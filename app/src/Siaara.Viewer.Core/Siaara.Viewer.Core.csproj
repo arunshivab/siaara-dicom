@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Viewer logic without UI: toolkit facade and scheduler, store, import, imaging, viewing,
+       measurements, overlay text, settings, audit. Only Toolkit/Tk.cs touches the bindings' names. -->
+  <PropertyGroup>
+    <AssemblyName>Siaara.Viewer.Core</AssemblyName>
+    <RootNamespace>Siaara.Viewer.Core</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(SiaaraBindingsSrc)Siaara/Siaara.csproj" />
+    <ProjectReference Include="$(SiaaraBindingsSrc)Siaara.Interop/Siaara.Interop.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Siaara.Viewer.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- Desktop host: ABI check, single instance, store open, Kestrel on 127.0.0.1:0, launch secret,
+       opening the window (decision A1 option a, isolated in BrowserLauncher), shutdown. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>siaara-viewer</AssemblyName>
+    <RootNamespace>Siaara.Viewer.Host</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Siaara.Viewer.Web/Siaara.Viewer.Web.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Siaara.Viewer.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <!-- Blazor UI (Browser and Viewer pages, components), the /ws/view frame socket and the own
+       canvas layer (wwwroot/js/siaara-view.js) and styles (wwwroot/css/siaara.css). -->
+  <PropertyGroup>
+    <AssemblyName>Siaara.Viewer.Web</AssemblyName>
+    <RootNamespace>Siaara.Viewer.Web</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Siaara.Viewer.Core/Siaara.Viewer.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Siaara.Viewer.Tests" />
+  </ItemGroup>
+</Project>
