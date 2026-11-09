@@ -170,7 +170,7 @@ Status make_plan(Family f, const StreamHeader& h, const PixelInfo& info, unsigne
     if (h.components > static_cast<int>(spp))
         warn(FrameWarningCode::ExtraComponents, "codestream has " + std::to_string(h.components) +
                                                     " components; the first " + std::to_string(spp) + " are used");
-    if (f != Family::Jpeg) {  // JPEG precision legitimately differs from Bits Stored (PS3.5 8.2.1)
+    {
         if (prec < static_cast<int>(declared_bs))
             warn(FrameWarningCode::PrecisionBelowBitsStored,
                  "codestream precision " + std::to_string(prec) + " below Bits Stored " +
@@ -199,8 +199,8 @@ Status make_plan(Family f, const StreamHeader& h, const PixelInfo& info, unsigne
                      prec <= static_cast<int>(ba);
     else if (f == Family::JpegLs)
         consistent = consistent && prec == static_cast<int>(bs) && prec <= static_cast<int>(ba);
-    else
-        consistent = consistent && prec <= static_cast<int>(ba) && (prec <= 8 || ba == 16);
+    else  // the JPEG decoder does not compare P with Bits Stored: values above it must be checked here
+        consistent = consistent && prec <= static_cast<int>(ba) && prec <= static_cast<int>(bs) && (prec <= 8 || ba == 16);
     if (consistent) return Status::ok();
 
     const unsigned temp_ba = prec <= 8 ? 8u : 16u;
@@ -549,7 +549,7 @@ void FrameReader::probe_first_frame() {
     // Stored says, Bits Allocated when it carries more than that.
     int bs = info_.bits_stored;
     if (h.precision > ba && (ba == 8 || ba == 16 || ba == 32)) bs = ba;
-    else if (f != Family::Jpeg && h.precision > bs && h.precision <= ba) bs = h.precision;
+    else if (h.precision > bs && h.precision <= ba) bs = h.precision;
     if (bs != info_.bits_stored) {
         info_.bits_stored = static_cast<std::uint16_t>(bs);
         info_.high_bit = static_cast<std::uint16_t>(bs - 1);
@@ -675,6 +675,12 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
     Plan plan;
     if (opt_.lenient && f != Family::None && probe_header(f, data, h)) {
         if (Status s = make_plan(f, h, info_, declared_bits_stored_, index, plan, warnings); !s) return s;
+    } else if (!opt_.lenient && f == Family::Jpeg && probe_header(f, data, h) && h.precision != info_.bits_stored) {
+        // The JPEG 2000 and JPEG-LS decoders refuse P != Bits Stored themselves; the JPEG decoder
+        // only checks P against Bits Allocated, so strict mode enforces the rule here.
+        return Status(Errc::TypeMismatch, "frame " + std::to_string(index) + ": JPEG precision " +
+                                              std::to_string(h.precision) + " differs from Bits Stored " +
+                                              std::to_string(info_.bits_stored));
     }
     if (!plan.convert) {
         st = run_codec(codec_, data, info_.frame_info(), out);

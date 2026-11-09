@@ -2204,3 +2204,42 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_pick(const siaara_view* view, d
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- lenient frame decoding
+namespace {
+
+siaara_status frame_warnings_of(const siaara_file* file, uint32_t frame, std::vector<siaara::image::FrameWarning>& out) {
+    auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax);
+    if (!fr) return fail(fr.error());
+    if (frame >= fr->frame_count()) return fail(Errc::InvalidArgument, "frame index out of range");
+    if (Status s = fr->check_frame(frame, out); !s) return fail(s);
+    return SIAARA_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning_count(const siaara_file* file, uint32_t frame, uint32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        std::vector<siaara::image::FrameWarning> w;
+        if (siaara_status st = frame_warnings_of(file, frame, w); st != SIAARA_OK) return st;
+        *out = static_cast<uint32_t>(w.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning(const siaara_file* file, uint32_t frame, uint32_t index,
+                                                          int32_t* code, char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        std::vector<siaara::image::FrameWarning> w;
+        if (siaara_status st = frame_warnings_of(file, frame, w); st != SIAARA_OK) return st;
+        if (index >= w.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        if (code) *code = static_cast<int32_t>(w[index].code);
+        return copy_out(w[index].message, buf, cap, needed);
+    });
+}
+
+}  // extern "C"

@@ -31,10 +31,12 @@ namespace siaara::image {
 // are part of the C API as SIAARA_FRAME_WARN_*). Strict mode refuses such frames instead.
 enum class FrameWarningCode : std::uint16_t {
     None = 0,
-    // JPEG 2000 / JPEG-LS precision below Bits Stored: values are used as decoded (no scaling).
+    // Codestream precision (JPEG 2000 SIZ, JPEG-LS / JPEG SOF P) below Bits Stored: values are used
+    // as decoded (no scaling).
     PrecisionBelowBitsStored = 1,
-    // JPEG 2000 / JPEG-LS precision above Bits Stored (but within Bits Allocated): values are kept
-    // and info().bits_stored reports the codestream precision (taken from frame 0).
+    // Codestream precision above Bits Stored (but within Bits Allocated): values are kept and
+    // info().bits_stored reports the codestream precision (taken from frame 0); later frames whose
+    // values do not fit that precision fail.
     PrecisionAboveBitsStored = 2,
     // JPEG 2000 component signedness differs from Pixel Representation: the low `precision` bits of
     // each decoded sample are reinterpreted as Pixel Representation says (two's complement or not).
