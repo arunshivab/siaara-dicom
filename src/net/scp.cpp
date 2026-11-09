@@ -11,6 +11,8 @@
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
+#include "net/services.hpp"
+#include "net/store_support.hpp"
 
 namespace siaara::net {
 
@@ -63,7 +65,18 @@ ScpServer::ScpServer(ScpConfig cfg, ScpHandlers handlers) : cfg_(std::move(cfg))
         if (h_.on_get)
             for (std::string_view s : {sop::PatientRootGet, sop::StudyRootGet})
                 policy_.push_back({std::string(s), native, true, false});
+        if (h_.on_move) policy_.push_back({std::string(sop::CompositeInstanceRootMove), native, true, false});
+        if (h_.on_get)
+            for (std::string_view s : {sop::CompositeInstanceRootGet, sop::CompositeInstanceRetrieveWithoutBulkDataGet})
+                policy_.push_back({std::string(s), native, true, false});
     }
+    if (h_.services)
+        for (AcceptedSyntax& a : service_policy(*h_.services, native)) {
+            const bool known = std::any_of(policy_.begin(), policy_.end(), [&](const AcceptedSyntax& x) {
+                return x.abstract_syntax == a.abstract_syntax;
+            });
+            if (!known) policy_.push_back(std::move(a));
+        }
     const bool has_verification = std::any_of(policy_.begin(), policy_.end(), [](const AcceptedSyntax& a) {
         return a.abstract_syntax == sop::Verification;
     });
@@ -256,6 +269,16 @@ void ScpServer::serve(std::unique_ptr<Transport> t) {
     AssociateAc ac;
     std::vector<NegotiatedContext> contexts =
         negotiate_contexts(rq, policy_, any_policy_ ? &*any_policy_ : nullptr, ac);
+    if (!cfg_.extended_negotiation.empty())
+        ac.user.extended = answer_extended_negotiation(rq.user.extended, cfg_.extended_negotiation);
+    if (rq.user.async_window) {
+        // Requests are performed one at a time in arrival order, so any window up to the limit works.
+        const std::uint16_t want = rq.user.async_window->max_invoked, lim = cfg_.max_async_operations;
+        AsyncWindow w;
+        w.max_invoked = want == 0 ? lim : (lim == 0 ? want : std::min(want, lim));
+        w.max_performed = 1;
+        ac.user.async_window = w;
+    }
     if (rq.user.identity_rq && h_.on_identity) {
         std::vector<std::uint8_t> response;
         if (!h_.on_identity(*rq.user.identity_rq, response))
@@ -271,7 +294,7 @@ void ScpServer::serve(std::unique_ptr<Transport> t) {
 
     Ctx c{a};
     while (!c.dead) {
-        Result<DimseReceived> r = receive_dimse(a, cfg_.timeouts.idle_ms);
+        Result<DimseReceived> r = receive_dimse(a, cfg_.timeouts.idle_ms, cfg_.spool ? &*cfg_.spool : nullptr);
         if (!r) {
             if (r.error().code == Errc::Timeout && a.established()) {
                 log("idle timeout; aborting association");
@@ -303,9 +326,23 @@ bool ScpServer::dispatch(Ctx& c, Message& m) {
     }
     if (rq.command_field == cmd::CCancelRq) return true;  // nothing running: ignore
     if (Status v = validate_command(rq); !v) {
+        if (v.code == Errc::Unsupported && rq.message_id) {
+            // PS3.7 C.4.2: unknown operation -> 0211 (Unrecognized Operation), association kept.
+            log("unrecognized DIMSE command; replying 0211");
+            Command rsp = make_response(rq, dimse_status::UnrecognizedOperation);
+            if (Status s = send_dimse(c.a, m.context_id, rsp); !s) return false;
+            return true;
+        }
         log("invalid DIMSE request: " + v.message);
         c.a.abort(abort_src::Provider, abort_reason::InvalidPduParameterValue);
         return false;
+    }
+    if (h_.services) {
+        ServiceContext sc{c.a, cfg_, h_.log};
+        const ServiceOutcome o = dispatch_service(*h_.services, sc, m);
+        if (sc.release_pending) c.release_pending = true;
+        if (o == ServiceOutcome::Failed) return false;
+        if (o == ServiceOutcome::Handled) return !c.dead;
     }
     Status s = Status::ok();
     switch (rq.command_field) {
@@ -343,11 +380,16 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
         rq.move_originator_ae = m.command.move_originator_ae;
         rq.move_originator_message_id = m.command.move_originator_message_id;
         rq.raw = m.data;
+        rq.spool = m.spool;
         Result<Dataset> ds = decode_message_dataset(m);
         if (!ds) {
             st = dimse_status::CannotUnderstand;
         } else {
             rq.dataset = std::move(ds.value());
+            if (!cfg_.preferred_store_ts.empty() && rq.transfer_syntax != cfg_.preferred_store_ts)
+                if (Status cs = convert_received(rq, cfg_.preferred_store_ts, cfg_.transcode_params,
+                                                 cfg_.spool ? &*cfg_.spool : nullptr); !cs)
+                    log("kept received transfer syntax: " + cs.message);
             st = h_.on_store(rq);
         }
     }
@@ -386,6 +428,8 @@ Status ScpServer::do_find(Ctx& c, const Message& m) {
     q.message_id = *m.command.message_id;
     q.priority = m.command.priority.value_or(0);
     q.identifier = std::move(ident.value());
+    for (const ExtendedNegotiation& e : c.a.accept_pdu().user.extended)
+        if (e.sop_class_uid == q.sop_class_uid) q.extended_negotiation = e.info;
     bool stopped = false, cancelled = false;
     Status send_error = Status::ok();
     const auto emit = [&](const Dataset& result) -> bool {
@@ -426,6 +470,9 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
     q.priority = m.command.priority.value_or(0);
     q.move_destination = m.command.move_destination;
     q.identifier = std::move(ident.value());
+    for (const ExtendedNegotiation& e : c.a.accept_pdu().user.extended)
+        if (e.sop_class_uid == q.sop_class_uid) q.extended_negotiation = e.info;
+    const bool without_bulk = q.sop_class_uid == sop::CompositeInstanceRetrieveWithoutBulkDataGet;
 
     std::optional<MoveDestination> dest;
     if (!is_get) {
@@ -476,6 +523,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         sc.timeouts = cfg_.timeouts;
         sc.limits = cfg_.limits;
         sc.tls = cfg_.move_tls;
+        sc.transcode_params = cfg_.transcode_params;
         sub = std::make_unique<Scu>(sc);
         std::vector<std::pair<std::string, std::string>> seen;
         for (const Loaded& l : loaded) {
@@ -529,23 +577,23 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
             Result<DicomFile> full = read_file(l.path);
             if (full) f = std::make_shared<const DicomFile>(std::move(full.value()));
         }
+        if (f && without_bulk) {
+            auto stripped = std::make_shared<DicomFile>(*f);
+            strip_bulk_data(stripped->dataset);
+            f = std::move(stripped);
+        }
         if (f && is_get) {
             // C-STORE sub-operation on this association, on a context where the requestor is SCP.
             const NegotiatedContext* spc = nullptr;
-            std::vector<std::string> pref{f->transfer_syntax};
-            if (is_native(f->transfer_syntax))
-                for (const std::string& n : native_transfer_syntaxes()) pref.push_back(n);
-            for (const std::string& ts : pref) {
-                for (const NegotiatedContext& k : c.a.contexts())
-                    if (k.accepted() && k.requestor_scp && k.abstract_syntax == l.sop_class && k.transfer_syntax == ts) {
-                        spc = &k;
-                        break;
-                    }
-                if (spc) break;
-            }
+            std::vector<std::uint8_t> body;
+            for (const NegotiatedContext* k :
+                 store_contexts(c.a, l.sop_class, f->transfer_syntax, true, true, cfg_.transcode_params))
+                if (encode_for_transfer_syntax(*f, k->transfer_syntax, cfg_.transcode_params, body)) {
+                    spc = k;
+                    break;
+                }
             if (spc) {
-                std::vector<std::uint8_t> body;
-                if (write_dataset(f->dataset, spc->transfer_syntax, body)) {
+                {
                     const std::uint16_t smid = c.a.next_message_id();
                     const Command srq = make_c_store_rq(smid, l.sop_class, l.sop_instance);
                     if (!send_dimse_raw(c.a, spc->id, srq, body.data(), body.size())) {
@@ -647,7 +695,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
 
 Status ScpServer::do_n(Ctx& c, const Message& m) {
     const NegotiatedContext* pc = c.a.context(m.context_id);
-    if (!h_.on_n_request || !pc || pc->abstract_syntax != m.command.sop_class())
+    if (!h_.on_n_request || !pc || !context_covers(pc->abstract_syntax, m.command.sop_class()))
         return send_dimse(c.a, m.context_id, make_response(m.command, dimse_status::NoSuchSopClass));
     Result<Dataset> ds = decode_message_dataset(m);
     if (!ds) return send_dimse(c.a, m.context_id, make_response(m.command, dimse_status::ProcessingFailure));

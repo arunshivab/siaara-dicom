@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 
+#include "codec/transcode.hpp"
 #include "core/dataset.hpp"
 #include "core/status.hpp"
 #include "net/association.hpp"
@@ -23,8 +24,11 @@
 #include "net/scu.hpp"
 #include "net/socket.hpp"
 #include "net/tls.hpp"
+#include "net/spool.hpp"
 
 namespace siaara::net {
+
+struct ServiceSet;  // net/services.hpp
 
 struct QueryRequest {
     std::string calling_ae;
@@ -33,6 +37,9 @@ struct QueryRequest {
     std::uint16_t priority = 0;
     std::string move_destination;   // C-MOVE only
     Dataset identifier;
+    // SOP Class Extended Negotiation agreed for this SOP class (empty when none); see
+    // parse_query_flags() in net/services.hpp.
+    std::vector<std::uint8_t> extended_negotiation;
 };
 
 // One instance to send for C-MOVE / C-GET: either a file path (read when sent) or a loaded file.
@@ -68,6 +75,8 @@ struct ScpHandlers {
     std::function<bool(const UserIdentityRq&, std::vector<std::uint8_t>& response)> on_identity;
     // Diagnostics (AE titles, addresses, statuses and errors only; never patient data).
     std::function<void(const std::string&)> log;
+    // Storage Commitment, MPPS, UPS, Instance Availability and other services (net/services.hpp).
+    std::shared_ptr<ServiceSet> services;
 };
 
 struct ScpConfig {
@@ -92,6 +101,23 @@ struct ScpConfig {
     TlsSettings tls;
     // TLS client settings for C-MOVE sub-associations (used when move_tls.enabled).
     TlsSettings move_tls;
+    // ---- transcoding, streaming and negotiation extras
+    // Received C-STORE data sets larger than spool->threshold are written to disk (net/spool.hpp).
+    std::optional<SpoolConfig> spool;
+    // When set, received instances are converted to this transfer syntax before on_store sees them
+    // (left as received when the conversion is not possible).
+    std::string preferred_store_ts;
+    // Parameters for that conversion and for C-GET / C-MOVE sub-operations that must transcode.
+    codec::TranscodeParams transcode_params = [] {
+        codec::TranscodeParams p;
+        p.allow_lossy = false;
+        return p;
+    }();
+    // Operations a requestor may have outstanding when it proposes an Asynchronous Operations
+    // Window (PS3.7 D.3.3.3); 0 = unlimited. Requests are performed in order of arrival.
+    std::uint16_t max_async_operations = 16;
+    // SOP Class Extended Negotiation the SCP supports (each byte: 1 = supported).
+    std::vector<ExtendedNegotiation> extended_negotiation;
 };
 
 class ScpServer {

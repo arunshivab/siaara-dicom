@@ -11,6 +11,7 @@
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
+#include "net/store_support.hpp"
 
 namespace siaara::net {
 
@@ -125,6 +126,8 @@ Status Scu::connect_over(std::unique_ptr<Transport> t, AssociateRj* rj) {
     rq.calling_ae = cfg_.calling_ae;
     if (Status s = build_proposals(proposals_, rq); !s) return s;
     rq.user.identity_rq = cfg_.identity;
+    rq.user.async_window = cfg_.async_window;
+    rq.user.extended = cfg_.extended_negotiation;
     Result<std::unique_ptr<Association>> a = Association::request_over(std::move(t), rq, cfg_.timeouts, cfg_.limits, rj);
     if (!a) return a.take_error();
     assoc_ = std::move(a.value());
@@ -183,25 +186,22 @@ Result<std::uint16_t> Scu::store(const DicomFile& file, std::string_view move_or
     const std::string sop_class = sop_class_of(file);
     const std::string sop_instance = sop_instance_of(file);
     if (sop_class.empty() || sop_instance.empty()) return Status(Errc::Malformed, "instance lacks SOP Class/Instance UID");
-    std::vector<std::string> pref{file.transfer_syntax};
-    const bool native = is_native(file.transfer_syntax);
-    if (native)
-        for (const std::string& n : native_transfer_syntaxes()) pref.push_back(n);
+    // Same transfer syntax, a native re-encoding, or (cfg_.transcode) a transcode on the fly.
+    const std::vector<const NegotiatedContext*> cands = store_contexts(
+        *assoc_, sop_class, file.transfer_syntax, false, cfg_.transcode, cfg_.transcode_params);
+    if (cands.empty())
+        return Status(Errc::Unsupported, "no accepted presentation context for this SOP class and transfer syntax");
     const NegotiatedContext* pc = nullptr;
-    for (const std::string& ts : pref) {
-        for (const NegotiatedContext& c : assoc_->contexts())
-            if (c.accepted() && c.requestor_scu && c.abstract_syntax == sop_class && c.transfer_syntax == ts) {
-                pc = &c;
-                break;
-            }
-        if (pc) break;
-    }
-    if (!pc) return Status(Errc::Unsupported, "no accepted presentation context for this SOP class and transfer syntax");
-    // Re-encoding between native syntaxes is lossless; compressed pixel data is never transcoded here.
-    if (pc->transfer_syntax != file.transfer_syntax && (!native || !is_native(pc->transfer_syntax)))
-        return Status(Errc::Unsupported, "transfer syntax conversion not supported");
     std::vector<std::uint8_t> body;
-    if (Status s = write_dataset(file.dataset, pc->transfer_syntax, body); !s) return s;
+    Status enc = Status::ok();
+    for (const NegotiatedContext* c : cands) {
+        enc = encode_for_transfer_syntax(file, c->transfer_syntax, cfg_.transcode_params, body);
+        if (enc) {
+            pc = c;
+            break;
+        }
+    }
+    if (!pc) return enc;
     const std::uint16_t mid = assoc_->next_message_id();
     const Command rq = make_c_store_rq(mid, sop_class, sop_instance, priority::Medium, move_originator_ae,
                                        move_originator_message_id);
@@ -265,6 +265,7 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
         rq.move_originator_ae = m.command.move_originator_ae;
         rq.move_originator_message_id = m.command.move_originator_message_id;
         rq.raw = m.data;
+        rq.spool = m.spool;
         Result<Dataset> ds = decode_message_dataset(m);
         if (!ds) {
             st = dimse_status::CannotUnderstand;
@@ -290,7 +291,8 @@ Result<RetrieveResult> Scu::retrieve(bool is_get, std::string_view sop_class, st
     const std::uint16_t rsp_field = is_get ? cmd::CGetRsp : cmd::CMoveRsp;
     bool cancel_sent = false;
     while (true) {
-        Result<DimseReceived> r = receive_dimse(*assoc_, cfg_.timeouts.dimse_ms);
+        Result<DimseReceived> r =
+            receive_dimse(*assoc_, cfg_.timeouts.dimse_ms, is_get && cfg_.spool ? &*cfg_.spool : nullptr);
         if (!r) {
             if (r.error().code == Errc::Timeout && assoc_->established()) assoc_->abort();
             return r.take_error();

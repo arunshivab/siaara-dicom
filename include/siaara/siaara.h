@@ -1000,6 +1000,31 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara
                                                                     uint32_t contour, double* buf, size_t cap,
                                                                     size_t* needed, int32_t* closed);
 
+/* ---------------------------------------------------------------- transcoding */
+#define SIAARA_OFFSET_TABLE_AUTO 0     /* Basic Offset Table, Extended when offsets exceed 32 bits */
+#define SIAARA_OFFSET_TABLE_BASIC 1
+#define SIAARA_OFFSET_TABLE_EXTENDED 2
+#define SIAARA_OFFSET_TABLE_EMPTY 3
+
+typedef struct siaara_transcode_params {
+    uint32_t struct_size;        /* set to sizeof(siaara_transcode_params) */
+    int32_t quality;             /* lossy JPEG / JPEG 2000: 1..100; 0 = default (90) */
+    int32_t lossy;               /* 0/1: code lossily in syntaxes that allow both (.81, .91, .203) */
+    int32_t near_lossless;       /* JPEG-LS NEAR for .81 when lossy; 0 = default (2) */
+    int32_t allow_lossy;         /* 0/1: 0 refuses any transcode that applies lossy compression */
+    int32_t predictor;           /* JPEG lossless .57 selection value 1..7; 0 = default (1) */
+    int32_t chroma_subsampling;  /* JPEG lossy colour: 0 = 4:4:4 (YBR_FULL), 1 = 4:2:2 (YBR_FULL_422) */
+    int32_t offset_table;        /* SIAARA_OFFSET_TABLE_* */
+} siaara_transcode_params;
+
+/* Converts the file's pixel data to the transfer syntax ts_uid (NUL-terminated) and updates the
+ * Image Pixel and Lossy Image Compression attributes and the file meta. params may be NULL
+ * (lossless where the syntax allows, lossy allowed for lossy-only syntaxes such as JPEG baseline).
+ * On failure the file is unchanged; SIAARA_ERR_UNSUPPORTED when the image cannot be
+ * represented, SIAARA_ERR_REJECTED when lossy coding is needed and allow_lossy is 0. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, const char* ts_uid,
+                                                           const siaara_transcode_params* params);
+
 #ifdef __cplusplus
 }
 #endif

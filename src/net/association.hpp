@@ -14,6 +14,7 @@
 #include "core/status.hpp"
 #include "net/pdu.hpp"
 #include "net/socket.hpp"
+#include "net/spool.hpp"
 
 namespace siaara::net {
 
@@ -129,6 +130,8 @@ struct RawMessage {
     Bytes command;
     bool has_data = false;
     Bytes data;
+    // Set when the data set was spooled to disk (see net/spool.hpp); `data` then views the mapping.
+    std::shared_ptr<SpoolFile> spool;
 };
 
 // What receive() returned.
@@ -142,6 +145,9 @@ struct Received {
 // Callback that tells receive() whether a data set follows a given command set.
 // (The upper layer does not parse commands itself; the DIMSE layer supplies this.)
 using HasDatasetFn = std::function<Result<bool>(const Bytes& command)>;
+// Supplies the bytes a spool file starts with (the Part 10 header) for a command whose data set
+// is about to be written to disk.
+using SpoolPrefixFn = std::function<Result<std::vector<std::uint8_t>>(const Bytes& command, const NegotiatedContext& pc)>;
 
 class Association {
 public:
@@ -174,6 +180,9 @@ public:
     // Receives the next complete message (or the peer's A-RELEASE-RQ). `timeout_ms` bounds the
     // wait for the first fragment; later fragments use the DIMSE timeout.
     Result<Received> receive(int timeout_ms, const HasDatasetFn& has_dataset);
+    // Same; data sets larger than spool->threshold are written to a spool file (when spool is set).
+    Result<Received> receive(int timeout_ms, const HasDatasetFn& has_dataset, const SpoolConfig* spool,
+                             const SpoolPrefixFn& prefix);
     // True when bytes are waiting (used to look for C-CANCEL between responses).
     bool data_pending(int timeout_ms);
 

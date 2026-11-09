@@ -236,6 +236,8 @@ public:
         if (!b.empty()) parts_.push_back(b);
         return true;
     }
+    std::uint64_t total() const noexcept { return total_; }
+    const std::vector<Bytes>& parts() const noexcept { return parts_; }
     Bytes take() {
         Bytes r;
         if (parts_.size() == 1) {
@@ -552,6 +554,11 @@ bool Association::data_pending(int timeout_ms) {
 }
 
 Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_dataset) {
+    return receive(timeout_ms, has_dataset, nullptr, {});
+}
+
+Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_dataset, const SpoolConfig* spool,
+                                      const SpoolPrefixFn& prefix) {
     if (state_ != S::Sta6) return Status(Errc::InvalidArgument, "association not established");
     if (interrupted_.load()) return handle_unexpected(E::Evt17, "interrupted");
     // Wait for the first byte without disturbing the stream; a timeout here is not an error
@@ -564,6 +571,7 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
     enum class Phase { Command, Data } phase = Phase::Command;
     Accumulator acc;
     RawMessage msg;
+    std::unique_ptr<SpoolWriter> sink;  // data set going to disk
     bool started = false;
     while (true) {
         UlEvent evt = E::Evt18;
@@ -598,7 +606,32 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                 msg.context_id = v.context_id;
             }
             const std::uint64_t cap = phase == Phase::Command ? lim_.max_command_size : lim_.max_dataset_size;
-            if (!acc.add(v.data, cap)) {
+            if (phase == Phase::Data && spool && !sink && acc.total() + v.data.size() > spool->threshold) {
+                Result<std::vector<std::uint8_t>> pre = prefix ? prefix(msg.command, *pc) : std::vector<std::uint8_t>{};
+                Result<std::unique_ptr<SpoolWriter>> w =
+                    pre ? SpoolWriter::open(*spool, pre.value()) : Result<std::unique_ptr<SpoolWriter>>(pre.take_error());
+                if (!w) {
+                    abort(abort_src::Provider, abort_reason::NotSpecified);
+                    return Status(w.error().code, "cannot spool data set: " + w.error().message);
+                }
+                sink = std::move(w.value());
+                for (const Bytes& b : acc.parts())
+                    if (Status ws = sink->write(b.data(), b.size()); !ws) {
+                        abort(abort_src::Provider, abort_reason::NotSpecified);
+                        return ws;
+                    }
+                acc.clear();
+            }
+            if (sink) {
+                if (sink->data_bytes() + v.data.size() > spool->max_size) {
+                    abort(abort_src::Provider, abort_reason::NotSpecified);
+                    return Status(Errc::LimitExceeded, "data set too large");
+                }
+                if (Status ws = sink->write(v.data.data(), v.data.size()); !ws) {
+                    abort(abort_src::Provider, abort_reason::NotSpecified);
+                    return ws;
+                }
+            } else if (!acc.add(v.data, cap)) {
                 abort(abort_src::Provider, abort_reason::NotSpecified);
                 return Status(Errc::LimitExceeded, phase == Phase::Command ? "command set too large"
                                                                           : "data set too large");
@@ -615,6 +648,16 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                 msg.has_data = *hd;
                 if (msg.has_data) phase = Phase::Data;
                 else complete = true;
+            } else if (sink) {
+                Result<SpoolWriter::Finished> fin = sink->finish();
+                sink.reset();
+                if (!fin) {
+                    abort(abort_src::Provider, abort_reason::NotSpecified);
+                    return fin.take_error();
+                }
+                msg.data = std::move(fin->data);
+                msg.spool = std::move(fin->file);
+                complete = true;
             } else {
                 msg.data = acc.take();
                 complete = true;

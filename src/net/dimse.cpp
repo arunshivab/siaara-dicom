@@ -462,8 +462,22 @@ Status send_dimse(Association& a, std::uint8_t context_id, const Command& c, con
     return send_dimse_raw(a, context_id, c, body.data(), body.size());
 }
 
-Result<DimseReceived> receive_dimse(Association& a, int timeout_ms) {
-    Result<Received> r = a.receive(timeout_ms, command_has_dataset);
+Result<DimseReceived> receive_dimse(Association& a, int timeout_ms) { return receive_dimse(a, timeout_ms, nullptr); }
+
+Result<DimseReceived> receive_dimse(Association& a, int timeout_ms, const SpoolConfig* spool) {
+    const std::string peer_ae = a.is_requestor() ? a.called_ae() : a.calling_ae();
+    const SpoolPrefixFn prefix = [&peer_ae](const Bytes& command, const NegotiatedContext& pc)
+        -> Result<std::vector<std::uint8_t>> {
+        Result<Command> c = decode_command(command);
+        if (!c) return c.take_error();
+        std::vector<std::uint8_t> out;
+        if (Status s = part10_header(c->affected_sop_class_uid, c->affected_sop_instance_uid, pc.transfer_syntax,
+                                     peer_ae, out); !s)
+            return s;
+        return out;
+    };
+    Result<Received> r = spool ? a.receive(timeout_ms, command_has_dataset, spool, prefix)
+                               : a.receive(timeout_ms, command_has_dataset);
     if (!r) return r.take_error();
     DimseReceived out;
     if (r->kind == ReceiveKind::PeerReleaseRequest) {
@@ -479,6 +493,7 @@ Result<DimseReceived> receive_dimse(Association& a, int timeout_ms) {
     out.message.command = std::move(c.value());
     out.message.has_data = r->message.has_data;
     out.message.data = std::move(r->message.data);
+    out.message.spool = std::move(r->message.spool);
     if (const NegotiatedContext* pc = a.context(out.message.context_id)) {
         out.message.transfer_syntax = pc->transfer_syntax;
         out.message.abstract_syntax = pc->abstract_syntax;

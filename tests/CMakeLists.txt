@@ -85,3 +85,7 @@ target_compile_options(tls_tool PRIVATE ${SIAARA_TEST_WARN})
 add_executable(clinical_tool crosscheck/clinical_tool.cpp)
 target_link_libraries(clinical_tool PRIVATE siaara_static)
 target_compile_options(clinical_tool PRIVATE ${SIAARA_TEST_WARN})
+# Test-only helper for tests/crosscheck/services_crosscheck.py (not installed).
+add_executable(services_tool crosscheck/services_tool.cpp)
+target_link_libraries(services_tool PRIVATE siaara_static)
+target_compile_options(services_tool PRIVATE ${SIAARA_TEST_WARN})
