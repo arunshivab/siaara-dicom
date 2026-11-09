@@ -356,7 +356,7 @@ def dicomweb_client_checks(build):
             return
         url = f"http://127.0.0.1:{port}/dicomweb"
         client = DICOMwebClient(url=url)
-        names = ["CT_small.dcm", "MR_small.dcm", "emri_small.dcm", "rtplan.dcm", "SC_rgb_rle.dcm", "JPEG2000.dcm"]
+        names = ["CT_small.dcm", "MR_small.dcm", "rtdose.dcm", "rtplan.dcm", "SC_rgb_rle.dcm", "JPEG2000.dcm"]
         datasets = []
         for n in names:
             try:
@@ -399,7 +399,7 @@ def dicomweb_client_checks(build):
             check("dicomweb-client: WADO-RS decompressed RLE equals pydicom decode",
                   dec.file_meta.TransferSyntaxUID == "1.2.840.10008.1.2.1" and np.array_equal(dec.pixel_array, rle.pixel_array))
         meta = client.retrieve_instance_metadata(ct.StudyInstanceUID, ct.SeriesInstanceUID, ct.SOPInstanceUID)
-        md = pydicom.Dataset.from_json(meta, bulk_data_uri_handler=lambda tag, vr, uri: client.retrieve_bulkdata(uri)[0])
+        md = pydicom.Dataset.from_json(meta, bulk_data_uri_handler=lambda tag, vr, uri: bytes(client.retrieve_bulkdata(uri)[0]))
         check("dicomweb-client: WADO-RS metadata + BulkDataURI via retrieve_bulkdata", md.PixelData == ct.PixelData and md.Rows == ct.Rows)
         frames = client.retrieve_instance_frames(ct.StudyInstanceUID, ct.SeriesInstanceUID, ct.SOPInstanceUID, frame_numbers=[1])
         check("dicomweb-client: WADO-RS frames (uncompressed)", len(frames) == 1 and frames[0] == ct.PixelData)
@@ -463,7 +463,7 @@ def orthanc_checks(build):
             p = subprocess.run([cli, *args], capture_output=True, timeout=timeout)
             return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
 
-        names = ["CT_small.dcm", "MR_small.dcm", "emri_small.dcm", "SC_rgb_rle.dcm"]
+        names = ["CT_small.dcm", "MR_small.dcm", "rtdose.dcm", "SC_rgb_rle.dcm"]
         paths = [get_testdata_file(n) for n in names]
         rc, out, err = run("stow", base, *paths)
         check("Orthanc: siaara STOW-RS", rc == 0 and "4 stored, 0 failed" in err, err.strip()[-80:])
@@ -503,6 +503,23 @@ def orthanc_checks(build):
                            "--out", os.path.join(tmp, "frame"))
         fr_ok = rc == 0 and os.path.exists(os.path.join(tmp, "frame.1")) and open(os.path.join(tmp, "frame.1"), "rb").read() == ct.PixelData
         check("Orthanc: siaara WADO-RS frames (uncompressed)", fr_ok, err.strip()[:120])
+        rle = pydicom.dcmread(paths[3])
+        rc, out, err = run("frames", base, rle.StudyInstanceUID, rle.SeriesInstanceUID, rle.SOPInstanceUID, "1",
+                           "--out", os.path.join(tmp, "rleframe"), "--ts", "1.2.840.10008.1.2.5")
+        from pydicom.encaps import generate_frames
+        enc = next(generate_frames(rle.PixelData, number_of_frames=1))
+        got = open(os.path.join(tmp, "rleframe.1"), "rb").read() if rc == 0 else b""
+        check("Orthanc: siaara WADO-RS frames as stored (RLE)", rc == 0 and got.rstrip(b"\x00") == enc.rstrip(b"\x00"), err.strip()[:120])
+        rc, out, err = run("wado", base, rle.StudyInstanceUID, rle.SeriesInstanceUID, rle.SOPInstanceUID, "--out", outdir,
+                           "--ts", "1.2.840.10008.1.2.1")
+        ok_dec = False
+        if rc == 0:
+            import numpy as np
+            g = pydicom.dcmread(os.path.join(outdir, rle.SOPInstanceUID + ".dcm"))
+            ok_dec = g.file_meta.TransferSyntaxUID == "1.2.840.10008.1.2.1" and np.array_equal(g.pixel_array, rle.pixel_array)
+        check("Orthanc: siaara WADO-RS with transfer-syntax (server decompresses RLE)", ok_dec, err.strip()[:120])
+        rc, out, err = run("qido", base, "series", "--study", ct.StudyInstanceUID)
+        check("Orthanc: siaara QIDO series of a study", rc == 0 and len(json.loads(out)) == 1)
         wu = os.path.join(tmp, "wado_uri.dcm")
         rc, out, err = run("wado-uri", f"http://127.0.0.1:{port}/dicom-web", ct.StudyInstanceUID, ct.SeriesInstanceUID,
                            ct.SOPInstanceUID, "--out", wu)

@@ -72,6 +72,8 @@ int main(int argc, char** argv) {
         DicomwebServerConfig cfg;
         cfg.http.bind_address = "127.0.0.1";
         cfg.http.port = static_cast<std::uint16_t>(std::atoi(argv[2]));
+        // Some clients send Host without the port, so absolute URLs use the known address.
+        if (cfg.http.port != 0) cfg.public_base_url = "http://127.0.0.1:" + std::to_string(cfg.http.port) + "/dicomweb";
         DicomwebServer server;
         if (Status st = server.start(cfg, mem.make_store()); !st) return fail(st);
         std::printf("listening %u\n", static_cast<unsigned>(server.port()));

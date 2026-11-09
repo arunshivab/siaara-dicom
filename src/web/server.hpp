@@ -63,6 +63,9 @@ struct Store {
 struct DicomwebServerConfig {
     http::ServerConfig http;
     std::string base_path = "/dicomweb";   // prefix of every DICOMweb route ("" for the root)
+    // Absolute URL of base_path as clients reach it (e.g. "http://pacs.example:8080/dicomweb"),
+    // used for BulkDataURI and RetrieveURL. Empty: built from the request's Host header.
+    std::string public_base_url;
     std::string wado_uri_path = "/wado";   // WADO-URI endpoint below base_path ("" disables it)
     // Binary values longer than this are returned as BulkDataURI in metadata responses.
     std::uint64_t bulk_data_threshold = 1024;

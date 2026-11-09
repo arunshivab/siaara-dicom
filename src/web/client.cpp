@@ -86,9 +86,9 @@ std::string uid_path(std::string_view study, std::string_view series, std::strin
 
 void add_query(std::string& target, std::string_view k, std::string_view v) {
     target.push_back(target.find('?') == std::string::npos ? '?' : '&');
-    target += http::percent_encode(k);
+    target += http::percent_encode_query(k);
     target.push_back('=');
-    target += http::percent_encode(v);
+    target += http::percent_encode_query(v);
 }
 
 std::string weight_text(std::size_t i) {

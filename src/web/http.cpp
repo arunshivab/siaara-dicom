@@ -290,6 +290,19 @@ std::string percent_encode(std::string_view s) {
     return out;
 }
 
+std::string percent_encode_query(std::string_view s) {
+    static constexpr std::string_view kKeep = "/:@!$'()*,;?";
+    std::string out;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= s.size(); ++i) {
+        if (i < s.size() && kKeep.find(s[i]) == std::string_view::npos) continue;
+        out += percent_encode(s.substr(start, i - start));
+        if (i < s.size()) out.push_back(s[i]);
+        start = i + 1;
+    }
+    return out;
+}
+
 Result<std::string> percent_decode(std::string_view s, bool plus_is_space) {
     std::string out;
     out.reserve(s.size());

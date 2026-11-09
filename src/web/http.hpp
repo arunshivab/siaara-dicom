@@ -85,6 +85,9 @@ std::string quote_if_needed(std::string_view v);
 
 // ---------------------------------------------------------------- URLs and targets (RFC 3986)
 std::string percent_encode(std::string_view s);  // everything except unreserved characters
+// For a query key or value: also leaves the RFC 3986 query characters "/:@!$'()*,;?" as they
+// are (some servers do not decode them); '&', '=', '+', '#' and '%' are always encoded.
+std::string percent_encode_query(std::string_view s);
 Result<std::string> percent_decode(std::string_view s, bool plus_is_space);
 struct Target {
     std::string path;                                        // decoded

@@ -179,7 +179,7 @@ public:
             !std::equal(base.begin(), base.end(), target_.segments.begin()))
             return fail(rs_, 404, "not found");
         seg_.assign(target_.segments.begin() + static_cast<std::ptrdiff_t>(base.size()), target_.segments.end());
-        base_url_ = origin_of(rq_) + cfg_.base_path;
+        base_url_ = cfg_.public_base_url.empty() ? origin_of(rq_) + cfg_.base_path : cfg_.public_base_url;
         route(get, post);
         add_cors(cfg_, rs_);
     }
@@ -436,9 +436,14 @@ private:
                 continue;
             }
             const std::string* type = m.param("type");
-            out.push_back({type ? http::parse_media_type(*type) ? http::parse_media_type(*type)->essence() : std::string("?")
-                                : std::string(media::OctetStream),
-                           ts ? *ts : ""});
+            std::string media_of_parts(media::OctetStream);
+            if (type) {
+                const auto slash = type->find('/');
+                if (slash != std::string::npos && type->substr(slash + 1) == "*") media_of_parts = "*";  // */*, image/*
+                else if (auto pm = http::parse_media_type(*type)) media_of_parts = pm->essence();
+                else continue;
+            }
+            out.push_back({media_of_parts, ts ? *ts : (media_of_parts == "*" ? "*" : "")});
         }
         return !out.empty();
     }
@@ -688,6 +693,7 @@ Status DicomwebServer::start(const DicomwebServerConfig& cfg, Store store) {
     cfg_ = cfg;
     store_ = std::move(store);
     while (!cfg_.base_path.empty() && cfg_.base_path.back() == '/') cfg_.base_path.pop_back();
+    while (!cfg_.public_base_url.empty() && cfg_.public_base_url.back() == '/') cfg_.public_base_url.pop_back();
     if (!cfg_.base_path.empty() && cfg_.base_path[0] != '/') return Status(Errc::InvalidArgument, "base_path must start with '/'");
     return http_.start(cfg_.http, [this](const http::Request& rq, http::Response& rs) { handle(rq, rs); });
 }

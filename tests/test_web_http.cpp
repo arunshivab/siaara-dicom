@@ -282,6 +282,10 @@ TEST_CASE("web/http targets and URLs") {
     CHECK(!http::parse_target("/a%zz").is_ok());
     CHECK(!http::parse_target("/a/../b").is_ok());
     CHECK_EQ(http::percent_encode("a b/^*~"), std::string("a%20b%2F%5E%2A~"));
+    CHECK_EQ(http::percent_encode_query("application/dicom; a=b&c+d*,e#%"), std::string("application/dicom;%20a%3Db%26c%2Bd*,e%23%25"));
+    auto rt = http::parse_target("/x?k=" + http::percent_encode_query("Doe^J* a+b=c&d"));
+    REQUIRE(rt.is_ok() && rt->query.size() == 1);
+    CHECK_EQ(rt->query[0].second, std::string("Doe^J* a+b=c&d"));
     auto u = http::parse_url("http://[::1]:8042/dicom-web/");
     REQUIRE(u.is_ok());
     CHECK_EQ(u->host, std::string("::1"));
