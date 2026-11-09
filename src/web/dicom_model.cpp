@@ -1,6 +1,8 @@
 // SIAARA DICOM Toolkit - value helpers shared by the DICOM JSON and XML encoders.
 #include "web/dicom_model.hpp"
 
+#include "core/number.hpp"
+
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -248,24 +250,17 @@ namespace {
 template <class F>
 std::optional<F> parse_float_t(std::string_view s) {
     if (!json::is_number_token(s)) return std::nullopt;
-    std::istringstream in{std::string(s)};
-    in.imbue(std::locale::classic());
-    F v{};
-    in >> v;
-    if (in.fail()) {
-        // Some standard libraries flag underflow to a subnormal / zero as a failure. The token is
-        // grammatically valid, so a tiny magnitude means the value is (close to) zero: retry the
-        // decision with the exact decimal form.
-        Decimal d;
-        if (!decompose(s, d)) return std::nullopt;
-        if (d.digits.empty()) return d.neg ? -F(0) : F(0);
-        const std::int64_t mag = static_cast<std::int64_t>(d.digits.size()) + d.exp10;
-        if (mag < std::numeric_limits<F>::min_exponent10 - 30) return d.neg ? -F(0) : F(0);
-        return std::nullopt;  // overflow or genuinely unparseable
+    // Correctly rounded, locale-independent conversion (istream >> double/float is unreliable on
+    // libc++ near the range limits). Floats go through double; every float is exactly a double.
+    auto d = parse_decimal_c(s);
+    if (!d) return std::nullopt;
+    if constexpr (std::is_same_v<F, float>) {
+        const auto f = static_cast<float>(*d);
+        if (!std::isfinite(f)) return std::nullopt;
+        return f;
+    } else {
+        return *d;
     }
-    if (in.peek() != std::char_traits<char>::eof()) return std::nullopt;
-    if (!std::isfinite(v)) return std::nullopt;
-    return v;
 }
 
 template <class F>

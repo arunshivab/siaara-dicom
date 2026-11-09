@@ -1,5 +1,7 @@
 #include "core/dataset.hpp"
 
+#include "core/number.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -18,55 +20,11 @@ bool leading_space_insignificant(VR vr) noexcept {
     }
 }
 
-// Locale-independent decimal parser for DS/IS/numeric strings (standards PARSE-42).
-// Mantissas of up to 19 significant digits are accumulated exactly; the power-of-ten scale is
-// applied in one step, which is exact for typical DS values (<= 16 chars) and within 1 ulp otherwise.
+// Locale-independent, correctly rounded decimal parsing for DS/IS/numeric strings (PARSE-42).
 std::optional<double> parse_double(std::string_view s) {
     while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
     while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.remove_suffix(1);
-    if (s.empty()) return std::nullopt;
-    std::size_t i = 0;
-    bool neg = false;
-    if (s[i] == '+' || s[i] == '-') neg = s[i++] == '-';
-    std::uint64_t mant = 0;
-    int digits = 0, exp10 = 0;
-    bool any = false;
-    for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i) {
-        any = true;
-        if (digits < 19) { mant = mant * 10 + static_cast<unsigned>(s[i] - '0'); if (mant) ++digits; }
-        else ++exp10;
-    }
-    if (i < s.size() && s[i] == '.') {
-        ++i;
-        for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i) {
-            any = true;
-            if (digits < 19) { mant = mant * 10 + static_cast<unsigned>(s[i] - '0'); if (mant) ++digits; --exp10; }
-        }
-    }
-    if (!any) return std::nullopt;
-    if (i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
-        ++i;
-        bool eneg = false;
-        if (i < s.size() && (s[i] == '+' || s[i] == '-')) eneg = s[i++] == '-';
-        if (i >= s.size()) return std::nullopt;
-        int e = 0;
-        for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i)
-            if (e < 10000) e = e * 10 + (s[i] - '0');
-        exp10 += eneg ? -e : e;
-    }
-    if (i != s.size()) return std::nullopt;
-    static constexpr double kPow10[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
-                                        1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
-                                        1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
-    double v = static_cast<double>(mant);
-    if (mant != 0) {
-        int e = exp10;
-        while (e > 22) { v *= 1e22; e -= 22; if (std::isinf(v)) return std::nullopt; }
-        while (e < -22) { v /= 1e22; e += 22; if (v == 0.0) break; }
-        v = e >= 0 ? v * kPow10[e] : v / kPow10[-e];
-    }
-    if (!std::isfinite(v)) return std::nullopt;
-    return neg ? -v : v;
+    return parse_decimal_c(s);
 }
 
 std::optional<std::int64_t> parse_int(std::string_view s) {
