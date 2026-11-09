@@ -129,3 +129,11 @@ add_executable(repair_samples crosscheck/repair_samples.cpp)
 target_link_libraries(repair_samples PRIVATE siaara_static)
 target_compile_options(repair_samples PRIVATE ${SIAARA_TEST_WARN})
 target_include_directories(repair_samples PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck)
+# Regenerates src/repair/iod_tables.inc from PS3.3 / PS3.4 when the XML is available and compares.
+set(SIAARA_NEMA_PART03 "" CACHE FILEPATH "PS3.3 DocBook XML (part03.xml) for the IOD table check")
+set(SIAARA_NEMA_PART04 "" CACHE FILEPATH "PS3.4 DocBook XML (part04.xml) for the IOD table check")
+if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART03}" AND EXISTS "${SIAARA_NEMA_PART04}")
+  add_test(NAME repair_iod_table_matches_generator
+           COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/repair_iod_table_check.py
+                   ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART03} ${SIAARA_NEMA_PART04})
+endif()
