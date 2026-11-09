@@ -324,8 +324,8 @@ TEST_CASE("dicomdir: broken links, cycles and inactive records are contained") {
     }
     {  // the second patient is inactive: it and its subtree are skipped (unless asked)
         auto b = orig;
-        b[patients[1]->offset + 28] = 0;
-        b[patients[1]->offset + 29] = 0;
+        b[static_cast<std::size_t>(patients[1]->offset + 28)] = 0;
+        b[static_cast<std::size_t>(patients[1]->offset + 29)] = 0;
         store_synth::write_bytes(dd, b);
         const auto v = read_all(dd);
         CHECK_EQ(v.size(), 16u);
@@ -473,12 +473,16 @@ TEST_CASE("dicomdir: DCMTK dcmmkdir output reads correctly (oracle, skipped when
     const int rc = std::system(cmd.c_str());
     if (rc != 0) {
         std::printf("  dcmmkdir failed (rc %d), log follows\n", rc);
-        std::system(("cat '" + (td / "fs" / "dcmmkdir.log").string() + "'").c_str());
+        const int shown = std::system(("cat '" + (td / "fs" / "dcmmkdir.log").string() + "'").c_str());
+        (void)shown;
     }
     REQUIRE(rc == 0);
     DicomdirSummary s;
     const auto v = read_all(td / "fs" / "DICOMDIR", &s);
-    if (s.files != 9) std::system(("cat '" + (td / "fs" / "dcmmkdir.log").string() + "'").c_str());
+    if (s.files != 9) {
+        const int shown = std::system(("cat '" + (td / "fs" / "dcmmkdir.log").string() + "'").c_str());
+        (void)shown;
+    }
     CHECK(!s.sequential_fallback);
     CHECK_EQ(s.unreachable, 0u);
     CHECK_EQ(s.file_set_id, "TESTSET");

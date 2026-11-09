@@ -1,5 +1,7 @@
 #include "store/common.hpp"
 
+#include "core/io.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -16,6 +18,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -314,6 +317,78 @@ void sync_dir(const fs::path& dir) noexcept {
         (void)::fsync(fd);
         ::close(fd);
     }
+}
+#endif
+
+#if defined(_WIN32)
+namespace {
+struct WinMap {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    HANDLE map = nullptr;
+    const void* view = nullptr;
+    ~WinMap() {
+        if (view) UnmapViewOfFile(view);
+        if (map) CloseHandle(map);
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    }
+};
+}  // namespace
+
+Result<Bytes> map_for_header(const std::string& utf8_path) {
+    const fs::path p = u8path(utf8_path);
+    auto m = std::make_shared<WinMap>();
+    m->file = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
+    if (m->file == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot open file");
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(m->file, &size)) return Status(Errc::IoError, "cannot get file size");
+    if (size.QuadPart == 0) return Bytes{};
+    if (static_cast<std::uint64_t>(size.QuadPart) > SIZE_MAX) return Status(Errc::LimitExceeded, "file too large");
+    m->map = CreateFileMappingW(m->file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!m->map) return io::read_file(utf8_path);
+    m->view = MapViewOfFile(m->map, FILE_MAP_READ, 0, 0, 0);
+    if (!m->view) return io::read_file(utf8_path);
+    const auto* q = static_cast<const std::uint8_t*>(m->view);
+    return Bytes(std::shared_ptr<const void>(m, m->view), q, static_cast<std::size_t>(size.QuadPart));
+}
+#else
+namespace {
+struct PosixMap {
+    void* addr = MAP_FAILED;
+    std::size_t len = 0;
+    ~PosixMap() {
+        if (addr != MAP_FAILED) munmap(addr, len);
+    }
+};
+}  // namespace
+
+Result<Bytes> map_for_header(const std::string& utf8_path) {
+    const int fd = ::open(utf8_path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return Status(Errc::IoError, "cannot open file");
+    struct stat st {};
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        return Status(Errc::IoError, "not a regular file");
+    }
+    if (static_cast<std::uint64_t>(st.st_size) > SIZE_MAX) {
+        ::close(fd);
+        return Status(Errc::LimitExceeded, "file too large");
+    }
+    const auto len = static_cast<std::size_t>(st.st_size);
+    if (len == 0) {
+        ::close(fd);
+        return Bytes{};
+    }
+    auto m = std::make_shared<PosixMap>();
+    m->addr = mmap(nullptr, len, PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd);
+    if (m->addr == MAP_FAILED) return io::read_file(utf8_path);
+    m->len = len;
+#if defined(MADV_RANDOM)
+    (void)madvise(m->addr, len, MADV_RANDOM);
+#endif
+    const auto* q = static_cast<const std::uint8_t*>(m->addr);
+    return Bytes(std::shared_ptr<const void>(m, m->addr), q, len);
 }
 #endif
 

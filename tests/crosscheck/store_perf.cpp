@@ -245,8 +245,8 @@ int main(int argc, char** argv) {
     unsigned threads = std::max(2u, std::thread::hardware_concurrency());
     bool worst = false;
     for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--files") && i + 1 < argc) nfiles = std::strtoull(argv[++i], nullptr, 10);
-        else if (!std::strcmp(argv[i], "--records") && i + 1 < argc) nrecords = std::strtoull(argv[++i], nullptr, 10);
+        if (!std::strcmp(argv[i], "--files") && i + 1 < argc) nfiles = static_cast<std::size_t>(std::strtoull(argv[++i], nullptr, 10));
+        else if (!std::strcmp(argv[i], "--records") && i + 1 < argc) nrecords = static_cast<std::size_t>(std::strtoull(argv[++i], nullptr, 10));
         else if (!std::strcmp(argv[i], "--threads") && i + 1 < argc) threads = static_cast<unsigned>(std::strtoul(argv[++i], nullptr, 10));
         else if (!std::strcmp(argv[i], "--worst")) worst = true;
     }

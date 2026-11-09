@@ -7,6 +7,7 @@
 #include "core/dataset.hpp"
 #include "core/io.hpp"
 #include "core/reader.hpp"
+#include "store/common.hpp"
 
 namespace siaara::store {
 
@@ -191,7 +192,7 @@ Status extract_index(const Bytes& data, IndexRecord& out, const ExtractOptions& 
 }
 
 Status extract_index_file(const std::string& utf8_path, IndexRecord& out, const ExtractOptions& opt) {
-    auto bytes = io::map_file(utf8_path);
+    auto bytes = map_for_header(utf8_path);
     if (!bytes) {
         out = IndexRecord{};
         return bytes.take_error();

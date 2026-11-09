@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/status.hpp"
+#include "core/types.hpp"
 
 namespace siaara::store {
 
@@ -61,6 +62,11 @@ private:
     int fd_ = -1;
 #endif
 };
+
+// Maps a whole file read-only for header access: unlike io::map_file it asks the OS not to read
+// ahead (MADV_RANDOM / no sequential-scan hint), so parsing the header of a large file touches only
+// the pages it reads. Falls back to io::read_file where mapping is unavailable.
+Result<Bytes> map_for_header(const std::string& utf8_path);
 
 // Reads a whole (small) file. Fails with IoError when it cannot be read.
 Result<std::vector<std::uint8_t>> read_whole(const std::filesystem::path& p);

@@ -96,7 +96,7 @@ Result<ScanStats> scan_folder(const std::string& utf8_root, const ScanCallback& 
             if (cancelled.load()) break;
             item.path = path;
             item.status = Status::ok();
-            auto bytes = io::map_file(path);
+            auto bytes = map_for_header(path);
             if (!bytes) {
                 item.kind = ScanKind::Error;
                 item.status = bytes.take_error();

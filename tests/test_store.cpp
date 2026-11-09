@@ -1,6 +1,7 @@
 // Local store tests: index extraction, add/dedupe/replace, every query filter, ordering,
 // delete/move/verify/rebuild, crash recovery at every journal byte, lock file, C API.
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -194,7 +195,7 @@ TEST_CASE("store: extract_index reads every key, the pixel data offset and UTF-8
     CHECK(r.flags & kHasOrientation);
     CHECK(r.position[0] == -10.0 && r.position[1] == -20.0 && r.position[2] == 0.0);
     CHECK(r.orientation[0] == 1.0 && r.orientation[4] == 1.0);
-    CHECK((r.flags & kHasPixelSpacing) && r.pixel_spacing[0] == 0.5 && r.pixel_spacing[1] == 0.6);
+    CHECK((r.flags & kHasPixelSpacing) && r.pixel_spacing[0] == 0.5 && std::abs(r.pixel_spacing[1] - 0.6) < 1e-12);
     CHECK((r.flags & kHasSliceThickness) && r.slice_thickness == 1.5);
     CHECK_EQ(r.file_size, bytes.size());
     REQUIRE((r.flags & kPixelOffsetKnown) != 0);
