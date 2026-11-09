@@ -204,9 +204,20 @@ private:
                 return t.values[idx];
             }
         }
+        if (tolerant_) {
+            // No code of 1..16 bits matches. Like the IJG-derived decoders, take the 16 bits plus
+            // one more as consumed and use symbol 0 (difference / DC difference 0, AC end of block).
+            ++bad_codes_;
+            br_.skip(17);
+            return 0;
+        }
         err_ = true;
         return 0;
     }
+public:
+    bool tolerant_ = false;        // JpegDecodeOptions::tolerate_bad_codes
+    std::uint64_t bad_codes_ = 0;  // codes replaced by symbol 0
+private:
     std::int32_t receive_extend(int s) { return extend(br_.get(s), s); }
     std::int32_t decode_diff(const HuffTable& t, int max_size) {
         const std::int32_t pk = t.fast_val[br_.peek(kFastBits)];
@@ -915,6 +926,17 @@ Status decode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, std:
     std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
     if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
     return dec->run();
+}
+
+Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                      const JpegDecodeOptions& opt, std::uint64_t& bad_codes) {
+    bad_codes = 0;
+    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
+    if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
+    dec->tolerant_ = opt.tolerate_bad_codes;
+    Status st = dec->run();
+    bad_codes = dec->bad_codes_;
+    return st;
 }
 
 Status jpeg_read_header(std::span<const std::uint8_t> in, JpegHeaderInfo& hdr) {

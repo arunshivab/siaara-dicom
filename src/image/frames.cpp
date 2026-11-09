@@ -263,10 +263,30 @@ Status convert_frame(const Plan& p, const PixelInfo& info, std::span<const std::
     return Status::ok();
 }
 
-Status run_codec(Codec c, std::span<const std::uint8_t> data, const codec::FrameInfo& fi, std::span<std::uint8_t> out) {
+// `lenient`: the RLE and JPEG decoders' repair modes, reported as warnings.
+Status run_codec(Codec c, std::span<const std::uint8_t> data, const codec::FrameInfo& fi, std::span<std::uint8_t> out,
+                 bool lenient, std::uint32_t frame, std::vector<FrameWarning>* w) {
     switch (c) {
-        case Codec::Rle: return codec::decode_rle(data, fi, out);
-        case Codec::JpegBaseline: case Codec::JpegExtended: case Codec::JpegLossless: return codec::decode_jpeg(data, fi, out);
+        case Codec::Rle: {
+            if (!lenient) return codec::decode_rle(data, fi, out);
+            bool clamped = false;
+            Status s = codec::decode_rle_lenient(data, fi, out, clamped);
+            if (s && clamped && w)
+                w->push_back(FrameWarning{FrameWarningCode::RleRunClamped, frame,
+                                          "RLE segment data ends before the frame is complete; missing bytes are 0"});
+            return s;
+        }
+        case Codec::JpegBaseline: case Codec::JpegExtended: case Codec::JpegLossless: {
+            if (!lenient) return codec::decode_jpeg(data, fi, out);
+            codec::JpegDecodeOptions o;
+            o.tolerate_bad_codes = true;
+            std::uint64_t bad = 0;
+            Status s = codec::decode_jpeg_ex(data, fi, out, o, bad);
+            if (s && bad && w)
+                w->push_back(FrameWarning{FrameWarningCode::CorruptEntropyData, frame,
+                                          std::to_string(bad) + " invalid Huffman code(s) replaced by symbol 0"});
+            return s;
+        }
         case Codec::JpegLs: return codec::decode_jpegls(data, fi, out);
         case Codec::Jpeg2000: case Codec::Htj2k: return codec::decode_j2k(data, fi, out);
         default: return Status(Errc::Unsupported, "frames: no decoder for this transfer syntax");
@@ -300,6 +320,7 @@ Result<FrameReader> FrameReader::open(const Dataset& ds, std::string_view ts_uid
     r.opt_ = opt;
     PixelInfoOptions po;
     po.lenient = opt.lenient;
+    if (const Element* pe = ds.find(siaara::tags::PixelData)) po.encapsulated = pe->is_encapsulated();
     auto pi = read_pixel_info(ds, po);
     if (!pi) return pi.take_error();
     r.info_ = std::move(pi).value();
@@ -324,6 +345,11 @@ Result<FrameReader> FrameReader::open(const Dataset& ds, std::string_view ts_uid
         r.frame_bytes_ = r.info_.decoded_frame_bytes();
         if (Status s = r.index_fragments(ds); !s) return s;
         if (opt.lenient) r.probe_first_frame();
+        if (r.info_.bits_from_codestream && r.info_.bits_stored > r.info_.bits_allocated)
+            return Status(Errc::Malformed, "frames: Bits Allocated could not be taken from the codestream", 0,
+                          siaara::tags::BitsAllocated);
+        r.frame_bytes_ = r.info_.decoded_frame_bytes();
+        if (r.frame_bytes_ == 0) return Status(Errc::LimitExceeded, "frames: frame size overflows", 0, e->tag);
         return r;
     }
 
@@ -544,6 +570,28 @@ void FrameReader::probe_first_frame() {
     if (!frame_data(0, data, joined)) return;
     StreamHeader h;
     if (!probe_header(f, data, h)) return;  // an unreadable header is reported when decoding
+    auto attr = [&](FrameWarningCode code, std::string msg) {
+        warnings_.push_back("frame 0: " + msg);
+        attr_warnings_.push_back(FrameWarning{code, 0, std::move(msg)});
+    };
+    if (info_.bits_from_codestream && h.precision >= 1 && h.precision <= 16) {
+        info_.bits_allocated = static_cast<std::uint16_t>(h.precision <= 8 ? 8 : 16);
+        info_.bits_stored = static_cast<std::uint16_t>(h.precision);
+        info_.high_bit = static_cast<std::uint16_t>(h.precision - 1);
+        declared_bits_stored_ = info_.bits_stored;
+        attr(FrameWarningCode::BitsFromCodestream,
+             "Bits Allocated " + std::to_string(info_.declared_bits_allocated) + " replaced by " +
+                 std::to_string(info_.bits_allocated) + ", Bits Stored by the codestream precision " +
+                 std::to_string(h.precision));
+    }
+    const std::uint32_t sh = h.height != 0 ? h.height : info_.rows;
+    if (info_.number_of_frames == 1 && h.width >= 1 && h.width <= 0xFFFF && sh >= 1 && sh <= 0xFFFF &&
+        (h.width < info_.columns || sh < info_.rows)) {
+        attr(FrameWarningCode::SizeFromCodestream, "Columns x Rows " + size_text(info_.columns, info_.rows) +
+                                                       " replaced by the codestream size " + size_text(h.width, sh));
+        info_.columns = h.width;
+        info_.rows = sh;
+    }
     const int ba = info_.bits_allocated;
     // Display range: the codestream precision when JPEG 2000 / JPEG-LS carries more bits than Bits
     // Stored says, Bits Allocated when it carries more than that.
@@ -584,6 +632,7 @@ Status FrameReader::check_frame(std::uint32_t index, std::vector<FrameWarning>& 
     std::span<const std::uint8_t> data;
     std::vector<std::uint8_t> joined;
     if (Status s = frame_data(index, data, joined); !s) return s;
+    for (const auto& a : attr_warnings_) out.push_back(FrameWarning{a.code, index, a.message});
     StreamHeader h;
     if (!probe_header(f, data, h)) return Status::ok();
     Plan p;
@@ -670,6 +719,8 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
         return Status::ok();
     }
     const Family f = codec_family(codec_);
+    if (warnings && opt_.lenient)
+        for (const auto& a : attr_warnings_) warnings->push_back(FrameWarning{a.code, index, a.message});
     Status st;
     StreamHeader h;
     Plan plan;
@@ -683,7 +734,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
                                               std::to_string(info_.bits_stored));
     }
     if (!plan.convert) {
-        st = run_codec(codec_, data, info_.frame_info(), out);
+        st = run_codec(codec_, data, info_.frame_info(), out, opt_.lenient, index, warnings);
     } else {
         const std::uint64_t tb = plan.temp.frame_bytes();
         if (tb == 0 || tb > opt_.memory_budget || tb > SIZE_MAX)
@@ -694,7 +745,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
         } catch (const std::bad_alloc&) {
             return Status(Errc::OutOfMemory, "frames: cannot allocate the scratch frame");
         }
-        st = run_codec(codec_, data, plan.temp, tmp);
+        st = run_codec(codec_, data, plan.temp, tmp, true, index, warnings);
         if (st) return convert_frame(plan, info_, tmp, out, index);
     }
     if (!st) st.message = "frame " + std::to_string(index) + ": " + st.message;

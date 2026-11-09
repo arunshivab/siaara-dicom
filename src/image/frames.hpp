@@ -51,6 +51,18 @@ enum class FrameWarningCode : std::uint16_t {
     // Bits Allocated is a container the codec does not produce: decoded at the codestream's own
     // sample size and widened into Bits Allocated.
     ContainerWidened = 7,
+    // Bits Allocated is not a valid container (12, 65535 ...): Bits Allocated / Bits Stored are
+    // taken from the codestream precision of frame 0 (info() reports them).
+    BitsFromCodestream = 8,
+    // Single-frame image whose codestream is smaller than Rows x Columns: info() reports the
+    // codestream size (Rows / Columns in the data set are taken to be wrong).
+    SizeFromCodestream = 9,
+    // RLE: a run reaching past the end of its segment was cut, or a segment ended early; the
+    // missing bytes are 0.
+    RleRunClamped = 10,
+    // JPEG: entropy-coded data held Huffman codes that match no table entry; each was replaced by
+    // symbol 0 (as the IJG-derived decoders do).
+    CorruptEntropyData = 11,
 };
 
 struct FrameWarning {
@@ -142,6 +154,7 @@ private:
     std::uint64_t frame_bytes_ = 0;
     std::vector<std::string> warnings_;
     std::vector<FrameWarning> frame_warnings_;
+    std::vector<FrameWarning> attr_warnings_;  // attribute replacements made at open(), every frame
     std::uint16_t declared_bits_stored_ = 0;
 
     // native

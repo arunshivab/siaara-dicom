@@ -1,7 +1,9 @@
 // Lenient frame decoding (src/image/frames.*): encapsulated codestreams whose own header disagrees
 // with the Image Pixel module. Every case is a synthetic file made with our own encoders and a
 // deliberately inconsistent data set; strict mode must keep refusing it.
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -315,7 +317,7 @@ TEST_CASE("lenient: JPEG-LS signed data with precision below Bits Stored is sign
 
 // ================================================================ size and components
 
-TEST_CASE("lenient: codestream larger than Rows x Columns is cropped, smaller is refused") {
+TEST_CASE("lenient: codestream larger than Rows x Columns is cropped, smaller (multi-frame) is refused") {
     for (Enc e : {Enc::J2k, Enc::JpegLs, Enc::JpegLossless}) {
         const auto f = fi(12, 14, 1, 16, 12, false);
         const Buf px = samples(f, [](std::size_t i) { return ramp(i, 4096); });
@@ -324,7 +326,9 @@ TEST_CASE("lenient: codestream larger than Rows x Columns is cropped, smaller is
         CHECK(o.strict_refused);
         CHECK(has(o.decode_warnings, W::CodestreamCropped));
         CHECK(values_equal(o, 90, [](std::size_t i) { return ramp((i / 9) * 14 + i % 9, 4096); }));
-        const Outcome bigger = run(dataset(13, 14, 1, 16, 12, false, {cs}), ts_of(e));
+        // Smaller than Rows x Columns: refused when several frames share the attributes (a single
+        // frame takes the codestream size instead, see the F4 test below).
+        const Outcome bigger = run(dataset(13, 14, 1, 16, 12, false, {cs, cs}), ts_of(e));
         CHECK(bigger.strict_refused);
         CHECK(!bigger.lenient_ok);
         CHECK(bigger.lenient_status.code == Errc::Malformed);
@@ -453,4 +457,233 @@ TEST_CASE("lenient: frame warnings through the C API") {
     // A value above 4095 in 13 bits is negative per Pixel Representation 1.
     CHECK_EQ(static_cast<std::int16_t>(load_le16(&out[2 * 9])), static_cast<std::int16_t>(ramp(9, 8192) - (ramp(9, 8192) >= 4096 ? 8192 : 0)));
     siaara_file_free(h);
+}
+
+// ================================================================ testing-chat findings F2 / F4 / F6
+
+namespace {
+
+constexpr std::string_view kRleTs = "1.2.840.10008.1.2.5";
+constexpr std::string_view kExplicitLE = "1.2.840.10008.1.2.1";
+
+// Explicit VR little endian element bytes.
+void put_elem(Buf& b, Tag t, const char* vr, const Buf& value, bool undefined = false) {
+    auto u16 = [&](unsigned v) { b.push_back(static_cast<std::uint8_t>(v)); b.push_back(static_cast<std::uint8_t>(v >> 8)); };
+    auto u32 = [&](std::uint32_t v) { u16(v & 0xFFFFu); u16(v >> 16); };
+    u16(tag_group(t));
+    u16(t & 0xFFFFu);
+    b.push_back(static_cast<std::uint8_t>(vr[0]));
+    b.push_back(static_cast<std::uint8_t>(vr[1]));
+    const std::string v(vr);
+    if (v == "OB" || v == "OW" || v == "SQ" || v == "UN" || v == "UT") {
+        u16(0);
+        u32(undefined ? 0xFFFFFFFFu : static_cast<std::uint32_t>(value.size()));
+    } else {
+        u16(static_cast<unsigned>(value.size()));
+    }
+    b.insert(b.end(), value.begin(), value.end());
+}
+Buf us(unsigned v) { return Buf{static_cast<std::uint8_t>(v), static_cast<std::uint8_t>(v >> 8)}; }
+Buf str(std::string_view s) {
+    Buf b(s.begin(), s.end());
+    if (b.size() & 1u) b.push_back(' ');
+    return b;
+}
+void put_item(Buf& b, std::uint16_t el, std::uint32_t len) {
+    const std::uint8_t h[8] = {0xFE, 0xFF, static_cast<std::uint8_t>(el), static_cast<std::uint8_t>(el >> 8),
+                               static_cast<std::uint8_t>(len), static_cast<std::uint8_t>(len >> 8),
+                               static_cast<std::uint8_t>(len >> 16), static_cast<std::uint8_t>(len >> 24)};
+    b.insert(b.end(), h, h + 8);
+}
+// Image Pixel module for a raw data set (sorted tags, explicit VR LE).
+Buf pixel_module(unsigned rows, unsigned cols, unsigned ba, unsigned bs, bool with_spp_and_photometric = true) {
+    Buf b;
+    if (with_spp_and_photometric) {
+        put_elem(b, siaara::tags::SamplesPerPixel, "US", us(1));
+        put_elem(b, siaara::tags::PhotometricInterpretation, "CS", str("MONOCHROME2"));
+    }
+    put_elem(b, siaara::tags::Rows, "US", us(rows));
+    put_elem(b, siaara::tags::Columns, "US", us(cols));
+    put_elem(b, siaara::tags::BitsAllocated, "US", us(ba));
+    put_elem(b, siaara::tags::BitsStored, "US", us(bs));
+    put_elem(b, siaara::tags::HighBit, "US", us(bs - 1));
+    put_elem(b, siaara::tags::PixelRepresentation, "US", us(0));
+    return b;
+}
+Result<Dataset> read_raw(const Buf& b, bool lenient) {
+    ReadOptions o;
+    o.lenient = lenient;
+    return read_dataset(Bytes::copy_of(b.data(), b.size()), kExplicitLE, o);
+}
+
+}  // namespace
+
+TEST_CASE("lenient F6: RLE literal run past the segment end is clamped and flagged") {
+    const auto f = fi(6, 10, 1, 8, 8, false);
+    const Buf px = samples(f, [](std::size_t i) { return ramp(i, 256); });  // incompressible: literal runs
+    Buf enc;
+    REQUIRE(codec::encode_rle(px, f, {}, enc).is_ok());
+    enc.resize(enc.size() - 6);  // the last literal run now runs past the segment end
+    const Dataset ds = dataset(6, 10, 1, 8, 8, false, {enc});
+    const Outcome o = run(ds, kRleTs);
+    CHECK(o.strict_refused);
+    REQUIRE(o.lenient_ok);
+    CHECK(has(o.decode_warnings, W::RleRunClamped));
+    CHECK(std::equal(o.frame.begin(), o.frame.begin() + 50, px.begin()));  // readable bytes kept
+    CHECK(o.frame.back() == 0);
+}
+
+TEST_CASE("lenient F6: Bits Allocated 12 with a JPEG codestream takes the depth from the codestream") {
+    const auto f = fi(8, 8, 1, 16, 12, false);
+    const Buf px = samples(f, [](std::size_t i) { return ramp(i, 4096); });
+    for (int ba : {12, 65535}) {
+        Dataset ds = dataset(8, 8, 1, 16, 12, false, {encode(Enc::JpegLossless, px, f)});
+        (void)ds.set_uint16(siaara::tags::BitsAllocated, static_cast<std::uint16_t>(ba));
+        if (ba == 65535) {
+            (void)ds.set_uint16(siaara::tags::BitsStored, 65535);
+            (void)ds.set_uint16(siaara::tags::HighBit, 65534);
+        }
+        CHECK(!FrameReader::open(ds, kJpegLossless, strict_options()).is_ok());
+        const Outcome o = run(ds, kJpegLossless);
+        REQUIRE(o.lenient_ok);
+        CHECK_EQ(o.info.bits_allocated, 16);
+        CHECK_EQ(o.info.bits_stored, 12);
+        CHECK_EQ(o.info.declared_bits_allocated, ba);
+        CHECK(has(o.decode_warnings, W::BitsFromCodestream));
+        CHECK(o.frame == px);
+    }
+}
+
+TEST_CASE("lenient F6: ACR-NEMA Bits Allocated 24 without Samples per Pixel is read as 8-bit RGB") {
+    Buf b = pixel_module(3, 4, 24, 24, false);
+    Buf px(3 * 4 * 3);
+    for (std::size_t i = 0; i < px.size(); ++i) px[i] = static_cast<std::uint8_t>(i * 7);
+    put_elem(b, siaara::tags::PixelData, "OB", px);
+    auto ds = read_raw(b, true);
+    REQUIRE(ds.is_ok());
+    CHECK(!FrameReader::open(*ds, kExplicitLE, strict_options()).is_ok());
+    auto r = FrameReader::open(*ds, kExplicitLE);
+    REQUIRE(r.is_ok());
+    CHECK_EQ(r->info().samples_per_pixel, 3);
+    CHECK_EQ(r->info().bits_allocated, 8);
+    CHECK(r->info().photometric == Photometric::Rgb);
+    auto fr = r->decode(0);
+    CHECK(fr.is_ok() && *fr == px);
+}
+
+TEST_CASE("lenient F6: JPEG Huffman codes that match no table entry decode as symbol 0 (IJG rule)") {
+    // Lossless SOF3, 1x1, P = 8, one Huffman code ("0" -> difference category 0). The entropy-coded
+    // data is all ones (stuffed FF 00), which matches no code: the IJG-derived decoders consume 17
+    // bits and use difference 0, so the sample is the initial prediction 128.
+    const Buf jpg = {0xFF, 0xD8,                                                               // SOI
+                     0xFF, 0xC3, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,  // SOF3
+                     0xFF, 0xC4, 0x00, 0x14, 0x00,                                                // DHT
+                     1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,                              //  counts
+                     0x00,                                                                        //  value
+                     0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00,               // SOS
+                     0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0xD9};
+    REQUIRE(jpg.size() == 2 + 13 + 22 + 10 + 8);
+    const Dataset ds = dataset(1, 1, 1, 8, 8, false, {jpg});
+    const Outcome o = run(ds, kJpegLossless);
+    CHECK(o.strict_refused);
+    REQUIRE(o.lenient_ok);
+    CHECK_EQ(o.frame[0], 128);
+    CHECK(has(o.decode_warnings, W::CorruptEntropyData));
+    Buf out(1);
+    std::uint64_t bad = 0;
+    CHECK(!codec::decode_jpeg(jpg, fi(1, 1, 1, 8, 8, false), out).is_ok());
+    codec::JpegDecodeOptions jo;
+    jo.tolerate_bad_codes = true;
+    CHECK(codec::decode_jpeg_ex(jpg, fi(1, 1, 1, 8, 8, false), out, jo, bad).is_ok());
+    CHECK_EQ(bad, 1u);
+}
+
+TEST_CASE("lenient F4: single-frame codestream smaller than bogus Rows/Columns sets the size") {
+    const auto f = fi(8, 6, 1, 8, 8, false);
+    const Buf px = samples(f, [](std::size_t i) { return ramp(i, 256); });
+    for (Enc e : {Enc::JpegLossless, Enc::J2k, Enc::JpegLs}) {
+        const Dataset ds = dataset(19789, 19789, 1, 8, 8, false, {encode(e, px, f)});
+        const Outcome o = run(ds, ts_of(e));
+        CHECK(o.strict_refused);
+        REQUIRE(o.lenient_ok);
+        CHECK_EQ(o.info.rows, 8u);
+        CHECK_EQ(o.info.columns, 6u);
+        CHECK(has(o.decode_warnings, W::SizeFromCodestream));
+        CHECK(o.frame == px);
+        // Multi-frame: the data set size is kept and the smaller codestream is refused.
+        const Buf c = encode(e, px, f);
+        const Outcome m = run(dataset(9, 6, 1, 8, 8, false, {c, c}), ts_of(e));
+        CHECK(!m.lenient_ok);
+    }
+}
+
+TEST_CASE("lenient F2: a broken private sequence is kept as UN bytes and parsing resumes") {
+    Buf b = pixel_module(2, 2, 8, 8);
+    Buf junk = {0x20, 0x01, 0x00, 0x10, 'L', 'O', 0x00, 0x04, 'A', 'B', 'C', 'D'};  // not an item
+    put_elem(b, 0x2001E05F, "SQ", junk);
+    put_elem(b, 0x2001E060, "LO", str("AFTER"));
+    put_elem(b, siaara::tags::PixelData, "OB", Buf{1, 2, 3, 4});
+    CHECK(!read_raw(b, false).is_ok());
+    auto ds = read_raw(b, true);
+    REQUIRE(ds.is_ok());
+    const Element* e = ds->find(0x2001E05F);
+    REQUIRE(e != nullptr);
+    CHECK(e->vr == VR::UN);
+    CHECK(e->value.size() == junk.size() && std::memcmp(e->value.data(), junk.data(), junk.size()) == 0);
+    auto after = ds->get_string(0x2001E060);
+    CHECK(after && *after == "AFTER");
+    CHECK(ds->contains(siaara::tags::PixelData));
+    // A broken public (even group) sequence still fails.
+    Buf p = pixel_module(2, 2, 8, 8);
+    put_elem(p, 0x00082112, "SQ", junk);
+    CHECK(!read_raw(p, true).is_ok());
+}
+
+TEST_CASE("lenient F2: encapsulated pixel data without items, without delimiter, or truncated") {
+    const auto f = fi(4, 4, 1, 8, 8, false);
+    const Buf px = samples(f, [](std::size_t i) { return ramp(i, 256); });
+    const Buf jpg = encode(Enc::JpegLossless, px, f);
+    Buf even = jpg;
+    if (even.size() & 1u) even.push_back(0);
+    auto decode_ok = [&](const Buf& raw) {
+        auto ds = read_dataset(Bytes::copy_of(raw.data(), raw.size()), kJpegLossless);
+        if (!ds) return false;
+        auto r = FrameReader::open(*ds, kJpegLossless);
+        if (!r) return false;
+        auto fr = r->decode(0);
+        return fr.is_ok() && *fr == px;
+    };
+    auto strict_fails = [&](const Buf& raw) {
+        ReadOptions o;
+        o.lenient = false;
+        return !read_dataset(Bytes::copy_of(raw.data(), raw.size()), kJpegLossless, o).is_ok();
+    };
+    // a) codestream bytes directly after the header, then the sequence delimiter (no items)
+    Buf a = pixel_module(4, 4, 8, 8);
+    put_elem(a, siaara::tags::PixelData, "OB", {}, true);
+    a.insert(a.end(), even.begin(), even.end());
+    put_item(a, 0xE0DD, 0);
+    CHECK(strict_fails(a));
+    CHECK(decode_ok(a));
+    // b) BOT + fragment, then trailing junk instead of the delimiter
+    Buf c = pixel_module(4, 4, 8, 8);
+    put_elem(c, siaara::tags::PixelData, "OB", {}, true);
+    put_item(c, 0xE000, 0);
+    put_item(c, 0xE000, static_cast<std::uint32_t>(even.size()));
+    c.insert(c.end(), even.begin(), even.end());
+    const Buf tail = {0x0C, 0xB0, 0xB6, 0x0E, 0x50, 0xD1, 0x02, 0x0E};
+    c.insert(c.end(), tail.begin(), tail.end());
+    CHECK(strict_fails(c));
+    CHECK(decode_ok(c));
+    // c) a second fragment whose length runs past the end of the data
+    Buf d = pixel_module(4, 4, 8, 8);
+    put_elem(d, siaara::tags::PixelData, "OB", {}, true);
+    put_item(d, 0xE000, 0);
+    put_item(d, 0xE000, static_cast<std::uint32_t>(even.size()));
+    d.insert(d.end(), even.begin(), even.end());
+    put_item(d, 0xE000, 0x00022188);
+    CHECK(strict_fails(d));
+    auto ds = read_dataset(Bytes::copy_of(d.data(), d.size()), kJpegLossless);
+    REQUIRE(ds.is_ok());
+    CHECK(decode_ok(d));
 }

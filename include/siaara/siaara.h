@@ -1203,9 +1203,14 @@ enum {
     SIAARA_FRAME_WARN_EXTRA_COMPONENTS = 4,               /* first Samples per Pixel components used */
     SIAARA_FRAME_WARN_CODESTREAM_CROPPED = 5,             /* larger than Rows x Columns: top-left part used */
     SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_ALLOCATED = 6, /* decodes only if the values fit Bits Allocated */
-    SIAARA_FRAME_WARN_CONTAINER_WIDENED = 7               /* decoded samples widened into Bits Allocated */
+    SIAARA_FRAME_WARN_CONTAINER_WIDENED = 7,              /* decoded samples widened into Bits Allocated */
+    SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM = 8,           /* invalid Bits Allocated: depth from the codestream */
+    SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9,           /* single frame: Rows/Columns from the codestream */
+    SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10,               /* RLE run cut at its segment end; missing bytes 0 */
+    SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11           /* JPEG: invalid Huffman codes read as symbol 0 */
 };
-/* Number of adjustments made for frame `frame` (0-based). Reads the codestream header only. */
+/* Number of adjustments made for frame `frame` (0-based). Decodes the frame to find them. The pixel
+ * info (siaara_file_pixel_info) already reports adjusted Bits Allocated / Bits Stored / size. */
 SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning_count(const siaara_file* file, uint32_t frame, uint32_t* out);
 /* Adjustment `index` (< count) of frame `frame`: *code (may be NULL) receives SIAARA_FRAME_WARN_*;
  * the message follows the string buffer rules. */

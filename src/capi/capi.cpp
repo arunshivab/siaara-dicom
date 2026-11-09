@@ -2212,7 +2212,10 @@ siaara_status frame_warnings_of(const siaara_file* file, uint32_t frame, std::ve
     auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax);
     if (!fr) return fail(fr.error());
     if (frame >= fr->frame_count()) return fail(Errc::InvalidArgument, "frame index out of range");
-    if (Status s = fr->check_frame(frame, out); !s) return fail(s);
+    // Decoding (not only the header probe) also finds the repairs made inside the codecs.
+    auto px = fr->decode(frame);
+    if (!px) return fail(px.error());
+    if (Status s = fr->decode(frame, *px, &out); !s) return fail(s);
     return SIAARA_OK;
 }
 

@@ -3,7 +3,8 @@
 
 For every JPEG / JPEG-LS / JPEG 2000 file of the pydicom test set and of pylibjpeg-data, this
 compares SIAARA's decoded frames (pixel_tool frames, lenient by default) with
-pydicom.pixels.pixel_array(..., raw=True) backed by pylibjpeg (an oracle only), and reports
+pydicom.pixels.pixel_array(..., raw=True) backed by pylibjpeg (an oracle only; GDCM via
+python-gdcm when pydicom cannot decode a file), and reports
 whether the codestream header disagrees with the Image Pixel module and which frame warnings we
 attach. With --before <older pixel_tool> it also reports what that build did with the file.
 
@@ -16,6 +17,8 @@ Usage:
       --all   list every encapsulated file (default: only files whose codestream header disagrees
               with the data set, or that either build refuses)
       --data  pylibjpeg-data checkout (default /tmp/pylibjpeg-data)
+      --extra DIR  also scan DIR (repeatable), e.g. a gdcmData or pydicom-data checkout
+    Files given explicitly are checked whatever their transfer syntax (gdcmData, pydicom-data ...).
 """
 import glob
 import os
@@ -118,12 +121,15 @@ def mismatch(ds, ts):
     h = j2k_header(f0) if ts in J2K else jpeg_header(f0)
     if not h:
         return "no header"
+    if any(k not in ds for k in ("Rows", "Columns", "SamplesPerPixel", "BitsAllocated", "BitsStored",
+                                 "PixelRepresentation")):
+        return "Image Pixel attributes missing"
     out = []
     if h["w"] != ds.Columns or (h["h"] and h["h"] != ds.Rows):
         out.append(f"size {h['w']}x{h['h']} vs {ds.Columns}x{ds.Rows}")
     if h["c"] != ds.SamplesPerPixel:
         out.append(f"components {h['c']} vs {ds.SamplesPerPixel}")
-    if ts not in JPEG and h["p"] != ds.BitsStored:
+    if h["p"] != ds.BitsStored:
         out.append(f"P {h['p']} vs BS {ds.BitsStored}")
     if h["p"] > ds.BitsAllocated:
         out.append(f"P {h['p']} > BA {ds.BitsAllocated}")
@@ -132,11 +138,47 @@ def mismatch(ds, ts):
     return ", ".join(out)
 
 
-def oracle(path, inf):
+def oracle_pydicom(path, inf):
     arr = pixel_array(path, raw=True)
     nf, spp = int(inf["frames"]), int(inf["spp"])
     shape = (nf,) + (arr.shape[-3:] if spp > 1 else arr.shape[-2:])
     return arr.reshape(shape).astype(np.int64)
+
+
+def oracle_gdcm(path, inf):
+    import gdcm  # optional second oracle (python-gdcm), test-only
+    r = gdcm.ImageReader()
+    r.SetFileName(path)
+    if not r.Read():
+        raise RuntimeError("GDCM cannot read")
+    img = r.GetImage()
+    pf = img.GetPixelFormat()
+    buf = img.GetBuffer()
+    if buf is None:
+        raise RuntimeError("GDCM cannot decode")
+    b = buf.encode("utf-8", "surrogateescape")
+    nf, spp = int(inf["frames"]), int(inf["spp"])
+    rows, cols = int(inf["rows"]), int(inf["columns"])
+    n = nf * rows * cols * spp
+    if n == 0 or len(b) % n:
+        raise RuntimeError(f"GDCM buffer of {len(b)} bytes")
+    w = len(b) // n
+    a = np.frombuffer(b, {1: "u1", 2: "<u2", 4: "<u4"}[w]).astype(np.int64)
+    if pf.GetPixelRepresentation() == 1:
+        a = np.where(a >= 1 << (8 * w - 1), a - (1 << (8 * w)), a)
+    return a.reshape((nf, rows, cols, spp) if spp > 1 else (nf, rows, cols))
+
+
+def oracle(path, inf):
+    """pydicom first, GDCM when pydicom cannot decode the file; returns (array, oracle name)."""
+    try:
+        return oracle_pydicom(path, inf), "pydicom"
+    except Exception as e:  # noqa: BLE001
+        first = e
+    try:
+        return oracle_gdcm(path, inf), "GDCM"
+    except ImportError:
+        raise first
 
 
 def compare(a, b):
@@ -163,6 +205,7 @@ def main():
     before = None
     show_all = False
     data = "/tmp/pylibjpeg-data"
+    extra_dirs = []
     files = []
     while args:
         a = args.pop(0)
@@ -172,51 +215,64 @@ def main():
             show_all = True
         elif a == "--data":
             data = args.pop(0)
+        elif a == "--extra":
+            extra_dirs.append(args.pop(0))
         else:
             files.append(a)
+    explicit = bool(files)
     if not files:
         seen = {}
+        extra = []
+        for d in extra_dirs:  # gdcmData, pydicom-data checkouts: every file, any extension
+            extra += sorted(q for q in glob.glob(os.path.join(d, "**/*"), recursive=True)
+                            if os.path.isfile(q) and "/.git/" not in q)
         for p in sorted(get_testdata_files("*")) + sorted(glob.glob(os.path.join(data, "ljdata/ds/**/*.dcm"),
-                                                                     recursive=True)):
+                                                                     recursive=True)) + extra:
             seen.setdefault(os.path.basename(p), p)  # one copy of files present in both sets
         files = list(seen.values())
     counts = {}
     for p in files:
         try:
             ds = pydicom.dcmread(p, force=True)
-            ts = str(ds.file_meta.TransferSyntaxUID)
+            ts = str(ds.file_meta.TransferSyntaxUID) if "TransferSyntaxUID" in ds.file_meta else "?"
         except Exception:  # noqa: BLE001
+            if not explicit:
+                continue
+            ds, ts = None, "?"
+        if ds is None:
+            st, err, inf, a = outcome(tool, p)
+            print(f"{os.path.basename(p)}\n    pydicom cannot parse it; ours: {st} {err[:80]}")
             continue
-        if ts not in J2K | JLS | JPEG or "PixelData" not in ds:
+        if not explicit and ("PixelData" not in ds or ts not in J2K | JLS | JPEG):
             continue
-        mm = mismatch(ds, ts)
+        mm = mismatch(ds, ts) if ts in J2K | JLS | JPEG and "PixelData" in ds else ""
         b_state = ""
         if before:
             st, err, _, _ = outcome(before, p)
             b_state = "opens" if st == "opens" else "refused: " + err[:70]
         st, err, inf, a = outcome(tool, p)
         try:
-            ref = oracle(p, inf) if inf else None
+            ref, oname = oracle(p, inf) if inf else (None, "")
             perr = ""
         except Exception as e:  # noqa: BLE001
-            ref, perr = None, str(e).splitlines()[0][:70]
+            ref, oname, perr = None, "", str(e).splitlines()[0][:70]
         if st != "opens":
             verdict = "refused (" + err[:90] + ")"
             key = "refused" + ("; pydicom also fails" if ref is None and inf else "")
         elif ref is None:
-            verdict = "opens; pydicom fails: " + perr
+            verdict = "opens; no oracle decodes it: " + perr
             key = "opens, no oracle"
         else:
             c = compare(a, ref)
-            verdict = "opens, " + ("matches pydicom" if c == "match" else "differs from pydicom: " + c)
+            verdict = "opens, " + ("matches " + oname if c == "match" else "differs from " + oname + ": " + c)
             key = "opens, matches" if c == "match" else "opens, differs"
         interesting = bool(mm) or st != "opens" or (before and not b_state.startswith("opens"))
         if not (interesting or show_all):
             continue
         counts[key] = counts.get(key, 0) + 1
         warn = "; ".join(inf["warnings"]) if inf else ""
-        bs = f" BS {inf['declared_bits_stored'] if 'declared_bits_stored' in inf else ds.BitsStored}->{inf['bits_stored']}" \
-            if inf and int(inf["bits_stored"]) != int(ds.BitsStored) else ""
+        bs = f" BS {inf['declared_bits_stored'] if 'declared_bits_stored' in inf else ds.get("BitsStored")}->{inf['bits_stored']}" \
+            if inf and "BitsStored" in ds and int(inf["bits_stored"]) != int(ds.BitsStored) else ""
         print(f"{os.path.basename(p)}\n    header: {mm or 'consistent'}")
         if before:
             print(f"    before: {b_state}")
