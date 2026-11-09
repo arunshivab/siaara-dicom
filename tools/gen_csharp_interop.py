@@ -32,6 +32,7 @@ OUT_UIDS = os.path.join(ROOT, "bindings", "csharp", "src", "Siaara", "Generated"
 OUT_LAYOUT_C = os.path.join(ROOT, "bindings", "csharp", "tests", "native", "struct_layout.c")
 OUT_LAYOUT_CS = os.path.join(ROOT, "bindings", "csharp", "tests", "Siaara.Tests", "Generated", "StructLayouts.g.cs")
 
+SKIPPED = []  # functions without a generated safe overload
 BANNER = "GENERATED FILE - do not edit. Produced by tools/gen_csharp_interop.py"
 
 SCALARS = {
@@ -273,7 +274,17 @@ def gen_native(model):
     w("internal static unsafe class Native")
     w("{")
     for fname, ret, params in model.functions:
-        gen_safe(model, w, fname, ret, params)
+        # A parameter pattern the rules below do not know (a future C API addition) must not
+        # break generation: the Raw declaration is still emitted (its types are exact), only the
+        # safe overload is left out and reported, so a hand-written wrapper can call Raw.
+        lines = []
+        try:
+            gen_safe(model, lines.append, fname, ret, params)
+        except ValueError as e:
+            SKIPPED.append(f"{fname}: {e}")
+            lines = [f"    // {fname}: no safe overload generated ({e}); call Raw.{fname}.", ""]
+        for line in lines:
+            w(line)
     w("}")
     return "\n".join(o) + "\n"
 
@@ -326,7 +337,21 @@ def gen_safe(model, w, fname, ret, params):
         elem = "nint" if (is_handle(model, base) or (ct.ptr == 2 and base == "char")) else SCALARS.get(base)
         if base in model.struct_names:
             if ct.ptr != 1:
-                raise ValueError(fname + ": struct pointer depth")
+                raise ValueError("struct pointer depth")
+            if not ct.const and has_cap and n == "buf":
+                sig.append(f"Span<{base}> {nm}")
+                cap_from = nm
+                fixed.append(f"fixed ({base}* p_{n} = {nm})")
+                call.append(f"p_{n}")
+                continue
+            if (ct.const and nxt and nxt[0].base == "size_t" and nxt[0].ptr == 0 and LEN_NAME.search(nxt[1])
+                    and n not in rules):
+                sig.append(f"ReadOnlySpan<{base}> {nm}")
+                fixed.append(f"fixed ({base}* p_{n} = {nm})")
+                call.append(f"p_{n}")
+                call.append(f"(nuint){nm}.Length")
+                collapsed.add(nxt[1])
+                continue
             mod = "in" if ct.const else "ref"
             sig.append(f"{mod} {base} {nm}")
             fixed.append(f"fixed ({base}* p_{n} = &{nm})")
@@ -567,6 +592,8 @@ def main(argv):
             f.write(text)
     print(f"generated: {len(model.functions)} functions, {len(model.structs)} structs, "
           f"{len(model.callbacks)} callbacks, {len(model.opaque)} handle types")
+    for msg in SKIPPED:
+        print("warning: " + msg, file=sys.stderr)
     return 0
 
 
