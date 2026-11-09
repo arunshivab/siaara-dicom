@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace Siaara.Interop;
 
@@ -182,6 +183,89 @@ internal sealed class PresentationStateHandle : SiaaraHandle
     {
         Raw.siaara_pstate_free(handle);
         return true;
+    }
+}
+
+/// <summary>siaara_cancel (siaara_cancel_free).</summary>
+internal sealed class CancelHandle : SiaaraHandle
+{
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_cancel_free(handle);
+        return true;
+    }
+}
+
+/// <summary>siaara_web_parts (siaara_web_parts_free).</summary>
+internal sealed class WebPartsHandle : SiaaraHandle
+{
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_web_parts_free(handle);
+        return true;
+    }
+}
+
+/// <summary>
+/// siaara_scp (siaara_scp_free, which stops the server and joins its threads). Owns the GCHandle
+/// passed as callback user data; it is freed only after the SCP is gone, so no callback can see a
+/// dangling pointer. The target must not reference the public object.
+/// </summary>
+internal sealed class ScpHandle : SiaaraHandle
+{
+    internal GCHandle CallbackTarget;
+
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_scp_free(handle);
+        if (CallbackTarget.IsAllocated)
+        {
+            CallbackTarget.Free();
+        }
+        return true;
+    }
+}
+
+/// <summary>
+/// A native cancellation token tied to a CancellationToken for the duration of one call:
+/// cancelling the .NET token calls siaara_cancel_set (from the cancelling thread).
+/// Dispose unregisters first (waiting for a running set), then frees the token.
+/// </summary>
+internal sealed class NativeCancellation : IDisposable
+{
+    private readonly CancelHandle _handle = new();
+    private readonly CancellationTokenRegistration _registration;
+
+    internal NativeCancellation(CancellationToken token)
+    {
+        int st = Native.siaara_cancel_create(out nint p);
+        if (st != C.SIAARA_OK)
+        {
+            _handle.Dispose();
+            throw new InvalidOperationException("siaara_cancel_create failed: " + st);
+        }
+        _handle.Attach(p);
+        if (token.CanBeCanceled)
+        {
+            _registration = token.Register(static s => ((NativeCancellation)s!).Set(), this);
+        }
+    }
+
+    /// <summary>The raw token; valid until Dispose.</summary>
+    internal nint Pointer => _handle.DangerousGetHandle();
+
+    private void Set()
+    {
+        if (!_handle.IsClosed)
+        {
+            _ = Native.siaara_cancel_set(_handle.DangerousGetHandle());
+        }
+    }
+
+    public void Dispose()
+    {
+        _registration.Dispose();
+        _handle.Dispose();
     }
 }
 

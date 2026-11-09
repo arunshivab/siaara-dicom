@@ -183,6 +183,7 @@ internal static class Program
             VolumeTests.Register();
             InteropTests.Register();
             ViewerTests.Register();
+            NetworkTests.Register();
             return T.Run(filters);
         }
         finally

@@ -197,6 +197,8 @@ public sealed record DicomStoreStatistics(long Patients, long Studies, long Seri
 public sealed class DicomStore : IDisposable
 {
     private readonly StoreHandle _handle;
+
+    internal StoreHandle Handle => _handle;
     private readonly EventSink _sink = new();
     private readonly Lock _gate = new();
 
@@ -429,10 +431,36 @@ public sealed class DicomStore : IDisposable
     /// <summary>Verify on a thread-pool thread (it reads every file: long-running and blocking).</summary>
     /// <param name="deep">Re-read every file.</param>
     /// <param name="repair">Fix what can be fixed.</param>
-    /// <param name="cancellationToken">Cancels before the work starts.</param>
+    /// <param name="cancellationToken">Cancels, also while running (a cancelled verify repairs nothing).</param>
+    /// <param name="progress">Instances checked / total (optional).</param>
     /// <returns>The report.</returns>
-    public Task<DicomStoreVerifyReport> VerifyAsync(bool deep = false, bool repair = false, CancellationToken cancellationToken = default) =>
-        Task.Run(() => Verify(deep, repair), cancellationToken);
+    public Task<DicomStoreVerifyReport> VerifyAsync(bool deep = false, bool repair = false, IProgress<OperationProgress>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            var r = new siaara_store_verify_report { struct_size = StructSize.Of<siaara_store_verify_report>() };
+            RunLong(progress, (c, cb, u) =>
+            {
+                using var l = new HandleLease(_handle);
+                return Native.siaara_store_verify_ex(l.Pointer, deep ? 1 : 0, repair ? 1 : 0, c, cb, u, ref r);
+            }, cancellationToken);
+            return new DicomStoreVerifyReport((int)r.@checked, (int)r.missing, (int)r.size_mismatch, (int)r.content_mismatch,
+                (int)r.orphans, (int)r.repaired);
+        }, cancellationToken);
+
+    private static void RunLong(IProgress<OperationProgress>? progress, LongCall.Body body, CancellationToken token)
+    {
+        try
+        {
+            LongCall.Run(progress, body, token);
+        }
+        catch
+        {
+            EventSink.TakePending();
+            throw;
+        }
+        ThrowPendingHandlerException();
+    }
 
     /// <summary>Re-indexes the data folder and every referenced file still present (blocking).</summary>
     public void Rebuild()
@@ -446,9 +474,15 @@ public sealed class DicomStore : IDisposable
     }
 
     /// <summary>Rebuild on a thread-pool thread (long-running and blocking).</summary>
-    /// <param name="cancellationToken">Cancels before the work starts.</param>
+    /// <param name="cancellationToken">Cancels, also while running (the index is then unchanged).</param>
+    /// <param name="progress">Files indexed (total unknown) (optional).</param>
     /// <returns>The task.</returns>
-    public Task RebuildAsync(CancellationToken cancellationToken = default) => Task.Run(Rebuild, cancellationToken);
+    public Task RebuildAsync(IProgress<OperationProgress>? progress = null, CancellationToken cancellationToken = default) =>
+        Task.Run(() => RunLong(progress, (c, cb, u) =>
+        {
+            using var l = new HandleLease(_handle);
+            return Native.siaara_store_rebuild_ex(l.Pointer, c, cb, u);
+        }, cancellationToken), cancellationToken);
 
     /// <summary>Compacts the journal into a snapshot.</summary>
     public void Compact()
