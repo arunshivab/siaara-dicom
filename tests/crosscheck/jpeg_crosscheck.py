@@ -6,6 +6,9 @@ Oracles (only used to produce reference pixels):
     lossless. Its chroma upsampling interpolates.
   - jpeglib (pip package wrapping IJG libjpeg 6b and libjpeg-turbo 2.1) with do_fancy_upsampling
     off, i.e. sample replication like SIAARA, and no colour conversion: 8-bit DCT streams.
+  - imagecodecs.jpeg8_decode (libjpeg-turbo 3.x): second opinion for grey-scale lossless and
+    12-bit streams, and the verdict for lossless point transform (Pt > 0), where pylibjpeg-libjpeg
+    seeds the first prediction with 2^(P-1) instead of the 2^(P-Pt-1) of T.81 H.1.2.1.
 T.81 does not define how subsampled components are upsampled, so for subsampled lossy streams the
 verdict uses the replicating oracle; the difference to the interpolating oracle is still printed.
 Pillow (libjpeg-turbo) is used to write test streams.
@@ -32,6 +35,7 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
+import imagecodecs  # libjpeg-turbo 3.x
 import jpeglib  # IJG libjpeg / libjpeg-turbo builds, used without fancy upsampling
 import libjpeg  # pylibjpeg-libjpeg
 import pydicom
@@ -82,6 +86,10 @@ def siaara_encode(arr, alloc, stored, lossless, predictor=1, quality=90, ybr=0, 
 
 def oracle(stream):
     return np.asarray(libjpeg.decode(bytes(stream), colour_transform=0))
+
+
+def turbo3(stream):
+    return np.asarray(imagecodecs.jpeg8_decode(bytes(stream)))
 
 
 def replicating_oracle(stream, version):
@@ -209,6 +217,8 @@ def part_a():
                 compare_lossy8(label, oracle_stream, ours, err)
             else:
                 compare(label, ours, ref, lossless_mode, err)
+            if spp == 1 and ours is not None and not signed:
+                compare(label + " vs libjpeg-turbo 3", ours, turbo3(oracle_stream), lossless_mode)
 
 
 # ------------------------------------------------------------------ B. Pillow-written streams
@@ -264,13 +274,36 @@ def part_c():
                     results.append((f"C lossless {bits}-bit psv {psv} ri {ri}", False, f"oracle failed: {e}"))
                     continue
                 ok = np.array_equal(ref.reshape(img.shape).astype(np.int64), img.astype(np.int64))
-                results.append((f"C lossless {bits}-bit psv {psv} ri {ri} -> oracle", ok, "exact" if ok else "MISMATCH"))
+                ok2 = np.array_equal(turbo3(stream).reshape(img.shape).astype(np.int64), img.astype(np.int64))
+                results.append((f"C lossless {bits}-bit psv {psv} ri {ri} -> both oracles", ok and ok2,
+                                "exact" if ok and ok2 else f"MISMATCH (pylibjpeg {ok}, turbo3 {ok2})"))
     rgb = test_image(31, 45, "RGB", 3).astype(np.uint16)
     for psv in (1, 4, 7):
-        stream = siaara_encode(rgb, 8, 8, True, predictor=psv)
-        ref = oracle(stream)
-        ok = np.array_equal(ref.reshape(rgb.shape), rgb)
-        results.append((f"C lossless RGB psv {psv} -> oracle", ok, "exact" if ok else "MISMATCH"))
+        for ri in (0, 45, 90):
+            stream = siaara_encode(rgb, 8, 8, True, predictor=psv, ri=ri)
+            ref = oracle(stream)
+            ok = np.array_equal(ref.reshape(rgb.shape), rgb)
+            results.append((f"C lossless RGB interleaved psv {psv} ri {ri} -> oracle", ok, "exact" if ok else "MISMATCH"))
+    # Point transform and signed data.
+    img12 = (np.arange(37 * 53).reshape(37, 53) * 37 % 4096).astype(np.uint16)
+    for pt in (1, 4, 11):
+        stream = siaara_encode(img12, 16, 12, True, predictor=6, pt=pt)
+        want = (img12.astype(np.int64) >> pt) << pt
+        ref = turbo3(stream).reshape(img12.shape).astype(np.int64)
+        ours, err = siaara_decode(stream, 37, 53, 1, 16, 12)
+        ok = np.array_equal(ref, want) and ours is not None and np.array_equal(ours.astype(np.int64), want)
+        alt = oracle(stream).reshape(img12.shape).astype(np.int64)
+        info = "pylibjpeg agrees" if np.array_equal(alt, want) else "pylibjpeg differs (2^(P-1) seed)"
+        results.append((f"C lossless 12-bit Pt {pt} -> libjpeg-turbo 3 and SIAARA", ok,
+                        ("exact" if ok else "MISMATCH") + f"; {info}"))
+    sgn = (np.arange(29 * 31).reshape(29, 31) * 101 % 4096 - 2048).astype(np.int16)
+    stream = siaara_encode(sgn.view(np.uint16), 16, 12, True, predictor=4, signed=1)
+    ref = oracle(stream).reshape(sgn.shape).astype(np.int64) & 0xFFF
+    ok = np.array_equal(ref, sgn.astype(np.int64) & 0xFFF)
+    results.append(("C lossless 12-bit signed -> oracle (bit pattern)", ok, "exact" if ok else "MISMATCH"))
+    ours, err = siaara_decode(stream, 29, 31, 1, 16, 12, signed=1)
+    ok = ours is not None and np.array_equal(ours.view(np.int16), sgn)
+    results.append(("C lossless 12-bit signed SIAARA round trip sign-extended", ok, "exact" if ok else f"MISMATCH {err}"))
     # Lossy: oracle decode of our stream vs our own decode.
     for bits, alloc in ((8, 8), (12, 16)):
         y, x = np.mgrid[0:40, 0:56]
@@ -280,6 +313,7 @@ def part_c():
                 stream = siaara_encode(img, alloc, bits, False, quality=q, ri=ri)
                 ours, err = siaara_decode(stream, 40, 56, 1, alloc, bits)
                 compare(f"C lossy {bits}-bit q{q} ri {ri} -> oracle", ours, oracle(stream), False, err)
+                compare(f"C lossy {bits}-bit q{q} ri {ri} -> libjpeg-turbo 3", ours, turbo3(stream), False, err)
     col = test_image(41, 50, "RGB", 9).astype(np.uint16)
     for lh, lv in ((1, 1), (2, 2), (2, 1)):
         stream = siaara_encode(col, 8, 8, False, quality=90, ybr=1, lh=lh, lv=lv)

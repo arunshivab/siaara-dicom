@@ -231,7 +231,7 @@ TEST_CASE("jpeg: lossless full-range 16-bit noise and the 32768 difference") {
     std::mt19937 rng(3);
     for (std::size_t i = 0; i < img.size(); i += 2) store_le16(img.data() + i, static_cast<std::uint16_t>(rng()));
     // Alternate 0 / 32768 in the first row: predictor 1 then sees differences of exactly 32768.
-    for (std::uint32_t x = 0; x < f.columns; ++x) store_le16(img.data() + 2 * x, x % 2 ? 0x8000 : 0);
+    for (std::uint32_t x = 0; x < f.columns; ++x) store_le16(img.data() + 2 * x, static_cast<std::uint16_t>(x % 2 ? 0x8000u : 0u));
     for (int psv = 1; psv <= 7; ++psv) {
         Buf dec;
         CHECK(roundtrip(img, f, lossless(psv), {}, dec).is_ok());
@@ -279,20 +279,35 @@ TEST_CASE("jpeg: lossless colour, interleaved, planar and separate scans") {
     CHECK(dec == img4);
 }
 
-TEST_CASE("jpeg: lossless restart intervals (row aligned and mid-row)") {
-    for (int spp : {1, 3}) {
-        const FrameInfo f = frame(23, 19, spp, 16, 16);
-        const Buf img = make_image(f, 99, 40.0);
-        for (std::uint16_t ri : {std::uint16_t(1), std::uint16_t(7), std::uint16_t(19), std::uint16_t(38),
-                                 std::uint16_t(100), std::uint16_t(1000)})
-            for (int psv : {1, 2, 4, 7}) {
-                JpegEncodeOptions o;
-                o.restart_interval = ri;
-                Buf dec, stream;
-                CHECK(roundtrip(img, f, lossless(psv), o, dec, &stream).is_ok());
-                CHECK(dec == img);
-            }
-    }
+TEST_CASE("jpeg: lossless restart intervals") {
+    for (int spp : {1, 3})
+        for (bool separate : {false, true}) {
+            const FrameInfo f = frame(23, 19, spp, 16, 16);
+            const Buf img = make_image(f, 99, 40.0);
+            for (std::uint16_t ri : {std::uint16_t(19), std::uint16_t(38), std::uint16_t(19 * 22), std::uint16_t(19 * 30)})
+                for (int psv : {1, 2, 4, 7}) {
+                    JpegEncodeOptions o;
+                    o.restart_interval = ri;
+                    o.separate_scans = separate;
+                    Buf dec, stream;
+                    CHECK(roundtrip(img, f, lossless(psv), o, dec, &stream).is_ok());
+                    CHECK(dec == img);
+                }
+            // T.81 H.1.1: intervals that are not whole rows are refused by the encoder...
+            JpegEncodeOptions o;
+            o.restart_interval = 7;
+            Buf enc;
+            CHECK(encode_jpeg_ex(img, f, lossless(1), o, enc).code == Errc::InvalidArgument);
+            // ... and by the decoder (DRI patched from 19 to 7).
+            o.restart_interval = 19;
+            o.separate_scans = separate;
+            REQUIRE(encode_jpeg_ex(img, f, lossless(1), o, enc).is_ok());
+            const std::size_t dri = find_segment(enc, 0xDD);
+            REQUIRE(dri != npos);
+            enc[dri + 5] = 7;
+            Buf out(img.size());
+            CHECK(decode_jpeg(enc, f, out).code == Errc::Malformed);
+        }
 }
 
 TEST_CASE("jpeg: lossless point transform") {
@@ -559,4 +574,384 @@ TEST_CASE("jpeg: unsupported processes are refused cleanly") {
     CHECK(!decode_jpeg(s, f, out).is_ok());
     CHECK(!decode_jpeg(Buf{0xFF, 0xD8}, f, out).is_ok());
     CHECK(!decode_jpeg(Buf{}, f, out).is_ok());
+}
+
+// ================================================================== progressive (test-only writer)
+// A small progressive writer used only to produce test streams: it codes a set of quantised
+// coefficients once as a sequential (SOF1) stream and once as a progressive (SOF2) stream with
+// spectral selection and successive approximation, EOB runs and restart intervals. Decoding
+// both must give identical pixels. All components use 1x1 sampling.
+namespace {
+
+struct TestBits {
+    Buf& o;
+    std::uint64_t acc = 0;
+    int n = 0;
+    explicit TestBits(Buf& out) : o(out) {}
+    void put(std::uint32_t v, int len) {
+        for (int i = len - 1; i >= 0; --i) {
+            acc = (acc << 1) | ((v >> i) & 1u);
+            if (++n == 8) {
+                o.push_back(static_cast<std::uint8_t>(acc));
+                if (static_cast<std::uint8_t>(acc) == 0xFF) o.push_back(0);
+                acc = 0;
+                n = 0;
+            }
+        }
+    }
+    void flush() {
+        while (n) put(1, 1);
+    }
+};
+
+int cat(int v) {
+    int a = v < 0 ? -v : v, s = 0;
+    while (a) { ++s; a >>= 1; }
+    return s;
+}
+std::uint32_t mag(int v, int s) { return static_cast<std::uint32_t>(v < 0 ? v + (1 << s) - 1 : v); }
+
+struct CoefImage {
+    int P = 8, nc = 1;
+    std::uint32_t X = 0, Y = 0, bw = 0, bh = 0;
+    std::vector<std::vector<std::int16_t>> coef;  // per component, 64 per block, zig-zag order
+};
+
+CoefImage random_coefs(int P, int nc, std::uint32_t X, std::uint32_t Y, unsigned seed) {
+    CoefImage im;
+    im.P = P;
+    im.nc = nc;
+    im.X = X;
+    im.Y = Y;
+    im.bw = (X + 7) / 8;
+    im.bh = (Y + 7) / 8;
+    std::mt19937 rng(seed);
+    auto R = [&] { return static_cast<std::uint32_t>(rng()); };
+    const int dcmax = P == 8 ? 1000 : 16000, acmax = P == 8 ? 1000 : 16000;
+    im.coef.assign(static_cast<std::size_t>(nc), std::vector<std::int16_t>(static_cast<std::size_t>(im.bw) * im.bh * 64));
+    for (auto& c : im.coef)
+        for (std::size_t b = 0; b < c.size() / 64; ++b) {
+            std::int16_t* blk = c.data() + b * 64;
+            blk[0] = static_cast<std::int16_t>(static_cast<int>(R() % static_cast<std::uint32_t>(2 * dcmax + 1)) - dcmax);
+            const unsigned kind = R() % 6;
+            if (kind == 0) continue;  // DC only: builds EOB runs
+            for (int k = 1; k < 64; ++k) {
+                const unsigned r = R() % 100;
+                const unsigned thresh = kind == 1 ? 3u : (k < 10 ? 60u : 15u);  // kind 1: long zero runs
+                if (r >= thresh) continue;
+                int v = static_cast<int>(R() % 9) + 1;
+                if (R() % 20 == 0) v = static_cast<int>(R() % static_cast<unsigned>(acmax)) + 1;
+                blk[k] = static_cast<std::int16_t>(R() % 2 ? v : -v);
+            }
+            if (kind == 2) blk[63] = 5;  // a coefficient in the last position
+        }
+    return im;
+}
+
+struct TestTables {
+    jpeg_detail::HuffSpec spec;
+    std::uint16_t code[256];
+    std::uint8_t len[256];
+    TestTables() {
+        std::uint32_t f[256];
+        for (auto& x : f) x = 1;  // every symbol gets a code
+        jpeg_detail::build_huffman_spec(f, spec);
+        jpeg_detail::make_codes(spec, code, len);
+    }
+};
+
+void write_header(Buf& o, int sof, const CoefImage& im, std::uint16_t ri, const TestTables& t) {
+    o = {0xFF, 0xD8};
+    // One quantisation table, 16-bit entries (allowed for 12-bit), values 1..7.
+    o.insert(o.end(), {0xFF, 0xDB, 0x00, static_cast<std::uint8_t>(2 + 1 + (im.P == 8 ? 64 : 128)),
+                       static_cast<std::uint8_t>(im.P == 8 ? 0x00 : 0x10)});
+    for (int k = 0; k < 64; ++k) {
+        if (im.P != 8) o.push_back(0);
+        o.push_back(static_cast<std::uint8_t>(1 + k % 7));
+    }
+    o.insert(o.end(), {0xFF, static_cast<std::uint8_t>(sof), 0x00, static_cast<std::uint8_t>(8 + 3 * im.nc),
+                       static_cast<std::uint8_t>(im.P), static_cast<std::uint8_t>(im.Y >> 8),
+                       static_cast<std::uint8_t>(im.Y), static_cast<std::uint8_t>(im.X >> 8),
+                       static_cast<std::uint8_t>(im.X), static_cast<std::uint8_t>(im.nc)});
+    for (int i = 0; i < im.nc; ++i) o.insert(o.end(), {static_cast<std::uint8_t>(i + 1), 0x11, 0x00});
+    for (int tc = 0; tc < 2; ++tc) {
+        const int len = 2 + 17 + t.spec.nvalues;
+        o.insert(o.end(), {0xFF, 0xC4, static_cast<std::uint8_t>(len >> 8), static_cast<std::uint8_t>(len),
+                           static_cast<std::uint8_t>(tc << 4)});
+        for (int l = 1; l <= 16; ++l) o.push_back(t.spec.counts[l]);
+        for (int i = 0; i < t.spec.nvalues; ++i) o.push_back(t.spec.values[i]);
+    }
+    if (ri) o.insert(o.end(), {0xFF, 0xDD, 0x00, 0x04, static_cast<std::uint8_t>(ri >> 8), static_cast<std::uint8_t>(ri)});
+}
+
+void write_sos(Buf& o, const std::vector<int>& comps, int ss, int se, int ah, int al) {
+    o.insert(o.end(), {0xFF, 0xDA, 0x00, static_cast<std::uint8_t>(6 + 2 * comps.size()),
+                       static_cast<std::uint8_t>(comps.size())});
+    for (int c : comps) o.insert(o.end(), {static_cast<std::uint8_t>(c + 1), 0x00});
+    o.insert(o.end(), {static_cast<std::uint8_t>(ss), static_cast<std::uint8_t>(se),
+                       static_cast<std::uint8_t>((ah << 4) | al)});
+}
+
+struct ScanWriter {
+    Buf& o;
+    TestBits bits;
+    const TestTables& t;
+    std::uint32_t eobrun = 0;
+    std::vector<int> be;  // correction bits waiting for the EOB run
+    explicit ScanWriter(Buf& out, const TestTables& tt) : o(out), bits(out), t(tt) {}
+    void sym(int s) { bits.put(t.code[s], t.len[s]); }
+    void flush_eob() {
+        if (!eobrun) return;
+        int r = 0;
+        while ((eobrun >> (r + 1)) != 0) ++r;
+        sym(r << 4);
+        if (r) bits.put(eobrun - (1u << r), r);
+        for (int b : be) bits.put(static_cast<std::uint32_t>(b), 1);
+        be.clear();
+        eobrun = 0;
+    }
+    void add_eob(const std::vector<int>& corr) {
+        ++eobrun;
+        be.insert(be.end(), corr.begin(), corr.end());
+        if (eobrun == 0x7FFF || be.size() > 900) flush_eob();
+    }
+    void ac_first(const std::int16_t* b, int ss, int se, int al) {
+        int v[64] = {}, last = -1;
+        for (int k = ss; k <= se; ++k) {
+            const int a = (b[k] < 0 ? -b[k] : b[k]) >> al;
+            v[k] = b[k] < 0 ? -a : a;
+            if (a) last = k;
+        }
+        if (last < 0) { add_eob({}); return; }
+        flush_eob();
+        int run = 0;
+        for (int k = ss; k <= last; ++k) {
+            if (!v[k]) { ++run; continue; }
+            while (run > 15) { sym(0xF0); run -= 16; }
+            const int s = cat(v[k]);
+            sym((run << 4) | s);
+            bits.put(mag(v[k], s), s);
+            run = 0;
+        }
+        if (last < se) add_eob({});
+    }
+    void ac_refine(const std::int16_t* b, int ss, int se, int al) {
+        int a[64] = {}, eob = -1;
+        for (int k = ss; k <= se; ++k) {
+            a[k] = (b[k] < 0 ? -b[k] : b[k]) >> al;
+            if (a[k] == 1) eob = k;
+        }
+        int run = 0;
+        std::vector<int> br;
+        for (int k = ss; k <= se; ++k) {
+            if (a[k] == 0) {
+                ++run;
+                if (run == 16 && k < eob) {
+                    flush_eob();
+                    sym(0xF0);
+                    for (int x : br) bits.put(static_cast<std::uint32_t>(x), 1);
+                    br.clear();
+                    run = 0;
+                }
+                continue;
+            }
+            if (a[k] > 1) { br.push_back(a[k] & 1); continue; }
+            flush_eob();
+            sym((run << 4) | 1);
+            bits.put(b[k] < 0 ? 0u : 1u, 1);
+            for (int x : br) bits.put(static_cast<std::uint32_t>(x), 1);
+            br.clear();
+            run = 0;
+        }
+        if (run > 0 || !br.empty()) add_eob(br);
+    }
+};
+
+// Emits one scan over `comps`; f(writer, comp, block, pred) codes one block.
+template <class F>
+void emit_scan(Buf& o, const CoefImage& im, const std::vector<int>& comps, std::uint16_t ri, const TestTables& t,
+               int ss, int se, int ah, int al, F&& f) {
+    write_sos(o, comps, ss, se, ah, al);
+    ScanWriter w(o, t);
+    int pred[4] = {};
+    std::uint32_t todo = ri, rst = 0;
+    const std::uint32_t nblocks = im.bw * im.bh;
+    for (std::uint32_t b = 0; b < nblocks; ++b) {
+        if (ri) {
+            if (todo == 0) {
+                w.flush_eob();
+                w.bits.flush();
+                o.insert(o.end(), {0xFF, static_cast<std::uint8_t>(0xD0 + (rst++ & 7))});
+                std::fill(pred, pred + 4, 0);
+                todo = ri;
+            }
+            --todo;
+        }
+        for (int c : comps) f(w, im.coef[static_cast<std::size_t>(c)].data() + static_cast<std::size_t>(b) * 64, pred[c]);
+    }
+    w.flush_eob();
+    w.bits.flush();
+}
+
+void code_dc(ScanWriter& w, int v, int& pred) {
+    const int d = v - pred;
+    pred = v;
+    const int s = cat(d);
+    w.sym(s);
+    w.bits.put(mag(d, s), s);
+}
+
+Buf sequential_stream(const CoefImage& im, std::uint16_t ri) {
+    const TestTables t;
+    Buf o;
+    write_header(o, 0xC1, im, ri, t);
+    std::vector<int> all;
+    for (int i = 0; i < im.nc; ++i) all.push_back(i);
+    emit_scan(o, im, all, ri, t, 0, 63, 0, 0, [](ScanWriter& w, const std::int16_t* b, int& pred) {
+        code_dc(w, b[0], pred);
+        int run = 0;
+        for (int k = 1; k < 64; ++k) {
+            if (!b[k]) { ++run; continue; }
+            while (run > 15) { w.sym(0xF0); run -= 16; }
+            const int s = cat(b[k]);
+            w.sym((run << 4) | s);
+            w.bits.put(mag(b[k], s), s);
+            run = 0;
+        }
+        if (run) w.sym(0);
+    });
+    o.insert(o.end(), {0xFF, 0xD9});
+    return o;
+}
+
+Buf progressive_stream(const CoefImage& im, std::uint16_t ri) {
+    const TestTables t;
+    Buf o;
+    write_header(o, 0xC2, im, ri, t);
+    std::vector<int> all;
+    for (int i = 0; i < im.nc; ++i) all.push_back(i);
+    // DC first with Al = 1 (interleaved), AC bands at Al = 2, refinements down to 0.
+    emit_scan(o, im, all, ri, t, 0, 0, 0, 1,
+              [](ScanWriter& w, const std::int16_t* b, int& pred) { code_dc(w, b[0] >> 1, pred); });
+    for (int c = 0; c < im.nc; ++c) {
+        emit_scan(o, im, {c}, ri, t, 1, 5, 0, 2,
+                  [](ScanWriter& w, const std::int16_t* b, int&) { w.ac_first(b, 1, 5, 2); });
+        emit_scan(o, im, {c}, ri, t, 6, 63, 0, 2,
+                  [](ScanWriter& w, const std::int16_t* b, int&) { w.ac_first(b, 6, 63, 2); });
+    }
+    for (int c = 0; c < im.nc; ++c)
+        emit_scan(o, im, {c}, ri, t, 1, 63, 2, 1,
+                  [](ScanWriter& w, const std::int16_t* b, int&) { w.ac_refine(b, 1, 63, 1); });
+    emit_scan(o, im, all, ri, t, 0, 0, 1, 0,
+              [](ScanWriter& w, const std::int16_t* b, int&) { w.bits.put(static_cast<std::uint32_t>(b[0]) & 1u, 1); });
+    for (int c = 0; c < im.nc; ++c)
+        emit_scan(o, im, {c}, ri, t, 1, 63, 1, 0,
+                  [](ScanWriter& w, const std::int16_t* b, int&) { w.ac_refine(b, 1, 63, 0); });
+    o.insert(o.end(), {0xFF, 0xD9});
+    return o;
+}
+
+}  // namespace
+
+TEST_CASE("jpeg: progressive (successive approximation) equals sequential, 8 and 12 bit") {
+    struct Cfg { int P, nc; std::uint32_t X, Y; std::uint16_t ri; };
+    const Cfg cfgs[] = {{8, 1, 64, 48, 0}, {12, 1, 61, 37, 0}, {8, 3, 40, 24, 0}, {12, 3, 33, 17, 0},
+                        {8, 1, 64, 48, 5}, {12, 3, 40, 40, 7}, {8, 1, 8, 8, 1}};
+    unsigned seed = 1;
+    for (const Cfg& c : cfgs) {
+        const CoefImage im = random_coefs(c.P, c.nc, c.X, c.Y, seed++);
+        const Buf seq = sequential_stream(im, c.ri), prog = progressive_stream(im, c.ri);
+        const FrameInfo f = frame(c.Y, c.X, c.nc, c.P == 8 ? 8 : 16, c.P);
+        Buf a(static_cast<std::size_t>(f.frame_bytes())), b(a.size());
+        const Status sa = decode_jpeg(seq, f, a), sb = decode_jpeg(prog, f, b);
+        CHECK(sa.is_ok());
+        CHECK(sb.is_ok());
+        if (!sb) std::fprintf(stderr, "  progressive P=%d nc=%d: %s\n", c.P, c.nc, sb.message.c_str());
+        CHECK(a == b);
+    }
+}
+
+// ================================================================== robustness
+namespace {
+
+std::vector<std::pair<Buf, FrameInfo>> robustness_corpus() {
+    std::vector<std::pair<Buf, FrameInfo>> v;
+    const FrameInfo g8 = frame(19, 21, 1, 8, 8), g16 = frame(13, 17, 1, 16, 16), c8 = frame(18, 20, 3, 8, 8),
+                    g12 = frame(12, 20, 1, 16, 12);
+    Buf s;
+    JpegEncodeOptions o;
+    (void)encode_jpeg(make_image(g16, 1, 30), g16, lossless(7), s);
+    v.push_back({s, g16});
+    o.restart_interval = 21;
+    (void)encode_jpeg_ex(make_image(g8, 2, 10), g8, lossless(4), o, s);
+    v.push_back({s, g8});
+    (void)encode_jpeg(make_image(g8, 3, 10), g8, lossy(80), s);
+    v.push_back({s, g8});
+    o.luma_h = o.luma_v = 2;
+    o.restart_interval = 1;
+    (void)encode_jpeg_ex(make_image(c8, 4, 10), c8, lossy(70, true), o, s);
+    v.push_back({s, c8});
+    (void)encode_jpeg(make_image(g12, 5, 10), g12, lossy(85), s);
+    v.push_back({s, g12});
+    const CoefImage im = random_coefs(8, 3, 16, 16, 9);
+    v.push_back({progressive_stream(im, 0), frame(16, 16, 3, 8, 8)});
+    const CoefImage im12 = random_coefs(12, 1, 24, 16, 10);
+    v.push_back({progressive_stream(im12, 2), frame(16, 24, 1, 16, 12)});
+    return v;
+}
+
+}  // namespace
+
+TEST_CASE("jpeg: every truncation fails cleanly") {
+    for (auto& [stream, f] : robustness_corpus()) {
+        Buf out(static_cast<std::size_t>(f.frame_bytes()));
+        REQUIRE(decode_jpeg(stream, f, out).is_ok());
+        int accepted = 0;
+        for (std::size_t n = 0; n < stream.size(); ++n) {
+            // Copy into an exact-size buffer so the sanitizer sees any over-read.
+            Buf cut(stream.begin(), stream.begin() + static_cast<std::ptrdiff_t>(n));
+            if (decode_jpeg(cut, f, out).is_ok()) ++accepted;
+        }
+        CHECK_EQ(accepted, 0);
+    }
+}
+
+TEST_CASE("jpeg: random corruption never crashes") {
+    std::mt19937 rng(12345);
+    auto R = [&] { return static_cast<std::uint32_t>(rng()); };
+    int iterations = 0, rejected = 0;
+    for (auto& [stream, f] : robustness_corpus()) {
+        Buf out(static_cast<std::size_t>(f.frame_bytes()));
+        for (int it = 0; it < 400; ++it) {
+            Buf s = stream;
+            const int flips = 1 + static_cast<int>(R() % 4);
+            for (int k = 0; k < flips; ++k) {
+                const std::size_t at = R() % s.size();
+                if (R() % 2) s[at] ^= static_cast<std::uint8_t>(1u << (R() % 8));
+                else s[at] = static_cast<std::uint8_t>(R());
+            }
+            if (R() % 8 == 0) s.resize(R() % s.size());
+            if (!decode_jpeg(s, f, out).is_ok()) ++rejected;
+            ++iterations;
+        }
+    }
+    std::printf("  corruption: %d streams, %d rejected\n", iterations, rejected);
+    CHECK(iterations > 0);
+}
+
+TEST_CASE("jpeg: hostile headers") {
+    const FrameInfo f = frame(8, 8, 1, 8, 8);
+    Buf out(64);
+    // Over-subscribed Huffman table (three 1-bit codes).
+    Buf s = {0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x16, 0x00, 3};
+    for (int i = 0; i < 15; ++i) s.push_back(0);
+    s.insert(s.end(), {0, 1, 2, 0xFF, 0xD9});
+    CHECK(decode_jpeg(s, f, out).code == Errc::Malformed);
+    // SOS before SOF, segment length past the end, zero sampling factor.
+    CHECK(!decode_jpeg(Buf{0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x08, 1, 1, 0, 0, 63, 0, 0xFF, 0xD9}, f, out).is_ok());
+    CHECK(!decode_jpeg(Buf{0xFF, 0xD8, 0xFF, 0xE0, 0x40, 0x00, 1, 2}, f, out).is_ok());
+    CHECK(!decode_jpeg(Buf{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 8, 0, 8, 0, 8, 1, 1, 0x00, 0, 0xFF, 0xD9}, f, out).is_ok());
+    // A huge frame header is refused before any allocation (mismatch with FrameInfo).
+    CHECK(decode_jpeg(Buf{0xFF, 0xD8, 0xFF, 0xC3, 0x00, 0x0B, 16, 0xFF, 0xFF, 0xFF, 0xFF, 1, 1, 0x11, 0, 0xFF, 0xD9}, f,
+                      out).code == Errc::TypeMismatch);
 }

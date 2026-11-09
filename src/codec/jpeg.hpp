@@ -7,6 +7,8 @@
 //     point transform, 2..16-bit precision); arithmetic coding and hierarchical mode are refused
 //     with Errc::Unsupported.
 //   - 1..4 components, any sampling factors 1..4, restart intervals, multiple scans, DNL.
+//     A lossless scan whose restart interval is not a whole number of MCU rows (forbidden by
+//     T.81 H.1.1, and decoded differently by different decoders) is rejected as Malformed.
 //   - Colour values are returned AS STORED in the codestream: no YCbCr -> RGB conversion is done
 //     here, whatever the APP0/APP14 markers say. The image layer converts according to the
 //     Photometric Interpretation (YBR_FULL, YBR_FULL_422, RGB ...).
@@ -35,7 +37,8 @@ struct JpegEncodeOptions {
     //   1x1 = 4:4:4 (default), 2x1 = 4:2:2, 2x2 = 4:2:0, 4x1 = 4:1:1.
     int luma_h = 1;
     int luma_v = 1;
-    std::uint16_t restart_interval = 0;  // MCUs per restart interval, 0 = none
+    std::uint16_t restart_interval = 0;  // MCUs per restart interval, 0 = none. Lossless: must be a
+                                         // multiple of the columns (T.81 H.1.1: whole MCU rows)
     int point_transform = 0;             // lossless only, 0 .. P-1
     bool optimize_huffman = true;        // false: T.81 Annex K example tables (8-bit lossy only)
     bool separate_scans = false;         // one scan per component instead of one interleaved scan

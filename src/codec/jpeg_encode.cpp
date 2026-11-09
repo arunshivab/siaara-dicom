@@ -133,6 +133,8 @@ Status encode_lossless(std::span<const std::uint8_t> in, const FrameInfo& info, 
     const int psv = p.predictor;
     const int init = 1 << (P - pt - 1);
     const std::uint32_t ri = opt.restart_interval;
+    if (ri % X != 0)  // T.81 H.1.1: whole MCU rows only (one MCU = one pixel here)
+        return Status(Errc::InvalidArgument, "JPEG lossless: restart interval must be a multiple of the columns");
     const bool separate = opt.separate_scans || nc == 1;
 
     // One scan: components comps[0..n). MCU = one pixel (all sampling factors 1).

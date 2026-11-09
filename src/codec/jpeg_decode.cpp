@@ -3,7 +3,8 @@
 // progressive refinement (Annex G.1.2), lossless prediction (Annex H.1.2).
 #include <algorithm>
 #include <cstring>
-#include <limits>
+#include <memory>
+#include <new>
 #include <vector>
 
 #include "codec/codec.hpp"
@@ -421,6 +422,10 @@ Status Decoder::parse_sos(std::size_t b, std::size_t e, Scan& s) {
     } else if (mode_ == Mode::Lossless) {
         if (s.ss < 1 || s.ss > 7) return malformed("JPEG: bad lossless predictor", p);
         if (s.al >= precision_) return malformed("JPEG: bad point transform", p);
+        // T.81 H.1.1: the restart interval of a lossless scan is a whole number of MCU rows.
+        // Other intervals have no defined prediction rule, and decoders disagree on them.
+        const std::uint32_t per_row = s.n == 1 ? comps_[s.ci[0]].cw : mcux_;
+        if (ri_ % per_row != 0) return malformed("JPEG: lossless restart interval is not a multiple of the MCU row", p);
     }
     // Tables used by this scan must exist.
     for (int i = 0; i < s.n; ++i) {
@@ -906,8 +911,10 @@ Status Decoder::run() {
 }  // namespace
 
 Status decode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
-    Decoder dec(in, info, out);
-    return dec.run();
+    // The decoder carries ~55 KB of Huffman lookup tables: keep it off the stack.
+    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
+    if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
+    return dec->run();
 }
 
 Status jpeg_read_header(std::span<const std::uint8_t> in, JpegHeaderInfo& hdr) {
