@@ -1,0 +1,6 @@
+# Keep generated tables byte-identical on every platform (their hashes are checked in tests).
+* text=auto eol=lf
+*.dcm binary
+*.jpg binary
+*.j2k binary
+*.jls binary
