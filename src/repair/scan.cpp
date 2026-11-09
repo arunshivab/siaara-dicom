@@ -75,6 +75,14 @@ public:
         Tag prev = 0;
         bool have_prev = false;
         GroupTrack gt;
+        // Values inside a defined-length item may not run past the item (R-001).
+        const std::uint64_t saved_bound = bound_;
+        if (!undefined) bound_ = std::min<std::uint64_t>(end, size_);
+        struct RestoreBound {
+            std::uint64_t& ref;
+            std::uint64_t v;
+            ~RestoreBound() { ref = v; }
+        } restore_bound{bound_, saved_bound};
         while (!stop_) {
             if (!undefined && pos_ >= end) {
                 if (pos_ > end)
@@ -149,6 +157,7 @@ public:
             Element e;
             e.tag = tag;
             e.offset = file_offsets_ ? start : 0;
+            e.read.parsed = true;
             std::uint32_t len = 0;
             if (!read_vr_and_length(syn, tag, e.vr, len, path, start)) break;
             if (++element_count_ > opt_.max_elements) {
@@ -156,7 +165,7 @@ public:
                 break;
             }
             // Group length bookkeeping (PS3.5 7.2).
-            if (gt.active && tag_group(tag) != gt.group) finish_group(gt, start, path);
+            if (gt.active && tag_group(tag) != gt.group) finish_group(gt, start, path, ds);
 
             Path here = path;
             here.push_back({tag, -1});
@@ -164,10 +173,12 @@ public:
                 e.undefined_length = true;
                 if (e.vr == VR::SQ || (e.vr == VR::UN && !is_pixel_tag(tag))) {
                     const Syntax inner = e.vr == VR::UN ? Syntax{false, false} : syn;
+                    e.read.un_sequence = e.vr == VR::UN;
                     e.vr = VR::SQ;
                     parse_items(e, inner, 0, true, depth, here);
                 } else if (is_pixel_tag(tag) || e.vr == VR::OB || e.vr == VR::OW || e.vr == VR::UN) {
                     parse_fragments(e, syn, here, start);
+                    e.read.fragment_count = static_cast<std::uint32_t>(e.fragments.size());
                 } else {
                     add(Severity::Error, "undefined-length", kStructural, here,
                         "undefined length on an element that is not a sequence or pixel data", start);
@@ -177,15 +188,20 @@ public:
             } else {
                 std::uint64_t vend = 0;
                 std::uint32_t avail_len = len;
-                const bool overrun = !checked_add(pos_, len, vend) || vend > size_;
+                const std::uint64_t limit = std::min<std::uint64_t>(bound_, size_);
+                const bool overrun = !checked_add(pos_, len, vend) || vend > limit;
                 if (overrun) {
-                    avail_len = static_cast<std::uint32_t>(size_ - pos_);
-                    vend = size_;
-                    add(Severity::Error, "value-truncated", kRescue, here,
-                        "value length " + std::to_string(len) + " runs past the end of the data (" +
-                            std::to_string(avail_len) + " byte(s) present)",
+                    avail_len = static_cast<std::uint32_t>(limit - pos_);
+                    vend = limit;
+                    const bool in_parent = limit < size_;
+                    add(Severity::Error, in_parent ? "item-length" : "value-truncated", in_parent ? kStructural : kRescue,
+                        here,
+                        "value length " + std::to_string(len) + " runs past the end of the " +
+                            (in_parent ? "enclosing item" : "data") + " (" + std::to_string(avail_len) +
+                            " byte(s) available)",
                         start);
                 }
+                e.read.length = avail_len;
                 if ((len & 1u) != 0 && !overrun) {
                     ++out_.odd_lengths;
                     add(Severity::Error, "odd-length", kStructural, here,
@@ -245,7 +261,7 @@ public:
             }
             if (stop_) break;
         }
-        if (gt.active) finish_group(gt, std::min<std::size_t>(pos_, size_), path);
+        if (gt.active) finish_group(gt, std::min<std::size_t>(pos_, size_), path, ds);
     }
 
 private:
@@ -257,13 +273,15 @@ private:
         std::uint64_t offset = 0;
     };
 
-    void finish_group(GroupTrack& gt, std::size_t end, const Path& path) {
+    void finish_group(GroupTrack& gt, std::size_t end, const Path& path, Dataset& ds) {
         GroupLengthInfo g;
         g.path = path;
         g.group = gt.group;
         g.declared = gt.declared;
         g.actual = end >= gt.start ? end - gt.start : 0;
         g.offset = gt.offset;
+        if (Element* ge = ds.find(make_tag(gt.group, 0)); ge && ge->offset == (file_offsets_ ? gt.offset : 0))
+            ge->read.group_bytes = g.actual > 0xFFFFFFFEu ? 0xFFFFFFFEu : static_cast<std::uint32_t>(g.actual);
         Path here = path;
         here.push_back({make_tag(gt.group, 0), -1});
         if (g.actual != g.declared) {
@@ -516,6 +534,7 @@ private:
     bool file_offsets_;
     bool stop_ = false;
     Status limit_;
+    std::uint64_t bound_ = UINT64_MAX;
     std::uint64_t element_count_ = 0;
     std::uint16_t bits_allocated_ = 0;
 };
@@ -618,6 +637,7 @@ Result<ScanResult> scan(const Bytes& data, const ScanOptions& opt) {
     if (n >= 132 && p[128] == 'D' && p[129] == 'I' && p[130] == 'C' && p[131] == 'M') {
         out.file.had_preamble = true;
         out.had_dicm = true;
+        out.file.preamble = data.sub(0, 128);
         pos = 132;
         for (std::size_t i = 0; i < 128; ++i)
             if (p[i] != 0) {
@@ -652,6 +672,7 @@ Result<ScanResult> scan(const Bytes& data, const ScanOptions& opt) {
         mp.parse(out.file.meta, ms, n, false, 0, path, 0x0002);
         if (!mp.limit().is_ok()) return mp.limit();
         pos = mp.pos();
+        out.file.meta_as_read = !out.file.meta.empty();
         if (!out.file.meta.contains(tags::FileMetaInformationGroupLength))
             add_file_finding(out, Severity::Error, "meta-group-length", kStructural,
                              "File Meta Information Group Length (0002,0000) is missing", pos, true);
