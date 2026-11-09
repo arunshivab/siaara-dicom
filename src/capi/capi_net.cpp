@@ -322,9 +322,13 @@ struct siaara_scp {
     }
 
     void event(int32_t kind, std::uint16_t status, int32_t outcome, const std::string& calling, const std::string& cls,
-               const std::string& inst, const std::string& addr) {
+               const std::string& inst, const std::string& addr, const net::StoreRequest* rq = nullptr) {
         if (!cb) return;
+        static const std::string empty;
         siaara_scp_event e{};
+        e.uid_mismatch = rq && rq->uid_mismatch ? 1 : 0;
+        e.command_sop_class_uid = (rq ? rq->command_sop_class_uid : empty).c_str();
+        e.command_sop_instance_uid = (rq ? rq->command_sop_instance_uid : empty).c_str();
         e.struct_size = sizeof e;
         e.kind = kind;
         e.dimse_status = status;
@@ -521,7 +525,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
     return guarded([&]() -> siaara_status {
         if (!result_ok(result)) return fail(Errc::InvalidArgument, "result must be set up with struct_size");
         result_init(result);
-        if (!identifier || !options || options->struct_size < sizeof(siaara_get_options))
+        if (!identifier || !options || options->struct_size < offsetof(siaara_get_options, native_only) + sizeof(int32_t))
             return fail(Errc::InvalidArgument, "identifier and options (with struct_size) must be set");
         if (!options->store && !options->folder) return fail(Errc::InvalidArgument, "options->store or options->folder is required");
         if (options->sop_class_count && !options->sop_classes) return fail(Errc::InvalidArgument, "sop_classes is NULL");
@@ -543,6 +547,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
         if (classes.size() > 120) return fail(Errc::LimitExceeded, "at most 120 storage SOP classes can be proposed");
         std::vector<std::string> ts = net::native_transfer_syntaxes();
         if (!options->native_only) ts.insert(ts.end(), compressed_syntaxes().begin(), compressed_syntaxes().end());
+        if (options->struct_size >= offsetof(siaara_get_options, strict_store_uids) + sizeof(int32_t))
+            c.strict_store_uids = options->strict_store_uids != 0;
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
         for (const std::string& k : classes) scu.add_get_storage(k, ts);
@@ -565,7 +571,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
                     const std::uint16_t s = keep_instance(rq, options->store, policy, folder, nullptr, err, &kept);
                     if (s != net::dimse_status::Success)
                         capi::log(SIAARA_LOG_WARNING, true, "C-GET: instance " + rq.sop_instance_uid + " not kept: " + err);
-                    else if (kept)
+                    else if (rq.uid_mismatch)
+                        capi::log(SIAARA_LOG_WARNING, true, "C-GET: instance " + rq.sop_instance_uid +
+                                                                " kept under its data set's UIDs; the C-STORE command said " +
+                                                                rq.command_sop_class_uid + " / " + rq.command_sop_instance_uid);
+                    if (s == net::dimse_status::Success && kept)
                         capi::log(SIAARA_LOG_WARNING, true, "C-GET: " + rq.sop_instance_uid +
                                                                 ".dcm already exists in the folder; the existing file was kept "
                                                                 "(duplicate policy KEEP)");
@@ -843,8 +853,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
     return guarded([&]() -> siaara_status {
         if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
         *out = nullptr;
-        if (!o || o->struct_size < sizeof(siaara_scp_options))
+        if (!o || o->struct_size < offsetof(siaara_scp_options, tls) + sizeof(void*))
             return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        const auto has = [&](std::size_t end) { return o->struct_size >= end; };
         if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
         if (o->port > 65535) return fail(Errc::InvalidArgument, "port must be 0..65535");
         if (o->allowed_count && !o->allowed_calling_aes) return fail(Errc::InvalidArgument, "allowed_calling_aes is NULL");
@@ -881,6 +892,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
             if (o->tls->struct_size < sizeof(siaara_tls_options)) return fail(Errc::InvalidArgument, "tls->struct_size is too small");
             cfg.tls = capi::tls_settings(o->tls);
         }
+        if (has(offsetof(siaara_scp_options, strict_store_uids) + sizeof(int32_t)))
+            cfg.strict_store_uids = o->strict_store_uids != 0;
         auto h = std::make_unique<siaara_scp>();
         h->store = store;
         h->policy = o->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
@@ -900,11 +913,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
             if (s == net::dimse_status::Success) {
                 raw->stored.fetch_add(1, std::memory_order_relaxed);
                 raw->bytes.fetch_add(rq.raw.size(), std::memory_order_relaxed);
-                raw->event(SIAARA_SCP_STORED, s, outcome, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, "");
+                if (rq.uid_mismatch)
+                    capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid +
+                                                            " stored under its data set's UIDs; the C-STORE command said " +
+                                                            rq.command_sop_class_uid + " / " + rq.command_sop_instance_uid);
+                raw->event(SIAARA_SCP_STORED, s, outcome, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, "", &rq);
             } else {
                 raw->failures.fetch_add(1, std::memory_order_relaxed);
                 capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid + " not stored: " + err);
-                raw->event(SIAARA_SCP_STORE_FAILED, s, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, "");
+                raw->event(SIAARA_SCP_STORE_FAILED, s, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, "", &rq);
             }
             return s;
         };

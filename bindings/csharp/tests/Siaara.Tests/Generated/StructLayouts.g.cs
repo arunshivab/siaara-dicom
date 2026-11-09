@@ -631,6 +631,7 @@ internal static class StructLayouts
             r.Add("F siaara_get_options sop_classes " + Offset(ref s, ref s.sop_classes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_get_options sop_class_count " + Offset(ref s, ref s.sop_class_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_get_options native_only " + Offset(ref s, ref s.native_only).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_get_options strict_store_uids " + Offset(ref s, ref s.strict_store_uids).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_options);
@@ -651,6 +652,7 @@ internal static class StructLayouts
             r.Add("F siaara_scp_options max_pdu " + Offset(ref s, ref s.max_pdu).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options allow_any_calling_ae " + Offset(ref s, ref s.allow_any_calling_ae).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options tls " + Offset(ref s, ref s.tls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options strict_store_uids " + Offset(ref s, ref s.strict_store_uids).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_event);
@@ -663,6 +665,9 @@ internal static class StructLayouts
             r.Add("F siaara_scp_event sop_class_uid " + Offset(ref s, ref s.sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_event sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_event peer_address " + Offset(ref s, ref s.peer_address).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event uid_mismatch " + Offset(ref s, ref s.uid_mismatch).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event command_sop_class_uid " + Offset(ref s, ref s.command_sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event command_sop_instance_uid " + Offset(ref s, ref s.command_sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_stats);

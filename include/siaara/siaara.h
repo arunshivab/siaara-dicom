@@ -1669,6 +1669,10 @@ typedef struct siaara_get_options {
     const char* const* sop_classes;  /* storage SOP classes to accept; NULL: the toolkit's list */
     uint32_t sop_class_count;
     int32_t native_only;             /* 0/1: propose only uncompressed transfer syntaxes */
+    /* Fields below are read only when struct_size covers them. */
+    int32_t strict_store_uids;       /* 0/1: refuse (0xA900) an instance whose C-STORE command UIDs differ from
+                                        (0008,0016)/(0008,0018) of its data set; 0: keep it under the data set's
+                                        UIDs and log a warning */
 } siaara_get_options;
 
 /* C-GET; the instances arrive on the same association. options->store or ->folder is required. */
@@ -1725,6 +1729,10 @@ typedef struct siaara_scp_options {
     uint32_t max_pdu;                /* 0 = 65536 */
     int32_t allow_any_calling_ae;    /* 0/1: with no allowed_calling_aes, accept any peer (else start fails) */
     const siaara_tls_options* tls;   /* NULL: plain TCP; else every connection must use TLS (needs an identity) */
+    /* Fields below are read only when struct_size covers them. */
+    int32_t strict_store_uids;       /* 0/1: refuse (0xA900) a C-STORE whose command UIDs differ from
+                                        (0008,0016)/(0008,0018) of the data set; 0: store it under the data set's
+                                        UIDs (event uid_mismatch, command UIDs reported) */
 } siaara_scp_options;
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
@@ -1738,6 +1746,11 @@ typedef struct siaara_scp_event {
     const char* sop_class_uid;       /* "" for SIAARA_SCP_ECHO */
     const char* sop_instance_uid;
     const char* peer_address;
+    /* Present when struct_size covers them. */
+    int32_t uid_mismatch;            /* 1: the C-STORE command's UIDs differed from the data set's; the instance
+                                        was stored under the data set's (sop_class_uid / sop_instance_uid) */
+    const char* command_sop_class_uid;    /* the command's Affected SOP Class UID ("" unless uid_mismatch) */
+    const char* command_sop_instance_uid; /* the command's Affected SOP Instance UID ("" unless uid_mismatch) */
 } siaara_scp_event;
 
 /* Called after each event, from the association's thread; never concurrently for one SCP. */

@@ -43,6 +43,7 @@ constexpr std::uint16_t OutOfResourcesMatches = 0xA701;
 constexpr std::uint16_t OutOfResourcesSubOps = 0xA702;
 constexpr std::uint16_t MoveDestinationUnknown = 0xA801;
 constexpr std::uint16_t IdentifierDoesNotMatch = 0xA900;
+constexpr std::uint16_t DataSetDoesNotMatch = 0xA900;  // C-STORE: Data Set does not match SOP Class
 constexpr std::uint16_t UnableToProcess = 0xC000;
 constexpr std::uint16_t CannotUnderstand = 0xC000;
 constexpr std::uint16_t ProcessingFailure = 0x0110;

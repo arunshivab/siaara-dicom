@@ -43,6 +43,29 @@ RetrieveProgress progress_of(const Command& c) {
 
 }  // namespace
 
+std::uint16_t check_store_uids(StoreRequest& rq, bool strict, std::string& note) {
+    note.clear();
+    const auto cls = rq.dataset.get_string(tags::SOPClassUID);
+    const auto inst = rq.dataset.get_string(tags::SOPInstanceUID);
+    const bool cls_ok = cls && *cls == rq.sop_class_uid;
+    const bool inst_ok = inst && *inst == rq.sop_instance_uid;
+    if (cls_ok && inst_ok) return dimse_status::Success;
+    if (!inst_ok)
+        note = "the command's Affected SOP Instance UID " + rq.sop_instance_uid + " differs from the data set's " +
+               (inst ? *inst : std::string("(absent)"));
+    if (!cls_ok)
+        note += std::string(note.empty() ? "" : "; ") + "the command's Affected SOP Class UID " + rq.sop_class_uid +
+                " differs from the data set's " + (cls ? *cls : std::string("(absent)"));
+    if (strict) return dimse_status::DataSetDoesNotMatch;
+    rq.uid_mismatch = true;
+    rq.command_sop_class_uid = rq.sop_class_uid;
+    rq.command_sop_instance_uid = rq.sop_instance_uid;
+    if (cls && !cls->empty()) rq.sop_class_uid = *cls;
+    if (inst && !inst->empty()) rq.sop_instance_uid = *inst;
+    rq.spool.reset();  // its file meta carries the command's UIDs; `raw` keeps the bytes alive
+    return dimse_status::Success;
+}
+
 DicomFile to_part10(const StoreRequest& rq) {
     DicomFile f;
     f.transfer_syntax = rq.transfer_syntax;
@@ -271,7 +294,9 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
             st = dimse_status::CannotUnderstand;
         } else {
             rq.dataset = std::move(ds.value());
-            st = on_instance ? on_instance(rq) : dimse_status::Success;
+            std::string note;
+            st = check_store_uids(rq, cfg_.strict_store_uids, note);
+            if (st == dimse_status::Success) st = on_instance ? on_instance(rq) : dimse_status::Success;
         }
     }
     return send_dimse(*assoc_, m.context_id, make_response(m.command, st));

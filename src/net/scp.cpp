@@ -474,6 +474,15 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
             st = dimse_status::CannotUnderstand;
         } else {
             rq.dataset = std::move(ds.value());
+            std::string note;
+            st = check_store_uids(rq, cfg_.strict_store_uids, note);
+            // UIDs stay out of this log (they identify patient data); StoreRequest carries both sets.
+            if (!note.empty())
+                log(st == dimse_status::Success
+                        ? "C-STORE: command UIDs differ from the data set's; accepted under the data set's UIDs"
+                        : "C-STORE: command UIDs differ from the data set's; refused (0xA900)");
+        }
+        if (ds && st == dimse_status::Success) {
             if (!cfg_.preferred_store_ts.empty() && rq.transfer_syntax != cfg_.preferred_store_ts)
                 if (Status cs = convert_received(rq, cfg_.preferred_store_ts, cfg_.transcode_params,
                                                  cfg_.spool ? &*cfg_.spool : nullptr); !cs)

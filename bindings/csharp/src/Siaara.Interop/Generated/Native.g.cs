@@ -1117,6 +1117,7 @@ internal struct siaara_get_options
     public nint sop_classes;
     public uint sop_class_count;
     public int native_only;
+    public int strict_store_uids;
 }
 
 /// <summary>siaara_scp_options (blittable, C layout).</summary>
@@ -1139,6 +1140,7 @@ internal struct siaara_scp_options
     public uint max_pdu;
     public int allow_any_calling_ae;
     public nint tls;
+    public int strict_store_uids;
 }
 
 /// <summary>siaara_scp_event (blittable, C layout).</summary>
@@ -1153,6 +1155,9 @@ internal struct siaara_scp_event
     public nint sop_class_uid;
     public nint sop_instance_uid;
     public nint peer_address;
+    public int uid_mismatch;
+    public nint command_sop_class_uid;
+    public nint command_sop_instance_uid;
 }
 
 /// <summary>siaara_scp_stats (blittable, C layout).</summary>

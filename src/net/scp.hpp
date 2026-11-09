@@ -112,6 +112,9 @@ struct ScpConfig {
     // ---- transcoding, streaming and negotiation extras
     // Received C-STORE data sets larger than spool->threshold are written to disk (net/spool.hpp).
     std::optional<SpoolConfig> spool;
+    // C-STORE requests whose command UIDs differ from the data set's: refuse (0xA900) instead of
+    // accepting them under the data set's UIDs with StoreRequest::uid_mismatch (R-073).
+    bool strict_store_uids = false;
     // When set, received instances are converted to this transfer syntax before on_store sees them
     // (left as received when the conversion is not possible).
     std::string preferred_store_ts;

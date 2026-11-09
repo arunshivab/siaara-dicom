@@ -1103,3 +1103,81 @@ TEST_CASE("net/services: spool file commit is synchronous and deletion happens w
     std::filesystem::remove(target, ec);
     CHECK(std::filesystem::is_empty(dir));
 }
+
+// ===================================================================== R-073 command vs data set UIDs
+
+namespace {
+// Sends a C-STORE whose command names `cmd_instance` while the data set says otherwise.
+Result<std::uint16_t> store_with_command_uid(Scu& scu, const DicomFile& f, const std::string& cmd_instance) {
+    Association* a = scu.association();
+    if (!a) return Status(Errc::InvalidArgument, "not connected");
+    const NegotiatedContext* pc = a->find_context(kSC);
+    if (!pc) return Status(Errc::Unsupported, "no context");
+    std::vector<std::uint8_t> body;
+    if (Status s = write_dataset(f.dataset, pc->transfer_syntax, body); !s) return s;
+    const std::uint16_t mid = a->next_message_id();
+    if (Status s = send_dimse_raw(*a, pc->id, make_c_store_rq(mid, kSC, cmd_instance, priority::Medium), body.data(), body.size()); !s)
+        return s;
+    Result<DimseReceived> r = receive_dimse(*a, 5000);
+    if (!r) return r.take_error();
+    return r->message.command.status.value_or(0xFFFF);
+}
+}  // namespace
+
+TEST_CASE("net/services: R-073 C-STORE command UID differing from the data set (SCP, lenient and strict)") {
+    for (bool strict : {false, true}) {
+        StoreSink rec;
+        ScpConfig cfg = scp_cfg();
+        cfg.strict_store_uids = strict;
+        ScpHandlers h;
+        h.on_store = std::ref(rec);
+        ScpServer scp(cfg, h);
+        REQUIRE(scp.start().is_ok());
+        const DicomFile f = make_image(7);  // data set: 2.25.5557
+        Scu scu(scu_cfg(scp.port()));
+        scu.add_context(kSC, {kExplicit});
+        REQUIRE(scu.connect().is_ok());
+        Result<std::uint16_t> st = store_with_command_uid(scu, f, "2.25.9999");
+        REQUIRE(st.is_ok());
+        (void)scu.release();
+        std::lock_guard<std::mutex> l(rec.mu);
+        if (strict) {
+            CHECK_EQ(*st, 0xA900);
+            CHECK(rec.got.empty());
+        } else {
+            CHECK_EQ(*st, dimse_status::Success);
+            REQUIRE(rec.got.size() == 1u);
+            const StoreRequest& rq = rec.got[0];
+            CHECK(rq.uid_mismatch);
+            CHECK_EQ(rq.sop_instance_uid, std::string("2.25.5557"));  // named and indexed by the data set
+            CHECK_EQ(rq.command_sop_instance_uid, std::string("2.25.9999"));
+            // The Part 10 meta written for it names the data set's instance.
+            std::vector<std::uint8_t> p10;
+            REQUIRE(encode_received_part10(rq, p10).is_ok());
+            auto back = read_part10(Bytes::copy_of(p10.data(), p10.size()));
+            REQUIRE(back);
+            CHECK_EQ(back->meta.get_string(tags::MediaStorageSOPInstanceUID).value_or(""), std::string("2.25.5557"));
+        }
+    }
+}
+
+TEST_CASE("net/services: R-073 matching UIDs are not flagged") {
+    StoreSink rec;
+    ScpHandlers h;
+    h.on_store = std::ref(rec);
+    ScpConfig cfg = scp_cfg();
+    cfg.strict_store_uids = true;
+    ScpServer scp(cfg, h);
+    REQUIRE(scp.start().is_ok());
+    Scu scu(scu_cfg(scp.port()));
+    scu.add_context(kSC, {kExplicit});
+    REQUIRE(scu.connect().is_ok());
+    Result<std::uint16_t> st = scu.store(make_image(8));
+    REQUIRE(st.is_ok());
+    CHECK_EQ(*st, dimse_status::Success);
+    (void)scu.release();
+    std::lock_guard<std::mutex> l(rec.mu);
+    REQUIRE(rec.got.size() == 1u);
+    CHECK(!rec.got[0].uid_mismatch);
+    CHECK(rec.got[0].command_sop_instance_uid.empty());
+}
