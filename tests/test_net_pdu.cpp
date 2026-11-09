@@ -405,7 +405,7 @@ TEST_CASE("net/ul: requestor handles A-ASSOCIATE-RJ and garbage") {
 }
 
 TEST_CASE("net/dimse: command encode/decode") {
-    Command c = make_c_store_rq(7, "1.2.840.10008.5.1.4.1.1.2", "1.2.3.4.5", priority::High, "MOVER", 3);
+    Command c = make_c_store_rq(7, "1.2.840.10008.5.1.4.1.1.2", "1.2.3.4.5", priority::High, "MOVER", std::uint16_t{3});
     std::vector<std::uint8_t> b;
     REQUIRE(encode_command(c, b).is_ok());
     // starts with (0000,0000) UL 4 = remaining length

@@ -540,7 +540,7 @@ TEST_CASE("jpeg: APPn, COM, fill bytes and DNL are handled") {
         u[sof + 5] = 0;
         u[sof + 6] = 0;
         u = insert(u, u.size() - 2, {0xFF, 0xDC, 0x00, 0x04, 0x00, static_cast<std::uint8_t>(f.rows)});
-        std::fill(out.begin(), out.end(), 0);
+        std::fill(out.begin(), out.end(), std::uint8_t{0});
         CHECK(decode_jpeg(u, f, out).is_ok());
         CHECK(out == ref);
         // DNL that disagrees, and a missing DNL.
