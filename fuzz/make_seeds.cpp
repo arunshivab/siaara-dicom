@@ -191,7 +191,7 @@ void seeds_part10() {
     for (std::string_view tsuid : syntaxes) {
         emit("part10", "ts" + std::to_string(i) + ".dcm", part10(d, tsuid));
         WriteOptions wo;
-        wo.sequences_undefined_length = true;
+        wo.sequence_lengths = SequenceLengths::Undefined;
         emit("part10", "ts" + std::to_string(i) + "_undef.dcm", part10(d, tsuid, wo));
         ++i;
     }

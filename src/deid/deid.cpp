@@ -1017,7 +1017,9 @@ Status deidentify(DicomFile& file, const Options& opt, Report* report) {
         if (!copy.transfer_syntax.empty())
             (void)meta.set_string(siaara::tags::TransferSyntaxUID, VR::UI, copy.transfer_syntax);
         copy.meta = std::move(meta);
+        copy.meta_as_read = false;  // new meta: the writer adds the required elements
         copy.had_preamble = false;
+        copy.preamble = Bytes{};  // may hold a TIFF header or other identifying bytes
         copy.warnings.clear();
     }
 

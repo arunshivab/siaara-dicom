@@ -34,11 +34,13 @@ siaara_extract_index_memory
 siaara_file_create
 siaara_file_dataset
 siaara_file_free
+siaara_file_get_raw_stored
 siaara_file_meta
 siaara_file_open
 siaara_file_open_memory
 siaara_file_pixel_info
 siaara_file_save
+siaara_file_save_ex
 siaara_file_transcode
 siaara_file_transfer_syntax
 siaara_file_warning_count

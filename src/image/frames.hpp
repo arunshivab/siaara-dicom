@@ -78,6 +78,9 @@ struct FrameOptions {
     // Worker threads for decode_range(): 0 = hardware concurrency (at most 8), 1 = calling thread only.
     unsigned threads = 0;
     bool lenient = true;  // accept common non-conformances (recorded in warnings())
+    // JPEG chroma upsampling: false = triangular interpolation like libjpeg (default), true =
+    // sample replication (the toolkit's behaviour before F5).
+    bool jpeg_replicate_chroma = false;
 };
 
 class FrameReader {

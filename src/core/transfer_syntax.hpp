@@ -8,6 +8,7 @@ namespace siaara {
 enum class Codec {
     None,           // native (uncompressed) pixel data
     Deflate,        // whole data set deflated
+    DeflateFrame,   // Deflated Image Frame Compression: each frame deflated separately (PS3.5 A.4.13)
     Rle,
     JpegBaseline,   // process 1
     JpegExtended,   // processes 2 and 4
@@ -33,6 +34,8 @@ struct TransferSyntaxInfo {
     bool lossy;
     Codec codec;
     bool retired;
+    // Data set little endian but Pixel Data samples big endian (GE private syntax, F6b).
+    bool pixel_big_endian = false;
 };
 
 // Looks up a transfer syntax by UID (padding must already be removed). Returns nullptr if unknown.
@@ -44,6 +47,8 @@ constexpr std::string_view ExplicitVRLittleEndian = "1.2.840.10008.1.2.1";
 constexpr std::string_view EncapsulatedUncompressedExplicitVRLittleEndian = "1.2.840.10008.1.2.1.98";
 constexpr std::string_view DeflatedExplicitVRLittleEndian = "1.2.840.10008.1.2.1.99";
 constexpr std::string_view ExplicitVRBigEndian = "1.2.840.10008.1.2.2";
+// GE private: implicit VR little endian data set, big-endian Pixel Data (as GDCM and DCMTK read it).
+constexpr std::string_view PrivateGEImplicitVRLittleEndianBigEndianPixels = "1.2.840.113619.5.2";
 }  // namespace ts
 
 }  // namespace siaara

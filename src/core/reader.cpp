@@ -30,6 +30,7 @@ std::string hex_tag(Tag t) {
 struct Syntax {
     bool explicit_vr = true;
     bool big_endian = false;
+    bool pixel_big_endian = false;  // F6b: only top-level OW Pixel Data is big endian
 };
 
 class Parser {
@@ -71,7 +72,9 @@ public:
                           std::uint16_t only_group, bool& ordered) {
         if (depth > opt_.max_depth)
             return Status(Errc::LimitExceeded, "sequence nesting too deep", pos_);
+        GroupLengthTracker groups{ds, pos_};  // F1: records each group length's actual group size
         while (true) {
+            groups.content_end = pos_;
             if (!undefined && pos_ >= end) return Status::ok();
             if (pos_ == limit_) {
                 if (undefined && depth > 0) return lenient_or(Errc::Truncated, "missing item delimiter");
@@ -110,9 +113,11 @@ public:
                 return Status::ok();
             }
 
+            groups.element_starts(tag);
             Element e;
             e.tag = tag;
             e.offset = start;
+            e.read.parsed = true;
             std::uint32_t len = 0;
             if (Status s = read_vr_and_length(syn, tag, e.vr, len); !s) return s;
 
@@ -124,12 +129,14 @@ public:
                 if (e.vr == VR::SQ || (e.vr == VR::UN && tag != tags::PixelData)) {
                     // UN with undefined length is a sequence encoded implicit VR LE (PS3.5 6.2.2).
                     Syntax inner = (e.vr == VR::UN) ? Syntax{false, false} : syn;
+                    e.read.un_sequence = e.vr == VR::UN;
                     e.vr = VR::SQ;
                     if (Status s = parse_items(e, inner, 0, true, depth); !s) return s;
                 } else if (tag == tags::PixelData || tag == tags::FloatPixelData ||
                            tag == tags::DoubleFloatPixelData || tag_group(tag) == 0x7FE0 ||
                            e.vr == VR::OB || e.vr == VR::OW || e.vr == VR::UN) {
                     if (Status s = parse_fragments(e, syn); !s) return s;
+                    e.read.fragment_count = static_cast<std::uint32_t>(e.fragments.size());
                 } else {
                     return Status(Errc::Malformed, "undefined length on a non-sequence element",
                                   start, tag);
@@ -147,6 +154,7 @@ public:
                     len = static_cast<std::uint32_t>(limit_ - pos_);
                     vend = limit_;
                 }
+                e.read.length = len;
                 if (e.vr == VR::SQ) {
                     const std::size_t vstart = pos_;
                     if (Status s = parse_items(e, syn, vend, false, depth); !s) {
@@ -169,7 +177,11 @@ public:
                     if (syn.big_endian && depth == 0 && tag == tags::PixelData && e.vr == VR::OW &&
                         (bits_allocated_ == 32 || bits_allocated_ == 64))
                         unit = bits_allocated_ / 8u;
-                    e.value = value_bytes(e.vr, pos_, len, syn, unit);
+                    if (syn.pixel_big_endian && depth == 0 && tag == tags::PixelData && e.vr == VR::OW &&
+                        (bits_allocated_ == 16 || bits_allocated_ == 32 || bits_allocated_ == 64))
+                        e.value = swapped_copy(pos_, len, bits_allocated_ / 8u);
+                    else
+                        e.value = value_bytes(e.vr, pos_, len, syn, unit);
                     if (depth == 0 && tag == tags::BitsAllocated && e.value.size() >= 2)
                         bits_allocated_ = load_le16(e.value.data());
                     advance_to(vend);
@@ -177,6 +189,8 @@ public:
             }
             if (ordered && !ds.empty() && !(ds.elements().back().tag < e.tag)) ordered = false;
             ds.append_unsorted(std::move(e));
+            groups.content_end = pos_;
+            groups.element_done(tag, pos_);
         }
     }
 
@@ -200,6 +214,43 @@ private:
         }
         return s;
     }
+    // Records, on each group length element (gggg,0000), the number of bytes its group actually
+    // occupied as read, so the writer can tell an unchanged group from an edited one (F1).
+    // Looks elements up by tag, so it does not depend on how the data set stores them.
+    struct GroupLengthTracker {
+        Dataset& ds;
+        std::size_t content_end;
+        Tag pending = 0;
+        std::size_t pending_index = 0;
+        bool active = false;
+        std::size_t body_start = 0;
+
+        void element_starts(Tag t) {
+            if (active && tag_group(t) != tag_group(pending)) finish();
+        }
+        void element_done(Tag t, std::size_t after) {
+            if (tag_element(t) != 0 || tag_group(t) == 0xFFFE) return;
+            if (active) finish();
+            pending = t;
+            pending_index = ds.elements().empty() ? 0 : ds.elements().size() - 1;
+            active = true;
+            body_start = after;
+        }
+        void finish() {
+            active = false;
+            // The reader appends unsorted (R-002), so look the element up by its position first.
+            Element* g = nullptr;
+            auto& els = ds.elements();
+            if (pending_index < els.size() && els[pending_index].tag == pending) g = &els[pending_index];
+            if (!g) g = ds.find(pending);
+            if (!g || content_end < body_start) return;
+            const std::size_t n = content_end - body_start;
+            g->read.group_bytes = n > 0xFFFFFFFEu ? 0xFFFFFFFEu : static_cast<std::uint32_t>(n);
+        }
+        ~GroupLengthTracker() {
+            if (active) finish();
+        }
+    };
 
     Tag read_tag(Syntax syn) {
         const std::uint8_t* q = p_ + pos_;
@@ -282,6 +333,8 @@ private:
             if (e.items.size() >= opt_.max_items_per_sequence)
                 return Status(Errc::LimitExceeded, "too many items in sequence", start, e.tag);
             Dataset item;
+            item.set_item_length_mode(len == kUndefinedLength ? Dataset::kItemLengthUndefined
+                                                              : Dataset::kItemLengthExplicit);
             if (len == kUndefinedLength) {
                 if (Status s = parse(item, syn, 0, true, depth + 1); !s) return s;
             } else {
@@ -364,6 +417,14 @@ private:
         return copy;
     }
 
+    Bytes swapped_copy(std::size_t at, std::uint32_t len, std::size_t w) {
+        Bytes copy = Bytes::copy_of(p_ + at, len);
+        auto* q = const_cast<std::uint8_t*>(copy.data());
+        for (std::size_t i = 0; i + w <= len; i += w)
+            for (std::size_t k = 0; k < w / 2; ++k) std::swap(q[i + k], q[i + w - 1 - k]);
+        return copy;
+    }
+
     Status lenient_or(Errc code, const char* msg) {
         if (opt_.lenient) {
             warn(msg);
@@ -394,7 +455,7 @@ private:
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {
     const TransferSyntaxInfo* t = find_transfer_syntax(uid);
     *info = t;
-    if (t) return Syntax{t->explicit_vr, t->big_endian};
+    if (t) return Syntax{t->explicit_vr, t->big_endian, t->pixel_big_endian};
     if (!lenient) return Status(Errc::Unsupported, "unknown transfer syntax");
     // Unknown (often private) transfer syntax: PS3.5 says encapsulated ones are explicit VR LE.
     return Syntax{true, false};
@@ -457,6 +518,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
 
     if (has_part10_header(p, n)) {
         out.had_preamble = true;
+        out.preamble = data.sub(0, 128);
         pos = 132;
     } else if (n >= 4 && p[0] == 'D' && p[1] == 'I' && p[2] == 'C' && p[3] == 'M') {
         out.warnings.push_back("file has 'DICM' but no preamble");
@@ -472,6 +534,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
             Parser mp(data, opt, &out.warnings);
             if (Status s = mp.parse(out.meta, Syntax{true, false}, n, false, 0, 0x0002); !s) return s;
             pos = mp.pos();
+            out.meta_as_read = !out.meta.empty();
             if (auto t = out.meta.get_string(tags::TransferSyntaxUID)) {
                 out.transfer_syntax = *t;
                 uid = out.transfer_syntax;
@@ -490,6 +553,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
         mp.seek(pos);
         if (Status s = mp.parse(out.meta, Syntax{true, false}, n, false, 0, 0x0002); !s) return s;
         pos = mp.pos();
+        out.meta_as_read = !out.meta.empty();
     }
     auto ts_uid = out.meta.get_string(tags::TransferSyntaxUID);
     if (!ts_uid || ts_uid->empty()) {

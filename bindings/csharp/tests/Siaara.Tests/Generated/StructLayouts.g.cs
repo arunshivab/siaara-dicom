@@ -471,6 +471,14 @@ internal static class StructLayouts
             r.Add("F siaara_gpu_device_info name " + Offset(ref s, ref s.name).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_gpu_device_info driver " + Offset(ref s, ref s.driver).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        {
+            var s = default(siaara_save_options);
+            r.Add("S siaara_save_options " + Unsafe.SizeOf<siaara_save_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_save_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_save_options sequence_lengths " + Offset(ref s, ref s.sequence_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_save_options group_lengths " + Offset(ref s, ref s.group_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_save_options odd_lengths " + Offset(ref s, ref s.odd_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         return r;
     }
 
@@ -510,6 +518,7 @@ internal static class StructLayouts
         r.Add("siaara_fusion_options " + Marshal.SizeOf<siaara_fusion_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_pick_result " + Marshal.SizeOf<siaara_pick_result>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_gpu_device_info " + Marshal.SizeOf<siaara_gpu_device_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_save_options " + Marshal.SizeOf<siaara_save_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         return r;
     }
 }

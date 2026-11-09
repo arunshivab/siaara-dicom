@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "codec/codec.hpp"
+#include "codec/deflate.hpp"
 #include "codec/j2k.hpp"
 #include "codec/jpeg.hpp"
 #include "codec/jpegls.hpp"
@@ -52,6 +53,7 @@ bool is_supported_codec(Codec c) noexcept {
     switch (c) {
         case Codec::None: case Codec::Rle: case Codec::JpegBaseline: case Codec::JpegExtended:
         case Codec::JpegLossless: case Codec::JpegLs: case Codec::Jpeg2000: case Codec::Htj2k:
+        case Codec::DeflateFrame:
             return true;
         default:
             return false;
@@ -265,8 +267,23 @@ Status convert_frame(const Plan& p, const PixelInfo& info, std::span<const std::
 
 // `lenient`: the RLE and JPEG decoders' repair modes, reported as warnings.
 Status run_codec(Codec c, std::span<const std::uint8_t> data, const codec::FrameInfo& fi, std::span<std::uint8_t> out,
-                 bool lenient, std::uint32_t frame, std::vector<FrameWarning>* w) {
+                 bool lenient, bool replicate_chroma, std::uint32_t frame, std::vector<FrameWarning>* w) {
     switch (c) {
+        case Codec::DeflateFrame: {
+            // PS3.5 8.2.16 / A.4.13: the frame's native bytes as one raw DEFLATE stream (RFC 1951),
+            // frame starting on a byte boundary; a trailing NUL pads odd streams.
+            std::vector<std::uint8_t> plain;
+            try {
+                plain.reserve(out.size());
+            } catch (const std::bad_alloc&) {
+                return Status(Errc::OutOfMemory, "frames: cannot allocate the inflated frame");
+            }
+            // Allow a padding byte (even-length native frames) beyond the frame, nothing more.
+            Status st = codec::inflate_raw(data.data(), data.size(), out.size() + 1, plain);
+            if (st && plain.size() < out.size()) st = Status(Errc::Truncated, "deflated frame is too short");
+            if (st) std::memcpy(out.data(), plain.data(), out.size());
+            return st;
+        }
         case Codec::Rle: {
             if (!lenient) return codec::decode_rle(data, fi, out);
             bool clamped = false;
@@ -277,8 +294,9 @@ Status run_codec(Codec c, std::span<const std::uint8_t> data, const codec::Frame
             return s;
         }
         case Codec::JpegBaseline: case Codec::JpegExtended: case Codec::JpegLossless: {
-            if (!lenient) return codec::decode_jpeg(data, fi, out);
             codec::JpegDecodeOptions o;
+            o.replicate_chroma = replicate_chroma;
+            if (!lenient) return codec::decode_jpeg_ex(data, fi, o, out);
             o.tolerate_bad_codes = true;
             std::uint64_t bad = 0;
             Status s = codec::decode_jpeg_ex(data, fi, out, o, bad);
@@ -513,6 +531,8 @@ Status FrameReader::index_fragments(const Dataset& ds) {
                                            " frames");
     if (codec_ == Codec::Rle)  // PS3.5 G.1: each frame is encoded in one and only one fragment
         return Status(Errc::Malformed, "frames: RLE requires exactly one fragment per frame");
+    if (codec_ == Codec::DeflateFrame)  // PS3.5 A.4.13: one and only one fragment per frame
+        return Status(Errc::Malformed, "frames: Deflated Image Frame Compression requires one fragment per frame");
     if (codec_ == Codec::None) {
         // Encapsulated Uncompressed: frames have a known size; accumulate fragments to that size.
         std::uint64_t acc = 0;
@@ -734,7 +754,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
                                               std::to_string(info_.bits_stored));
     }
     if (!plan.convert) {
-        st = run_codec(codec_, data, info_.frame_info(), out, opt_.lenient, index, warnings);
+        st = run_codec(codec_, data, info_.frame_info(), out, opt_.lenient, opt_.jpeg_replicate_chroma, index, warnings);
     } else {
         const std::uint64_t tb = plan.temp.frame_bytes();
         if (tb == 0 || tb > opt_.memory_budget || tb > SIZE_MAX)
@@ -745,7 +765,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
         } catch (const std::bad_alloc&) {
             return Status(Errc::OutOfMemory, "frames: cannot allocate the scratch frame");
         }
-        st = run_codec(codec_, data, plan.temp, tmp, true, index, warnings);
+        st = run_codec(codec_, data, plan.temp, tmp, true, opt_.jpeg_replicate_chroma, index, warnings);
         if (st) return convert_frame(plan, info_, tmp, out, index);
     }
     if (!st) st.message = "frame " + std::to_string(index) + ": " + st.message;

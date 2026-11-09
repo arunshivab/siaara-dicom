@@ -107,7 +107,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transfer_syntax(const siaara_fi
                                                                  size_t cap, size_t* needed);
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file* file, uint32_t* out);
 
-/* Writes the file. transfer_syntax_uid may be NULL to keep the current one. */
+/* Writes the file. transfer_syntax_uid may be NULL to keep the current one. Uses the default
+ * siaara_save_options: an unedited file saved in its own transfer syntax is reproduced byte for
+ * byte (see siaara_file_save_ex). */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, const char* utf8_path,
                                                       size_t path_len, const char* transfer_syntax_uid);
 
@@ -124,7 +126,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_int64(const siaara_datas
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_double(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t vm_index, double* out);
 /* Raw value bytes, borrowed (valid until the owning file is freed or this element is changed or
- * removed; changes to other elements do not invalidate it). */
+ * removed; changes to other elements do not invalidate it).
+ * Byte order: always little endian, whatever the transfer syntax. Data sets hold values little
+ * endian in memory, so for Explicit VR Big Endian files multi-byte binary values (US, UL, FL, OW,
+ * AT ...) come back byte-swapped relative to the file. Strings and OB/UN are never swapped. For
+ * the bytes exactly as stored in the file use siaara_file_get_raw_stored. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_raw(const siaara_dataset* ds, uint32_t tag,
                                                             const uint8_t** out_data, size_t* out_size);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item_count(const siaara_dataset* ds, uint32_t tag,
@@ -1267,6 +1273,52 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning_count(const siaara_fil
  * the message follows the string buffer rules. */
 SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning(const siaara_file* file, uint32_t frame, uint32_t index,
                                                           int32_t* code, char* buf, size_t cap, size_t* needed);
+
+/* ---------------------------------------------------------------- save options and stored bytes */
+/* Sequence and item lengths. */
+enum {
+    SIAARA_SEQ_LENGTHS_KEEP = 0,      /* default: as read; new sequences get a sensible choice */
+    SIAARA_SEQ_LENGTHS_EXPLICIT = 1,  /* every sequence and item gets an explicit length */
+    SIAARA_SEQ_LENGTHS_UNDEFINED = 2  /* every sequence and item gets undefined length + delimiter */
+};
+/* Group length elements (gggg,0000) outside group 0002. */
+enum {
+    SIAARA_GROUP_LENGTHS_KEEP = 0,     /* default: kept where present; recomputed when the group
+                                          changed, so a kept value is never stale */
+    SIAARA_GROUP_LENGTHS_DROP = 1,     /* removed */
+    SIAARA_GROUP_LENGTHS_RECOMPUTE = 2 /* a correct group length for every group, added if missing */
+};
+/* Odd value lengths. */
+enum {
+    SIAARA_ODD_LENGTHS_KEEP = 0,  /* default: values and fragments read odd stay odd; edited or new
+                                     values are padded to even length */
+    SIAARA_ODD_LENGTHS_PAD = 1    /* every odd value and fragment is padded to even length */
+};
+typedef struct siaara_save_options {
+    uint32_t struct_size;      /* set to sizeof(siaara_save_options) */
+    int32_t sequence_lengths;  /* SIAARA_SEQ_LENGTHS_* */
+    int32_t group_lengths;     /* SIAARA_GROUP_LENGTHS_* */
+    int32_t odd_lengths;       /* SIAARA_ODD_LENGTHS_* */
+} siaara_save_options;
+/* siaara_file_save with options (NULL = defaults, the same as siaara_file_save). The defaults keep
+ * every unedited element as it was read: sequence/item length modes, group lengths, odd lengths,
+ * the preamble. An element counts as edited when it was set through a setter or its value size
+ * changed. When transfer_syntax_uid changes the syntax, "keep" still applies where it is valid;
+ * group lengths are recomputed for the new encoding, and sequences that a reader could only
+ * recognise through a (private) dictionary get undefined length when the target is implicit VR.
+ * A struct_size smaller than this version's struct is accepted (missing fields use defaults). */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_save_ex(const siaara_file* file, const char* utf8_path,
+                                                         size_t path_len, const char* transfer_syntax_uid,
+                                                         const siaara_save_options* options);
+/* The value bytes of element `tag` of `ds` (the file's data set, its meta, or an item borrowed
+ * from it) exactly as stored in the file's transfer syntax: for Explicit VR Big Endian, big
+ * endian (and the main data set's OW Pixel Data of the GE private syntax 1.2.840.113619.5.2, whose
+ * pixels are big endian); otherwise the same bytes siaara_dataset_get_raw returns. Copied into buf (cap bytes);
+ * *needed receives the value length. SIAARA_ERR_BUFFER_TOO_SMALL when cap < length (buf may be
+ * NULL with cap 0 to query the length). The meta group is always little endian. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_file* file, const siaara_dataset* ds,
+                                                                uint32_t tag, uint8_t* buf, size_t cap,
+                                                                size_t* needed);
 
 #ifdef __cplusplus
 }
