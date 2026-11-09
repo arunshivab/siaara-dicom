@@ -27,6 +27,9 @@ namespace siaara::capi {
 // LiveHandle member, so every allocation and free is counted without touching the functions.
 std::atomic<std::int64_t>& live_handle_counter() noexcept;
 
+// Exceptions caught (and dropped) at a callback or hook boundary; for diagnostics.
+std::atomic<std::uint64_t>& swallowed_exceptions() noexcept;
+
 struct LiveHandle {
     LiveHandle() noexcept { live_handle_counter().fetch_add(1, std::memory_order_relaxed); }
     LiveHandle(const LiveHandle&) noexcept { live_handle_counter().fetch_add(1, std::memory_order_relaxed); }
@@ -66,6 +69,7 @@ struct siaara_cancel {
             try {
                 fn();
             } catch (...) {
+                siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
             }
         }
     }

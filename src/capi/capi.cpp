@@ -2441,6 +2441,11 @@ std::atomic<std::int64_t>& live_handle_counter() noexcept {
     return n;
 }
 
+std::atomic<std::uint64_t>& swallowed_exceptions() noexcept {
+    static std::atomic<std::uint64_t> n{0};
+    return n;
+}
+
 siaara_status set_error(Errc code, std::string_view msg) noexcept { return fail(code, msg); }
 siaara_status set_error(const Status& s) noexcept { return fail(s); }
 siaara_status clear_error() noexcept { return ok(); }

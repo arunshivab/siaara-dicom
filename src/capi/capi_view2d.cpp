@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <span>
@@ -22,7 +23,7 @@
 
 struct siaara_frame {
     siaara::DicomFile file;  // own copy: the Image below points into file.dataset
-    std::optional<siaara::image::Image> img;
+    std::unique_ptr<siaara::image::Image> img;
     std::vector<std::uint8_t> pixels;  // decoded frame, native layout
     std::uint32_t index = 0;
     siaara::image::ModalityTransform modality;
@@ -175,11 +176,12 @@ siaara_status render_source(const siaara_frame& f, const Parsed& p, Source& s) {
         po.overlay_color = p.rp.overlay_rgba;
         auto r = cl::render_with_presentation_state(*f.img, p.ps->ps, f.index, f.sop_uid, po);
         if (!r) return fail(r.error());
-        s.w = r->width;
-        s.h = r->height;
-        s.rgba = std::move(r->rgba);
-        r->rgba.clear();
-        s.ps = std::move(r).value();
+        cl::PsRendered done = std::move(r).value();
+        s.w = done.width;
+        s.h = done.height;
+        s.rgba = std::move(done.rgba);
+        done.rgba.clear();
+        s.ps = std::move(done);
         return SIAARA_OK;
     }
     const img::PixelInfo& pi = f.img->info();
@@ -229,7 +231,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_open(const siaara_file* file, 
         h->file = file->file;
         auto im = img::Image::open(h->file.dataset, h->file.transfer_syntax);
         if (!im) return fail(im.error());
-        h->img.emplace(std::move(im).value());
+        h->img = std::make_unique<img::Image>(std::move(im).value());
         const img::PixelInfo& pi = h->img->info();
         if (frame >= pi.number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
         h->index = frame;
@@ -513,7 +515,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_overlay_get(const siaara_frame* fram
         out->columns = o.columns;
         out->origin_row = o.origin_row;
         out->origin_column = o.origin_column;
-        out->type = o.type;
+        out->type = static_cast<unsigned char>(o.type);
         out->frames = o.frames;
         out->image_frame_origin = o.image_frame_origin;
         out->embedded = o.embedded ? 1 : 0;
@@ -597,7 +599,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_palette(const siaara_frame* fr
         if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");
         if (cap < need) return fail(Errc::BufferTooSmall, "buffer too small");
         const std::uint16_t amax = static_cast<std::uint16_t>((1u << pal.bits) - 1u);
-        for (std::uint32_t k = 0; k < pal.entries; ++k) {
+        for (std::size_t k = 0; k < pal.entries; ++k) {
             buf[4 * k] = pal.red[k];
             buf[4 * k + 1] = pal.green[k];
             buf[4 * k + 2] = pal.blue[k];
@@ -627,10 +629,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_colormap_rgba8(int32_t colormap, uin
                 gg = pal.to8(pal.green[k]);
                 b = pal.to8(pal.blue[k]);
             }
-            buf[4 * g] = r;
-            buf[4 * g + 1] = gg;
-            buf[4 * g + 2] = b;
-            buf[4 * g + 3] = 255;
+            const std::size_t o = std::size_t{g} * 4;
+            buf[o] = r;
+            buf[o + 1] = gg;
+            buf[o + 2] = b;
+            buf[o + 3] = 255;
         }
         return ok();
     });

@@ -281,6 +281,7 @@ void log(int level, bool phi, std::string_view message) noexcept {
         const std::string text(message);
         cb(user, level, phi ? 1 : 0, text.c_str());
     } catch (...) {
+        swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -324,6 +325,7 @@ struct siaara_scp {
         try {
             cb(user, &e);
         } catch (...) {
+            siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
         }
     }
 };

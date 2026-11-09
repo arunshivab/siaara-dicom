@@ -105,7 +105,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_strings(const siaara_dat
         if (!buf && cap == 0) return ok();
         if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");
         if (cap < all.size()) return fail(Errc::BufferTooSmall, "buffer too small");
-        std::memcpy(buf, all.data(), all.size());
+        std::copy(all.begin(), all.end(), buf);  // the values carry their own NUL terminators
         return ok();
     });
 }
