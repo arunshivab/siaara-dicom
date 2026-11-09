@@ -5,8 +5,12 @@
 #include <memory>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -46,7 +50,8 @@ Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
     auto m = std::make_shared<WinMapping>();
-    m->file = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    // FILE_SHARE_DELETE lets other code rename or delete the file while it is mapped here.
+    m->file = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (m->file == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot open file");
     LARGE_INTEGER size{};
