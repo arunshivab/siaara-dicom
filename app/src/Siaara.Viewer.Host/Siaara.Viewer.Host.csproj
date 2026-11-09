@@ -5,6 +5,11 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>siaara-viewer</AssemblyName>
     <RootNamespace>Siaara.Viewer.Host</RootNamespace>
+    <!-- Blazor's own script (_framework/blazor.web.js) ships in .NET 10 as the SDK pack
+         Microsoft.AspNetCore.App.Internal.Assets, which the Web SDK fetches only when the app project
+         itself holds .razor files (ours are in Siaara.Viewer.Web). This asks for it explicitly. It is a
+         framework pack of the SDK (like the NativeAOT compiler pack), not a PackageReference. -->
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Siaara.Viewer.Web/Siaara.Viewer.Web.csproj" />

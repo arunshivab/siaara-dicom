@@ -1,5 +1,6 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 
+using System.Globalization;
 using Siaara.Viewer.Core.Audit;
 using Siaara.Viewer.Core.Imaging;
 using Siaara.Viewer.Core.Import;
@@ -57,6 +58,51 @@ public sealed class ViewerRuntime : IDisposable
     public ThumbnailService Thumbnails { get; }
     /// <summary>Sessions.</summary>
     public SessionRegistry Sessions { get; }
+
+    /// <summary>Opens a study in a new viewer session and audits study.open with the store's patient key.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <returns>The session (loading in the background).</returns>
+    public async Task<ViewerSession> OpenStudyAsync(string studyInstanceUid)
+    {
+        StudyRow? study = await Store.GetStudyAsync(studyInstanceUid).ConfigureAwait(false);
+        Audit.Append("study.open", new Dictionary<string, string>
+        {
+            ["patientKey"] = study?.PatientKey ?? "",
+            ["study"] = studyInstanceUid,
+        });
+        return Sessions.Create(studyInstanceUid);
+    }
+
+    /// <summary>Deletes a study and audits study.delete with the patient key.</summary>
+    /// <param name="study">Study row.</param>
+    /// <returns>Instances removed.</returns>
+    public async Task<int> DeleteStudyAsync(StudyRow study)
+    {
+        ArgumentNullException.ThrowIfNull(study);
+        int removed = await Store.DeleteStudyAsync(study.StudyInstanceUid).ConfigureAwait(false);
+        Audit.Append("study.delete", new Dictionary<string, string>
+        {
+            ["patientKey"] = study.PatientKey,
+            ["study"] = study.StudyInstanceUid,
+            ["instances"] = removed.ToString(CultureInfo.InvariantCulture),
+        });
+        return removed;
+    }
+
+    /// <summary>Deletes every study of the row's patient (by patient key) and audits patient.delete.</summary>
+    /// <param name="study">A study row of the patient.</param>
+    /// <returns>Instances removed.</returns>
+    public async Task<int> DeletePatientAsync(StudyRow study)
+    {
+        ArgumentNullException.ThrowIfNull(study);
+        int removed = await Store.DeletePatientAsync(study.PatientKey).ConfigureAwait(false);
+        Audit.Append("patient.delete", new Dictionary<string, string>
+        {
+            ["patientKey"] = study.PatientKey,
+            ["instances"] = removed.ToString(CultureInfo.InvariantCulture),
+        });
+        return removed;
+    }
 
     /// <summary>Rendering backend tag for the status bar (2D renders on the CPU in M1).</summary>
     public static string Backend => "CPU";

@@ -9,6 +9,7 @@ public static class Tags
 {
 #pragma warning disable CS1591 // Each field is named after its DICOM keyword; the number is the documentation.
     public static readonly TkTag ImageType = new(0x00080008);
+    public static readonly TkTag SpecificCharacterSet = new(0x00080005);
     public static readonly TkTag SopClassUid = new(0x00080016);
     public static readonly TkTag SopInstanceUid = new(0x00080018);
     public static readonly TkTag StudyDate = new(0x00080020);

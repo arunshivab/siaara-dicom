@@ -194,16 +194,13 @@
         _confirm = Confirm.None;
         try
         {
-            int removed;
             if (what == Confirm.Study)
             {
-                removed = await Rt.Store.DeleteStudyAsync(s.StudyInstanceUid).ConfigureAwait(true);
-                Rt.Audit.Append("study.delete", new Dictionary<string, string> { ["patientKey"] = s.PatientKey, ["study"] = s.StudyInstanceUid, ["instances"] = removed.ToString(CultureInfo.InvariantCulture) });
+                await Rt.DeleteStudyAsync(s).ConfigureAwait(true);
             }
             else
             {
-                removed = await Rt.Store.DeletePatientAsync(s.PatientKey).ConfigureAwait(true);
-                Rt.Audit.Append("patient.delete", new Dictionary<string, string> { ["patientKey"] = s.PatientKey, ["instances"] = removed.ToString(CultureInfo.InvariantCulture) });
+                await Rt.DeletePatientAsync(s).ConfigureAwait(true);
             }
             _selected = null;
             await Requery().ConfigureAwait(true);

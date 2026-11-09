@@ -52,14 +52,13 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _session = Rt.Sessions.Create(Uri.UnescapeDataString(StudyUid));
-        _session.UiChanged += OnUi;
-        StudyRow? study = await Rt.Store.GetStudyAsync(_session.StudyInstanceUid).ConfigureAwait(true);
-        Rt.Audit.Append("study.open", new Dictionary<string, string>
+        // Prerendering shows the shell only; the session (and the study.open audit) belongs to the live circuit.
+        if (!RendererInfo.IsInteractive)
         {
-            ["patientKey"] = study?.PatientKey ?? "",
-            ["study"] = _session.StudyInstanceUid,
-        });
+            return;
+        }
+        _session = await Rt.OpenStudyAsync(Uri.UnescapeDataString(StudyUid)).ConfigureAwait(true);
+        _session.UiChanged += OnUi;
     }
 
     private void OnUi(object? sender, EventArgs e) => _ = InvokeAsync(StateHasChanged);

@@ -1525,6 +1525,7 @@ public sealed class ViewerSession : IDisposable
         }
         await SaveAsync(doc).ConfigureAwait(false);
         SendAnnotationState(vp);
+        RaiseUi();
     }
 
     /// <summary>The user typed the true length of a calibration line: sets the instance's mm per pixel.</summary>
@@ -1613,6 +1614,7 @@ public sealed class ViewerSession : IDisposable
         }
         await SaveAsync(doc).ConfigureAwait(false);
         SendAnnotationState(vp);
+        RaiseUi();
     }
 
     /// <summary>Undoes the last annotation change.</summary>
@@ -1649,6 +1651,7 @@ public sealed class ViewerSession : IDisposable
         {
             SendAnnotationState(vp);
         }
+        RaiseUi();
     }
 
     /// <summary>Annotations of a frame (tests and the measurement panel).</summary>

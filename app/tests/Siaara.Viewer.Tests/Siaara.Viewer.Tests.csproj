@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Console test runner, no test framework packages. Usage: dotnet run -c Release -- [name prefixes]. -->
+  <!-- Console test runner, no test framework packages. Usage: dotnet run -c Release (then name prefixes, or the quick switch). -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>Siaara.Viewer.Tests</AssemblyName>
