@@ -290,6 +290,18 @@ int main(void) {
     printf("F siaara_rt_roi_info has_color %u\n", (unsigned)offsetof(siaara_rt_roi_info, has_color));
     printf("F siaara_rt_roi_info rgb %u\n", (unsigned)offsetof(siaara_rt_roi_info, rgb));
     printf("F siaara_rt_roi_info reserved0 %u\n", (unsigned)offsetof(siaara_rt_roi_info, reserved0));
+    printf("S siaara_rt_dose_info %u\n", (unsigned)sizeof(siaara_rt_dose_info));
+    printf("F siaara_rt_dose_info struct_size %u\n", (unsigned)offsetof(siaara_rt_dose_info, struct_size));
+    printf("F siaara_rt_dose_info is_rt_dose %u\n", (unsigned)offsetof(siaara_rt_dose_info, is_rt_dose));
+    printf("F siaara_rt_dose_info has_dose_grid_scaling %u\n", (unsigned)offsetof(siaara_rt_dose_info, has_dose_grid_scaling));
+    printf("F siaara_rt_dose_info grid_frame_offset_form %u\n", (unsigned)offsetof(siaara_rt_dose_info, grid_frame_offset_form));
+    printf("F siaara_rt_dose_info dose_grid_scaling %u\n", (unsigned)offsetof(siaara_rt_dose_info, dose_grid_scaling));
+    printf("F siaara_rt_dose_info grid_frame_offset_count %u\n", (unsigned)offsetof(siaara_rt_dose_info, grid_frame_offset_count));
+    printf("F siaara_rt_dose_info reserved0 %u\n", (unsigned)offsetof(siaara_rt_dose_info, reserved0));
+    printf("F siaara_rt_dose_info dose_units %u\n", (unsigned)offsetof(siaara_rt_dose_info, dose_units));
+    printf("F siaara_rt_dose_info dose_type %u\n", (unsigned)offsetof(siaara_rt_dose_info, dose_type));
+    printf("F siaara_rt_dose_info dose_summation_type %u\n", (unsigned)offsetof(siaara_rt_dose_info, dose_summation_type));
+    printf("F siaara_rt_dose_info reserved1 %u\n", (unsigned)offsetof(siaara_rt_dose_info, reserved1));
     printf("S siaara_transcode_params %u\n", (unsigned)sizeof(siaara_transcode_params));
     printf("F siaara_transcode_params struct_size %u\n", (unsigned)offsetof(siaara_transcode_params, struct_size));
     printf("F siaara_transcode_params quality %u\n", (unsigned)offsetof(siaara_transcode_params, quality));

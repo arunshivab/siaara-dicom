@@ -225,6 +225,9 @@ internal static class C
     public const int SIAARA_SEG_BINARY = 0;
     public const int SIAARA_SEG_FRACTIONAL = 1;
     public const int SIAARA_SEG_LABELMAP = 2;
+    public const int SIAARA_GFOV_NONE = 0;
+    public const int SIAARA_GFOV_RELATIVE = 1;
+    public const int SIAARA_GFOV_ABSOLUTE = 2;
     public const int SIAARA_VOXEL_AUTO = 0;
     public const int SIAARA_VOXEL_INT16 = 1;
     public const int SIAARA_VOXEL_FLOAT32 = 2;
@@ -301,6 +304,7 @@ internal static class C
     public const int SIAARA_FRAMEF_SHUTTER_BITMAP = 1 << 9;
     public const int SIAARA_FRAMEF_FLOAT = 1 << 10;
     public const int SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11;
+    public const int SIAARA_FRAMEF_DOSE_GRID_SCALING = 1 << 12;
     public const int SIAARA_VOI_IDENTITY = 3;
     public const int SIAARA_VOI_LINEAR = 0;
     public const int SIAARA_VOI_LINEAR_EXACT = 1;
@@ -835,6 +839,23 @@ internal struct siaara_rt_roi_info
     public int has_color;
     public FixedArray3OfByte rgb;
     public byte reserved0;
+}
+
+/// <summary>siaara_rt_dose_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_rt_dose_info
+{
+    public uint struct_size;
+    public int is_rt_dose;
+    public int has_dose_grid_scaling;
+    public int grid_frame_offset_form;
+    public double dose_grid_scaling;
+    public uint grid_frame_offset_count;
+    public uint reserved0;
+    public FixedArray20OfByte dose_units;
+    public FixedArray20OfByte dose_type;
+    public FixedArray20OfByte dose_summation_type;
+    public FixedArray4OfByte reserved1;
 }
 
 /// <summary>siaara_transcode_params (blittable, C layout).</summary>
@@ -1622,6 +1643,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_rtstruct_contour_points")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_rtstruct_contour_points(nint rt, uint roi, uint contour, double* buf, nuint cap, nuint* needed, int* closed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_rt_dose_info_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_rt_dose_info_get(nint ds, siaara_rt_dose_info* @out);
 
     [LibraryImport(Library, EntryPoint = "siaara_file_transcode")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -2763,6 +2788,12 @@ internal static unsafe class Native
         fixed (nuint* p_needed = &needed)
         fixed (int* p_closed = &closed)
             return Raw.siaara_rtstruct_contour_points(rt, roi, contour, (double*)p_buf, (nuint)buf.Length, p_needed, p_closed);
+    }
+
+    internal static int siaara_rt_dose_info_get(nint ds, ref siaara_rt_dose_info @out)
+    {
+        fixed (siaara_rt_dose_info* p_out = &@out)
+            return Raw.siaara_rt_dose_info_get(ds, p_out);
     }
 
     internal static int siaara_file_transcode(nint file, ReadOnlySpan<byte> ts_uid, in siaara_transcode_params @params)

@@ -438,6 +438,49 @@ std::string fmt(double v) {
     return buf;
 }
 
+// RT Dose Grid Frame Offset Vector (3004,000C), PS3.3 C.8.8.3.2 (testing-chat P0-2b). Returns the
+// offset of each frame along the plane normal from Image Position (Patient), or nullopt when the
+// object has no usable vector (the caller then stacks with the header spacing and says so).
+//  - relative form: the first value is 0 and the values are offsets from the first frame;
+//  - absolute form: the first value is the z of Image Position (Patient) and the values are the
+//    z coordinates of the planes; allowed only for transverse planes (normal along z).
+// A vector of the wrong length, with values that are not finite or not strictly monotonic, or an
+// absolute form that does not start at the IPP z or is not transverse, fails in strict mode and
+// is ignored with a warning in lenient mode. Irregular (but monotonic) spacing is kept: the gap
+// check of build_volume reports it as non-uniform spacing.
+Result<std::optional<std::vector<double>>> grid_frame_offsets(const Dataset& ds, std::uint32_t nf, const FramePlane& plane,
+                                                              bool strict, std::vector<std::string>& warnings) {
+    constexpr Tag kGridFrameOffsetVector = 0x3004000C;
+    using Out = std::optional<std::vector<double>>;
+    if (!image::is_rt_dose(ds) || !ds.contains(kGridFrameOffsetVector)) return Out{};
+    auto bad = [&](const std::string& why) -> Result<Out> {
+        if (strict) return Status(Errc::Malformed, "volume: Grid Frame Offset Vector " + why, 0, kGridFrameOffsetVector);
+        add_warning(warnings, "RT Dose Grid Frame Offset Vector " + why + "; ignored, frames stacked with the header slice spacing");
+        return Out{};
+    };
+    const std::size_t vm = ds.value_multiplicity(kGridFrameOffsetVector);
+    if (vm != nf) return bad("has " + std::to_string(vm) + " values for " + std::to_string(nf) + " frames");
+    std::vector<double> v(nf);
+    for (std::uint32_t k = 0; k < nf; ++k) {
+        auto x = ds.get_double(kGridFrameOffsetVector, k);
+        if (!x || !std::isfinite(*x)) return bad("value " + std::to_string(k + 1) + " is not a number");
+        v[k] = *x;
+    }
+    for (std::uint32_t k = 1; k < nf; ++k) {
+        const double g0 = v[1] - v[0], g = v[k] - v[k - 1];
+        if (g == 0.0 || (g > 0.0) != (g0 > 0.0)) return bad("is not strictly increasing or decreasing");
+    }
+    if (v[0] == 0.0) return Out{std::move(v)};  // relative form
+    const Vec3 n = plane.normal();
+    if (std::fabs(std::fabs(n.z) - 1.0) > 1e-3)
+        return bad("starts with " + fmt(v[0]) + " (absolute z form) but the planes are not transverse");
+    if (std::fabs(v[0] - plane.position.z) > 1e-2)
+        return bad("starts with " + fmt(v[0]) + ", neither 0 (relative form) nor the Image Position (Patient) z " +
+                   fmt(plane.position.z) + " (absolute form)");
+    for (double& x : v) x = (x - plane.position.z) / n.z;  // z coordinates -> offsets along the normal
+    return Out{std::move(v)};
+}
+
 }  // namespace
 
 Result<Volume> build_volume(std::span<const DicomFile* const> files, const VolumeOptions& opt) {
@@ -540,15 +583,24 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
             // Classic (non-enhanced) multi-frame object: one position for all frames; the frames are
             // stacked along the normal with the header's slice spacing.
             const bool synth_stack = nf > 1 && !s.per_frame_groups;
+            // RT Dose: the Grid Frame Offset Vector gives each frame's offset (P0-2b).
+            std::optional<std::vector<double>> gfov;
+            if (synth_stack && !per_file[fi].empty() && per_file[fi].front().plane.has_position) {
+                auto g = grid_frame_offsets(s.file->dataset, nf, per_file[fi].front().plane, opt.strict, warnings);
+                if (!g) return g.take_error();
+                gfov = std::move(g).value();
+            }
             for (auto& r : per_file[fi]) {
                 r.order = order++;
                 if (synth_stack && r.plane.has_position) {
                     const double sp = r.plane.spacing_between_slices.value_or(r.plane.slice_thickness.value_or(1.0));
-                    r.plane.position = r.plane.position + r.plane.normal() * (sp * r.frame);
+                    const double off = gfov ? (*gfov)[r.frame] : sp * r.frame;
+                    r.plane.position = r.plane.position + r.plane.normal() * off;
                 }
                 frames.push_back(std::move(r));
             }
-            if (synth_stack) add_warning(warnings, "classic multi-frame object: frames stacked with the header slice spacing");
+            if (synth_stack && !gfov)
+                add_warning(warnings, "classic multi-frame object: frames stacked with the header slice spacing");
         }
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "volume: out of memory");

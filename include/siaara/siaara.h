@@ -1042,6 +1042,30 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara
                                                                     uint32_t contour, double* buf, size_t cap,
                                                                     size_t* needed, int32_t* closed);
 
+/* ---- RT Dose (PS3.3 C.8.8.3)
+ * For an RT Dose object every modality value the library produces (SIAARA_FRAME_FLOAT32_MODALITY,
+ * ROI statistics, volumes, fusion, siaara_frame_properties.rescale_slope) is the stored value
+ * times Dose Grid Scaling (3004,000E), i.e. a dose in Dose Units (normally GY). Multi-frame RT
+ * Dose volumes place the frames with the Grid Frame Offset Vector (3004,000C), relative (first
+ * value 0) or absolute (first value = Image Position (Patient) z, transverse planes only). */
+enum { SIAARA_GFOV_NONE = 0, SIAARA_GFOV_RELATIVE = 1, SIAARA_GFOV_ABSOLUTE = 2 };
+typedef struct siaara_rt_dose_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_rt_dose_info) */
+    int32_t is_rt_dose;              /* SOP Class RT Dose or Modality RTDOSE */
+    int32_t has_dose_grid_scaling;   /* 0/1: (3004,000E) present and a positive number */
+    int32_t grid_frame_offset_form;  /* SIAARA_GFOV_* */
+    double dose_grid_scaling;        /* 1 when absent */
+    uint32_t grid_frame_offset_count; /* values in (3004,000C) */
+    uint32_t reserved0;
+    char dose_units[20];             /* (3004,0002) GY / RELATIVE, NUL-terminated */
+    char dose_type[20];              /* (3004,0004) PHYSICAL / EFFECTIVE / ERROR */
+    char dose_summation_type[20];    /* (3004,000A) PLAN / MULTI_PLAN / FRACTION / BEAM / ... */
+    char reserved1[4];
+} siaara_rt_dose_info;
+/* Fills *out from a data set (struct_size must be set; a smaller struct_size gets the fields that
+ * fit). Works for any data set (is_rt_dose = 0 when it is not RT Dose). Thread safety: as reading. */
+SIAARA_API siaara_status SIAARA_CALL siaara_rt_dose_info_get(const siaara_dataset* ds, siaara_rt_dose_info* out);
+
 /* ---------------------------------------------------------------- transcoding */
 #define SIAARA_OFFSET_TABLE_AUTO 0     /* Basic Offset Table, Extended when offsets exceed 32 bits */
 #define SIAARA_OFFSET_TABLE_BASIC 1
@@ -1378,7 +1402,8 @@ enum {
     SIAARA_FRAMEF_SHUTTER_POLYGONAL = 1 << 8,
     SIAARA_FRAMEF_SHUTTER_BITMAP = 1 << 9,
     SIAARA_FRAMEF_FLOAT = 1 << 10,           /* Float / Double Float Pixel Data */
-    SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11
+    SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11,
+    SIAARA_FRAMEF_DOSE_GRID_SCALING = 1 << 12 /* RT Dose: rescale_slope is Dose Grid Scaling (values in Dose Units) */
 };
 
 typedef struct siaara_frame_properties {

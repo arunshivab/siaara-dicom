@@ -14,7 +14,11 @@
 
 #include "core/reader.hpp"
 #include "core/writer.hpp"
+#include "volume/volume.hpp"
+#include "clinical/roi.hpp"
 #include "dict/dictionary.hpp"
+#include "image/lut.hpp"
+#include "image/render.hpp"
 #include "siaara/siaara.h"
 #include "test.hpp"
 
@@ -284,5 +288,206 @@ TEST_CASE("testing2 P0-1: C API read report, warning text and allow_incomplete")
     REQUIRE(siaara_file_read_report(f, &r) == SIAARA_OK);
     CHECK(r.loss == 0u);
     CHECK(r.bytes_not_read == 0u);
+    siaara_file_free(f);
+}
+
+// ================================================================ P0-2: RT Dose
+
+namespace {
+
+constexpr double kDgs = 4.574449e-05;  // Dose Grid Scaling of the samples
+constexpr std::uint32_t kHot = 1861000; // stored maximum: 1861000 x 4.574449e-05 = 85.13049589 Gy
+
+// A Varian-Eclipse-like multi-frame RT Dose: 3 x 4 pixels, unsigned 32-bit, one frame per
+// `gfov` value (DS text as stored, e.g. "0\\3\\6\\11"). Stored value of frame k, row r, column c:
+// 1000 (k + 1) + 100 r + c, except frame 1 row 1 column 2 = kHot.
+DicomFile rt_dose(std::string_view gfov, std::uint32_t frames, bool with_dgs = true) {
+    DicomFile f;
+    f.transfer_syntax = "1.2.840.10008.1.2.1";
+    Dataset& d = f.dataset;
+    (void)d.set_string(0x00080016, VR::UI, "1.2.840.10008.5.1.4.1.1.481.2");
+    (void)d.set_string(0x00080018, VR::UI, "2.25.1234");
+    (void)d.set_string(0x00080060, VR::CS, "RTDOSE");
+    (void)d.set_string(0x00200032, VR::DS, "-10\\-20\\-30");
+    (void)d.set_string(0x00200037, VR::DS, "1\\0\\0\\0\\1\\0");
+    (void)d.set_string(0x00200052, VR::UI, "2.25.99");
+    (void)d.set_uint16(0x00280002, 1);
+    (void)d.set_string(0x00280004, VR::CS, "MONOCHROME2");
+    (void)d.set_string(0x00280008, VR::IS, std::to_string(frames));
+    (void)d.set_uint16(0x00280010, 3);
+    (void)d.set_uint16(0x00280011, 4);
+    (void)d.set_string(0x00280030, VR::DS, "2.5\\2.5");
+    (void)d.set_uint16(0x00280100, 32);
+    (void)d.set_uint16(0x00280101, 32);
+    (void)d.set_uint16(0x00280102, 31);
+    (void)d.set_uint16(0x00280103, 0);
+    (void)d.set_string(0x30040002, VR::CS, "GY");
+    (void)d.set_string(0x30040004, VR::CS, "PHYSICAL");
+    (void)d.set_string(0x3004000A, VR::CS, "PLAN");
+    if (!gfov.empty()) (void)d.set_string(0x3004000C, VR::DS, gfov);
+    if (with_dgs) (void)d.set_string(0x3004000E, VR::DS, "4.574449e-05");
+    Buf px;
+    for (std::uint32_t k = 0; k < frames; ++k)
+        for (std::uint32_t r = 0; r < 3; ++r)
+            for (std::uint32_t c = 0; c < 4; ++c) u32(px, k == 1 && r == 1 && c == 2 ? kHot : 1000 * (k + 1) + 100 * r + c);
+    (void)d.set_bytes(0x7FE00010, VR::OW, Bytes::copy_of(px.data(), px.size()));
+    return f;
+}
+
+bool near(double a, double b, double tol = 1e-4) { return std::fabs(a - b) <= tol; }
+
+Result<volume::Volume> dose_volume(const DicomFile& f, bool strict = false) {
+    const DicomFile* files[] = {&f};
+    volume::VolumeOptions o;
+    o.strict = strict;
+    o.threads = 1;
+    return volume::build_volume(files, o);
+}
+
+bool has_warning(const std::vector<std::string>& w, std::string_view part) {
+    for (const auto& s : w)
+        if (s.find(part) != std::string::npos) return true;
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("testing2 P0-2a: Dose Grid Scaling gives doses in Gy (modality, frame values, ROI stats)") {
+    const DicomFile f = rt_dose("0\\5\\10\\15", 4);
+    auto img = image::Image::open(f.dataset, f.transfer_syntax);
+    REQUIRE(img.is_ok());
+    auto m = img->modality(1);
+    REQUIRE(m.is_ok());
+    CHECK(m->dose_grid_scaling);
+    CHECK_EQ(m->slope, kDgs);
+    CHECK_EQ(m->intercept, 0.0);
+    CHECK_EQ(m->rescale_type, "GY");
+    std::vector<float> v(12);
+    REQUIRE(image::decode_modality_f32(*img, 1, v).is_ok());
+    CHECK(near(v[1 * 4 + 2], 85.13049589, 1e-4));  // hand computed: 1861000 x 4.574449e-05
+    CHECK(near(v[0], 2000 * kDgs, 1e-7));            // frame 1, row 0, column 0: stored 2000
+    // ROI statistics over row 1 of frame 1 (stored 2100, 2101, kHot, 2103).
+    auto st = clinical::roi_stats(v, 3, 4, clinical::Roi::rectangle(0, 1, 4, 2));
+    REQUIRE(st.is_ok());
+    CHECK(near(st->max, 85.13049589, 1e-4));
+    CHECK(near(st->mean, (2100.0 + 2101.0 + kHot + 2103.0) / 4.0 * kDgs, 1e-4));
+    // The dose module values.
+    const image::RtDoseInfo info = image::read_rt_dose_info(f.dataset);
+    CHECK(info.is_rt_dose);
+    CHECK(info.dose_grid_scaling && *info.dose_grid_scaling == kDgs);
+    CHECK_EQ(info.dose_units, "GY");
+    CHECK_EQ(info.dose_type, "PHYSICAL");
+    CHECK_EQ(info.dose_summation_type, "PLAN");
+    CHECK(info.offset_form == image::RtDoseInfo::OffsetForm::Relative);
+    CHECK_EQ(info.offset_count, 4u);
+    // Strict mode refuses an RT Dose without Dose Grid Scaling; lenient leaves stored values.
+    const DicomFile nodgs = rt_dose("0\\5\\10\\15", 4, false);
+    image::PixelInfo pi = img->info();
+    CHECK(!image::modality_for_frame(nodgs.dataset, pi, 0, false).is_ok());
+    auto lm = image::modality_for_frame(nodgs.dataset, pi, 0, true);
+    REQUIRE(lm.is_ok());
+    CHECK(lm->is_identity());
+}
+
+TEST_CASE("testing2 P0-2a/b: RT Dose volume holds Gy and uses the Grid Frame Offset Vector") {
+    // Uniform relative vector: 5 mm frames.
+    auto v = dose_volume(rt_dose("0\\5\\10\\15", 4));
+    REQUIRE(v.is_ok());
+    CHECK(v->type() == volume::VoxelType::Float32);
+    CHECK_EQ(v->grid().dims[2], 4u);
+    CHECK(near(v->grid().spacing[2], 5.0));
+    CHECK(near(v->grid().origin.z, -30.0));
+    CHECK(near(v->value_max, 85.13049589, 1e-4));
+    CHECK(near(v->at(2, 1, 1), 85.13049589, 1e-4));
+    CHECK(near(v->at(0, 0, 3), 4000 * kDgs, 1e-6));
+    CHECK(!has_warning(v->warnings, "header slice spacing"));
+    CHECK_EQ(v->flags & (volume::kNonUniformSpacing | volume::kMissingSlices), 0u);
+    // The same grid in the absolute form (first value = IPP z = -30).
+    auto a = dose_volume(rt_dose("-30\\-25\\-20\\-15", 4));
+    REQUIRE(a.is_ok());
+    CHECK(near(a->grid().spacing[2], 5.0));
+    CHECK(near(a->grid().origin.z, -30.0));
+    // 3 mm, uniform, both forms.
+    auto r3 = dose_volume(rt_dose("0\\3\\6\\9\\12", 5));
+    auto a3 = dose_volume(rt_dose("-30\\-27\\-24\\-21\\-18", 5));
+    REQUIRE(r3.is_ok() && a3.is_ok());
+    CHECK(near(r3->grid().spacing[2], 3.0));
+    CHECK(near(a3->grid().spacing[2], 3.0));
+    // Decreasing offsets: frames sorted along the normal, so the origin is the last frame.
+    auto dn = dose_volume(rt_dose("0\\-3\\-6\\-9", 4));
+    REQUIRE(dn.is_ok());
+    CHECK(near(dn->grid().spacing[2], 3.0));
+    CHECK(near(dn->grid().origin.z, -39.0));
+    CHECK(near(dn->at(0, 0, 0), 4000 * kDgs, 1e-6));  // frame 3 is the lowest
+}
+
+TEST_CASE("testing2 P0-2b: irregular or invalid Grid Frame Offset Vectors are flagged") {
+    // Non-uniform (gaps 3, 3, 5): kept in order, flagged, mean spacing 11/3; strict refuses.
+    for (std::string_view g : {"0\\3\\6\\11", "-30\\-27\\-24\\-19"}) {
+        auto v = dose_volume(rt_dose(g, 4));
+        REQUIRE(v.is_ok());
+        CHECK((v->flags & volume::kNonUniformSpacing) != 0);
+        CHECK(near(v->grid().spacing[2], 11.0 / 3.0));
+        CHECK(near(v->grid().origin.z, -30.0));
+        CHECK(has_warning(v->warnings, "gaps from 3 to 5 mm"));
+        CHECK(!dose_volume(rt_dose(g, 4), true).is_ok());
+    }
+    // Wrong count, not monotonic, absolute form not starting at the IPP z: lenient warns and
+    // stacks with the header spacing; strict refuses.
+    for (std::string_view g : {"0\\5\\10", "0\\5\\5\\10", "0\\5\\3\\10", "-31\\-26\\-21\\-16"}) {
+        auto v = dose_volume(rt_dose(g, 4));
+        REQUIRE(v.is_ok());
+        CHECK(has_warning(v->warnings, "Grid Frame Offset Vector"));
+        CHECK(has_warning(v->warnings, "header slice spacing"));
+        CHECK(!dose_volume(rt_dose(g, 4), true).is_ok());
+    }
+    // Absolute form on non-transverse planes is refused (coronal: IOP 1\0\0\0\0\-1).
+    DicomFile cor = rt_dose("-30\\-25\\-20\\-15", 4);
+    (void)cor.dataset.set_string(0x00200037, VR::DS, "1\\0\\0\\0\\0\\-1");
+    auto c = dose_volume(cor);
+    REQUIRE(c.is_ok());
+    CHECK(has_warning(c->warnings, "not transverse"));
+    // ...but the relative form works for any orientation (offsets along the normal).
+    DicomFile corr = rt_dose("0\\4\\8\\12", 4);
+    (void)corr.dataset.set_string(0x00200037, VR::DS, "1\\0\\0\\0\\0\\-1");
+    auto cr = dose_volume(corr);
+    REQUIRE(cr.is_ok());
+    CHECK(near(cr->grid().spacing[2], 4.0));
+}
+
+TEST_CASE("testing2 P0-2: RT Dose through the C API (frame values, info, ROI statistics, volume flag)") {
+    const DicomFile d = rt_dose("0\\3\\6\\9", 4);
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(write_part10(d, bytes).is_ok());
+    siaara_file* f = nullptr;
+    REQUIRE(siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &f) == SIAARA_OK);
+    float px[12] = {};
+    size_t need = 0;
+    REQUIRE(siaara_frame_decode(f, 1, SIAARA_FRAME_FLOAT32_MODALITY, reinterpret_cast<uint8_t*>(px), sizeof px, &need) == SIAARA_OK);
+    CHECK(near(px[6], 85.13049589, 1e-4));
+    siaara_dataset* ds = nullptr;
+    REQUIRE(siaara_file_dataset(f, &ds) == SIAARA_OK);
+    siaara_rt_dose_info info{};
+    info.struct_size = sizeof info;
+    REQUIRE(siaara_rt_dose_info_get(ds, &info) == SIAARA_OK);
+    CHECK(info.is_rt_dose == 1);
+    CHECK(info.has_dose_grid_scaling == 1);
+    CHECK_EQ(info.dose_grid_scaling, kDgs);
+    CHECK(info.grid_frame_offset_form == SIAARA_GFOV_RELATIVE);
+    CHECK_EQ(info.grid_frame_offset_count, 4u);
+    CHECK_EQ(std::string(info.dose_units), "GY");
+    CHECK_EQ(std::string(info.dose_type), "PHYSICAL");
+    CHECK_EQ(std::string(info.dose_summation_type), "PLAN");
+    info.struct_size = 0;
+    CHECK(siaara_rt_dose_info_get(ds, &info) == SIAARA_ERR_INVALID_ARGUMENT);
+    siaara_frame* fr = nullptr;
+    REQUIRE(siaara_frame_open(f, 1, &fr) == SIAARA_OK);
+    siaara_frame_properties fp{};
+    fp.struct_size = sizeof fp;
+    REQUIRE(siaara_frame_info(fr, &fp) == SIAARA_OK);
+    CHECK((fp.flags & SIAARA_FRAMEF_DOSE_GRID_SCALING) != 0);
+    CHECK_EQ(fp.rescale_slope, kDgs);
+    CHECK(near(fp.max_value, 85.13049589, 1e-4));
+    siaara_frame_free(fr);
     siaara_file_free(f);
 }

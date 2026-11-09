@@ -49,6 +49,41 @@ internal static class ClinicalTests
             Check(none.Warnings.HasFlag(SuvWarnings.MissingWeight));
         });
 
+        Case("clinical: RT Dose values in Gy and the dose module (testing2 P0-2)", () =>
+        {
+            using DicomFile f = DicomFile.Create();
+            DicomDataset d = f.Dataset;
+            d.SetRawString(DicomTags.SOPClassUID, "UI", "1.2.840.10008.5.1.4.1.1.481.2");
+            d.SetRawString(DicomTags.SOPInstanceUID, "UI", "2.25.77");
+            d.SetRawString(DicomTags.Modality, "CS", "RTDOSE");
+            d.SetUInt16(DicomTags.SamplesPerPixel, 1);
+            d.SetRawString(DicomTags.PhotometricInterpretation, "CS", "MONOCHROME2");
+            d.SetUInt16(DicomTags.Rows, 1);
+            d.SetUInt16(DicomTags.Columns, 2);
+            d.SetUInt16(DicomTags.BitsAllocated, 32);
+            d.SetUInt16(DicomTags.BitsStored, 32);
+            d.SetUInt16(DicomTags.HighBit, 31);
+            d.SetUInt16(DicomTags.PixelRepresentation, 0);
+            d.SetRawString(new DicomTag(0x30040002), "CS", "GY");
+            d.SetRawString(new DicomTag(0x30040004), "CS", "PHYSICAL");
+            d.SetRawString(new DicomTag(0x3004000A), "CS", "PLAN");
+            d.SetRawString(new DicomTag(0x3004000E), "DS", "4.574449e-05");
+            byte[] px = new byte[8];
+            BitConverter.TryWriteBytes(px.AsSpan(0), 1861000u);
+            BitConverter.TryWriteBytes(px.AsSpan(4), 1000u);
+            d.SetBytes(DicomTags.PixelData, "OW", px);
+            float[] v = f.DecodeFrameModality(0);
+            CheckNear(v[0], 85.13049589, 1e-4);  // 1861000 x 4.574449e-05 Gy
+            CheckNear(v[1], 0.04574449, 1e-7);
+            RtDoseInfo info = RtDoseInfo.Read(d);
+            Check(info.IsRtDose);
+            CheckEq(info.DoseGridScaling, 4.574449e-05);
+            CheckEq(info.DoseUnits, "GY");
+            CheckEq(info.DoseType, "PHYSICAL");
+            CheckEq(info.DoseSummationType, "PLAN");
+            CheckEq(info.GridFrameOffsetForm, GridFrameOffsetForm.None);
+        });
+
         Case("clinical: ROI statistics (rectangle, circle, polygon) with area in mm2", () =>
         {
             var px = new short[4 * 4];

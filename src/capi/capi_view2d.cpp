@@ -312,6 +312,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_info(const siaara_frame* frame
         if (sh.bitmap) fl |= SIAARA_FRAMEF_SHUTTER_BITMAP;
         if (pi.kind != img::SampleKind::Integer) fl |= SIAARA_FRAMEF_FLOAT;
         if (frame->voi.from_functional_groups) fl |= SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS;
+        if (frame->modality.dose_grid_scaling) fl |= SIAARA_FRAMEF_DOSE_GRID_SCALING;
         out->flags = fl;
         out->voi_count = static_cast<uint32_t>(frame->voi.windows.size() + frame->voi.luts.size());
         out->overlay_count = static_cast<uint32_t>(frame->img->overlays().size());

@@ -98,6 +98,7 @@ siaara_pstate_string
 siaara_render_rgba8
 siaara_repair_file
 siaara_roi_stats_compute
+siaara_rt_dose_info_get
 siaara_rtstruct_contour_points
 siaara_rtstruct_free
 siaara_rtstruct_open

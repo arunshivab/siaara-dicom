@@ -1936,6 +1936,34 @@ SIAARA_API siaara_status SIAARA_CALL siaara_seg_mask(const siaara_file* file, co
     });
 }
 
+// ---- RT Dose
+SIAARA_API siaara_status SIAARA_CALL siaara_rt_dose_info_get(const siaara_dataset* ds, siaara_rt_dose_info* out) {
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        if (out->struct_size < sizeof(uint32_t) * 2) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        const siaara::image::RtDoseInfo d = siaara::image::read_rt_dose_info(*ds_cast(ds));
+        siaara_rt_dose_info r{};
+        r.struct_size = out->struct_size < sizeof r ? out->struct_size : static_cast<uint32_t>(sizeof r);
+        r.is_rt_dose = d.is_rt_dose ? 1 : 0;
+        r.has_dose_grid_scaling = d.dose_grid_scaling ? 1 : 0;
+        r.dose_grid_scaling = d.dose_grid_scaling.value_or(1.0);
+        using F = siaara::image::RtDoseInfo::OffsetForm;
+        r.grid_frame_offset_form = d.offset_form == F::Relative ? SIAARA_GFOV_RELATIVE
+                                   : d.offset_form == F::Absolute ? SIAARA_GFOV_ABSOLUTE : SIAARA_GFOV_NONE;
+        r.grid_frame_offset_count = static_cast<uint32_t>(std::min<std::size_t>(d.offset_count, UINT32_MAX));
+        const auto put = [](char* dst, std::size_t cap, const std::string& v) {
+            const std::size_t n = std::min(v.size(), cap - 1);
+            std::memcpy(dst, v.data(), n);
+            dst[n] = 0;
+        };
+        put(r.dose_units, sizeof r.dose_units, d.dose_units);
+        put(r.dose_type, sizeof r.dose_type, d.dose_type);
+        put(r.dose_summation_type, sizeof r.dose_summation_type, d.dose_summation_type);
+        std::memcpy(out, &r, r.struct_size);
+        return ok();
+    });
+}
+
 // ---- RT Structure Set
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* file, siaara_rtstruct** out) {
     return guarded([&]() -> siaara_status {
