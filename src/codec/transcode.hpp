@@ -56,6 +56,14 @@ struct TranscodeParams {
     // JPEG lossy colour: 0 = 4:4:4 (YBR_FULL), 1 = 4:2:2 (YBR_FULL_422).
     int chroma_subsampling = 1;
     OffsetTableMode offset_table = OffsetTableMode::Auto;
+    // A transcode that applies lossy compression makes a new image (PS3.3 C.7.6.1.1.5): by default
+    // it gets a new SOP Instance UID, Image Type value 1 DERIVED, a Source Image Sequence item
+    // referencing the predecessor (CID 7202: 121320 Uncompressed predecessor, or 121330 Lossy
+    // compressed predecessor when it was lossy already), a Derivation Code Sequence item
+    // (CID 7203: 113040 Lossy Compression) and a Derivation Description with method and ratio.
+    // true keeps the SOP Instance UID and leaves those attributes alone (Lossy Image Compression,
+    // Ratio and Method are always recorded).
+    bool keep_uid_on_lossy = false;
     // Frame decoding limits (memory budget also bounds the native output buffer).
     image::FrameOptions frames;
 };
@@ -66,6 +74,7 @@ struct TranscodeReport {
     bool source_lossy = false;        // the source was already lossy (attribute or codestream)
     std::uint64_t encoded_bytes = 0;  // total encoded frame bytes (encapsulated targets)
     std::uint64_t native_bytes = 0;   // total decoded frame bytes
+    std::string new_sop_instance_uid; // set when a lossy transcode gave the image a new UID
 };
 
 // Transfer syntaxes the transcoder can write / read pixel data in.

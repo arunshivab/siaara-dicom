@@ -2099,6 +2099,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, co
                 case SIAARA_OFFSET_TABLE_EMPTY: p.offset_table = siaara::codec::OffsetTableMode::Empty; break;
                 default: return fail(Errc::InvalidArgument, "unknown offset_table");
             }
+            if (params->struct_size >= offsetof(siaara_transcode_params, keep_uid_on_lossy) + sizeof(int32_t)) {
+                if (params->keep_uid_on_lossy != 0 && params->keep_uid_on_lossy != 1)
+                    return fail(Errc::InvalidArgument, "keep_uid_on_lossy must be 0 or 1");
+                p.keep_uid_on_lossy = params->keep_uid_on_lossy == 1;
+            }
         }
         if (Status s = siaara::codec::transcode_file(file->file, ts_uid, p); !s) return fail(s);
         return ok();

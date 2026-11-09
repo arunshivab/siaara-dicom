@@ -38,6 +38,9 @@ public sealed record TranscodeParameters
     public bool ChromaSubsampling { get; init; }
     /// <summary>Offset table of the encapsulated output.</summary>
     public OffsetTableKind OffsetTable { get; init; }
+    /// <summary>Keep the SOP Instance UID when lossy compression is applied (default false: the
+    /// result is a new, derived image with a new UID that references its predecessor; PS3.3 C.7.6.1.1.5).</summary>
+    public bool KeepUidOnLossy { get; init; }
 
     internal siaara_transcode_params ToNative() => new()
     {
@@ -49,6 +52,7 @@ public sealed record TranscodeParameters
         predictor = Predictor,
         chroma_subsampling = ChromaSubsampling ? 1 : 0,
         offset_table = (int)OffsetTable,
+        keep_uid_on_lossy = KeepUidOnLossy ? 1 : 0,
     };
 }
 

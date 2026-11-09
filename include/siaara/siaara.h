@@ -1109,6 +1109,13 @@ typedef struct siaara_transcode_params {
     int32_t predictor;           /* JPEG lossless .57 selection value 1..7; 0 = default (1) */
     int32_t chroma_subsampling;  /* JPEG lossy colour: 0 = 4:4:4 (YBR_FULL), 1 = 4:2:2 (YBR_FULL_422) */
     int32_t offset_table;        /* SIAARA_OFFSET_TABLE_* */
+    int32_t keep_uid_on_lossy;   /* 0 (default): a transcode that applies lossy compression makes a
+                                    new image (PS3.3 C.7.6.1.1.5): new SOP Instance UID (data set and
+                                    meta), Image Type value 1 DERIVED, the predecessor in Source Image
+                                    Sequence (CID 7202 121320 / 121330), Derivation Code Sequence
+                                    (113040) and Derivation Description. 1: keep the UID and those
+                                    attributes. Lossy Image Compression, Ratio and Method are always
+                                    recorded (history appended). Needs struct_size to include it. */
 } siaara_transcode_params;
 
 /* Converts the file's pixel data to the transfer syntax ts_uid (NUL-terminated) and updates the

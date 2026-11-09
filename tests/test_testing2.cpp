@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "codec/transcode.hpp"
 #include "core/reader.hpp"
 #include "core/writer.hpp"
 #include "net/services.hpp"
@@ -791,4 +792,134 @@ TEST_CASE("testing2 P2: LibIDO ACR-NEMA Rows and Columns are swapped back (lenie
     auto other = image::read_pixel_info(d);
     REQUIRE(other.is_ok());
     CHECK_EQ(other->rows, 4u);
+}
+
+// ================================================================ lossy transcode: new image (owner decision 2026-11-10)
+
+namespace {
+
+DicomFile gray_image() {
+    DicomFile f;
+    f.transfer_syntax = "1.2.840.10008.1.2.1";
+    Dataset& d = f.dataset;
+    (void)d.set_string(0x00080008, VR::CS, "ORIGINAL\\PRIMARY\\AXIAL");
+    (void)d.set_string(0x00080016, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    (void)d.set_string(0x00080018, VR::UI, "2.25.111");
+    (void)d.set_uint16(0x00280002, 1);
+    (void)d.set_string(0x00280004, VR::CS, "MONOCHROME2");
+    (void)d.set_uint16(0x00280010, 16);
+    (void)d.set_uint16(0x00280011, 16);
+    (void)d.set_uint16(0x00280100, 8);
+    (void)d.set_uint16(0x00280101, 8);
+    (void)d.set_uint16(0x00280102, 7);
+    (void)d.set_uint16(0x00280103, 0);
+    Buf px(256);
+    for (std::size_t i = 0; i < px.size(); ++i) px[i] = static_cast<std::uint8_t>((i * 37u + i / 16u * 11u) & 0xFFu);
+    (void)d.set_bytes(0x7FE00010, VR::OB, Bytes::copy_of(px.data(), px.size()));
+    (void)f.meta.set_string(0x00020003, VR::UI, "2.25.111");
+    return f;
+}
+
+std::string purpose_of(const Dataset& ref) {
+    const Element* p = ref.find(0x0040A170);
+    if (!p || p->items.empty()) return {};
+    return p->items[0].get_string(0x00080100).value_or("");
+}
+
+}  // namespace
+
+TEST_CASE("testing2 lossy: a lossy transcode is a new derived image that references its predecessor") {
+    DicomFile f = gray_image();
+    codec::TranscodeParams p;
+    p.allow_lossy = true;
+    codec::TranscodeReport rep;
+    REQUIRE(codec::transcode_file(f, "1.2.840.10008.1.2.4.50", p, &rep).is_ok());
+    const std::string uid1 = f.dataset.get_string(0x00080018).value_or("");
+    CHECK(uid1 != "2.25.111");
+    CHECK(uid1.rfind("2.25.", 0) == 0);
+    CHECK_EQ(rep.new_sop_instance_uid, uid1);
+    CHECK_EQ(f.meta.get_string(0x00020003).value_or(""), uid1);
+    CHECK_EQ(f.dataset.get_string(0x00080008, 0).value_or(""), "DERIVED");
+    CHECK_EQ(f.dataset.get_string(0x00080008, 1).value_or(""), "PRIMARY");
+    CHECK_EQ(f.dataset.get_string(0x00080008, 2).value_or(""), "AXIAL");
+    CHECK_EQ(f.dataset.get_string(0x00282110).value_or(""), "01");
+    CHECK_EQ(f.dataset.get_string(0x00282114).value_or(""), "ISO_10918_1");
+    const Element* src = f.dataset.find(0x00082112);
+    REQUIRE(src != nullptr && src->items.size() == 1u);
+    CHECK_EQ(src->items[0].get_string(0x00081155).value_or(""), "2.25.111");
+    CHECK_EQ(src->items[0].get_string(0x00081150).value_or(""), "1.2.840.10008.5.1.4.1.1.7");
+    CHECK_EQ(purpose_of(src->items[0]), "121320");  // Uncompressed predecessor (CID 7202)
+    const Element* der = f.dataset.find(0x00089215);
+    REQUIRE(der != nullptr && der->items.size() == 1u);
+    CHECK_EQ(der->items[0].get_string(0x00080100).value_or(""), "113040");  // Lossy Compression (CID 7203)
+    CHECK(f.dataset.get_string(0x00082111).value_or("").find("ISO_10918_1") != std::string::npos);
+
+    // Second lossy step: history appended, the intermediate referenced as a lossy predecessor.
+    codec::TranscodeParams p2 = p;
+    p2.lossy = true;
+    REQUIRE(codec::transcode_file(f, "1.2.840.10008.1.2.4.91", p2).is_ok());
+    const std::string uid2 = f.dataset.get_string(0x00080018).value_or("");
+    CHECK(uid2 != uid1);
+    CHECK_EQ(f.meta.get_string(0x00020003).value_or(""), uid2);
+    CHECK_EQ(f.dataset.value_multiplicity(0x00282114), 2u);
+    CHECK_EQ(f.dataset.get_string(0x00282114, 1).value_or(""), "ISO_15444_1");
+    CHECK_EQ(f.dataset.value_multiplicity(0x00282112), 2u);
+    src = f.dataset.find(0x00082112);
+    REQUIRE(src != nullptr && src->items.size() == 2u);
+    CHECK_EQ(src->items[1].get_string(0x00081155).value_or(""), uid1);
+    CHECK_EQ(purpose_of(src->items[1]), "121330");  // Lossy compressed predecessor
+    CHECK_EQ(f.dataset.find(0x00089215)->items.size(), 2u);
+    const std::string desc = f.dataset.get_string(0x00082111).value_or("");
+    CHECK(desc.find("ISO_10918_1") != std::string::npos && desc.find("; Lossy compression ISO_15444_1") != std::string::npos);
+
+    // Lossless transcodes keep the UID and add nothing.
+    DicomFile g = gray_image();
+    REQUIRE(codec::transcode_file(g, "1.2.840.10008.1.2.4.70", p).is_ok());
+    CHECK_EQ(g.dataset.get_string(0x00080018).value_or(""), "2.25.111");
+    CHECK(!g.dataset.contains(0x00082112));
+    CHECK_EQ(g.dataset.get_string(0x00080008, 0).value_or(""), "ORIGINAL");
+    // ... and so does a lossless step after the lossy ones (the history stays).
+    REQUIRE(codec::transcode_file(f, "1.2.840.10008.1.2.1", p).is_ok());
+    CHECK_EQ(f.dataset.get_string(0x00080018).value_or(""), uid2);
+    CHECK_EQ(f.dataset.get_string(0x00282110).value_or(""), "01");
+
+    // keep_uid_on_lossy: the UID stays, the lossy attributes are still recorded.
+    DicomFile k = gray_image();
+    codec::TranscodeParams pk = p;
+    pk.keep_uid_on_lossy = true;
+    REQUIRE(codec::transcode_file(k, "1.2.840.10008.1.2.4.50", pk).is_ok());
+    CHECK_EQ(k.dataset.get_string(0x00080018).value_or(""), "2.25.111");
+    CHECK(!k.dataset.contains(0x00082112));
+    CHECK_EQ(k.dataset.get_string(0x00282110).value_or(""), "01");
+}
+
+TEST_CASE("testing2 lossy: C API keep_uid_on_lossy (struct_size versioned)") {
+    const DicomFile base = gray_image();
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(write_part10(base, bytes).is_ok());
+    auto run = [&](uint32_t size, int32_t keep, std::string* uid) -> siaara_status {
+        siaara_file* f = nullptr;
+        if (siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &f) != SIAARA_OK) return SIAARA_ERR_INTERNAL;
+        siaara_transcode_params tp{};
+        tp.struct_size = size;
+        tp.allow_lossy = 1;
+        tp.keep_uid_on_lossy = keep;
+        const siaara_status st = siaara_file_transcode(f, "1.2.840.10008.1.2.4.50", &tp);
+        siaara_dataset* ds = nullptr;
+        (void)siaara_file_dataset(f, &ds);
+        char buf[80] = {};
+        size_t need = 0;
+        (void)siaara_dataset_get_string(ds, 0x00080018, 0, buf, sizeof buf, &need);
+        *uid = buf;
+        siaara_file_free(f);
+        return st;
+    };
+    std::string uid;
+    CHECK(run(sizeof(siaara_transcode_params), 0, &uid) == SIAARA_OK);
+    CHECK(uid != "2.25.111");
+    CHECK(run(sizeof(siaara_transcode_params), 1, &uid) == SIAARA_OK);
+    CHECK_EQ(uid, "2.25.111");
+    CHECK(run(static_cast<uint32_t>(offsetof(siaara_transcode_params, keep_uid_on_lossy)), 1, &uid) == SIAARA_OK);
+    CHECK(uid != "2.25.111");  // an older caller: the default
+    CHECK(run(sizeof(siaara_transcode_params), 2, &uid) == SIAARA_ERR_INVALID_ARGUMENT);
 }

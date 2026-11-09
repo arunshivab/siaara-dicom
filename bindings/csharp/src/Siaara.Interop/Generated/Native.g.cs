@@ -892,6 +892,7 @@ internal struct siaara_transcode_params
     public int predictor;
     public int chroma_subsampling;
     public int offset_table;
+    public int keep_uid_on_lossy;
 }
 
 /// <summary>siaara_volume_options (blittable, C layout).</summary>

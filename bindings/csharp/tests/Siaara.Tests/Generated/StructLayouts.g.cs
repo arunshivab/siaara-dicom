@@ -412,6 +412,7 @@ internal static class StructLayouts
             r.Add("F siaara_transcode_params predictor " + Offset(ref s, ref s.predictor).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_transcode_params chroma_subsampling " + Offset(ref s, ref s.chroma_subsampling).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_transcode_params offset_table " + Offset(ref s, ref s.offset_table).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_params keep_uid_on_lossy " + Offset(ref s, ref s.keep_uid_on_lossy).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_volume_options);
