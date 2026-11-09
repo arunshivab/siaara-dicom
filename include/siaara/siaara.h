@@ -1191,6 +1191,46 @@ typedef struct siaara_pick_result {
 SIAARA_API siaara_status SIAARA_CALL siaara_view_pick(const siaara_view* view, double x, double y,
                                                       siaara_pick_result* out);
 
+/* ---------------------------------------------------------------- GPU rendering of 3D views */
+/* Views render on the CPU by default. With SIAARA_BACKEND_AUTO a view renders on a hardware GPU
+ * (Vulkan on Windows / Linux, Metal on macOS; the OS graphics stack, loaded at run time) when one
+ * is present and the view's mode is implemented there (MPR with nearest / trilinear sampling,
+ * slabs, fusion, volume rendering, MIP / MinIP), and on the CPU otherwise. SIAARA_BACKEND_GPU
+ * also accepts a software GPU device (e.g. Mesa lavapipe) and fails with SIAARA_ERR_UNSUPPORTED
+ * when no device exists. Both fall back to the CPU for any frame the GPU cannot render. GPU
+ * images match the CPU renderer within small tolerances (texture filtering and float precision). */
+enum { SIAARA_GPU_API_VULKAN = 1, SIAARA_GPU_API_METAL = 2 };
+enum {
+    SIAARA_GPU_DEVICE_OTHER = 0,
+    SIAARA_GPU_DEVICE_INTEGRATED = 1,
+    SIAARA_GPU_DEVICE_DISCRETE = 2,
+    SIAARA_GPU_DEVICE_VIRTUAL = 3,
+    SIAARA_GPU_DEVICE_CPU = 4          /* a software implementation */
+};
+enum { SIAARA_BACKEND_AUTO = 0, SIAARA_BACKEND_CPU = 1, SIAARA_BACKEND_GPU = 2 };
+
+typedef struct siaara_gpu_device_info {
+    uint32_t struct_size;               /* sizeof(siaara_gpu_device_info), set by the caller */
+    int32_t api;                        /* SIAARA_GPU_API_* */
+    int32_t type;                       /* SIAARA_GPU_DEVICE_* */
+    uint32_t vendor_id, device_id;      /* PCI ids where the API reports them */
+    uint64_t memory_bytes;              /* device-local memory */
+    uint32_t max_texture_3d;            /* largest 3D texture dimension */
+    int32_t selected;                   /* nonzero: the device the toolkit renders with */
+    int32_t float32_filtering;          /* hardware trilinear filtering of float32 volumes */
+    int32_t int16_filtering;            /* hardware trilinear filtering of int16 volumes */
+    char name[256];                     /* UTF-8, NUL-terminated */
+    char driver[128];                   /* API / driver version text, NUL-terminated */
+} siaara_gpu_device_info;
+/* Lists the GPU devices (probed once per process). *count receives the number of devices; up to
+ * cap entries are written to out (each entry's struct_size must be set). out may be NULL with
+ * cap 0 to query the count. No device is not an error (count 0). */
+SIAARA_API siaara_status SIAARA_CALL siaara_gpu_devices(siaara_gpu_device_info* out, uint32_t cap, uint32_t* count);
+/* SIAARA_BACKEND_*: where siaara_view_render_rgba8 renders. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_backend(siaara_view* view, int32_t backend);
+/* SIAARA_BACKEND_CPU or SIAARA_BACKEND_GPU: the renderer of the last siaara_view_render_rgba8. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view* view, int32_t* out_backend);
+
 #ifdef __cplusplus
 }
 #endif

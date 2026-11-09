@@ -97,3 +97,7 @@ target_compile_options(volume_tool PRIVATE ${SIAARA_TEST_WARN})
 add_executable(volume_bench crosscheck/volume_bench.cpp)
 target_link_libraries(volume_bench PRIVATE siaara_static)
 target_compile_options(volume_bench PRIVATE ${SIAARA_TEST_WARN})
+# Test-only GPU vs CPU rendering benchmark (tests/crosscheck/gpu_bench.cpp); not run by ctest.
+add_executable(gpu_bench crosscheck/gpu_bench.cpp)
+target_link_libraries(gpu_bench PRIVATE siaara_static)
+target_compile_options(gpu_bench PRIVATE ${SIAARA_TEST_WARN})

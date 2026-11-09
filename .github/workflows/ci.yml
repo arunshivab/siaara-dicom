@@ -46,6 +46,11 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install -y libssl3t64:i386
           build/tests/siaara_tests tls/
+      - name: GPU tests on Mesa lavapipe (software Vulkan driver and spirv-val, test-only oracles)
+        if: matrix.name == 'linux-x64-gcc-asan'
+        run: |
+          sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers spirv-tools
+          build/tests/siaara_tests gpu/
 
   pydicom-crosscheck:
     runs-on: ubuntu-24.04
