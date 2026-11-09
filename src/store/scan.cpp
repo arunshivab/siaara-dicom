@@ -128,6 +128,13 @@ Result<ScanStats> scan_folder(const std::string& utf8_root, const ScanCallback& 
                 deliver(item);
                 continue;
             }
+            if (item.record[Str::SopInstanceUid].empty() && item.record[Str::SopClassUid] != kMediaStorageDirectoryUid) {
+                ++errors;
+                item.kind = ScanKind::Error;
+                item.status = Status(Errc::Malformed, "no SOP Instance UID");
+                deliver(item);
+                continue;
+            }
             if (item.record[Str::SopClassUid] == kMediaStorageDirectoryUid) {
                 item.kind = ScanKind::Dicomdir;
                 ++dicomdirs;

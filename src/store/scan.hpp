@@ -21,7 +21,7 @@ enum class ScanKind { Instance = 0, Dicomdir = 1, NotDicom = 2, Error = 3 };
 struct ScanItem {
     std::string path;   // UTF-8
     ScanKind kind = ScanKind::Instance;
-    Status status;      // for Error: why the DICOM file could not be read
+    Status status;      // for Error: why the DICOM file could not be read (or has no SOP Instance UID)
     IndexRecord record; // Instance / Dicomdir
 };
 
