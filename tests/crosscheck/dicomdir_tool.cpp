@@ -1,5 +1,5 @@
 // Test-only helper for tests/crosscheck/dicomdir_crosscheck.py.
-//   dicomdir_tool make  <dir> <count>          synthetic files <dir>/IMAGES/IMnnnnnn
+//   dicomdir_tool make  <dir> <count> [first]  synthetic files <dir>/IMAGES/IMnnnnnn
 //   dicomdir_tool write <root> <file>...       DICOMDIR (General Purpose CD) for the files
 //   dicomdir_tool read  <DICOMDIR>             one JSON object per record, then a summary
 #include <cstdio>
@@ -34,8 +34,8 @@ std::string json(const std::string& s) {
     return o + "\"";
 }
 
-int make(const char* dir, int n) {
-    for (int i = 0; i < n; ++i) {
+int make(const char* dir, int first, int n) {
+    for (int i = first; i < first + n; ++i) {
         store_synth::Spec s;
         const int series = i / 4, study = series / 2, patient = study / 2;
         s.charset = (patient % 2) ? "ISO_IR 100" : "";
@@ -57,7 +57,7 @@ int make(const char* dir, int n) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc >= 4 && !std::strcmp(argv[1], "make")) return make(argv[2], std::atoi(argv[3]));
+    if (argc >= 4 && !std::strcmp(argv[1], "make")) return make(argv[2], argc >= 5 ? std::atoi(argv[4]) : 0, std::atoi(argv[3]));
     if (argc >= 4 && !std::strcmp(argv[1], "write")) {
         std::vector<std::string> files(argv + 3, argv + argc);
         DicomdirWriteOptions o;
