@@ -42,8 +42,8 @@ struct TlsIdentity {
     std::string private_key_file;
     // PKCS#12 (.p12 / .pfx) file holding the key, the certificate and optionally its chain.
     std::string pkcs12_file;
-    // Password of the PKCS#12 file or of an encrypted PEM key. Never logged; the toolkit's own
-    // copies are wiped when they are released.
+    // Password of the PKCS#12 file or of an encrypted PEM key. Never logged. The toolkit's own
+    // copies are wiped as soon as the identity is loaded: TlsContext::settings() returns it empty.
     std::string password;
     // Windows: SHA-1 thumbprint (hex, spaces allowed) of a certificate with a private key in the
     // "MY" store of the current user (or of the local machine when windows_local_machine is set).
@@ -63,6 +63,30 @@ enum class TlsMinVersion : std::uint8_t {
     Tls13 = 1,  // TLS 1.3 only
 };
 
+// The PS3.15 TLS Secure Transport Connection Profile a connection follows. Both negotiate the
+// same protocol versions and cipher suites: TLS 1.2 and 1.3 with ECDHE key exchange and AES-GCM
+// or ChaCha20-Poly1305 (the suites B.13 requires that every backend supports, which are also the
+// BCP 195 / RFC 9325 recommendations). They differ in the certificates accepted from the peer,
+// checked for every certificate of its chain:
+//   B.13 (default): keys RSA or RSA-PSS >= 2048 bits or ECDSA >= 256 bits only; signatures with
+//                   SHA-256 or stronger (the trust anchor's self-signature is not checked).
+//   B.12:           as B.13, and Ed25519 / Ed448 keys and signatures are also accepted.
+// MD5, SHA-1 and SHA-224 signatures, DSA and other key types are refused by both.
+enum class TlsProfile : std::uint8_t {
+    Bcp195Rfc8996 = 12,          // PS3.15 B.12 "BCP 195 RFC 8996 TLS Secure Transport Connection Profile"
+    ModifiedBcp195Rfc8996 = 13,  // PS3.15 B.13 "Modified BCP 195 RFC 8996 TLS ..." (default)
+};
+
+// Certificate revocation checking of the peer's chain.
+//   Off:      not checked.
+//   SoftFail: (default) a certificate known to be revoked is refused; when revocation status
+//             cannot be determined (no CRL, OCSP responder unreachable) the certificate is accepted.
+//   HardFail: the status of every certificate in the chain must be known and good.
+// Sources: Windows and macOS use the OS (CRL distribution points, OCSP, stapling). OpenSSL does
+// no network fetching: CRLs come from TlsSettings::crl_file and from CRL blocks in ca_file;
+// HardFail with OpenSSL therefore needs a crl_file (TlsContext::create fails without one).
+enum class TlsRevocation : std::uint8_t { Off = 0, SoftFail = 1, HardFail = 2 };
+
 struct TlsSettings {
     // When false, the owner of these settings uses plain TCP (the separate, unsecured port).
     bool enabled = false;
@@ -79,6 +103,11 @@ struct TlsSettings {
     // closed lab networks only; a warning is logged on every connection.
     bool insecure_skip_validation = false;
     TlsMinVersion min_version = TlsMinVersion::Tls12;
+    TlsProfile profile = TlsProfile::ModifiedBcp195Rfc8996;
+    TlsRevocation revocation = TlsRevocation::SoftFail;
+    // OpenSSL backend: PEM file of CRLs (X509 CRL blocks) for the revocation check. Ignored by
+    // the Windows and macOS backends, which use the OS revocation sources.
+    std::string crl_file;
     int handshake_timeout_ms = 15000;
     // Warnings and a one-line summary per connection (protocol, cipher suite, peer address).
     // Never key material, passwords or application data.
@@ -96,6 +125,8 @@ struct TlsSessionInfo {
 // A Transport protected by TLS. Transports from TlsContext::connect() have completed the
 // handshake; transports from TlsListener::accept() complete it in handshake(), which servers call
 // on the worker thread so a slow client cannot stall the accept loop.
+// Threading: after the handshake, one thread may read (read_some, wait_readable) while another
+// writes (write_all); shutdown() and close() may be called from any thread at any time.
 class TlsTransport : public Transport {
 public:
     // Runs the handshake to completion within `timeout_ms`. A no-op once it has completed.
@@ -114,7 +145,7 @@ public:
     enum class Role : std::uint8_t { Client, Server };
     static Result<std::shared_ptr<TlsContext>> create(const TlsSettings& settings, Role role);
 
-    virtual ~TlsContext();  // wipes the stored password
+    virtual ~TlsContext();
     TlsContext(const TlsContext&) = delete;
     TlsContext& operator=(const TlsContext&) = delete;
 
@@ -126,7 +157,8 @@ public:
     virtual Result<std::unique_ptr<TlsTransport>> connect(const std::string& host, std::uint16_t port,
                                                           int connect_timeout_ms) = 0;
     // Wraps an already connected stream (client side) and completes the handshake. `peer_name`
-    // is the name checked when settings().expected_identity is empty. Not available on macOS,
+    // is the name checked when settings().expected_identity is empty; with both empty the call
+    // fails with Errc::InvalidArgument (unless insecure_skip_validation). Not available on macOS,
     // where Network.framework owns the TCP connection (Errc::Unsupported).
     virtual Result<std::unique_ptr<TlsTransport>> wrap_client(std::unique_ptr<Transport> stream,
                                                               const std::string& peer_name);

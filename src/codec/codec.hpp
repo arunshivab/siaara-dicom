@@ -23,6 +23,19 @@ struct FrameInfo {
     bool is_signed = false;           // PixelRepresentation == 1
     bool planar = false;              // PlanarConfiguration == 1 (output layout requested/given)
 
+    // Decoder resource limits (0 selects the default). They bound what a hostile codestream can
+    // make a decoder allocate or do; valid images need far less.
+    //   memory_budget: working memory a decoder may allocate besides `out` (JPEG component
+    //                  planes and coefficients, JPEG 2000 tile buffers and code-block metadata).
+    //                  Exceeding it fails with Errc::LimitExceeded.
+    //   max_scans:     JPEG scans per frame (progressive JPEG); more fail with LimitExceeded.
+    std::uint64_t memory_budget = 0;
+    std::uint32_t max_scans = 0;
+    static constexpr std::uint64_t kDefaultMemoryBudget = std::uint64_t{4} << 30;  // 4 GiB
+    static constexpr std::uint32_t kDefaultMaxScans = 1000;
+    std::uint64_t effective_memory_budget() const noexcept { return memory_budget ? memory_budget : kDefaultMemoryBudget; }
+    std::uint32_t effective_max_scans() const noexcept { return max_scans ? max_scans : kDefaultMaxScans; }
+
     // Exact native frame size in bytes, or 0 on overflow / invalid parameters.
     std::uint64_t frame_bytes() const noexcept {
         if (rows == 0 || columns == 0 || samples_per_pixel == 0) return 0;

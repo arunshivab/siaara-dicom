@@ -20,7 +20,18 @@
 //    element. Elements of unknown creators and private groups below 0009 are always removed.
 //  * Group 0004 and all group length elements are removed; group 0002 found inside the data
 //    set is removed. Removing Overlay Data (60xx,3000) removes the whole 60xx overlay group.
-//    Overlays embedded in unused Pixel Data bits (retired) are cleared from the pixel data.
+//    Overlays embedded in unused Pixel Data bits (retired) are cleared from the pixel data and
+//    their groups removed; when the bits cannot be cleared (encapsulated pixel data, or a bit
+//    inside the stored image bits) the group is kept and the instance is reported as not
+//    fully de-identified (EmbeddedOverlayRemains).
+//  * Keys: every keyed value uses a per-purpose sub-key of the caller's key (deid.hpp). The
+//    patient behind the date offset and the Patient ID pseudonym is Patient ID together with
+//    Issuer of Patient ID; instances without a Patient ID share one offset (EmptyPatientId).
+//  * Text cleaning (C on SH/LO/ST/LT/UT/UC/PN) works on characters: the value is decoded with
+//    the Specific Character Set in force (inherited into sequence items), cleaned, and encoded
+//    again, so ISO 2022 multi-byte text is never cut up byte by byte.
+//  * Clean Recognizable Visual Features is done only by the caller's hook
+//    (Options::clean_recognizable_visual_features).
 #include "deid/deid.hpp"
 
 #include <algorithm>
@@ -35,6 +46,7 @@
 #include <utility>
 #include <vector>
 
+#include "charset/charset.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "deid/sha256.hpp"
@@ -278,15 +290,38 @@ std::int32_t offset_from_digest(Digest d, std::uint32_t max_days) {
     return -static_cast<std::int32_t>(1u + static_cast<std::uint32_t>(v % max_days));
 }
 
-constexpr std::string_view kDatePrefix = std::string_view("SIAARA-DEID-DATE-OFFSET\0", 24);
-constexpr std::string_view kPatientIdPrefix = std::string_view("SIAARA-DEID-PATIENT-ID\0", 23);
 constexpr std::string_view kDummyUidPrefix = std::string_view("SIAARA-DEID-DUMMY-UID\0", 22);
+
+// Per-purpose sub-keys (deid.hpp): K_purpose = HMAC(K, "SIAARA-DEID-KEY\0" + purpose).
+constexpr std::string_view kSubKeyLabel = std::string_view("SIAARA-DEID-KEY\0", 16);
+struct SubKeys {
+    HmacSha256 uid, date, patient_id;
+    explicit SubKeys(std::span<const std::uint8_t> key) {
+        HmacSha256 k(key);
+        auto derive = [&](HmacSha256& h, std::string_view purpose) {
+            Digest d = k.mac(kSubKeyLabel, purpose);
+            h.set_key(d);
+            secure_wipe(d.data(), d.size());
+        };
+        derive(uid, "uid");
+        derive(date, "date");
+        derive(patient_id, "patient-id");
+    }
+};
+
+// The MAC input identifying a patient: length-prefixed Patient ID, then the issuer.
+std::string patient_key(std::string_view id, std::string_view issuer) {
+    return std::to_string(id.size()) + ":" + std::string(id) + std::string(issuer);
+}
+
+bool uid_charset_ok(std::string_view u) noexcept {
+    return std::all_of(u.begin(), u.end(), [](char c) { return (c >= '0' && c <= '9') || c == '.'; });
+}
 
 // ---------------------------------------------------------------- engine
 class Engine {
 public:
-    Engine(const Options& opt, Report& rep) : opt_(opt), rep_(rep) {
-        hmac_.set_key(opt.key);
+    Engine(const Options& opt, Report& rep) : opt_(opt), rep_(rep), keys_(opt.key) {
         for (const std::string& w : opt.safe_words) {
             std::string lw;
             for (char c : w) lw.push_back(lower(c));
@@ -294,11 +329,14 @@ public:
         }
     }
 
-    void set_context(std::string sop_class, std::string_view patient_id) {
+    void set_context(std::string sop_class, std::string_view patient_id, std::string_view issuer) {
         sop_class_ = std::move(sop_class);
-        offset_ = offset_from_digest(hmac_.mac(kDatePrefix, patient_id), opt_.max_shift_days);
+        if (patient_id.empty()) rep_.flags |= EmptyPatientId;
+        std::string who = patient_key(patient_id, issuer);
+        offset_ = offset_from_digest(keys_.date.mac(who), opt_.max_shift_days);
         patient_pseudonym_ = "ID";
-        Digest d = hmac_.mac(kPatientIdPrefix, patient_id);
+        Digest d = keys_.patient_id.mac(who);
+        secure_wipe(who.data(), who.size());
         static constexpr char kHex[] = "0123456789ABCDEF";
         for (int i = 0; i < 8; ++i) {
             patient_pseudonym_.push_back(kHex[d[static_cast<std::size_t>(i)] >> 4]);
@@ -307,7 +345,7 @@ public:
         secure_wipe(d.data(), d.size());
     }
 
-    std::string map_uid(std::string_view uid) const { return uid_from_digest(hmac_.mac(uid)); }
+    std::string map_uid(std::string_view uid) const { return uid_from_digest(keys_.uid.mac(uid)); }
 
     Status process(Dataset& ds, bool clean_mode, std::uint32_t depth);
 
@@ -332,7 +370,8 @@ private:
 
     const Options& opt_;
     Report& rep_;
-    HmacSha256 hmac_;
+    SubKeys keys_;
+    const charset::CharacterSet* cs_ = nullptr;  // in force for the data set being processed
     std::set<std::string> safe_;
     std::string sop_class_;
     std::string patient_pseudonym_;
@@ -397,6 +436,7 @@ Bytes Engine::map_uids(const Element& e, bool only_unknown) {
             out.append(u);
             continue;
         }
+        if (!uid_charset_ok(u)) rep_.flags |= InvalidUidValues;  // replaced like any other (PARSE-43)
         out += map_uid(u);
         ++rep_.uids_replaced;
     }
@@ -421,7 +461,7 @@ Bytes Engine::dummy(Tag tag, VR vr, const Element& e) {
             char tb[8];
             for (int i = 0; i < 8; ++i) tb[i] = "0123456789ABCDEF"[(tag >> (28 - 4 * i)) & 15u];
             ++rep_.uids_replaced;
-            return string_value(uid_from_digest(hmac_.mac(kDummyUidPrefix, std::string_view(tb, 8))), vr);
+            return string_value(uid_from_digest(keys_.uid.mac(kDummyUidPrefix, std::string_view(tb, 8))), vr);
         }
         default: {
             std::size_t n = vr_value_size(vr);
@@ -579,7 +619,15 @@ bool Engine::clean(Element& e, VR vr, std::uint32_t depth, Status& err) {
         return true;
     }
     if (vr_is_string(vr)) {
-        e.value = string_value(clean_text(e.value.as_chars(), vr), vr);
+        if (cs_ && charset::vr_uses_character_set(vr)) {
+            // Characters, not bytes: decode, clean (the result is ASCII), encode back.
+            const charset::TextKind kind = charset::text_kind(vr);
+            const std::string utf8 = charset::decode(e.value.as_chars(), *cs_, kind);
+            charset::EncodeResult enc = charset::encode(clean_text(utf8, vr), *cs_, kind);
+            e.value = string_value(enc.ok() ? std::move(enc.bytes) : std::string(kCleaned), vr);
+        } else {
+            e.value = string_value(clean_text(e.value.as_chars(), vr), vr);
+        }
         e.vr = vr;
         return true;
     }
@@ -679,6 +727,15 @@ bool Engine::process_private(const Dataset& ds, Element& e, std::uint32_t depth,
 
 Status Engine::process(Dataset& ds, bool clean_mode, std::uint32_t depth) {
     if (depth > kMaxDepth) return Status(Errc::LimitExceeded, "sequence nesting too deep for de-identification");
+    // The character set in force here (an item inherits the enclosing data set's).
+    const charset::CharacterSet local = charset::character_set_of(ds, cs_);
+    const charset::CharacterSet* const outer = cs_;
+    cs_ = &local;
+    struct Restore {
+        const charset::CharacterSet*& p;
+        const charset::CharacterSet* v;
+        ~Restore() { p = v; }
+    } restore{cs_, outer};
     std::vector<Element> out;
     out.reserve(ds.size());
     std::set<std::uint32_t> private_blocks;
@@ -742,30 +799,46 @@ Status Engine::process(Dataset& ds, bool clean_mode, std::uint32_t depth) {
     return Status::ok();
 }
 
-// Overlays embedded in unused bits of Pixel Data (retired, PS3.3 C.9.2): clears those bits and
-// returns the overlay groups concerned.
-std::vector<std::uint16_t> clear_embedded_overlays(Dataset& ds) {
-    std::vector<std::uint16_t> groups;
+// Overlays embedded in unused bits of Pixel Data (retired, PS3.3 C.9.2). The bits of every
+// overlay that can be cleared are cleared in one pass over one copy of the pixel data. An
+// overlay can be cleared when the pixel data is native, BitsAllocated is 8, 16 or 32 and its bit
+// position is outside the stored image bits (HighBit - BitsStored + 1 .. HighBit).
+struct EmbeddedOverlays {
+    std::vector<std::uint16_t> cleared;  // groups whose bits were cleared (to be removed)
+    bool remains = false;                // an overlay could not be cleared (its group is kept)
+};
+
+EmbeddedOverlays clear_embedded_overlays(Dataset& ds) {
+    EmbeddedOverlays r;
+    Element* px = ds.find(siaara::tags::PixelData);
+    const auto alloc = ds.get_int(siaara::tags::BitsAllocated);
+    const bool native = px && !px->is_encapsulated() && alloc && (*alloc == 8 || *alloc == 16 || *alloc == 32);
+    const std::int64_t stored = ds.get_int(siaara::tags::BitsStored).value_or(alloc.value_or(0));
+    const std::int64_t high = ds.get_int(siaara::tags::HighBit).value_or(stored - 1);
+    std::uint32_t mask = 0;  // overlay bits within one sample
     for (std::uint16_t g = 0x6000; g <= 0x601E; g = static_cast<std::uint16_t>(g + 2)) {
         const Tag ba = make_tag(g, tag_element(t::OverlayBitsAllocated));
         const Tag bp = make_tag(g, tag_element(t::OverlayBitPosition));
         if (!ds.contains(bp) || ds.contains(make_tag(g, tag_element(t::OverlayData)))) continue;
-        auto bits_alloc = ds.get_int(ba);
-        auto pos = ds.get_int(bp);
+        const auto bits_alloc = ds.get_int(ba);
+        const auto pos = ds.get_int(bp);
         if (!pos || (bits_alloc && *bits_alloc == 1)) continue;
-        groups.push_back(g);
-        Element* px = ds.find(siaara::tags::PixelData);
-        auto alloc = ds.get_int(siaara::tags::BitsAllocated);
-        if (!px || px->is_encapsulated() || !alloc || (*alloc != 16 && *alloc != 32 && *alloc != 8)) continue;
-        if (*pos < 0 || *pos >= *alloc) continue;
+        const bool in_image = *pos >= high - stored + 1 && *pos <= high;
+        if (!native || *pos < 0 || *pos >= *alloc || in_image) {
+            r.remains = true;
+            continue;
+        }
+        mask |= 1u << *pos;
+        r.cleared.push_back(g);
+    }
+    if (mask) {
         std::vector<std::uint8_t> v(px->value.data(), px->value.data() + px->value.size());
         const std::size_t bytes = static_cast<std::size_t>(*alloc / 8);
-        const std::size_t byte_in = static_cast<std::size_t>(*pos / 8);
-        const auto mask = static_cast<std::uint8_t>(~(1u << (*pos % 8)));
-        for (std::size_t i = byte_in; i < v.size(); i += bytes) v[i] &= mask;
+        for (std::size_t i = 0; i + bytes <= v.size(); i += bytes)
+            for (std::size_t k = 0; k < bytes; ++k) v[i + k] &= static_cast<std::uint8_t>(~(mask >> (8 * k)) & 0xFFu);
         px->value = Bytes::copy_of(v.data(), v.size());
     }
-    return groups;
+    return r;
 }
 
 }  // namespace
@@ -773,14 +846,22 @@ std::vector<std::uint16_t> clear_embedded_overlays(Dataset& ds) {
 // ---------------------------------------------------------------- public helpers
 
 std::string replacement_uid(std::span<const std::uint8_t> key, std::string_view uid) {
-    HmacSha256 h(key);
-    return uid_from_digest(h.mac(trim_all(uid)));
+    const SubKeys k(key);
+    return uid_from_digest(k.uid.mac(trim_all(uid)));
+}
+
+std::int32_t date_offset_days(std::span<const std::uint8_t> key, std::string_view patient_id,
+                              std::string_view issuer_of_patient_id, std::uint32_t max_shift_days) {
+    const SubKeys k(key);
+    std::string who = patient_key(trim_all(patient_id), trim_all(issuer_of_patient_id));
+    const std::int32_t d = offset_from_digest(k.date.mac(who), max_shift_days ? max_shift_days : 1u);
+    secure_wipe(who.data(), who.size());
+    return d;
 }
 
 std::int32_t date_offset_days(std::span<const std::uint8_t> key, std::string_view patient_id,
                               std::uint32_t max_shift_days) {
-    HmacSha256 h(key);
-    return offset_from_digest(h.mac(kDatePrefix, patient_id), max_shift_days ? max_shift_days : 1u);
+    return date_offset_days(key, patient_id, std::string_view(), max_shift_days);
 }
 
 bool shift_date(std::string_view value, VR vr, std::int32_t days, std::string& out) {
@@ -857,10 +938,15 @@ Status deidentify(DicomFile& file, const Options& opt, Report* report) {
         if (Status s = blank_pixel_regions(ds, opt.pixel_regions); !s) return s;
         rep.flags |= PixelDataCleaned;
     }
-    for (std::uint16_t g : clear_embedded_overlays(ds)) {
+    if (has_pixels && opt.clean_recognizable_visual_features) {
+        if (Status s = opt.clean_recognizable_visual_features(ds); !s) return s;
+    }
+    const EmbeddedOverlays overlays = clear_embedded_overlays(ds);
+    for (std::uint16_t g : overlays.cleared) {
         std::erase_if(ds.elements(), [g](const Element& e) { return tag_group(e.tag) == g; });
         ++rep.removed;
     }
+    if (overlays.remains) rep.flags |= EmbeddedOverlayRemains | NotFullyDeidentified;
 
     std::string_view original_sop_instance = trim_all(ds.get_raw_string(siaara::tags::SOPInstanceUID).value_or(""));
     if (original_sop_instance.empty())
@@ -869,7 +955,8 @@ Status deidentify(DicomFile& file, const Options& opt, Report* report) {
 
     {
         Engine engine(opt, rep);
-        engine.set_context(sop_class, trim_all(file.dataset.get_raw_string(siaara::tags::PatientID).value_or("")));
+        engine.set_context(sop_class, trim_all(file.dataset.get_raw_string(siaara::tags::PatientID).value_or("")),
+                           trim_all(file.dataset.get_raw_string(0x00100021).value_or("")));  // Issuer of Patient ID
         if (Status s = engine.process(ds, false, 0); !s) return s;
 
         // E.1.1: Patient Identity Removed, De-identification Method and its code sequence.
@@ -882,6 +969,8 @@ Status deidentify(DicomFile& file, const Options& opt, Report* report) {
         add_code("113100");
         const bool pixels_clean = opt.pixel_data_clean;
         if (pixels_clean && has_pixels) add_code("113101");
+        const bool features_clean = has_pixels && static_cast<bool>(opt.clean_recognizable_visual_features);
+        if (features_clean) add_code("113102");
         for (std::size_t i = 0; i < kOptionCount; ++i)
             if (opt.options & (1u << i)) add_code(kOptionCode[i]);
         std::sort(codes.begin(), codes.end(), [](const MethodCode* a, const MethodCode* b) { return a->value < b->value; });
@@ -913,7 +1002,8 @@ Status deidentify(DicomFile& file, const Options& opt, Report* report) {
                 rep.flags |= BurnedInAnnotationRemains | NotFullyDeidentified;
             }
         }
-        if (visual == "YES") rep.flags |= RecognizableFeaturesRemain | NotFullyDeidentified;
+        if (features_clean) (void)ds.set_string(t::RecognizableVisualFeatures, VR::CS, "NO");
+        else if (visual == "YES") rep.flags |= RecognizableFeaturesRemain | NotFullyDeidentified;
 
         // File meta: replaced with a description of this application (E.1.1); the writer fills
         // in the Implementation Class UID and Version Name. The preamble is written as zeros.

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -331,7 +332,15 @@ Status locate_codestream(std::span<const std::uint8_t> in, std::span<const std::
     return malformed("no SOC marker or JP2 codestream box");
 }
 
-Status parse_codestream(std::span<const std::uint8_t> in, Codestream& cs) {
+// Called by parse_codestream as soon as SIZ is known, before anything else is parsed or
+// allocated, so a codestream that disagrees with the caller's attributes or limits costs nothing.
+class SizCheck {
+public:
+    virtual ~SizCheck() = default;
+    virtual Status on_siz(const Siz& siz) = 0;
+};
+
+Status parse_codestream(std::span<const std::uint8_t> in, Codestream& cs, SizCheck* check = nullptr) {
     if (in.size() < 4 || load_be16(&in[0]) != kSOC) return malformed("missing SOC");
     if (load_be16(&in[2]) != kSIZ) return malformed("SIZ must follow SOC", 2);
     std::size_t pos = 2;
@@ -376,6 +385,8 @@ Status parse_codestream(std::span<const std::uint8_t> in, Codestream& cs) {
         if (m == kSIZ) {
             if (seen_siz || !in_main) return malformed("second SIZ", seg_off);
             if (Status s = parse_siz(r, cs.siz); !s) return s;
+            if (check)
+                if (Status s = check->on_siz(cs.siz); !s) return s;
             seen_siz = true;
             cs.tiles.resize(std::size_t{cs.siz.ntx} * cs.siz.nty);
             continue;
@@ -669,10 +680,38 @@ bool is_term(const CodeBlock& cb, std::uint8_t style, int i) {
 
 // ---------------------------------------------------------------- output sinks
 
-class Sink {
+// Working-memory accounting of one decode (FrameInfo::memory_budget).
+struct Budget {
+    std::uint64_t limit = FrameInfo::kDefaultMemoryBudget;
+    std::uint64_t used = 0;
+    Status charge(std::uint64_t bytes, const char* what) {
+        if (bytes > limit || used > limit - bytes)
+            return Status(Errc::LimitExceeded, std::string("JPEG 2000: ") + what + " exceed the memory budget");
+        used += bytes;
+        return Status::ok();
+    }
+    void release(std::uint64_t bytes) noexcept { used = bytes > used ? 0 : used - bytes; }
+};
+
+class Sink : public SizCheck {
 public:
-    virtual ~Sink() = default;
     virtual Status begin(const Siz& siz) = 0;
+    // begin() plus the sample limit, right after SIZ (parse_codestream).
+    Status on_siz(const Siz& siz) override {
+        if (Status s = begin(siz); !s) return s;
+        // Every tile-component buffer is at most the component size.
+        std::uint64_t total = 0;
+        for (const auto& c : siz.comp) {
+            const std::uint64_t w = static_cast<std::uint64_t>(ceil_div(siz.xsiz, c.dx) - ceil_div(siz.xo, c.dx));
+            const std::uint64_t h = static_cast<std::uint64_t>(ceil_div(siz.ysiz, c.dy) - ceil_div(siz.yo, c.dy));
+            std::uint64_t n = 0;
+            if (!checked_mul(w, h, n) || !checked_add(total, n, total))
+                return Status(Errc::LimitExceeded, "JPEG 2000: image too large");
+        }
+        if (total > max_samples) return Status(Errc::LimitExceeded, "JPEG 2000: image exceeds the sample limit");
+        return Status::ok();
+    }
+    std::uint64_t memory_budget = FrameInfo::kDefaultMemoryBudget;
     // Final sample values of component c for tile region (tile reference-grid rectangle tx..,
     // component rectangle cx0..cx1 x cy0..cy1, raster with `stride`).
     virtual void put(std::size_t c, std::int64_t tx0, std::int64_t ty0, std::int64_t tx1, std::int64_t ty1,
@@ -686,14 +725,38 @@ public:
 struct Decoder {
     const Codestream& cs;
     Sink& sink;
+    Budget& budget;
     std::vector<std::uint32_t> blk_mag, scratch;
     std::vector<std::uint8_t> blk_neg, seg_bytes;
 
     Status decode_tile(std::size_t t);
 };
 
+// Heap bytes of a tag tree over w x h leaves (TagTree::init).
+std::uint64_t tag_tree_bytes(std::int64_t w, std::int64_t h) {
+    if (w <= 0 || h <= 0) return 0;
+    std::uint64_t nodes = 0, levels = 0;
+    for (std::int64_t cw = w, ch = h;; cw = (cw + 1) / 2, ch = (ch + 1) / 2) {
+        nodes += static_cast<std::uint64_t>(cw) * static_cast<std::uint64_t>(ch);
+        ++levels;
+        if (cw == 1 && ch == 1) break;
+    }
+    return nodes * (sizeof(int) + 1) + levels * (2 * sizeof(std::int64_t) + sizeof(std::size_t));
+}
+
+// Sets up the layout (resolutions, sub-bands, code-blocks, precincts) of tile t. Every block of
+// metadata is charged to `budget` (and added to `charged`) before it is allocated, and a tile-
+// component may not have more code-blocks or precincts than about one per 16 samples (plus the
+// partial blocks along the edges): a few bytes of COD asking for 1 x 1 code-blocks would
+// otherwise cost ~100 bytes of state per image sample.
 Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::vector<TileComp>& comps,
-                  std::int64_t& tx0, std::int64_t& ty0, std::int64_t& tx1, std::int64_t& ty1) {
+                  std::int64_t& tx0, std::int64_t& ty0, std::int64_t& tx1, std::int64_t& ty1, Budget& budget,
+                  std::uint64_t& charged) {
+    auto charge = [&](std::uint64_t bytes, const char* what) {
+        Status st = budget.charge(bytes, what);
+        if (st) charged += bytes;
+        return st;
+    };
     const Siz& siz = cs.siz;
     const std::int64_t p = static_cast<std::int64_t>(t % siz.ntx);
     const std::int64_t q = static_cast<std::int64_t>(t / siz.ntx);
@@ -703,6 +766,7 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
     ty1 = std::min<std::int64_t>(std::int64_t{siz.yto} + (q + 1) * siz.yt, siz.ysiz);
     const Params& mp = cs.main;
     const Params* tp = tin ? &tin->params : nullptr;
+    if (Status ch = charge(std::uint64_t{siz.comp.size()} * sizeof(TileComp), "tile-components"); !ch) return ch;
     comps.resize(siz.comp.size());
     for (std::size_t c = 0; c < comps.size(); ++c) {
         TileComp& tc = comps[c];
@@ -733,6 +797,46 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
         if (needs_all && qs.n < 3 * nl + 1) return malformed("too few quantisation values for the levels");
         const std::int64_t w = tc.x1 - tc.x0, h = tc.y1 - tc.y0;
         if (w < 0 || h < 0) return malformed("bad tile-component size");
+        // Code-block and precinct allowance of this tile-component (see above).
+        const std::uint64_t max_blocks = static_cast<std::uint64_t>(w) * static_cast<std::uint64_t>(h) / 16 +
+                                         2 * static_cast<std::uint64_t>(w + h) + 64 * static_cast<std::uint64_t>(nl + 1);
+        std::uint64_t blocks = 0, precincts = 0;
+        auto too_small = [] {
+            return Status(Errc::LimitExceeded,
+                          "JPEG 2000: code-blocks or precincts too small for the tile (fewer than 16 samples each)");
+        };
+        // Count first (arithmetic only), so an abusive layout is refused before anything of it
+        // is allocated. The same geometry is computed again below.
+        for (int r = 0; r <= nl; ++r) {
+            const int sh = nl - r;
+            const std::int64_t rx0 = ceil_shift(tc.x0, sh), ry0 = ceil_shift(tc.y0, sh);
+            const std::int64_t rx1 = ceil_shift(tc.x1, sh), ry1 = ceil_shift(tc.y1, sh);
+            const int ppx = st.ppx[r], ppy = st.ppy[r];
+            if (rx1 > rx0 && ry1 > ry0)
+                precincts += static_cast<std::uint64_t>(ceil_shift(rx1, ppx) - (rx0 >> ppx)) *
+                             static_cast<std::uint64_t>(ceil_shift(ry1, ppy) - (ry0 >> ppy));
+            const int nb = r == 0 ? nl : nl - r + 1;
+            const int cbw = std::min(st.xcb, r == 0 ? ppx : ppx - 1);
+            const int cbh = std::min(st.ycb, r == 0 ? ppy : ppy - 1);
+            for (int b = 0; b < (r == 0 ? 1 : 3); ++b) {
+                const Orient o = r == 0 ? kLL : static_cast<Orient>(b + 1);
+                const std::int64_t xob = (o == kHL || o == kHH) ? 1 : 0, yob = (o == kLH || o == kHH) ? 1 : 0;
+                std::int64_t bx0 = rx0, by0 = ry0, bx1 = rx1, by1 = ry1;
+                if (r > 0) {
+                    const std::int64_t d = std::int64_t{1} << nb, hf = std::int64_t{1} << (nb - 1);
+                    bx0 = ceil_div_s(tc.x0 - hf * xob, d);
+                    by0 = ceil_div_s(tc.y0 - hf * yob, d);
+                    bx1 = ceil_div_s(tc.x1 - hf * xob, d);
+                    by1 = ceil_div_s(tc.y1 - hf * yob, d);
+                }
+                if (bx1 > bx0 && by1 > by0)
+                    blocks += static_cast<std::uint64_t>(ceil_shift(bx1, cbw) - (bx0 >> cbw)) *
+                              static_cast<std::uint64_t>(ceil_shift(by1, cbh) - (by0 >> cbh));
+            }
+            if (blocks > max_blocks || precincts > max_blocks) return too_small();
+        }
+        blocks = precincts = 0;
+        if (Status ch = charge(std::uint64_t(nl + 1) * sizeof(Resolution), "resolutions"); !ch) return ch;
         tc.res.assign(static_cast<std::size_t>(nl) + 1, Resolution{});
         for (int r = 0; r <= nl; ++r) {
             Resolution& rs = tc.res[static_cast<std::size_t>(r)];
@@ -801,7 +905,11 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
                     bd.cby0 = bd.y0 >> cbh;
                     bd.ncbx = ceil_shift(bd.x1, cbw) - bd.cbx0;
                     bd.ncby = ceil_shift(bd.y1, cbh) - bd.cby0;
-                    bd.cbs.resize(static_cast<std::size_t>(bd.ncbx * bd.ncby));
+                    const std::uint64_t n = static_cast<std::uint64_t>(bd.ncbx) * static_cast<std::uint64_t>(bd.ncby);
+                    blocks += n;
+                    if (blocks > max_blocks) return too_small();
+                    if (Status ch = charge(n * sizeof(CodeBlock), "code-blocks"); !ch) return ch;
+                    bd.cbs.resize(static_cast<std::size_t>(n));
                     for (std::int64_t j = 0; j < bd.ncby; ++j) {
                         for (std::int64_t i = 0; i < bd.ncbx; ++i) {
                             CodeBlock& cb = bd.cbs[static_cast<std::size_t>(j * bd.ncbx + i)];
@@ -814,7 +922,12 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
                 }
             }
             // Precincts.
-            const std::size_t np = static_cast<std::size_t>(rs.npx * rs.npy);
+            const std::uint64_t np64 = static_cast<std::uint64_t>(rs.npx) * static_cast<std::uint64_t>(rs.npy);
+            precincts += np64;
+            if (precincts > max_blocks) return too_small();
+            if (Status ch = charge(np64 * (static_cast<std::uint64_t>(rs.nbands) * sizeof(PrecBand) + sizeof(int)), "precincts"); !ch)
+                return ch;
+            const std::size_t np = static_cast<std::size_t>(np64);
             rs.prec.resize(np * static_cast<std::size_t>(rs.nbands));
             rs.next_layer.assign(np, 0);
             for (std::int64_t ky = 0; ky < rs.npy; ++ky) {
@@ -832,6 +945,7 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
                         pb.cy1 = std::min<std::int64_t>((py + 1) << sy, bd.cby0 + bd.ncby) - bd.cby0;
                         if (pb.cx1 < pb.cx0) pb.cx1 = pb.cx0;
                         if (pb.cy1 < pb.cy0) pb.cy1 = pb.cy0;
+                        if (Status ch = charge(2 * tag_tree_bytes(pb.cx1 - pb.cx0, pb.cy1 - pb.cy0), "tag trees"); !ch) return ch;
                         pb.incl.init(pb.cx1 - pb.cx0, pb.cy1 - pb.cy0);
                         pb.zbp.init(pb.cx1 - pb.cx0, pb.cy1 - pb.cy0);
                     }
@@ -1107,10 +1221,17 @@ inline std::uint32_t roi_adjust(std::uint32_t v, int s) {
 }
 
 Status Decoder::decode_tile(std::size_t t) {
+    // Everything charged for this tile is released when it is done (or fails).
+    std::uint64_t charged = 0;
+    struct Release {
+        Budget& b;
+        std::uint64_t& n;
+        ~Release() { b.release(n); }
+    } release{budget, charged};
     const TileIn* tin = cs.tiles[t].get();
     std::vector<TileComp> comps;
     std::int64_t tx0 = 0, ty0 = 0, tx1 = 0, ty1 = 0;
-    if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1); !s) return s;
+    if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1, budget, charged); !s) return s;
     const Params* tp = tin ? &tin->params : nullptr;
 
     // Packet data.
@@ -1160,7 +1281,9 @@ Status Decoder::decode_tile(std::size_t t) {
             p.permissive = attempt == 2;
             if (attempt > 0) {
                 comps.clear();
-                if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1); !s) return s;
+                budget.release(charged);
+                charged = 0;
+                if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1, budget, charged); !s) return s;
             }
             read_packets(cs, tp, comps, p, tx0, ty0, tx1, ty1);
             if (!p.violation) break;
@@ -1175,6 +1298,9 @@ Status Decoder::decode_tile(std::size_t t) {
         const std::size_t w = static_cast<std::size_t>(tc.x1 - tc.x0);
         const std::size_t h = static_cast<std::size_t>(tc.y1 - tc.y0);
         const bool rev = tc.cs.transform == 1;
+        // The coefficient buffer (all components are needed at once for the colour transform).
+        if (Status s = budget.charge(std::uint64_t{w} * h * 4u, "tile buffers"); !s) return s;
+        charged += std::uint64_t{w} * h * 4u;
         if (rev) tc.ibuf.assign(w * h, 0);
         else tc.fbuf.assign(w * h, 0.0f);
         for (auto& rs : tc.res) {
@@ -1294,6 +1420,8 @@ Status Decoder::decode_tile(std::size_t t) {
                 d[i] = static_cast<std::int32_t>(std::clamp<std::int64_t>(std::int64_t{d[i]} + shift, lo, hi));
             src = d;
         } else {
+            if (Status s = budget.charge(std::uint64_t{w} * h * 4u, "tile buffers"); !s) return s;
+            charged += std::uint64_t{w} * h * 4u;
             outbuf.resize(w * h);
             const float flo = static_cast<float>(lo), fhi = static_cast<float>(hi);
             const float fs = static_cast<float>(shift);
@@ -1309,6 +1437,10 @@ Status Decoder::decode_tile(std::size_t t) {
         sink.put(c, tx0, ty0, tx1, ty1, tc.x0, tc.y0, tc.x1, tc.y1, src, w);
         tc.ibuf = {};
         tc.fbuf = {};
+        outbuf = {};
+        const std::uint64_t buffers = std::uint64_t{w} * h * 4u * (tc.cs.transform == 1 ? 1u : 2u);  // + the output copy
+        budget.release(buffers);
+        charged -= buffers;
     }
     return Status::ok();
 }
@@ -1317,19 +1449,16 @@ Status run_decoder(std::span<const std::uint8_t> in, Sink& sink) {
     std::span<const std::uint8_t> stream;
     bool wrapped = false;
     if (Status s = locate_codestream(in, stream, wrapped); !s) return s;
+    Budget budget;
+    budget.limit = sink.memory_budget;
+    // The parsed codestream holds at most a few copies of its packet headers (PPM, PPT).
+    std::uint64_t parse_bytes = 0;
+    if (!checked_mul(std::uint64_t{stream.size()}, std::uint64_t{3}, parse_bytes)) return Status(Errc::LimitExceeded, "JPEG 2000: input too large");
+    if (Status s = budget.charge(parse_bytes, "the parsed codestream"); !s) return s;
     Codestream cs;
-    if (Status s = parse_codestream(stream, cs); !s) return s;
-    if (Status s = sink.begin(cs.siz); !s) return s;
-    // Memory bound: every tile-component buffer is at most the component size.
-    std::uint64_t total = 0;
-    for (const auto& c : cs.siz.comp) {
-        const std::uint64_t w = static_cast<std::uint64_t>(ceil_div(cs.siz.xsiz, c.dx) - ceil_div(cs.siz.xo, c.dx));
-        const std::uint64_t h = static_cast<std::uint64_t>(ceil_div(cs.siz.ysiz, c.dy) - ceil_div(cs.siz.yo, c.dy));
-        std::uint64_t n = 0;
-        if (!checked_mul(w, h, n) || !checked_add(total, n, total)) return Status(Errc::LimitExceeded, "JPEG 2000: image too large");
-    }
-    if (total > sink.max_samples) return Status(Errc::LimitExceeded, "JPEG 2000: image exceeds the sample limit");
-    Decoder dec{cs, sink, {}, {}, {}, {}};
+    // The sink checks SIZ against the caller's attributes and limits as soon as it is read.
+    if (Status s = parse_codestream(stream, cs, &sink); !s) return s;
+    Decoder dec{cs, sink, budget, {}, {}, {}, {}};
     // Tiles without tile-parts (absent from a sparse or truncated codestream) decode as empty
     // tiles: all coefficients zero, like a tile whose packets were all discarded (B.11).
     for (std::size_t t = 0; t < cs.tiles.size(); ++t) {
@@ -1340,7 +1469,9 @@ Status run_decoder(std::span<const std::uint8_t> in, Sink& sink) {
 
 class FrameSink : public Sink {
 public:
-    FrameSink(const FrameInfo& info, std::span<std::uint8_t> out) : info_(info), out_(out) {}
+    FrameSink(const FrameInfo& info, std::span<std::uint8_t> out) : info_(info), out_(out) {
+        memory_budget = info.effective_memory_budget();
+    }
     Status begin(const Siz& siz) override {
         siz_ = &siz;
         if (siz.xsiz - siz.xo != info_.columns || siz.ysiz - siz.yo != info_.rows)
@@ -1354,7 +1485,9 @@ public:
             if (c.depth > info_.bits_allocated) return malformed("component precision exceeds BitsAllocated");
             if (c.sgn != info_.is_signed) return malformed("component signedness differs from PixelRepresentation");
         }
-        if (info_.frame_bytes() != out_.size()) return Status(Errc::BufferTooSmall, "JPEG 2000: output buffer size");
+        if (info_.frame_bytes() != out_.size())
+            return Status(out_.size() < info_.frame_bytes() ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                          "JPEG 2000: output buffer size");
         max_samples = static_cast<std::uint64_t>(info_.rows) * info_.columns * info_.samples_per_pixel;
         return Status::ok();
     }
@@ -1434,26 +1567,51 @@ private:
 
 Status decode_j2k(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
     if (info.frame_bytes() == 0) return Status(Errc::InvalidArgument, "JPEG 2000: invalid frame parameters");
-    if (out.size() != info.frame_bytes()) return Status(Errc::BufferTooSmall, "JPEG 2000: output buffer size");
+    if (out.size() != info.frame_bytes())
+        return Status(out.size() < info.frame_bytes() ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                      "JPEG 2000: output buffer size");
     std::memset(out.data(), 0, out.size());
-    FrameSink sink(info, out);
-    return run_decoder(in, sink);
+    // Allocation failure is reported, never thrown (decision 13.1).
+    try {
+        FrameSink sink(info, out);
+        return run_decoder(in, sink);
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    }
 }
 
 Status j2k::decode_components(std::span<const std::uint8_t> in, std::vector<Component>& out, std::uint64_t max_samples) {
-    ComponentSink sink(out);
-    sink.max_samples = max_samples;
-    return run_decoder(in, sink);
+    try {
+        ComponentSink sink(out);
+        sink.max_samples = max_samples;
+        return run_decoder(in, sink);
+    } catch (const std::bad_alloc&) {
+        out.clear();
+        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    }
 }
 
+namespace {
+Status probe_impl(std::span<const std::uint8_t> in, j2k::StreamInfo& out);
+}  // namespace
+
 Status j2k::probe(std::span<const std::uint8_t> in, StreamInfo& out) {
+    try {
+        return probe_impl(in, out);
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    }
+}
+
+namespace {
+Status probe_impl(std::span<const std::uint8_t> in, j2k::StreamInfo& out) {
     std::span<const std::uint8_t> stream;
     bool wrapped = false;
     if (Status s = locate_codestream(in, stream, wrapped); !s) return s;
     Codestream cs;
     if (Status s = parse_codestream(stream, cs); !s) return s;
     const Siz& z = cs.siz;
-    out = StreamInfo{};
+    out = j2k::StreamInfo{};
     out.width = z.xsiz - z.xo;
     out.height = z.ysiz - z.yo;
     out.x_offset = z.xo;
@@ -1478,5 +1636,6 @@ Status j2k::probe(std::span<const std::uint8_t> in, StreamInfo& out) {
     out.jp2_wrapper = wrapped;
     return Status::ok();
 }
+}  // namespace
 
 }  // namespace siaara::codec
