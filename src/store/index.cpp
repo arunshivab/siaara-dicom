@@ -1,0 +1,188 @@
+#include "store/index.hpp"
+
+#include <cstddef>
+#include <optional>
+
+#include "charset/charset.hpp"
+#include "core/dataset.hpp"
+#include "core/io.hpp"
+#include "core/reader.hpp"
+
+namespace siaara::store {
+
+namespace {
+
+namespace t {
+constexpr Tag ImageType = 0x00080008, StudyDate = 0x00080020, SeriesDate = 0x00080021,
+              ContentDate = 0x00080023, StudyTime = 0x00080030, SeriesTime = 0x00080031,
+              ContentTime = 0x00080033, AccessionNumber = 0x00080050,
+              ReferringPhysician = 0x00080090, StudyDescription = 0x00081030,
+              SeriesDescription = 0x0008103E, IssuerOfPatientId = 0x00100021,
+              BirthDate = 0x00100030, Sex = 0x00100040, SliceThickness = 0x00180050,
+              BodyPart = 0x00180015, StudyId = 0x00200010, SeriesNumber = 0x00200011,
+              InstanceNumber = 0x00200013, Position = 0x00200032, Orientation = 0x00200037,
+              FrameOfReference = 0x00200052, PixelSpacing = 0x00280030;
+}  // namespace t
+
+std::string_view trim(std::string_view s) noexcept {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.remove_suffix(1);
+    while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
+    return s;
+}
+
+// The whole value (all multiplicities) as UTF-8, padding removed.
+std::string text(const Dataset& ds, Tag tag, const charset::CharacterSet& cs) {
+    const Element* e = ds.find(tag);
+    if (!e || e->is_sequence() || e->is_encapsulated()) return {};
+    static const charset::CharacterSet kDefault{};
+    const bool uses = charset::vr_uses_character_set(e->vr);
+    const VR vr = e->vr == VR::UN ? VR::LO : e->vr;
+    std::string s = charset::decode(e->value.as_chars(), uses ? cs : kDefault, charset::text_kind(vr));
+    return std::string(trim(s));
+}
+
+template <class T>
+bool get_num(const Dataset& ds, Tag tag, T& out) {
+    auto v = ds.get_int(tag);
+    if (!v || *v < 0) return false;
+    out = static_cast<T>(*v);
+    return true;
+}
+
+bool get_doubles(const Dataset& ds, Tag tag, double* out, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        auto v = ds.get_double(tag, i);
+        if (!v) return false;
+        out[i] = *v;
+    }
+    return true;
+}
+
+bool in_buffer(const Bytes& buf, const std::uint8_t* p) noexcept {
+    return p && buf.data() && p >= buf.data() && p <= buf.data() + buf.size();
+}
+
+}  // namespace
+
+bool looks_like_dicom(const std::uint8_t* p, std::size_t n, bool allow_raw) noexcept {
+    if (has_part10_header(p, n)) return true;
+    if (!allow_raw || n < 8) return false;
+    if (p[0] == 'D' && p[1] == 'I' && p[2] == 'C' && p[3] == 'M') return true;
+    const std::uint16_t group = load_le16(p);
+    if (group != 0x0002 && group != 0x0008) return false;
+    const VR vr = vr_from_chars(static_cast<char>(p[4]), static_cast<char>(p[5]));
+    if (vr_is_known(vr)) return true;
+    const std::uint32_t len = load_le32(p + 4);
+    return len <= n - 8 && len < 0x10000u;
+}
+
+Status extract_index(const Bytes& data, IndexRecord& out, const ExtractOptions& opt) {
+    out = IndexRecord{};
+    out.file_size = data.size();
+    if (!looks_like_dicom(data.data(), data.size(), opt.allow_raw_dataset))
+        return Status(Errc::NotDicom, "not a DICOM file");
+    ReadOptions ro;
+    ro.allow_raw_dataset = opt.allow_raw_dataset;
+    auto r = read_part10(data, ro);
+    if (!r) return r.take_error();
+    const DicomFile& f = *r;
+    const Dataset& ds = f.dataset;
+    if (f.had_preamble) out.flags |= kHadPreamble;
+    const charset::CharacterSet cs = charset::character_set_of(ds);
+
+    out[Str::PatientId] = text(ds, tags::PatientID, cs);
+    out[Str::IssuerOfPatientId] = text(ds, t::IssuerOfPatientId, cs);
+    out[Str::PatientName] = text(ds, tags::PatientName, cs);
+    out[Str::PatientBirthDate] = text(ds, t::BirthDate, cs);
+    out[Str::PatientSex] = text(ds, t::Sex, cs);
+    out[Str::StudyInstanceUid] = text(ds, tags::StudyInstanceUID, cs);
+    out[Str::StudyDate] = text(ds, t::StudyDate, cs);
+    out[Str::StudyTime] = text(ds, t::StudyTime, cs);
+    out[Str::AccessionNumber] = text(ds, t::AccessionNumber, cs);
+    out[Str::StudyId] = text(ds, t::StudyId, cs);
+    out[Str::StudyDescription] = text(ds, t::StudyDescription, cs);
+    out[Str::ReferringPhysician] = text(ds, t::ReferringPhysician, cs);
+    out[Str::SeriesInstanceUid] = text(ds, tags::SeriesInstanceUID, cs);
+    out[Str::Modality] = text(ds, tags::Modality, cs);
+    out[Str::SeriesDescription] = text(ds, t::SeriesDescription, cs);
+    out[Str::BodyPartExamined] = text(ds, t::BodyPart, cs);
+    out[Str::SeriesDate] = text(ds, t::SeriesDate, cs);
+    out[Str::SeriesTime] = text(ds, t::SeriesTime, cs);
+    out[Str::FrameOfReferenceUid] = text(ds, t::FrameOfReference, cs);
+    out[Str::SopClassUid] = text(ds, tags::SOPClassUID, cs);
+    if (out[Str::SopClassUid].empty()) out[Str::SopClassUid] = text(f.meta, tags::MediaStorageSOPClassUID, cs);
+    out[Str::SopInstanceUid] = text(ds, tags::SOPInstanceUID, cs);
+    if (out[Str::SopInstanceUid].empty())
+        out[Str::SopInstanceUid] = text(f.meta, tags::MediaStorageSOPInstanceUID, cs);
+    out[Str::TransferSyntaxUid] = std::string(trim(f.transfer_syntax));
+    out[Str::PhotometricInterpretation] = text(ds, tags::PhotometricInterpretation, cs);
+    out[Str::ContentDate] = text(ds, t::ContentDate, cs);
+    out[Str::ContentTime] = text(ds, t::ContentTime, cs);
+    out[Str::ImageType] = text(ds, t::ImageType, cs);
+    if (auto v = ds.get_raw_string(tags::SpecificCharacterSet)) out[Str::SpecificCharacterSet] = std::string(trim(*v));
+
+    if (auto v = ds.get_int(t::SeriesNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
+        out.series_number = static_cast<std::int32_t>(*v);
+        out.flags |= kHasSeriesNumber;
+    }
+    if (auto v = ds.get_int(t::InstanceNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
+        out.instance_number = static_cast<std::int32_t>(*v);
+        out.flags |= kHasInstanceNumber;
+    }
+    if (get_doubles(ds, t::Position, out.position, 3)) out.flags |= kHasPosition;
+    if (get_doubles(ds, t::Orientation, out.orientation, 6)) out.flags |= kHasOrientation;
+    if (get_doubles(ds, t::PixelSpacing, out.pixel_spacing, 2)) out.flags |= kHasPixelSpacing;
+    if (auto v = ds.get_double(t::SliceThickness)) {
+        out.slice_thickness = *v;
+        out.flags |= kHasSliceThickness;
+    }
+    (void)get_num(ds, tags::Rows, out.rows);
+    (void)get_num(ds, tags::Columns, out.columns);
+    (void)get_num(ds, tags::BitsAllocated, out.bits_allocated);
+    (void)get_num(ds, tags::BitsStored, out.bits_stored);
+    (void)get_num(ds, tags::HighBit, out.high_bit);
+    (void)get_num(ds, tags::SamplesPerPixel, out.samples_per_pixel);
+    (void)get_num(ds, tags::PixelRepresentation, out.pixel_representation);
+
+    const Element* pd = ds.find(tags::PixelData);
+    if (!pd) pd = ds.find(tags::FloatPixelData);
+    if (!pd) pd = ds.find(tags::DoubleFloatPixelData);
+    if (pd) {
+        out.flags |= kHasPixelData;
+        out.number_of_frames = 1;
+        (void)get_num(ds, tags::NumberOfFrames, out.number_of_frames);
+        if (out.number_of_frames == 0) out.number_of_frames = 1;
+        if (pd->is_encapsulated()) {
+            out.flags |= kEncapsulated;
+            if (!pd->fragments.empty()) {
+                const std::uint8_t* first = pd->fragments.front().data();
+                const Bytes& last = pd->fragments.back();
+                if (first && in_buffer(data, first) && first - data.data() >= 8 &&
+                    in_buffer(data, last.data() + last.size())) {
+                    out.pixel_data_offset = static_cast<std::uint64_t>(first - data.data()) - 8u;
+                    std::uint64_t end = static_cast<std::uint64_t>(last.data() + last.size() - data.data());
+                    if (end + 8 <= data.size()) end += 8;  // sequence delimiter
+                    out.pixel_data_length = end - out.pixel_data_offset;
+                    out.flags |= kPixelOffsetKnown;
+                }
+            }
+        } else if (in_buffer(data, pd->value.data()) &&
+                   in_buffer(data, pd->value.data() + pd->value.size())) {
+            out.pixel_data_offset = static_cast<std::uint64_t>(pd->value.data() - data.data());
+            out.pixel_data_length = pd->value.size();
+            out.flags |= kPixelOffsetKnown;
+        }
+    }
+    return Status::ok();
+}
+
+Status extract_index_file(const std::string& utf8_path, IndexRecord& out, const ExtractOptions& opt) {
+    auto bytes = io::map_file(utf8_path);
+    if (!bytes) {
+        out = IndexRecord{};
+        return bytes.take_error();
+    }
+    return extract_index(*bytes, out, opt);
+}
+
+}  // namespace siaara::store
