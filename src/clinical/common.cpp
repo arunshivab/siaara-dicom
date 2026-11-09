@@ -1,6 +1,8 @@
 // SIAARA DICOM Toolkit - clinical-object layer shared helpers (see common.hpp).
 #include "clinical/common.hpp"
 
+#include "charset/charset.hpp"
+
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -425,6 +427,51 @@ std::optional<Code> read_code(const Dataset& ds, Tag sequence_tag) {
     const Dataset* item = first_item(ds, sequence_tag);
     if (!item) return std::nullopt;
     return read_code_item(*item);
+}
+
+void put_text(Dataset& ds, Tag tag, VR vr, std::string_view utf8, bool& non_ascii) {
+    for (char c : utf8)
+        if (static_cast<unsigned char>(c) >= 0x80) non_ascii = true;
+    (void)ds.set_string(tag, vr, utf8);
+}
+
+void finish_charset(Dataset& ds, bool non_ascii) {
+    if (non_ascii) (void)ds.set_string(siaara::tags::SpecificCharacterSet, VR::CS, "ISO_IR 192");
+    else ds.remove(siaara::tags::SpecificCharacterSet);
+}
+
+void copy_patient_study(const Dataset* src, Dataset& dst, bool& non_ascii) {
+    struct Attr {
+        Tag tag;
+        VR vr;
+        bool type2;
+    };
+    static constexpr Attr kAttrs[] = {
+        {siaara::tags::PatientName, VR::PN, true},     {siaara::tags::PatientID, VR::LO, true},
+        {0x00100021, VR::LO, false} /* Issuer of Patient ID */,
+        {tags::PatientBirthDate, VR::DA, true},        {tags::PatientSex, VR::CS, true},
+        {siaara::tags::StudyInstanceUID, VR::UI, false}, {tags::StudyDate, VR::DA, true},
+        {tags::StudyTime, VR::TM, true},               {tags::ReferringPhysicianName, VR::PN, true},
+        {tags::StudyId, VR::SH, true},                 {tags::AccessionNumber, VR::SH, true},
+        {tags::StudyDescription, VR::LO, false},
+    };
+    const charset::CharacterSet cs = src ? charset::character_set_of(*src) : charset::CharacterSet{};
+    for (const auto& a : kAttrs) {
+        std::optional<std::string> v;
+        if (src && src->contains(a.tag)) {
+            if (charset::vr_uses_character_set(a.vr)) v = charset::get_utf8(*src, a.tag, 0, &cs);
+            else v = src->get_string(a.tag);
+        }
+        if (v) put_text(dst, a.tag, a.vr, *v, non_ascii);
+        else if (a.type2) put_text(dst, a.tag, a.vr, "", non_ascii);
+    }
+}
+
+bool cs_valid(std::string_view s) noexcept {
+    if (s.empty() || s.size() > 16) return false;
+    for (char c : s)
+        if (!((c >= 'A' && c <= 'Z') || is_digit(c) || c == '_' || c == ' ')) return false;
+    return true;
 }
 
 // ---------------------------------------------------------------- UIDs

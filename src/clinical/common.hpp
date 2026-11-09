@@ -196,6 +196,16 @@ Dataset code_item(const Code& c);
 std::optional<Code> read_code(const Dataset& ds, Tag sequence_tag);
 std::optional<Code> read_code_item(const Dataset& item);
 
+// Writers keep all text in UTF-8: put_text stores the bytes and records whether any is
+// non-ASCII; finish_charset then sets Specific Character Set "ISO_IR 192" when needed.
+void put_text(Dataset& ds, Tag tag, VR vr, std::string_view utf8, bool& non_ascii);
+void finish_charset(Dataset& ds, bool non_ascii);
+// Copies the Patient and General Study module attributes from `src` (decoded to UTF-8 with its
+// Specific Character Set); Type 2 attributes are written empty when absent or src is null.
+void copy_patient_study(const Dataset* src, Dataset& dst, bool& non_ascii);
+// CS value check: at most 16 of A-Z 0-9 '_' and space (PS3.5 table 6.2-1).
+bool cs_valid(std::string_view s) noexcept;
+
 // ---------------------------------------------------------------- UIDs
 // A new UID "2.25.<integer value of a random version 4 UUID>" (PS3.5 B.2, ISO/IEC 9834-8). The
 // generator is a 64-bit Mersenne Twister seeded from std::random_device; calls are thread-safe.
