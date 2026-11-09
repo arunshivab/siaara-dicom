@@ -130,7 +130,7 @@ std::string Writer::finish() {
     static constexpr char kChars[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     for (int attempt = 0; attempt < 64; ++attempt) {
         std::string b = "siaara-";
-        for (int i = 0; i < 32; ++i) b.push_back(kChars[gen() % 62]);
+        for (int i = 0; i < 32; ++i) b.push_back(kChars[static_cast<std::size_t>(gen() % 62u)]);
         bool clash = false;
         for (const auto& it : items_)
             if (it.data.find(b) != std::string::npos) { clash = true; break; }
