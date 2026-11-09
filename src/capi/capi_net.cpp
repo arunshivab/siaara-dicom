@@ -2,9 +2,13 @@
 // SCP (include/siaara/siaara.h, "viewer / PACS additions").
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <deque>
+#include <condition_variable>
 #include <new>
 #include <set>
 #include <shared_mutex>
@@ -52,7 +56,14 @@ struct LogState {
     siaara_log_callback cb = nullptr;
     void* user = nullptr;
     std::atomic<int> min_level{SIAARA_LOG_ERROR + 1};
+    // PHI-flagged messages are redacted unless enabled (R-075, SEC-40: PHI logging off by default).
+    std::atomic<int> include_phi{0};
+    // Calls in flight per callback generation: replacing the callback waits for the old one's
+    // calls to finish, so the caller may then free `user` (R-076).
+    std::uint64_t generation = 0;  // guarded by mu
+    std::atomic<int> inflight[2] = {0, 0};
 };
+thread_local int t_in_log_callback = 0;
 LogState& log_state() {
     static LogState s;
     return s;
@@ -284,14 +295,28 @@ void log(int level, bool phi, std::string_view message) noexcept {
     try {
         siaara_log_callback cb = nullptr;
         void* user = nullptr;
+        std::size_t slot = 0;
         {
             std::shared_lock<std::shared_mutex> l(s.mu);
             cb = s.cb;
             user = s.user;
+            if (!cb) return;
+            slot = static_cast<std::size_t>(s.generation & 1u);
+            s.inflight[slot].fetch_add(1);
         }
-        if (!cb) return;
-        const std::string text(message);
-        cb(user, level, phi ? 1 : 0, text.c_str());
+        struct Done {
+            std::atomic<int>& n;
+            ~Done() {
+                --t_in_log_callback;
+                n.fetch_sub(1);
+            }
+        };
+        ++t_in_log_callback;
+        const Done done{s.inflight[slot]};
+        const bool redact = phi && s.include_phi.load(std::memory_order_relaxed) == 0;
+        const std::string text = redact ? std::string("[message with patient data withheld; see siaara_set_log_include_phi]")
+                                        : std::string(message);
+        cb(user, level, phi && !redact ? 1 : 0, text.c_str());
     } catch (...) {
         swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
     }
@@ -306,45 +331,121 @@ std::function<void(const std::string&)> log_sink(int level) {
 }  // namespace siaara::capi
 
 // ---------------------------------------------------------------- the SCP handle
+// Events go through a bounded queue to one dispatcher thread, which calls the user's callback
+// with no toolkit lock held (R-070): a slow callback delays only the event queue, and the
+// associations only once the queue is full (back-pressure, so no event is lost).
 struct siaara_scp {
+    struct Event {
+        int32_t kind = 0;
+        std::uint16_t status = 0;
+        int32_t outcome = 0;
+        int32_t uid_mismatch = 0;
+        std::string calling, cls, inst, addr, cmd_cls, cmd_inst;
+    };
+    static constexpr std::size_t kMaxQueued = 1024;
+
     std::unique_ptr<net::ScpServer> server;
     siaara_store* store = nullptr;
     st::DuplicatePolicy policy = st::DuplicatePolicy::Keep;
     siaara_scp_callback cb = nullptr;
     void* user = nullptr;
-    std::mutex cb_mu;
+    std::mutex q_mu;
+    std::condition_variable q_cv;       // events queued / dispatcher stopping
+    std::condition_variable space_cv;   // room in the queue
+    std::deque<Event> queue;
+    bool closing = false;
+    std::thread dispatcher;
     std::atomic<std::uint64_t> stored{0}, failures{0}, echoes{0}, bytes{0};
     siaara::capi::LiveHandle live_{};
 
-    // Stops the server (joins its threads) before the members its handlers use go away.
+    void start_dispatcher() {
+        if (cb) dispatcher = std::thread([this] { dispatch_loop(); });
+    }
+    bool on_dispatcher() const noexcept { return dispatcher.joinable() && dispatcher.get_id() == std::this_thread::get_id(); }
+
+    // Stops the server (joins its threads, so no new events), then delivers what is queued and
+    // ends the dispatcher, before the members its handlers use go away.
     ~siaara_scp() {
         if (server) server->stop();
+        {
+            const std::lock_guard<std::mutex> l(q_mu);
+            closing = true;
+        }
+        q_cv.notify_all();
+        space_cv.notify_all();
+        if (dispatcher.joinable()) dispatcher.join();
+    }
+
+    void dispatch_loop() {
+        for (;;) {
+            Event ev;
+            {
+                std::unique_lock<std::mutex> l(q_mu);
+                q_cv.wait(l, [&] { return closing || !queue.empty(); });
+                if (queue.empty()) return;
+                ev = std::move(queue.front());
+                queue.pop_front();
+            }
+            space_cv.notify_one();
+            siaara_scp_event e{};
+            e.struct_size = sizeof e;
+            e.kind = ev.kind;
+            e.dimse_status = ev.status;
+            e.outcome = ev.outcome;
+            e.calling_ae = ev.calling.c_str();
+            e.sop_class_uid = ev.cls.c_str();
+            e.sop_instance_uid = ev.inst.c_str();
+            e.peer_address = ev.addr.c_str();
+            e.uid_mismatch = ev.uid_mismatch;
+            e.command_sop_class_uid = ev.cmd_cls.c_str();
+            e.command_sop_instance_uid = ev.cmd_inst.c_str();
+            try {
+                cb(user, &e);
+            } catch (...) {
+                siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
 
     void event(int32_t kind, std::uint16_t status, int32_t outcome, const std::string& calling, const std::string& cls,
                const std::string& inst, const std::string& addr, const net::StoreRequest* rq = nullptr) {
         if (!cb) return;
-        static const std::string empty;
-        siaara_scp_event e{};
-        e.uid_mismatch = rq && rq->uid_mismatch ? 1 : 0;
-        e.command_sop_class_uid = (rq ? rq->command_sop_class_uid : empty).c_str();
-        e.command_sop_instance_uid = (rq ? rq->command_sop_instance_uid : empty).c_str();
-        e.struct_size = sizeof e;
-        e.kind = kind;
-        e.dimse_status = status;
-        e.outcome = outcome;
-        e.calling_ae = calling.c_str();
-        e.sop_class_uid = cls.c_str();
-        e.sop_instance_uid = inst.c_str();
-        e.peer_address = addr.c_str();
-        std::lock_guard<std::mutex> l(cb_mu);
         try {
-            cb(user, &e);
+            Event ev;
+            ev.kind = kind;
+            ev.status = status;
+            ev.outcome = outcome;
+            ev.calling = calling;
+            ev.cls = cls;
+            ev.inst = inst;
+            ev.addr = addr;
+            if (rq && rq->uid_mismatch) {
+                ev.uid_mismatch = 1;
+                ev.cmd_cls = rq->command_sop_class_uid;
+                ev.cmd_inst = rq->command_sop_instance_uid;
+            }
+            std::unique_lock<std::mutex> l(q_mu);
+            space_cv.wait(l, [&] { return closing || queue.size() < kMaxQueued; });
+            if (closing) return;
+            queue.push_back(std::move(ev));
+            l.unlock();
+            q_cv.notify_one();
         } catch (...) {
             siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
         }
     }
 };
+
+namespace {
+// From the SCP callback, freeing would join the thread it runs on: refused (the handle stays valid).
+void free_scp(siaara_scp* scp) noexcept {
+    if (scp && scp->on_dispatcher()) {
+        siaara::capi::log(SIAARA_LOG_ERROR, false, "siaara_scp_free called from the SCP callback: ignored");
+        return;
+    }
+    delete scp;
+}
+}  // namespace
 
 extern "C" {
 
@@ -389,10 +490,27 @@ SIAARA_API siaara_status SIAARA_CALL siaara_set_log_callback(siaara_log_callback
         if (min_level < SIAARA_LOG_DEBUG || min_level > SIAARA_LOG_ERROR)
             return fail(Errc::InvalidArgument, "min_level must be SIAARA_LOG_DEBUG .. SIAARA_LOG_ERROR");
         LogState& s = log_state();
-        std::unique_lock<std::shared_mutex> l(s.mu);
-        s.cb = cb;
-        s.user = user;
-        s.min_level.store(cb ? min_level : SIAARA_LOG_ERROR + 1, std::memory_order_relaxed);
+        std::size_t old_slot = 0;
+        {
+            std::unique_lock<std::shared_mutex> l(s.mu);
+            s.cb = cb;
+            s.user = user;
+            s.min_level.store(cb ? min_level : SIAARA_LOG_ERROR + 1, std::memory_order_relaxed);
+            old_slot = static_cast<std::size_t>(s.generation & 1u);
+            ++s.generation;
+        }
+        // Wait for calls of the previous callback still running (not from inside a callback,
+        // which the contract forbids and which would wait for itself).
+        if (t_in_log_callback == 0)
+            while (s.inflight[old_slot].load() != 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_set_log_include_phi(int32_t include_phi) {
+    return guarded([&]() -> siaara_status {
+        if (include_phi != 0 && include_phi != 1) return fail(Errc::InvalidArgument, "include_phi must be 0 or 1");
+        log_state().include_phi.store(include_phi, std::memory_order_relaxed);
         return ok();
     });
 }
@@ -912,6 +1030,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
         h->policy = o->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
         h->cb = cb;
         h->user = user;
+        h->start_dispatcher();
         siaara_scp* raw = h.get();
         net::ScpHandlers hd;
         hd.on_echo = [raw](const std::string& calling) -> std::uint16_t {
@@ -975,11 +1094,12 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp,
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp) {
     return guarded([&]() -> siaara_status {
         if (!scp) return fail(Errc::InvalidArgument, "scp must not be NULL");
+        if (scp->on_dispatcher()) return fail(Errc::InvalidArgument, "siaara_scp_stop must not be called from the SCP callback");
         scp->server->stop();
         return ok();
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT { delete scp; }
+SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT { free_scp(scp); }
 
 }  // extern "C"

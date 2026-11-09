@@ -1598,8 +1598,12 @@ enum { SIAARA_LOG_DEBUG = 0, SIAARA_LOG_INFO = 1, SIAARA_LOG_WARNING = 2, SIAARA
  * several threads at once and must not call siaara_set_log_callback. */
 typedef void (SIAARA_CALL* siaara_log_callback)(void* user, int32_t level, int32_t contains_phi, const char* message);
 /* Installs (cb NULL: removes) the process-wide log callback for messages at min_level and above.
- * Thread safety: any thread; a call already running may still use the previous callback. */
+ * Thread safety: any thread. Returns once calls of the previous callback still running have
+ * finished, so its `user` may be freed afterwards. */
 SIAARA_API siaara_status SIAARA_CALL siaara_set_log_callback(siaara_log_callback cb, void* user, int32_t min_level);
+/* Messages that may hold patient data (contains_phi) are delivered only when include_phi is 1;
+ * by default (0) they arrive as a fixed notice with contains_phi = 0 (PHI logging is off by default). */
+SIAARA_API siaara_status SIAARA_CALL siaara_set_log_include_phi(int32_t include_phi);
 
 /* ---------------------------------------------------------------- DIMSE networking (PS3.7, PS3.4) */
 /* Every SCU call opens one association to the peer, performs the operation and releases the
@@ -1764,7 +1768,10 @@ typedef struct siaara_scp_event {
     const char* command_sop_instance_uid; /* the command's Affected SOP Instance UID ("" unless uid_mismatch) */
 } siaara_scp_event;
 
-/* Called after each event, from the association's thread; never concurrently for one SCP. */
+/* Called after each event, in order, from one dispatcher thread of the SCP (never concurrently
+ * for one SCP), with no toolkit lock held: a slow callback delays only later events (and, once
+ * 1024 are queued, the associations). It must not call siaara_scp_stop (SIAARA_ERR_INVALID_ARGUMENT)
+ * or siaara_scp_free (ignored) on its own SCP. */
 typedef void (SIAARA_CALL* siaara_scp_callback)(void* user, const siaara_scp_event* event);
 
 typedef struct siaara_scp_stats {
@@ -1786,8 +1793,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
                                                       siaara_scp_callback cb, void* user, siaara_scp** out);
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_port(const siaara_scp* scp, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp, siaara_scp_stats* out);
-/* Stops accepting, aborts running associations and waits for the threads (no callback runs
- * afterwards). Idempotent. Do not call from the SCP callback. */
+/* Stops accepting, aborts running associations and waits for their threads. Events already
+ * queued are still delivered until siaara_scp_free. Idempotent. Not from the SCP callback. */
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp);
 SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT;
 

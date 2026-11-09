@@ -3,6 +3,7 @@
 // the DICOMweb additions (metadata, frames, retrieve, WADO-URI, cancel).
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -265,6 +266,14 @@ TEST_CASE("capi/net: Storage SCP, C-ECHO, allowed peers, C-STORE with transcodin
     CHECK(r.completed == 1);
     siaara_file_free(mem);
     CHECK(st.instances() == 3);
+    // Events arrive on the SCP's dispatcher thread (R-070): wait for them.
+    for (int i = 0; i < 200; ++i) {
+        {
+            std::lock_guard<std::mutex> l(ev.mu);
+            if (ev.stored.size() == 3 && ev.echoes == 1) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     {
         std::lock_guard<std::mutex> l(ev.mu);
         CHECK(ev.stored.size() == 3 && ev.echoes == 1);
@@ -711,6 +720,7 @@ TEST_CASE("capi/net: R-072 C-GET into a folder honours SIAARA_DUP_KEEP") {
     go.folder = folder_s.c_str();
     go.duplicate_policy = SIAARA_DUP_KEEP;
     LogText logs;
+    REQUIRE(siaara_set_log_include_phi(1) == SIAARA_OK);  // the warning names the instance (R-075)
     REQUIRE(siaara_set_log_callback(on_log_text, &logs, SIAARA_LOG_DEBUG) == SIAARA_OK);
     siaara_dimse_result r = result();
     CHECK(siaara_dimse_get(&p, SIAARA_QR_STUDY_ROOT, id, &go, nullptr, nullptr, nullptr, &r) == SIAARA_OK);
@@ -718,6 +728,7 @@ TEST_CASE("capi/net: R-072 C-GET into a folder honours SIAARA_DUP_KEEP") {
     CHECK_EQ(file_text(existing), std::string("EXISTING"));            // kept
     CHECK(file_text(folder / "2.25.60031.dcm").size() > 132);          // the new one written
     REQUIRE(siaara_set_log_callback(nullptr, nullptr, SIAARA_LOG_DEBUG) == SIAARA_OK);
+    REQUIRE(siaara_set_log_include_phi(0) == SIAARA_OK);
     bool logged = false;
     for (const auto& l : logs.lines)
         if (l.find("already exists") != std::string::npos) logged = true;
@@ -770,4 +781,69 @@ TEST_CASE("capi/net: R-074 store quota through siaara_store_options; SCP associa
     REQUIRE(siaara_scp_start(&o, store, nullptr, nullptr, &scp) == SIAARA_OK);
     siaara_scp_free(scp);
     siaara_store_free(store);
+}
+
+namespace {
+struct Gate {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open = false;
+    int events = 0;
+    siaara_scp* scp = nullptr;
+    siaara_status stop_from_cb = SIAARA_OK;
+};
+void SIAARA_CALL gated_cb(void* user, const siaara_scp_event* e) {
+    auto* g = static_cast<Gate*>(user);
+    std::unique_lock<std::mutex> l(g->mu);
+    ++g->events;
+    if (e->kind == SIAARA_SCP_STORED && g->events == 1) {
+        g->stop_from_cb = siaara_scp_stop(g->scp);  // must be refused, not deadlock
+        g->cv.wait_for(l, std::chrono::seconds(20), [&] { return g->open; });
+    }
+}
+}  // namespace
+
+TEST_CASE("capi/net: R-070 a slow SCP callback does not stall other associations") {
+    const auto dir = temp_dir("r070");
+    StoreOpen st(dir / "store");
+    REQUIRE(st.store);
+    Gate gate;
+    siaara_scp_options o;
+    std::memset(&o, 0, sizeof o);
+    o.struct_size = sizeof o;
+    o.ae_title = "CAPI_SCP";
+    o.bind_address = "127.0.0.1";
+    o.allow_any_calling_ae = 1;
+    o.idle_timeout_ms = 10000;
+    siaara_scp* scp = nullptr;
+    REQUIRE(siaara_scp_start(&o, st.store, gated_cb, &gate, &scp) == SIAARA_OK);
+    {
+        std::lock_guard<std::mutex> l(gate.mu);
+        gate.scp = scp;
+    }
+    uint32_t port = 0;
+    REQUIRE(siaara_scp_port(scp, &port) == SIAARA_OK);
+    siaara_dimse_peer p = peer(port);
+    p.dimse_timeout_ms = 3000;
+    auto store_one = [&](int i) {
+        siaara_file* f = to_capi(make_ct(50 + i));
+        siaara_dimse_result r = result();
+        const siaara_status s = f ? siaara_dimse_store(&p, f, nullptr, &r) : SIAARA_ERR_INTERNAL;
+        siaara_file_free(f);
+        return s;
+    };
+    // The first event blocks in the callback; both stores still complete.
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(store_one(0) == SIAARA_OK);
+    CHECK(store_one(1) == SIAARA_OK);
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+    {
+        std::lock_guard<std::mutex> l(gate.mu);
+        gate.open = true;
+    }
+    gate.cv.notify_all();
+    siaara_scp_free(scp);  // delivers the queued event, then returns
+    std::lock_guard<std::mutex> l(gate.mu);
+    CHECK_EQ(gate.events, 2);
+    CHECK(gate.stop_from_cb == SIAARA_ERR_INVALID_ARGUMENT);
 }

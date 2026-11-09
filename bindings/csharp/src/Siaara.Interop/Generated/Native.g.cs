@@ -1818,6 +1818,10 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_set_log_callback(delegate* unmanaged[Cdecl]<void*, int, int, byte*, void> cb, void* user, int min_level);
 
+    [LibraryImport(Library, EntryPoint = "siaara_set_log_include_phi")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_set_log_include_phi(int include_phi);
+
     [LibraryImport(Library, EntryPoint = "siaara_dimse_echo")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dimse_echo(siaara_dimse_peer* peer, nint cancel, siaara_dimse_result* result);
@@ -3113,6 +3117,11 @@ internal static unsafe class Native
     internal static int siaara_set_log_callback(nint cb, nint user, int min_level)
     {
         return Raw.siaara_set_log_callback((delegate* unmanaged[Cdecl]<void*, int, int, byte*, void>)cb, (void*)user, min_level);
+    }
+
+    internal static int siaara_set_log_include_phi(int include_phi)
+    {
+        return Raw.siaara_set_log_include_phi(include_phi);
     }
 
     internal static int siaara_dimse_echo(in siaara_dimse_peer peer, nint cancel, ref siaara_dimse_result result)
