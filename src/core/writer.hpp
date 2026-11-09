@@ -69,9 +69,11 @@ Status write_part10(const DicomFile& file, std::vector<std::uint8_t>& out,
 // The value bytes of a non-sequence, non-encapsulated element in the byte order the given
 // transfer syntax stores them (data sets hold values little endian in memory; big-endian syntaxes
 // swap them back exactly as the writer does). `bits_allocated` is the data set's Bits Allocated,
-// used for OW pixel data wider than 16 bits.
+// used for OW pixel data wider than 16 bits. `top_level`: the element is in the main data set (not
+// in a sequence item), which matters for syntaxes with big-endian Pixel Data only.
 Status stored_value_bytes(const Element& e, std::string_view transfer_syntax_uid,
-                          std::uint16_t bits_allocated, std::vector<std::uint8_t>& out);
+                          std::uint16_t bits_allocated, std::vector<std::uint8_t>& out,
+                          bool top_level = true);
 
 Status write_file(const DicomFile& file, const std::string& utf8_path, const WriteOptions& opt = {});
 

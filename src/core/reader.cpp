@@ -15,6 +15,7 @@ namespace {
 struct Syntax {
     bool explicit_vr = true;
     bool big_endian = false;
+    bool pixel_big_endian = false;  // F6b: only top-level OW Pixel Data is big endian
 };
 
 class Parser {
@@ -119,7 +120,11 @@ public:
                     if (syn.big_endian && depth == 0 && tag == tags::PixelData && e.vr == VR::OW &&
                         (bits_allocated_ == 32 || bits_allocated_ == 64))
                         unit = bits_allocated_ / 8u;
-                    e.value = value_bytes(e.vr, pos_, len, syn, unit);
+                    if (syn.pixel_big_endian && depth == 0 && tag == tags::PixelData && e.vr == VR::OW &&
+                        (bits_allocated_ == 16 || bits_allocated_ == 32 || bits_allocated_ == 64))
+                        e.value = swapped_copy(pos_, len, bits_allocated_ / 8u);
+                    else
+                        e.value = value_bytes(e.vr, pos_, len, syn, unit);
                     if (depth == 0 && tag == tags::BitsAllocated && e.value.size() >= 2)
                         bits_allocated_ = load_le16(e.value.data());
                     pos_ = static_cast<std::size_t>(vend);
@@ -291,6 +296,14 @@ private:
         return copy;
     }
 
+    Bytes swapped_copy(std::size_t at, std::uint32_t len, std::size_t w) {
+        Bytes copy = Bytes::copy_of(p_ + at, len);
+        auto* q = const_cast<std::uint8_t*>(copy.data());
+        for (std::size_t i = 0; i + w <= len; i += w)
+            for (std::size_t k = 0; k < w / 2; ++k) std::swap(q[i + k], q[i + w - 1 - k]);
+        return copy;
+    }
+
     Status lenient_or(Errc code, const char* msg) {
         if (opt_.lenient) {
             warn(msg);
@@ -320,7 +333,7 @@ private:
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {
     const TransferSyntaxInfo* t = find_transfer_syntax(uid);
     *info = t;
-    if (t) return Syntax{t->explicit_vr, t->big_endian};
+    if (t) return Syntax{t->explicit_vr, t->big_endian, t->pixel_big_endian};
     if (!lenient) return Status(Errc::Unsupported, "unknown transfer syntax");
     // Unknown (often private) transfer syntax: PS3.5 says encapsulated ones are explicit VR LE.
     return Syntax{true, false};

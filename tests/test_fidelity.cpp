@@ -425,3 +425,37 @@ TEST_CASE("fidelity: stored_value_bytes returns big-endian bytes for big-endian 
     REQUIRE(stored_value_bytes(*rows, ts::ExplicitVRLittleEndian, 0, v).is_ok());
     CHECK(v == (std::vector<std::uint8_t>{0x02, 0x01}));
 }
+
+TEST_CASE("F6b: GE private syntax 1.2.840.113619.5.2 has little-endian data set, big-endian pixels") {
+    Stream s;
+    s.explicit_vr = false;
+    s.us(0x00280010, 1);
+    s.us(0x00280011, 2);
+    s.us(0x00280100, 16);
+    // Icon image in a sequence: left as stored (only the main Pixel Data is big endian).
+    s.hdr(0x00880200, "SQ", kUndefinedLength);
+    s.item(kUndefinedLength);
+    s.us(0x00280100, 16);
+    s.hdr(tags::PixelData, "OW", 2);
+    s.bytes({0x01, 0x02});
+    s.item_end();
+    s.seq_end();
+    s.hdr(tags::PixelData, "OW", 4);
+    s.bytes({0x12, 0x34, 0xAB, 0xCD});              // samples 0x1234, 0xABCD stored big endian
+    const auto in = part10(std::string(ts::PrivateGEImplicitVRLittleEndianBigEndianPixels), s.b);
+    auto g = read_part10(Bytes::copy_of(in.data(), in.size()));
+    REQUIRE(g.is_ok());
+    CHECK_EQ(g->dataset.get_int(0x00280011).value_or(0), 2);
+    CHECK_EQ(g->dataset.get_int(tags::PixelData, 0).value_or(0), 0x1234);
+    CHECK_EQ(g->dataset.get_int(tags::PixelData, 1).value_or(0), 0xABCD);
+    CHECK_EQ(g->dataset.find(0x00880200)->items[0].get_int(tags::PixelData).value_or(0), 0x0201);
+    std::vector<std::uint8_t> v;
+    REQUIRE(stored_value_bytes(*g->dataset.find(tags::PixelData), g->transfer_syntax, 16, v).is_ok());
+    CHECK(v == (std::vector<std::uint8_t>{0x12, 0x34, 0xAB, 0xCD}));
+    // Saved in the same syntax: byte for byte; to explicit VR LE: little-endian pixels.
+    CHECK(resave(in) == in);
+    const auto le = resave(in, {}, "1.2.840.10008.1.2.1");
+    auto h = read_part10(Bytes::copy_of(le.data(), le.size()));
+    REQUIRE(h.is_ok());
+    CHECK_EQ(h->dataset.get_int(tags::PixelData, 1).value_or(0), 0xABCD);
+}

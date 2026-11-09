@@ -12,6 +12,7 @@ namespace {
 struct Enc {
     bool explicit_vr;
     bool big_endian;
+    bool pixel_big_endian = false;  // F6b: top-level OW Pixel Data big endian, rest little endian
 };
 
 // Byte-swap unit for a value in a big-endian syntax: per sample for OW pixel data wider than 16
@@ -160,6 +161,9 @@ private:
         out_.insert(out_.end(), e.value.data(), e.value.data() + len);
         if (pad) out_.push_back(static_cast<std::uint8_t>(vr_pad_char(vr)));
         if (enc_.big_endian) swap_in_place(out_.data() + at, len, swap_unit(e.tag, vr, pixel_bits_));
+        else if (enc_.pixel_big_endian && depth_ == 0 && e.tag == tags::PixelData && vr == VR::OW &&
+                 (pixel_bits_ == 16 || pixel_bits_ == 32 || pixel_bits_ == 64))
+            swap_in_place(out_.data() + at, len, pixel_bits_ / 8u);
         return Status::ok();
     }
 
@@ -211,6 +215,8 @@ private:
         if (as_un) enc_ = Enc{false, false};
         struct RestoreEnc { Enc& ref; Enc v; ~RestoreEnc() { ref = v; } } restore{enc_, outer};
         const std::size_t body = out_.size();
+        ++depth_;
+        struct Depth { unsigned& d; ~Depth() { --d; } } depth_guard{depth_};
         for (const Dataset& item : e.items) {
             const bool iundef = item_undefined(item, undef);
             tag(tags::Item);
@@ -255,6 +261,7 @@ private:
 
     std::vector<std::uint8_t>& out_;
     std::uint16_t pixel_bits_ = 0;
+    unsigned depth_ = 0;  // sequence nesting
     Enc enc_;
     const WriteOptions& opt_;
 };
@@ -262,13 +269,16 @@ private:
 }  // namespace
 
 Status stored_value_bytes(const Element& e, std::string_view transfer_syntax_uid,
-                          std::uint16_t bits_allocated, std::vector<std::uint8_t>& out) {
+                          std::uint16_t bits_allocated, std::vector<std::uint8_t>& out, bool top_level) {
     if (e.is_sequence() || e.is_encapsulated())
         return Status(Errc::TypeMismatch, "element has no single value (sequence or encapsulated)", 0, e.tag);
     const TransferSyntaxInfo* t = find_transfer_syntax(transfer_syntax_uid);
     out.assign(e.value.data(), e.value.data() + e.value.size());
     if (t && t->big_endian)
         swap_in_place(out.data(), out.size(), swap_unit(e.tag, e.vr == VR::None ? VR::UN : e.vr, bits_allocated));
+    else if (t && t->pixel_big_endian && top_level && e.tag == tags::PixelData && e.vr == VR::OW &&
+             (bits_allocated == 16 || bits_allocated == 32 || bits_allocated == 64))
+        swap_in_place(out.data(), out.size(), bits_allocated / 8u);
     return Status::ok();
 }
 
@@ -276,7 +286,7 @@ Status write_dataset(const Dataset& ds, std::string_view transfer_syntax_uid,
                      std::vector<std::uint8_t>& out, const WriteOptions& opt) {
     const TransferSyntaxInfo* t = find_transfer_syntax(transfer_syntax_uid);
     if (!t) return Status(Errc::Unsupported, "unknown transfer syntax");
-    const Enc enc{t->explicit_vr, t->big_endian};
+    const Enc enc{t->explicit_vr, t->big_endian, t->pixel_big_endian};
     if (t->codec == Codec::Deflate) {
         std::vector<std::uint8_t> plain;
         Writer w(plain, enc, opt);

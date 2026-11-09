@@ -1275,7 +1275,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_save_ex(const siaara_file* file
                                                          const siaara_save_options* options);
 /* The value bytes of element `tag` of `ds` (the file's data set, its meta, or an item borrowed
  * from it) exactly as stored in the file's transfer syntax: for Explicit VR Big Endian, big
- * endian; otherwise the same bytes siaara_dataset_get_raw returns. Copied into buf (cap bytes);
+ * endian (and the main data set's OW Pixel Data of the GE private syntax 1.2.840.113619.5.2, whose
+ * pixels are big endian); otherwise the same bytes siaara_dataset_get_raw returns. Copied into buf (cap bytes);
  * *needed receives the value length. SIAARA_ERR_BUFFER_TOO_SMALL when cap < length (buf may be
  * NULL with cap 0 to query the length). The meta group is always little endian. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_file* file, const siaara_dataset* ds,

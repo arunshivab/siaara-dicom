@@ -2319,7 +2319,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_fil
         std::vector<std::uint8_t> v;
         if (Status s = siaara::stored_value_bytes(*e, meta ? std::string_view(siaara::ts::ExplicitVRLittleEndian)
                                                            : std::string_view(file->file.transfer_syntax),
-                                                  bits, v);
+                                                  bits, v, d == &file->file.dataset);
             !s)
             return fail(s);
         *needed = v.size();
