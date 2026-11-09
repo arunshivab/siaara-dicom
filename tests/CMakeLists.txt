@@ -53,3 +53,12 @@ target_compile_options(pixel_tool PRIVATE ${SIAARA_WARN})
 add_executable(web_tool crosscheck/web_tool.cpp)
 target_link_libraries(web_tool PRIVATE siaara_static)
 target_compile_options(web_tool PRIVATE ${SIAARA_WARN})
+target_compile_options(charset_tool PRIVATE ${SIAARA_WARN})
+# Test-only store/scan benchmark (tests/crosscheck/store_perf.cpp); not run by ctest.
+add_executable(store_perf crosscheck/store_perf.cpp)
+target_link_libraries(store_perf PRIVATE siaara_static)
+target_compile_options(store_perf PRIVATE ${SIAARA_WARN})
+# Test-only DICOMDIR helper for tests/crosscheck/dicomdir_crosscheck.py (not installed).
+add_executable(dicomdir_tool crosscheck/dicomdir_tool.cpp)
+target_link_libraries(dicomdir_tool PRIVATE siaara_static)
+target_compile_options(dicomdir_tool PRIVATE ${SIAARA_WARN})
