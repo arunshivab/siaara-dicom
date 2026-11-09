@@ -13,18 +13,18 @@ target_compile_options(siaara-webcli PRIVATE ${SIAARA_WARN})
 add_executable(siaara-deid siaara_deid.cpp)
 target_link_libraries(siaara-deid PRIVATE siaara_static)
 target_compile_options(siaara-deid PRIVATE ${SIAARA_WARN})
+add_executable(siaara-repair siaara_repair.cpp)
+target_link_libraries(siaara-repair PRIVATE siaara_static)
+target_compile_options(siaara-repair PRIVATE ${SIAARA_WARN})
 foreach(tool findscu movescu getscu storescu)
   add_executable(siaara-${tool} siaara_${tool}.cpp)
   target_link_libraries(siaara-${tool} PRIVATE siaara_static)
   target_compile_options(siaara-${tool} PRIVATE ${SIAARA_WARN})
 endforeach()
 foreach(t siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
-          siaara-findscu siaara-movescu siaara-getscu siaara-storescu)
+          siaara-findscu siaara-movescu siaara-getscu siaara-storescu siaara-repair)
   siaara_harden(${t})
 endforeach()
 install(TARGETS siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
-        siaara-findscu siaara-movescu siaara-getscu siaara-storescu
+        siaara-findscu siaara-movescu siaara-getscu siaara-storescu siaara-repair
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-add_executable(siaara-repair siaara_repair.cpp)
-target_link_libraries(siaara-repair PRIVATE siaara_static)
-target_compile_options(siaara-repair PRIVATE ${SIAARA_WARN})

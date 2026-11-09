@@ -28,7 +28,10 @@ target_link_libraries(siaara_capi_smoke PRIVATE siaara)
 target_compile_options(siaara_capi_smoke PRIVATE ${SIAARA_WARN_C})
 add_test(NAME siaara_capi_smoke COMMAND siaara_capi_smoke ${CMAKE_CURRENT_BINARY_DIR}/capi_smoke.dcm)
 if(WIN32)
-  set_tests_properties(siaara_capi_smoke PROPERTIES ENVIRONMENT "PATH=$<TARGET_FILE_DIR:siaara>;$ENV{PATH}")
+  # Escape the ';' separators: an unescaped PATH would be split into list items and only its first
+  # entry would reach the test (the ASan runtime DLL directory was lost that way).
+  string(REPLACE ";" "\\;" _siaara_escaped_path "$ENV{PATH}")
+  set_tests_properties(siaara_capi_smoke PROPERTIES ENVIRONMENT "PATH=$<TARGET_FILE_DIR:siaara>\\;${_siaara_escaped_path}")
 endif()
 # Test-only JPEG-LS conversion tool for tests/crosscheck/jpegls_crosscheck.py (not installed).
 add_executable(jpegls_tool crosscheck/jpegls_tool.cpp)
