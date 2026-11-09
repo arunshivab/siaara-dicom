@@ -150,7 +150,7 @@ std::optional<std::vector<double>> get_numbers_n(const Dataset& ds, Tag tag, std
 std::optional<std::string> get_text(const Dataset& ds, Tag tag, std::size_t vm = 0);
 
 // Sequence items, or an empty span when absent / not a sequence.
-const std::vector<Dataset>& items_of(const Dataset& ds, Tag tag) noexcept;
+const ItemList& items_of(const Dataset& ds, Tag tag) noexcept;
 const Dataset* first_item(const Dataset& ds, Tag tag) noexcept;
 // Functional group macro lookup for an enhanced multi-frame object: the macro sequence `macro`
 // in the Per-frame Functional Groups item `frame`, else in the Shared Functional Groups item.

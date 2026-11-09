@@ -197,8 +197,8 @@ std::optional<std::string> get_text(const Dataset& ds, Tag tag, std::size_t vm) 
     return std::string(t);
 }
 
-const std::vector<Dataset>& items_of(const Dataset& ds, Tag tag) noexcept {
-    static const std::vector<Dataset> kEmpty;
+const ItemList& items_of(const Dataset& ds, Tag tag) noexcept {
+    static const ItemList kEmpty;
     const Element* e = ds.find(tag);
     if (!e || !e->is_sequence()) return kEmpty;
     return e->items;
