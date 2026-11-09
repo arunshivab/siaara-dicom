@@ -5,15 +5,22 @@
 #include <cstdint>
 #include <cstdlib>
 #include <new>
+#include <thread>
 
 #include "alloc_guard.hpp"
 #include "test.hpp"
 
 namespace {
 
-constexpr std::size_t kHeader = alignof(std::max_align_t) > sizeof(std::size_t) ? alignof(std::max_align_t)
-                                                                                : sizeof(std::size_t);
+// The header keeps the returned pointer at the alignment the compiler assumes for operator new
+// (__STDCPP_DEFAULT_NEW_ALIGNMENT__: 16 on Apple arm64, where alignof(std::max_align_t) is only 8).
+constexpr std::size_t kMax(std::size_t a, std::size_t b) { return a > b ? a : b; }
+constexpr std::size_t kHeader =
+    kMax(kMax(alignof(std::max_align_t), sizeof(std::size_t)), static_cast<std::size_t>(__STDCPP_DEFAULT_NEW_ALIGNMENT__));
 std::atomic<std::size_t> g_current{0};
+// Only the thread that created the guard is limited: operating-system and framework threads
+// (libdispatch, Metal, ...) allocate through the same operator new and must never see a refusal.
+thread_local bool t_guarded = false;
 std::atomic<bool> g_active{false};
 std::atomic<std::size_t> g_base{0};
 std::atomic<std::size_t> g_limit{0};
@@ -21,7 +28,7 @@ std::atomic<std::size_t> g_peak{0};
 std::atomic<bool> g_refused{false};
 
 void* allocate(std::size_t n, bool nothrow) {
-    if (g_active.load(std::memory_order_relaxed)) {
+    if (t_guarded && g_active.load(std::memory_order_relaxed)) {
         const std::size_t now = g_current.load(std::memory_order_relaxed);
         const std::size_t base = g_base.load(std::memory_order_relaxed);
         const std::size_t used = now > base ? now - base : 0;
@@ -91,10 +98,14 @@ AllocGuard::AllocGuard(std::size_t limit_bytes) {
     g_limit.store(limit_bytes);
     g_peak.store(0);
     g_refused.store(false);
+    t_guarded = true;
     g_active.store(true);
 }
 
-AllocGuard::~AllocGuard() { g_active.store(false); }
+AllocGuard::~AllocGuard() {
+    g_active.store(false);
+    t_guarded = false;
+}
 
 std::size_t AllocGuard::peak() const noexcept { return g_peak.load(); }
 
@@ -116,4 +127,16 @@ TEST_CASE("test harness: allocation guard counts and refuses") {
     CHECK(threw);
     CHECK(g.refused());
     ::operator delete(small);
+    // Other threads are counted but never refused.
+    bool other_threw = false;
+    std::thread th([&] {
+        try {
+            void* big = ::operator new(2u << 20);
+            ::operator delete(big);
+        } catch (const std::bad_alloc&) {
+            other_threw = true;
+        }
+    });
+    th.join();
+    CHECK(!other_threw);
 }

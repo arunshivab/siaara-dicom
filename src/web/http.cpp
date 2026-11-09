@@ -50,6 +50,11 @@ std::int64_t now_ms() {
         .count();
 }
 
+// Lingering close of a refused connection on the accept thread: short, so a peer that keeps
+// the connection open cannot hold the accept loop for long.
+constexpr int kLingerMs = 250;
+constexpr std::size_t kLingerBytes = std::size_t{64} * 1024;
+
 // Strict decimal Content-Length (RFC 9110 8.6): 1*DIGIT, checked.
 bool parse_decimal(std::string_view s, std::uint64_t& out) noexcept {
     if (s.empty() || s.size() > 19) return false;
@@ -446,6 +451,27 @@ void Connection::close() noexcept {
         t_->shutdown();
         t_->close();
     }
+}
+
+void Connection::close_lingering(int max_ms, std::size_t max_bytes) noexcept {
+    if (!t_) return;
+    t_->shutdown_send();
+    const std::int64_t end = now_ms() + (max_ms < 0 ? 0 : max_ms);
+    std::uint8_t sink[4096];
+    std::size_t total = 0;
+    try {
+        while (total < max_bytes) {
+            const std::int64_t left = end - now_ms();
+            if (left <= 0) break;
+            auto r = t_->read_some(sink, sizeof sink, static_cast<int>(left));
+            if (!r || *r == 0) break;  // peer closed, timed out or failed
+            total += *r;
+        }
+    } catch (...) {
+        // Building an error Status failed (std::bad_alloc): stop draining; the socket is closed below.
+        total = max_bytes;
+    }
+    close();
 }
 
 int Connection::timeout_now(int base) const {
@@ -1094,7 +1120,7 @@ void Server::accept_loop() {
             rs.set("Retry-After", "1");
             rs.body = "server busy\n";
             (void)c.write_response(rs, false, true);
-            c.close();
+            c.close_lingering(kLingerMs, kLingerBytes);  // the request was never read
             if (cfg_.log) cfg_.log("http: connection refused (busy)");
             continue;
         }

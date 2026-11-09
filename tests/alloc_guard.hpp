@@ -3,7 +3,8 @@
 // AllocGuard is alive, allocations that would raise the bytes allocated since the guard started
 // above its limit throw std::bad_alloc instead, and the peak is recorded. Amplification
 // regression tests use it to bound a decoder's memory without letting it take the machine.
-// Only the thread that runs the test should allocate while a guard is active.
+// Only the thread that created the guard is limited; allocations of other threads (the OS's
+// included) are counted but never refused.
 #pragma once
 
 #include <cstddef>

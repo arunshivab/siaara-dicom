@@ -152,6 +152,11 @@ public:
     net::Transport& transport() noexcept { return *t_; }
     bool is_open() const noexcept { return t_ && t_->is_open(); }
     void close() noexcept;
+    // Close after an error response sent without reading the whole request: ends the sending
+    // direction, then discards input until the peer closes, `max_ms` passes or `max_bytes` were
+    // read. Closing with unread input makes the OS send a reset, and a Windows peer then drops
+    // the response it had not read yet.
+    void close_lingering(int max_ms, std::size_t max_bytes) noexcept;
     // True when bytes of a next message have already been received.
     bool has_buffered() const noexcept { return pos_ < buf_.size(); }
 

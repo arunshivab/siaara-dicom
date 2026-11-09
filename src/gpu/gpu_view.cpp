@@ -135,11 +135,12 @@ Status GpuAccess::layer(const View& v, Packer& pk, std::uint32_t L, const Volume
         // Exact colours of every int16 value, computed like the CPU's compose() (WinMap::gray / below).
         if (!cache.valid || cache.a != a || cache.b != b || cache.map != style.colormap) {
             cache.words.resize(65536);
-            for (std::int32_t x = -32768; x <= 32767; ++x) {
+            for (std::size_t i = 0; i < 65536; ++i) {
+                const std::int32_t x = static_cast<std::int32_t>(i) - 32768;
                 const double w = x * a + b;
                 const double tt = w > 0.0 ? (w < 1.0 ? w : 1.0) : 0.0;
-                const auto gray = static_cast<std::uint8_t>(tt * 255.0 + 0.5);
-                cache.words[static_cast<std::size_t>(x + 32768)] = pack_rgb(detail::colormap_rgb(style.colormap, gray), !(w > 0.0));
+                const auto gray = static_cast<std::uint8_t>(std::lround(tt * 255.0));  // 0..255
+                cache.words[i] = pack_rgb(detail::colormap_rgb(style.colormap, gray), !(w > 0.0));
             }
             cache.valid = true;
             cache.a = a;
@@ -147,7 +148,7 @@ Status GpuAccess::layer(const View& v, Packer& pk, std::uint32_t L, const Volume
             cache.map = style.colormap;
         }
         const std::uint32_t at = pk.alloc(65536);
-        std::memcpy(pk.d.data() + at, cache.words.data(), 65536u * 4u);
+        std::memcpy(pk.d.data() + at, cache.words.data(), std::size_t{65536} * 4u);
         pk.u(L + P::LLut, at);
     }
     (void)v;
@@ -345,7 +346,7 @@ Status GpuAccess::render(const View& v, gpu::ViewGpu& g, std::span<std::uint8_t>
                     };
                     const double top = at(x0, y0) * (1 - ax) + at(x1, y0) * ax;
                     const double bot = at(x0, y1) * (1 - ax) + at(x1, y1) * ax;
-                    px[c] = static_cast<std::uint8_t>(top * (1 - ay) + bot * ay + 0.5);
+                    px[c] = static_cast<std::uint8_t>(std::lround(top * (1 - ay) + bot * ay));  // 0..255
                 }
             }
         }

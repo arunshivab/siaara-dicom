@@ -200,6 +200,16 @@ public:
 #endif
     }
 
+    void shutdown_send() noexcept override {
+        const std::intptr_t fd = fd_.load();
+        if (fd == kInvalid) return;
+#if defined(_WIN32)
+        (void)::shutdown(to_handle(fd), SD_SEND);
+#else
+        (void)::shutdown(to_handle(fd), SHUT_WR);
+#endif
+    }
+
     void close() noexcept override {
         const std::intptr_t fd = fd_.exchange(kInvalid);
         if (fd != kInvalid) close_handle(to_handle(fd));
