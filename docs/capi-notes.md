@@ -1,0 +1,116 @@
+# C API additions for the PACS application: design notes
+
+Open design choices taken on branch `wip-capi`, with the simplest robust option chosen and the
+alternatives, for review with the owner. Everything here can still change before the API is
+frozen; none of it is in a released ABI yet.
+
+## 1. Where the code lives
+
+**Chosen:** the new exports are in their own translation units (`src/capi/capi_view2d.cpp`,
+`capi_net.cpp`, `capi_web.cpp`, `capi_misc.cpp`). `capi.cpp` only gained
+`src/capi/capi_internal.hpp` (shared handle structs) and a short bridge block at its end
+(thread error, TLS option conversion, live-handle counter).
+
+- Pro: merges with work on `capi.cpp` stay small; much faster rebuilds.
+- Con: the handle structs (`siaara_file`, `siaara_store`, `siaara_web_client`, `siaara_volume`)
+  moved to a header. The other option, one big `capi.cpp`, means one 3000+ line file.
+
+## 2. Blocking calls, async and cancellation
+
+**Chosen:** every C call is synchronous. Long calls take a `siaara_cancel*` token (DIMSE, volume
+build, store verify / rebuild, DICOMDIR write) or have one attached (`siaara_web_client_set_cancel`).
+`siaara_cancel_set` may be called from any thread: network calls abort at once (the DIMSE
+association gets A-ABORT; the HTTP connection is shut down), file loops stop at the next file.
+C# runs the call on a pool thread and ties its `CancellationToken` to a native token.
+
+- Pro: one simple model, no callbacks into managed code to complete operations, no native thread
+  pool or event loop to own, works the same in C, C# and NativeAOT.
+- Con: a pool thread is busy for the whole call (fine at PACS scale, not for thousands of
+  concurrent requests).
+- Con: a TCP connect (and TLS handshake) in progress cannot be interrupted; it waits for the
+  connect timeout. Closing that gap needs non-blocking connects in `net/socket`.
+- Con: cancelling a DIMSE retrieve aborts the association instead of sending C-CANCEL (C-CANCEL is
+  sent when a progress / match callback returns non-zero). A gentler "C-CANCEL, then abort after a
+  grace period" can be added later without an API change.
+- Alternative: a true asynchronous C API (completion callbacks plus a library thread pool). More
+  code, harder ownership rules, and every binding then needs marshalling of completions.
+
+## 3. One association per DIMSE call
+
+**Chosen:** `siaara_dimse_*` take a `siaara_dimse_peer` description (host, port, AE titles,
+timeouts, max PDU, TLS) and open, use and release one association per call. No SCU handle.
+
+- Pro: stateless and thread-safe; no association lifetime or state machine for callers;
+  `siaara_dimse_store_files` already sends many files over one association.
+- Con: a caller doing many small C-FINDs pays one association setup each (a few ms on a LAN).
+- Alternative: a `siaara_association` handle (connect / find / move / release). Can be added
+  later next to the stateless calls.
+
+## 4. C-FIND results
+
+**Chosen:** a callback gets each match as a borrowed `siaara_dataset*` (read with the usual data
+set functions or `siaara_dataset_to_json`); returning non-zero sends C-CANCEL. C# collects the
+matches as `DicomFile`s (through DICOM JSON).
+
+- Pro: streaming, no result object to free, no limit on the number of matches.
+- Con: C# converts each match through JSON (simple, slightly slower than walking the data set).
+
+## 5. 2D rendering: decode once, render at image resolution, then place
+
+**Chosen:** `siaara_frame_open` decodes a frame and copies the data set; `siaara_frame_render`
+runs the VOI / colour pipeline at image resolution and then resamples into the viewport
+(flips, rotation, zoom, pan; nearest or bilinear on the 8-bit output). The frame is immutable,
+so several threads may render one frame at once.
+
+- Pro: window / level drags never decode again; simple and exact pipeline; thread safe.
+- Con: bilinear interpolation works on display values, not on modality values (the usual viewer
+  behaviour; visible only at large zoom with steep windows). Interpolating modality values first
+  would need the pipeline per output pixel.
+- Con: cubic interpolation is refused for 2D (`SIAARA_ERR_UNSUPPORTED`).
+- Con: with a presentation state the GSPS renderer decodes the frame again on every call
+  (`render_with_presentation_state` takes an `Image`, not a decoded frame). Fix later in
+  `clinical/gsps` if GSPS window drags matter.
+- Open: presentation state text objects are not drawn (the C++ returns them placed; no C API to
+  get them yet).
+
+## 6. Logging
+
+**Chosen:** one process-wide callback (`siaara_set_log_callback`) with a level and a
+`contains_phi` flag per message. Messages naming SOP Instance UIDs or patient data are flagged;
+association, TLS and status messages are not. The callback may run on several threads at once.
+
+- Pro: one place to route diagnostics; the PHI flag lets the app keep identifiers out of general
+  logs.
+- Con: process-wide (no per-handle loggers). The C# side keeps every replaced handler alive (one
+  small object per replacement) rather than risk a call into a freed handle.
+
+## 7. Storage SCP
+
+**Chosen:** `siaara_scp_start` serves Verification and Storage into a `siaara_store`, with an
+allowed-peer list; an empty list needs `allow_any_calling_ae` (as main's NET-05 rule for
+`ScpServer`). Duplicates follow `SIAARA_DUP_*`. Events go to one callback, serialised per SCP.
+
+- Open: no C-FIND / C-MOVE / C-GET SCP from the store yet (a Q/R SCP over `siaara_store_query`
+  would be the next step if the app should act as a PACS for modalities).
+- Open: large instances are received in memory (the C++ spool to disk is not wired up).
+
+## 8. Encoders
+
+**Chosen:** `siaara_encode_jpeg` (the toolkit's baseline encoder, YCbCr 4:4:4, a JFIF APP0 added)
+and `siaara_encode_png` (written fresh: CRC-32, Adler-32, zlib wrapper over the toolkit's DEFLATE,
+per-row adaptive filters). Output in an owned `siaara_buffer`.
+
+- Pro: no double encoding for size queries (the output size is unknown in advance).
+- Con: one more handle type to free.
+
+## 9. Smaller choices
+
+- `siaara_dataset_get_strings` returns NUL-separated values; for sequence items that inherit a
+  character set, C# falls back to one call per value.
+- `siaara_debug_live_handles` counts every handle through a member in each handle struct, so no
+  create / free function had to change.
+- Lossless JPEG-LS of signed samples codes the two's complement bit patterns (the decoder
+  already sign-extends); near-lossless JPEG-LS of signed data stays refused because NEAR would
+  bound the error of the bit pattern, not of the value.
+- `siaara_gpu_select` affects views that have not rendered on the GPU yet; views that did keep
+  their device.

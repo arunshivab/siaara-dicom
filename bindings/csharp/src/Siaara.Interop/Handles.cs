@@ -186,6 +186,16 @@ internal sealed class PresentationStateHandle : SiaaraHandle
     }
 }
 
+/// <summary>siaara_buffer (siaara_buffer_free).</summary>
+internal sealed class BufferHandle : SiaaraHandle
+{
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_buffer_free(handle);
+        return true;
+    }
+}
+
 /// <summary>siaara_cancel (siaara_cancel_free).</summary>
 internal sealed class CancelHandle : SiaaraHandle
 {

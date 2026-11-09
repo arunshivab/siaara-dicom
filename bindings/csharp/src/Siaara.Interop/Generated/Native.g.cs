@@ -1888,6 +1888,26 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dicomdir_write_ex(byte* utf8_root, nuint root_len, byte** files, nuint* lens, nuint count, siaara_dicomdir_write_options* options, nint cancel, delegate* unmanaged[Cdecl]<void*, ulong, ulong, int> cb, void* user, uint* warnings);
 
+    [LibraryImport(Library, EntryPoint = "siaara_buffer_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_buffer_free(nint buffer);
+
+    [LibraryImport(Library, EntryPoint = "siaara_buffer_data")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_buffer_data(nint buffer, byte** out_data, ulong* out_size);
+
+    [LibraryImport(Library, EntryPoint = "siaara_encode_jpeg")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_encode_jpeg(byte* pixels, nuint size, uint width, uint height, int format, int quality, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_encode_png")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_encode_png(byte* pixels, nuint size, uint width, uint height, int format, int level, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_gpu_select")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_gpu_select(uint index);
+
     [LibraryImport(Library, EntryPoint = "siaara_dataset_append_item")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dataset_append_item(nint ds, uint tag, nint* @out, uint* index);
@@ -3297,6 +3317,41 @@ internal static unsafe class Native
         fixed (siaara_dicomdir_write_options* p_options = &options)
         fixed (uint* p_warnings = &warnings)
             return Raw.siaara_dicomdir_write_ex((byte*)p_utf8_root, (nuint)utf8_root.Length, (byte**)p_files, (nuint*)p_lens, count, p_options, cancel, (delegate* unmanaged[Cdecl]<void*, ulong, ulong, int>)cb, (void*)user, p_warnings);
+    }
+
+    internal static void siaara_buffer_free(nint buffer)
+    {
+        Raw.siaara_buffer_free(buffer);
+    }
+
+    internal static int siaara_buffer_data(nint buffer, out nint out_data, out ulong out_size)
+    {
+        out_data = 0;
+        out_size = default;
+        fixed (nint* p_out_data = &out_data)
+        fixed (ulong* p_out_size = &out_size)
+            return Raw.siaara_buffer_data(buffer, (byte**)p_out_data, p_out_size);
+    }
+
+    internal static int siaara_encode_jpeg(ReadOnlySpan<byte> pixels, uint width, uint height, int format, int quality, out nint @out)
+    {
+        @out = 0;
+        fixed (byte* p_pixels = pixels)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_encode_jpeg((byte*)p_pixels, (nuint)pixels.Length, width, height, format, quality, p_out);
+    }
+
+    internal static int siaara_encode_png(ReadOnlySpan<byte> pixels, uint width, uint height, int format, int level, out nint @out)
+    {
+        @out = 0;
+        fixed (byte* p_pixels = pixels)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_encode_png((byte*)p_pixels, (nuint)pixels.Length, width, height, format, level, p_out);
+    }
+
+    internal static int siaara_gpu_select(uint index)
+    {
+        return Raw.siaara_gpu_select(index);
     }
 
     internal static int siaara_dataset_append_item(nint ds, uint tag, out nint @out, out uint index)

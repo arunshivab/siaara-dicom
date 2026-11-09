@@ -198,3 +198,42 @@ internal static class ViewerTests
         });
     }
 }
+
+/// <summary>JPEG / PNG encoders, GPU device choice, signed JPEG-LS.</summary>
+internal static class EncoderTests
+{
+    internal static void Register()
+    {
+        Case("encode: PNG and JPEG of a rendered frame", () =>
+        {
+            using DicomFile f = Builders.Smoke();
+            using DicomFrame fr = f.OpenFrame();
+            byte[] rgba = fr.Render(new ViewportOptions { Width = 16, Height = 8, Background = new(0, 0, 0, 255) });
+            byte[] png = ImageEncoder.EncodePng(rgba, 16, 8);
+            Check(png.AsSpan(0, 8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }));
+            Check(png.AsSpan(png.Length - 8, 4).SequenceEqual("IEND"u8));
+            byte[] gray = fr.Render(new ViewportOptions { Width = 16, Height = 8, Format = PixelOutputFormat.Gray8 });
+            byte[] jpg = ImageEncoder.EncodeJpeg(gray, 16, 8, PixelOutputFormat.Gray8, 85);
+            CheckEq(jpg[0], (byte)0xFF);
+            CheckEq(jpg[1], (byte)0xD8);
+            Check(jpg.AsSpan(6, 4).SequenceEqual("JFIF"u8));
+            Throws<ArgumentOutOfRangeException>(() => ImageEncoder.EncodeJpeg(rgba, 16, 8, quality: 0));
+            CheckEq(Throws<SiaaraException>(() => ImageEncoder.EncodePng(rgba.AsSpan(0, 10), 16, 8))?.ErrorCode, SiaaraErrorCode.InvalidArgument);
+        });
+
+        Case("encode: GPU device list and selection; lossless JPEG-LS of signed data", () =>
+        {
+            var devices = Siaara.Volumes.GpuDevices.List();
+            CheckEq(Throws<SiaaraException>(() => Siaara.Volumes.GpuDevices.Select(devices.Count))?.ErrorCode, SiaaraErrorCode.NotFound);
+            if (devices.Count > 0)
+            {
+                Siaara.Volumes.GpuDevices.Select(0);
+                Check(Siaara.Volumes.GpuDevices.List()[0].IsSelected);
+            }
+            using DicomFile f = Builders.Smoke();
+            byte[] before = f.DecodeFrame(0);
+            f.Transcode(DicomTransferSyntaxes.JPEGLSLossless);
+            Check(f.DecodeFrame(0).SequenceEqual(before));
+        });
+    }
+}

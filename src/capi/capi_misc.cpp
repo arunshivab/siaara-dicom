@@ -1,6 +1,8 @@
 // SIAARA DICOM Toolkit - C API: data set additions (sequence items, multi-valued strings) and
 // diagnostics (include/siaara/siaara.h, "viewer / PACS additions").
 #include <cstring>
+#include <memory>
+#include <span>
 #include <new>
 #include <string>
 
@@ -11,6 +13,9 @@
 #include "capi/capi_internal.hpp"
 #include "charset/charset.hpp"
 #include "core/dataset.hpp"
+#include "codec/codec.hpp"
+#include "gpu/gpu.hpp"
+#include "image/png.hpp"
 #include "store/dicomdir.hpp"
 #include "volume/volume.hpp"
 
@@ -260,6 +265,117 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write_ex(const char* root, 
         auto r = st::write_dicomdir(std::string(root, root_len), paths, o);
         if (!r) return cancel_result(r.error(), cancel, by_cb);
         if (warnings) *warnings = static_cast<uint32_t>(r->warnings.size());
+        return ok();
+    });
+}
+
+}  // extern "C"
+
+// ---------------------------------------------------------------- image encoders, GPU choice
+struct siaara_buffer {
+    std::vector<std::uint8_t> bytes;
+    siaara::capi::LiveHandle live_{};
+};
+
+namespace {
+
+siaara_status check_pixels(const uint8_t* pixels, size_t size, uint32_t width, uint32_t height, int32_t format,
+                           unsigned& channels) {
+    if (format != SIAARA_PIXELS_RGBA8 && format != SIAARA_PIXELS_GRAY8) return fail(Errc::InvalidArgument, "unknown format");
+    channels = format == SIAARA_PIXELS_RGBA8 ? 4u : 1u;
+    if (width == 0 || height == 0 || width > 65535 || height > 65535)
+        return fail(Errc::InvalidArgument, "width and height must be 1..65535");
+    if (!pixels || size < std::uint64_t{width} * height * channels) return fail(Errc::InvalidArgument, "pixel buffer too short");
+    return SIAARA_OK;
+}
+
+siaara_status buffer_out(std::vector<std::uint8_t>&& bytes, siaara_buffer** out) {
+    auto b = std::make_unique<siaara_buffer>();
+    b->bytes = std::move(bytes);
+    *out = b.release();
+    return ok();
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API void SIAARA_CALL siaara_buffer_free(siaara_buffer* buffer) SIAARA_NOEXCEPT { delete buffer; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_buffer_data(const siaara_buffer* buffer, const uint8_t** out_data,
+                                                        uint64_t* out_size) {
+    return guarded([&]() -> siaara_status {
+        if (!buffer || !out_data) return fail(Errc::InvalidArgument, "buffer and out_data must not be NULL");
+        *out_data = buffer->bytes.data();
+        if (out_size) *out_size = buffer->bytes.size();
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_encode_jpeg(const uint8_t* pixels, size_t size, uint32_t width, uint32_t height,
+                                                        int32_t format, int32_t quality, siaara_buffer** out) {
+    return guarded([&]() -> siaara_status {
+        if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
+        *out = nullptr;
+        unsigned ch = 0;
+        if (siaara_status s = check_pixels(pixels, size, width, height, format, ch); s != SIAARA_OK) return s;
+        if (quality < 0 || quality > 100) return fail(Errc::InvalidArgument, "quality must be 0..100");
+        namespace cd = siaara::codec;
+        const std::size_t n = std::size_t{width} * height;
+        std::vector<std::uint8_t> in;
+        if (ch == 4) {
+            in.resize(n * 3);
+            for (std::size_t i = 0; i < n; ++i) {
+                in[3 * i] = pixels[4 * i];
+                in[3 * i + 1] = pixels[4 * i + 1];
+                in[3 * i + 2] = pixels[4 * i + 2];
+            }
+        } else {
+            in.assign(pixels, pixels + n);
+        }
+        cd::FrameInfo fi;
+        fi.rows = height;
+        fi.columns = width;
+        fi.samples_per_pixel = static_cast<std::uint16_t>(ch == 4 ? 3 : 1);
+        fi.bits_allocated = 8;
+        fi.bits_stored = 8;
+        cd::EncodeParams p;
+        p.lossless = false;
+        p.quality = quality ? quality : 90;
+        p.ybr = ch == 4;
+        std::vector<std::uint8_t> enc;
+        if (siaara::Status s = cd::encode_jpeg(in, fi, p, enc); !s) return fail(s);
+        // A JFIF APP0 segment after SOI (JFIF 1.02: 1:1 aspect, no thumbnail) so that viewers
+        // outside DICOM read the components as YCbCr.
+        if (enc.size() >= 4 && enc[0] == 0xFF && enc[1] == 0xD8 && !(enc[2] == 0xFF && enc[3] == 0xE0)) {
+            static const std::uint8_t app0[18] = {0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00,
+                                                  0x01, 0x02, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00};
+            enc.insert(enc.begin() + 2, app0, app0 + 18);
+        }
+        return buffer_out(std::move(enc), out);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_encode_png(const uint8_t* pixels, size_t size, uint32_t width, uint32_t height,
+                                                       int32_t format, int32_t level, siaara_buffer** out) {
+    return guarded([&]() -> siaara_status {
+        if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
+        *out = nullptr;
+        unsigned ch = 0;
+        if (siaara_status s = check_pixels(pixels, size, width, height, format, ch); s != SIAARA_OK) return s;
+        if (level < -1 || level > 9) return fail(Errc::InvalidArgument, "level must be -1..9");
+        std::vector<std::uint8_t> png;
+        if (siaara::Status s = siaara::image::encode_png(std::span<const std::uint8_t>(pixels, size), width, height, ch,
+                                                         level < 0 ? 6 : level, png);
+            !s)
+            return fail(s);
+        return buffer_out(std::move(png), out);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_gpu_select(uint32_t index) {
+    return guarded([&]() -> siaara_status {
+        if (siaara::Status s = siaara::gpu::select_device(index); !s) return fail(s);
         return ok();
     });
 }

@@ -130,6 +130,26 @@ std::shared_ptr<Backend> acquire() {
     return r.active;
 }
 
+Status select_device(std::size_t index) {
+    Registry& r = reg();
+    std::shared_ptr<Backend> old;
+    {
+        std::lock_guard<std::mutex> lock(r.m);
+        ensure_probed(r);
+        if (index >= r.devices.size()) return Status(Errc::NotFound, "gpu: no device with that index");
+        if (static_cast<std::size_t>(r.selected) == index && !r.create_failed) return Status::ok();
+        for (DeviceInfo& d : r.devices) d.selected = false;
+        r.selected = static_cast<int>(index);
+        r.devices[index].selected = true;
+        old = std::move(r.active);
+        r.active.reset();
+        r.create_failed = false;
+        r.reason.clear();
+    }
+    old.reset();  // outside the lock: the backend may wait for the device
+    return Status::ok();
+}
+
 std::string unavailable_reason() {
     Registry& r = reg();
     std::lock_guard<std::mutex> lock(r.m);

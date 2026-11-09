@@ -1843,6 +1843,31 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write_ex(const char* utf8_r
                                                               siaara_cancel* cancel, siaara_progress_callback cb,
                                                               void* user, uint32_t* warnings);
 
+/* ---------------------------------------------------------------- image encoders and byte buffers */
+/* An immutable byte buffer owned by the library (encoder output). Any thread. */
+typedef struct siaara_buffer siaara_buffer;
+
+SIAARA_API void SIAARA_CALL siaara_buffer_free(siaara_buffer* buffer) SIAARA_NOEXCEPT;
+/* Borrowed bytes, valid until the buffer is freed. */
+SIAARA_API siaara_status SIAARA_CALL siaara_buffer_data(const siaara_buffer* buffer, const uint8_t** out_data,
+                                                        uint64_t* out_size);
+/* Baseline JPEG (JFIF, YCbCr 4:4:4 for colour) of width x height pixels in SIAARA_PIXELS_RGBA8
+ * (alpha ignored) or SIAARA_PIXELS_GRAY8 layout, rows top to bottom without padding. quality
+ * 1..100, 0 = 90. Caller owns *out. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_encode_jpeg(const uint8_t* pixels, size_t size, uint32_t width, uint32_t height,
+                                                        int32_t format, int32_t quality, siaara_buffer** out);
+/* PNG (8-bit RGBA or gray, adaptive filtering, the toolkit's own DEFLATE). level 0..9, -1 = 6.
+ * Caller owns *out. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_encode_png(const uint8_t* pixels, size_t size, uint32_t width, uint32_t height,
+                                                       int32_t format, int32_t level, siaara_buffer** out);
+
+/* ---------------------------------------------------------------- GPU device choice */
+/* Selects device `index` of siaara_gpu_devices for this process instead of the automatic choice
+ * (discrete, integrated, virtual, other, CPU). Views that already rendered on the GPU keep their
+ * device; later renders use the new one. SIAARA_ERR_NOT_FOUND for an index past the list.
+ * Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_gpu_select(uint32_t index);
+
 /* ---------------------------------------------------------------- data set additions */
 /* Appends an empty item to sequence `tag` (created with VR SQ when absent) and returns it,
  * borrowed and writable: valid until that sequence or its owner changes (re-fetch items with

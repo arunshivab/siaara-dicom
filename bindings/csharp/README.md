@@ -8,7 +8,7 @@
 | Path | What |
 |---|---|
 | `src/Siaara.Interop` | Internal. `Generated/Native.g.cs` (constants, blittable structs, `[LibraryImport]` declarations in `Raw`, safe span/ref overloads in `Native`), SafeHandles, the native library resolver, `[UnmanagedCallersOnly]` callback trampolines. The only project with `AllowUnsafeBlocks`. Packed into the Siaara package. |
-| `src/Siaara` | Public API: `DicomFile`, `DicomDataset`, `DicomTag`/`DicomTags`, `DicomDictionary`, frames and rendering, `Transcoder`, `DicomStore`, `FolderScanner`, `Dicomdir`, `Deidentifier`, `DicomIndex`, `Siaara.Web.DicomWebClient` + `TlsOptions`, `Siaara.Clinical` (geometry, series sort, SUV, ROI, SR, SEG, RTSTRUCT), `Siaara.Volumes` (`Volume`, `VolumeView`). |
+| `src/Siaara` | Public API: `DicomFile`, `DicomDataset`, `DicomTag`/`DicomTags`, `DicomDictionary`, frames and rendering, `Transcoder`, `DicomStore`, `FolderScanner`, `Dicomdir`, `Deidentifier`, `DicomIndex`, `Siaara.Web.DicomWebClient` + `TlsOptions`, `Siaara.Clinical` (geometry, series sort, SUV, ROI, SR, SEG, RTSTRUCT), `Siaara.Volumes` (`Volume`, `VolumeView`, `GpuDevices`), `DicomFrame` + `ViewportOptions` (2D viewing), `PresentationState`, `ImageEncoder` (JPEG / PNG), `Siaara.Network` (`Dimse`, `StorageScp`, `SiaaraLog`). |
 | `tests/Siaara.Tests` | Console test runner (no test framework package), same CHECK/REQUIRE style as `tests/test.hpp`. |
 | `tests/native/struct_layout.c` | Generated; built by the CMake target `siaara_csharp_struct_layout`. |
 | `samples/Siaara.AotSample` | NativeAOT / trimming proof. |

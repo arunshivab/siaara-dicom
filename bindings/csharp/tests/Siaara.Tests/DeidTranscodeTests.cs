@@ -70,17 +70,9 @@ internal static class DeidTranscodeTests
             string dir = NewTempDir("transcode");
             foreach (string ts in syntaxes)
             {
+                // Signed samples go through every lossless codec, JPEG-LS included (two's
+                // complement bit patterns, sign-extended again by the decoder).
                 using DicomFile f = Builders.Ct(16, 16, px);
-                if (ts == DicomTransferSyntaxes.JPEGLSLossless)
-                {
-                    // The JPEG-LS encoder takes unsigned samples only (C library limitation).
-                    f.Dataset.SetUInt16(DicomTags.PixelRepresentation, 0);
-                    CheckEq(Throws<SiaaraException>(() =>
-                    {
-                        using DicomFile signed = Builders.Ct(16, 16, px);
-                        signed.Transcode(ts);
-                    })?.ErrorCode, SiaaraErrorCode.Unsupported);
-                }
                 byte[] original = f.DecodeFrame(0);
                 f.Transcode(ts);
                 CheckEq(f.TransferSyntaxUid, ts);

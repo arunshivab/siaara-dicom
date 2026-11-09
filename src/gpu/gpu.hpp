@@ -102,6 +102,10 @@ std::vector<DeviceInfo> devices();
 // in unavailable_reason()).
 std::shared_ptr<Backend> acquire();
 std::string unavailable_reason();
+// Selects device `index` of devices() for the process instead of the automatic choice. The
+// previous backend is released once no view uses it; views that already rendered on the GPU keep
+// their device, later views use the new one. NotFound for an index past the list.
+Status select_device(std::size_t index);
 
 // Per-view state held by volume::View (through a shared_ptr, so the View stays movable).
 struct ViewGpu;
