@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <set>
 #include <string>
@@ -45,7 +46,7 @@ bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     ScuConfig cfg;
     cfg.calling_ae = "SIAARA_STORE";
     unsigned long timeout = 30000, quality = 90, async = 0, max_pdu = 65536;
@@ -181,4 +182,11 @@ int main(int argc, char** argv) {
         return 1;
     }
     return failures == 0 ? 0 : 1;
+} catch (const std::exception& e) {
+    // An exception (std::bad_alloc, a filesystem error) is reported, not left to std::terminate.
+    std::fprintf(stderr, "error: %s\n", e.what());
+    return 1;
+} catch (...) {
+    std::fprintf(stderr, "error: unexpected exception\n");
+    return 1;
 }

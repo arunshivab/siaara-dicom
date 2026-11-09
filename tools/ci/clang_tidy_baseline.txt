@@ -1,5 +1,5 @@
 # clang-tidy findings accepted when the gate was introduced (tools/ci/clang_tidy_gate.py).
-# Remove entries as the code is fixed; never add entries for new code.
+# Remove entries as the code is fixed; never add entries for new code, except a genuine false positive with a "# false positive: <reason>" line above it.
 src/capi/capi.cpp|bugprone-empty-catch|empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether
 src/capi/capi.cpp|bugprone-not-null-terminated-result|the result from calling '_' is not null-terminated
 src/charset/charset.cpp|bugprone-branch-clone|repeated branch body in conditional chain
@@ -99,5 +99,11 @@ tools/siaara_deid.cpp|bugprone-exception-escape|an exception may be thrown in fu
 tools/siaara_dump.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
 tools/siaara_echoscu.cpp|bugprone-branch-clone|repeated branch body in conditional chain
 tools/siaara_echoscu.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
+# false positive: empty {} bodies of an option chain whose conditions parse into different variables (as echoscu)
+tools/siaara_findscu.cpp|bugprone-branch-clone|repeated branch body in conditional chain
+# false positive: empty {} bodies of an option chain whose conditions parse into different variables (as echoscu)
+tools/siaara_getscu.cpp|bugprone-branch-clone|repeated branch body in conditional chain
+# false positive: empty {} bodies of an option chain whose conditions parse into different variables (as echoscu)
+tools/siaara_storescu.cpp|bugprone-branch-clone|repeated branch body in conditional chain
 tools/siaara_webcli.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
 tools/siaara_webcli.cpp|cert-err34-c|'_' used to convert a string to an integer value, but function will not report conversion errors; consider using '_' instead

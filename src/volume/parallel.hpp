@@ -42,11 +42,13 @@ unsigned parallel_for(std::uint64_t count, unsigned threads, F&& fn) noexcept {
         pool.reserve(threads - 1);
         for (unsigned t = 1; t < threads; ++t) pool.emplace_back(work, t);
     } catch (...) {
-        // Not all workers could start: the ones that did and the caller finish the work.
+        // Not all workers could start (std::system_error, std::bad_alloc): the ones that did and
+        // the caller finish the work.
+        threads = static_cast<unsigned>(pool.size() + 1);
     }
     work(0u);
     for (auto& t : pool) t.join();
-    return static_cast<unsigned>(pool.size() + 1);
+    return threads;
 }
 
 }  // namespace siaara::volume::detail

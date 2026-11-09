@@ -103,7 +103,7 @@ struct Int16Counts {
     std::vector<std::uint64_t> c;  // 4 x 65536
     bool init() noexcept {
         try {
-            c.assign(4u * 65536u, 0);
+            c.assign(std::size_t{4} * 65536u, 0);
             return true;
         } catch (...) {
             return false;

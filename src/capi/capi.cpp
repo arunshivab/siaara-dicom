@@ -2213,7 +2213,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_set_curve(siaara_view* view, co
         if (!view || (!points && count)) return fail(Errc::InvalidArgument, "view and points must not be NULL");
         std::vector<vol::Vec3> pts;
         pts.reserve(count);
-        for (uint32_t i = 0; i < count; ++i) pts.push_back({points[3 * i], points[3 * i + 1], points[3 * i + 2]});
+        for (std::size_t i = 0; i < count; ++i) pts.push_back({points[3 * i], points[3 * i + 1], points[3 * i + 2]});
         if (Status s = view->view.set_curve(pts, spline != 0); !s) return fail(s);
         return ok();
     });
@@ -2230,10 +2230,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_set_transfer_function(siaara_vi
         if (tf->opacity_count > 65536 || tf->color_count > 65536 || tf->gradient_count > 65536)
             return fail(Errc::LimitExceeded, "too many transfer function points");
         vol::TransferFunction t;
-        for (uint32_t i = 0; i < tf->opacity_count; ++i) t.opacity.push_back({tf->opacity_points[2 * i], tf->opacity_points[2 * i + 1]});
-        for (uint32_t i = 0; i < tf->gradient_count; ++i)
+        for (std::size_t i = 0; i < tf->opacity_count; ++i) t.opacity.push_back({tf->opacity_points[2 * i], tf->opacity_points[2 * i + 1]});
+        for (std::size_t i = 0; i < tf->gradient_count; ++i)
             t.gradient_opacity.push_back({tf->gradient_points[2 * i], tf->gradient_points[2 * i + 1]});
-        for (uint32_t i = 0; i < tf->color_count; ++i) {
+        for (std::size_t i = 0; i < tf->color_count; ++i) {
             const double* c = tf->color_points + 4 * i;
             t.color.push_back({c[0], c[1], c[2], c[3]});
         }

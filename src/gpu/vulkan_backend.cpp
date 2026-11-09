@@ -152,7 +152,7 @@ Library open_library(const std::string& name) {
         return L;
     }
     static_assert(sizeof(V::PFN_GetInstanceProcAddr) == sizeof(void*), "function and object pointers differ in size");
-    std::memcpy(&L.gipa, &sym, sizeof sym);
+    std::memcpy(reinterpret_cast<unsigned char*>(&L.gipa), reinterpret_cast<const unsigned char*>(&sym), sizeof sym);
     L.ok = true;
     return L;
 }

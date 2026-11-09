@@ -20,8 +20,8 @@ std::string hex_tag(Tag t) {
     static constexpr char kHex[] = "0123456789ABCDEF";
     std::string out = "(gggg,eeee)";
     for (int i = 0; i < 4; ++i) {
-        out[static_cast<std::size_t>(1 + i)] = kHex[(t >> (28 - 4 * i)) & 0xFu];
-        out[static_cast<std::size_t>(6 + i)] = kHex[(t >> (12 - 4 * i)) & 0xFu];
+        out[1 + static_cast<std::size_t>(i)] = kHex[(t >> (28 - 4 * i)) & 0xFu];
+        out[6 + static_cast<std::size_t>(i)] = kHex[(t >> (12 - 4 * i)) & 0xFu];
     }
     return out;
 }
@@ -209,8 +209,8 @@ private:
         static const char* hex = "0123456789ABCDEF";
         std::string s = "(gggg,eeee)";
         for (int i = 0; i < 4; ++i) {
-            s[static_cast<std::size_t>(1 + i)] = hex[(t >> (28 - 4 * i)) & 0xFu];
-            s[static_cast<std::size_t>(6 + i)] = hex[(t >> (12 - 4 * i)) & 0xFu];
+            s[1 + static_cast<std::size_t>(i)] = hex[(t >> (28 - 4 * i)) & 0xFu];
+            s[6 + static_cast<std::size_t>(i)] = hex[(t >> (12 - 4 * i)) & 0xFu];
         }
         return s;
     }

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -77,7 +78,7 @@ static void usage() {
                  "  -q               quiet\n");
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     ScuConfig cfg;
     cfg.calling_ae = "SIAARA_MOVE";
     unsigned long timeout = 60000;
@@ -141,4 +142,11 @@ int main(int argc, char** argv) {
     print_progress("final", *r);
     (void)scu.release();
     return r->status == 0 ? 0 : 1;
+} catch (const std::exception& e) {
+    // An exception (std::bad_alloc, a filesystem error) is reported, not left to std::terminate.
+    std::fprintf(stderr, "error: %s\n", e.what());
+    return 1;
+} catch (...) {
+    std::fprintf(stderr, "error: unexpected exception\n");
+    return 1;
 }

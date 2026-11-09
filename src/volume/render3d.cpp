@@ -65,7 +65,7 @@ struct WinMap {
         return v > 0.0 ? (v < 1.0 ? v : 1.0) : 0.0;  // NaN -> 0
     }
     bool below(double x) const noexcept { return !(x * a + b > 0.0); }
-    std::uint8_t gray(double x) const noexcept { return static_cast<std::uint8_t>(t(x) * 255.0 + 0.5); }
+    std::uint8_t gray(double x) const noexcept { return static_cast<std::uint8_t>(std::lround(t(x) * 255.0)); }  // t: 0..1
 };
 
 WinMap make_window(const LayerStyle& s, const Volume& v) {
@@ -131,7 +131,7 @@ bool clip_ray(Vec3 s, Vec3 d, const Grid& g, double& t0, double& t1) noexcept {
 
 std::uint8_t to8(double v) noexcept {
     const double c = v > 0.0 ? (v < 1.0 ? v : 1.0) : 0.0;
-    return static_cast<std::uint8_t>(c * 255.0 + 0.5);
+    return static_cast<std::uint8_t>(std::lround(c * 255.0));
 }
 
 double eval_color(const std::vector<ColorPoint>& pts, double x, int ch) noexcept {
@@ -653,16 +653,18 @@ void RenderAccess::compose(float bval, float oval, std::uint8_t* px) const noexc
         g = c[1];
         b = c[2];
     }
-    if (ov && !std::isnan(oval) && !(v.overlay_->style.transparent_below_window && wo.below(oval))) {
+    // ov is set exactly when the view has an overlay; both are tested so neither is assumed.
+    if (ov && v.overlay_ && !std::isnan(oval) && !(v.overlay_->style.transparent_below_window && wo.below(oval))) {
         const Rgb& c = (*mo)[wo.gray(oval)];
         const double a = v.overlay_->style.opacity;
         r = r * (1.0 - a) + c[0] * a;
         g = g * (1.0 - a) + c[1] * a;
         b = b * (1.0 - a) + c[2] * a;
     }
-    px[0] = static_cast<std::uint8_t>(r + 0.5);
-    px[1] = static_cast<std::uint8_t>(g + 0.5);
-    px[2] = static_cast<std::uint8_t>(b + 0.5);
+    // Colour-map and background components are 0..255, and so is any blend of them.
+    px[0] = static_cast<std::uint8_t>(std::lround(r));
+    px[1] = static_cast<std::uint8_t>(std::lround(g));
+    px[2] = static_cast<std::uint8_t>(std::lround(b));
     px[3] = 255;
 }
 
@@ -898,7 +900,7 @@ Status View::render_rgba8(std::span<std::uint8_t> out) const {
             const bool curved = mode_ == ViewMode::CurvedStraightened || mode_ == ViewMode::CurvedStretched;
             if (curved) ra.curve_columns(w_, cc);
             const std::uint32_t tx = (w_ + kTile - 1) / kTile, ty = (h_ + kTile - 1) / kTile;
-            std::vector<std::vector<float>> buf(workers, std::vector<float>(kTile * 6));
+            std::vector<std::vector<float>> buf(workers, std::vector<float>(std::size_t{kTile} * 6));
             detail::parallel_for(std::uint64_t{tx} * ty, workers, [&](std::uint64_t tile, unsigned wk) noexcept {
                 const std::uint32_t x0 = static_cast<std::uint32_t>(tile % tx) * kTile, y0 = static_cast<std::uint32_t>(tile / tx) * kTile;
                 const std::uint32_t x1 = std::min(x0 + kTile, w_), y1 = std::min(y0 + kTile, h_);
@@ -977,7 +979,7 @@ Status View::render_rgba8(std::span<std::uint8_t> out) const {
                         };
                         const double top = at(x0, y0) * (1 - ax) + at(x1, y0) * ax;
                         const double bot = at(x0, y1) * (1 - ax) + at(x1, y1) * ax;
-                        px[c] = static_cast<std::uint8_t>(top * (1 - ay) + bot * ay + 0.5);
+                        px[c] = static_cast<std::uint8_t>(std::lround(top * (1 - ay) + bot * ay));  // 0..255
                     }
                 }
             });

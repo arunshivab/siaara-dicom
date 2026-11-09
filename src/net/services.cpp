@@ -278,7 +278,9 @@ Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg,
             result = r.take_error();
             break;
         }
-        if (is_failure(r->command.status.value_or(0xFFFF))) result = status_error("N-EVENT-REPORT", *r->command.status);
+        // A response without a status counts as a failure (0xFFFF); never dereference the empty value.
+        const std::uint16_t code = r->command.status.value_or(0xFFFF);
+        if (is_failure(code)) result = status_error("N-EVENT-REPORT", code);
     }
     if (scu.connected()) (void)scu.release();
     return result;

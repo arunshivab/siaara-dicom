@@ -141,14 +141,15 @@ Result<FramePlane> read_frame_plane(const Dataset& ds, std::uint32_t frame) {
 
     auto pos = read_values(*pos_src, tags::ImagePositionPatient, 3, "Image Position (Patient)");
     if (!pos) return pos.take_error();
-    if (*pos) {
+    if (const auto& pv = *pos; pv) {
+        const auto& v = *pv;
         p.has_position = true;
-        p.position = {(**pos)[0], (**pos)[1], (**pos)[2]};
+        p.position = {v[0], v[1], v[2]};
     }
     auto ori = read_values(*ori_src, tags::ImageOrientationPatient, 6, "Image Orientation (Patient)");
     if (!ori) return ori.take_error();
-    if (*ori) {
-        const auto& o = **ori;
+    if (const auto& ov = *ori; ov) {
+        const auto& o = *ov;
         auto r = normalized({o[0], o[1], o[2]});
         auto c = normalized({o[3], o[4], o[5]});
         // PS3.3 C.7.6.2.1.1: unit, orthogonal direction cosines. Values written with few digits are
@@ -165,12 +166,13 @@ Result<FramePlane> read_frame_plane(const Dataset& ds, std::uint32_t frame) {
     }
     auto sp = read_values(*pix_src, tags::PixelSpacing, 2, "Pixel Spacing");
     if (!sp) return sp.take_error();
-    if (*sp) {
-        if (!((**sp)[0] > 0.0) || !((**sp)[1] > 0.0))
+    if (const auto& sv = *sp; sv) {
+        const auto& v = *sv;
+        if (!(v[0] > 0.0) || !(v[1] > 0.0))
             return Status(Errc::Malformed, "volume: Pixel Spacing must be positive", 0, tags::PixelSpacing);
         p.has_spacing = true;
-        p.row_spacing = (**sp)[0];
-        p.col_spacing = (**sp)[1];
+        p.row_spacing = v[0];
+        p.col_spacing = v[1];
     }
     const Dataset* thick_src = functional_group(ds, frame, tags::PixelMeasuresSequence);
     auto positive = [](std::optional<double> v) -> std::optional<double> {

@@ -281,11 +281,12 @@ private:
                 }
                 continue;
             }
-            auto tag = attribute_id(k);
-            if (!tag) return fail(rs_, 400, "unknown query parameter or attribute");
+            const auto id = attribute_id(k);
+            if (!id) return fail(rs_, 400, "unknown query parameter or attribute");
+            const Tag tag = *id;
             for (const auto& m : q.match)
-                if (m.first == *tag) return fail(rs_, 400, "attribute matched more than once");
-            q.match.emplace_back(*tag, v);
+                if (m.first == tag) return fail(rs_, 400, "attribute matched more than once");
+            q.match.emplace_back(tag, v);
         }
         // Accept: JSON (default) or multipart XML.
         const MetaFormat fmt = metadata_format(rq_);

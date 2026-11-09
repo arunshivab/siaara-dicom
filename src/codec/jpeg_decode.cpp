@@ -917,8 +917,8 @@ void Decoder::fancy_row(const Comp& c, std::uint32_t y, int rh, int rv, std::uin
             const std::uint32_t here = colsum(i);
             const std::uint32_t left = colsum(i == 0 ? 0 : i - 1);
             const std::uint32_t right = colsum(i + 1 < cw ? i + 1 : i);
-            row[2 * i] = static_cast<std::uint16_t>((3u * here + left + 8u) >> 4);
-            row[2 * i + 1] = static_cast<std::uint16_t>((3u * here + right + 7u) >> 4);
+            row[2 * std::size_t{i}] = static_cast<std::uint16_t>((3u * here + left + 8u) >> 4);
+            row[2 * std::size_t{i} + 1] = static_cast<std::uint16_t>((3u * here + right + 7u) >> 4);
         }
         return;
     }
@@ -926,8 +926,8 @@ void Decoder::fancy_row(const Comp& c, std::uint32_t y, int rh, int rv, std::uin
         const std::uint32_t here = 3u * s0[i];
         const std::uint32_t left = s0[i == 0 ? 0 : i - 1];
         const std::uint32_t right = s0[i + 1 < cw ? i + 1 : i];
-        row[2 * i] = static_cast<std::uint16_t>((here + left + 1u) >> 2);
-        row[2 * i + 1] = static_cast<std::uint16_t>((here + right + 2u) >> 2);
+        row[2 * std::size_t{i}] = static_cast<std::uint16_t>((here + left + 1u) >> 2);
+        row[2 * std::size_t{i} + 1] = static_cast<std::uint16_t>((here + right + 2u) >> 2);
     }
 }
 

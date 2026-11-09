@@ -831,7 +831,7 @@ EmbeddedOverlays clear_embedded_overlays(Dataset& ds) {
         mask |= 1u << *pos;
         r.cleared.push_back(g);
     }
-    if (mask) {
+    if (mask && px && alloc) {  // a bit is only set for native pixel data with BitsAllocated
         std::vector<std::uint8_t> v(px->value.data(), px->value.data() + px->value.size());
         const std::size_t bytes = static_cast<std::size_t>(*alloc / 8);
         for (std::size_t i = 0; i + bytes <= v.size(); i += bytes)
