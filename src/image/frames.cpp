@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
 #include <new>
 #include <string>
 #include <system_error>
@@ -145,7 +147,7 @@ bool codec_supports_container(Family f, unsigned ba) noexcept {
 // `info` holds the effective attributes (Bits Stored possibly raised at open()); warnings are
 // worded against the declared ones.
 Status make_plan(Family f, const StreamHeader& h, const PixelInfo& info, unsigned declared_bs, std::uint32_t frame,
-                 Plan& p, std::vector<FrameWarning>* w) {
+                 std::uint32_t max_crop, Plan& p, std::vector<FrameWarning>* w) {
     p = Plan{};
     const std::uint32_t rows = info.rows, cols = info.columns;
     const std::uint32_t height = h.height != 0 ? h.height : rows;
@@ -155,6 +157,13 @@ Status make_plan(Family f, const StreamHeader& h, const PixelInfo& info, unsigne
     if (h.width < cols || height < rows)
         return Status(Errc::Malformed, where + "codestream image " + size_text(h.width, height) +
                                            " is smaller than Columns x Rows " + size_text(cols, rows));
+    // Cropping decodes the whole codestream into scratch: only a small margin is accepted, so a
+    // tiny codestream cannot make a small image cost the memory and time of a huge one (R-055).
+    if (static_cast<std::uint64_t>(h.width) > std::uint64_t{max_crop} * cols ||
+        static_cast<std::uint64_t>(height) > std::uint64_t{max_crop} * rows)
+        return Status(Errc::Malformed, where + "codestream image " + size_text(h.width, height) +
+                                           " is far larger than Columns x Rows " + size_text(cols, rows) +
+                                           " (crop margin " + std::to_string(max_crop) + "x per axis)");
     if (h.components < static_cast<int>(spp))
         return Status(Errc::Malformed, where + "codestream has " + std::to_string(h.components) +
                                            " components for Samples per Pixel " + std::to_string(spp));
@@ -624,7 +633,7 @@ void FrameReader::probe_first_frame() {
     }
     Plan p;
     std::vector<FrameWarning> w;
-    if (!make_plan(f, h, info_, declared_bits_stored_, 0, p, &w)) return;  // reported when decoding
+    if (!make_plan(f, h, info_, declared_bits_stored_, 0, opt_.max_crop_factor, p, &w)) return;  // reported when decoding
     for (const auto& x : w) warnings_.push_back("frame 0: " + x.message);
     frame_warnings_ = std::move(w);
 }
@@ -656,19 +665,47 @@ Status FrameReader::check_frame(std::uint32_t index, std::vector<FrameWarning>& 
     StreamHeader h;
     if (!probe_header(f, data, h)) return Status::ok();
     Plan p;
-    return make_plan(f, h, info_, declared_bits_stored_, index, p, &out);
+    return make_plan(f, h, info_, declared_bits_stored_, index, opt_.max_crop_factor, p, &out);
 }
 
 Status FrameReader::decode(std::uint32_t index, std::span<std::uint8_t> out) const {
     return decode(index, out, nullptr);
 }
 
+// Scratch memory in use by the decode_range() workers, charged against FrameOptions::memory_budget:
+// a worker whose scratch would not fit waits until others release theirs (every scratch frame fits
+// the budget on its own, and a worker holds at most one, so this always makes progress).
+struct FrameReader::ScratchGate {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::uint64_t in_use = 0;
+    std::uint64_t cap = 0;
+    void acquire(std::uint64_t n) {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return in_use == 0 || n <= cap - in_use; });
+        in_use += n;
+    }
+    void release(std::uint64_t n) {
+        {
+            const std::lock_guard<std::mutex> lk(mu);
+            in_use -= n;
+        }
+        cv.notify_all();
+    }
+};
+
 Status FrameReader::decode(std::uint32_t index, std::span<std::uint8_t> out, std::vector<FrameWarning>* warnings) const {
+    return decode_one(index, out, warnings, nullptr, opt_.memory_budget);
+}
+
+Status FrameReader::decode_one(std::uint32_t index, std::span<std::uint8_t> out, std::vector<FrameWarning>* warnings,
+                               ScratchGate* gate, std::uint64_t codec_budget) const {
     if (warnings) warnings->clear();
     if (index >= info_.number_of_frames)
         return Status(Errc::InvalidArgument, "frames: frame index " + std::to_string(index) + " out of range");
     if (out.size() < frame_bytes_) return Status(Errc::BufferTooSmall, "frames: output buffer too small");
-    return encapsulated_ ? decode_encapsulated(index, out.first(static_cast<std::size_t>(frame_bytes_)), warnings)
+    return encapsulated_ ? decode_encapsulated(index, out.first(static_cast<std::size_t>(frame_bytes_)), warnings, gate,
+                                               codec_budget)
                          : decode_native(index, out.first(static_cast<std::size_t>(frame_bytes_)));
 }
 
@@ -728,7 +765,8 @@ Status FrameReader::encoded_frame(std::uint32_t index, std::vector<std::uint8_t>
 }
 
 Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint8_t> out,
-                                        std::vector<FrameWarning>* warnings) const {
+                                        std::vector<FrameWarning>* warnings, ScratchGate* gate,
+                                        std::uint64_t codec_budget) const {
     std::span<const std::uint8_t> data;
     std::vector<std::uint8_t> joined;
     if (Status s = frame_data(index, data, joined); !s) return s;
@@ -745,7 +783,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
     StreamHeader h;
     Plan plan;
     if (opt_.lenient && f != Family::None && probe_header(f, data, h)) {
-        if (Status s = make_plan(f, h, info_, declared_bits_stored_, index, plan, warnings); !s) return s;
+        if (Status s = make_plan(f, h, info_, declared_bits_stored_, index, opt_.max_crop_factor, plan, warnings); !s) return s;
     } else if (!opt_.lenient && f == Family::Jpeg && probe_header(f, data, h) && h.precision != info_.bits_stored) {
         // The JPEG 2000 and JPEG-LS decoders refuse P != Bits Stored themselves; the JPEG decoder
         // only checks P against Bits Allocated, so strict mode enforces the rule here.
@@ -754,18 +792,30 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
                                               std::to_string(info_.bits_stored));
     }
     if (!plan.convert) {
-        st = run_codec(codec_, data, info_.frame_info(), out, opt_.lenient, opt_.jpeg_replicate_chroma, index, warnings);
+        codec::FrameInfo fi = info_.frame_info();
+        fi.memory_budget = codec_budget;
+        st = run_codec(codec_, data, fi, out, opt_.lenient, opt_.jpeg_replicate_chroma, index, warnings);
     } else {
         const std::uint64_t tb = plan.temp.frame_bytes();
         if (tb == 0 || tb > opt_.memory_budget || tb > SIZE_MAX)
             return Status(Errc::LimitExceeded, "frame " + std::to_string(index) + ": codestream image exceeds the memory budget");
+        if (gate) gate->acquire(tb);
+        struct Release {
+            ScratchGate* g;
+            std::uint64_t n;
+            ~Release() {
+                if (g) g->release(n);
+            }
+        } release{gate, tb};
         std::vector<std::uint8_t> tmp;
         try {
             tmp.resize(static_cast<std::size_t>(tb));
         } catch (const std::bad_alloc&) {
             return Status(Errc::OutOfMemory, "frames: cannot allocate the scratch frame");
         }
-        st = run_codec(codec_, data, plan.temp, tmp, true, opt_.jpeg_replicate_chroma, index, warnings);
+        codec::FrameInfo fi = plan.temp;
+        fi.memory_budget = codec_budget;
+        st = run_codec(codec_, data, fi, tmp, true, opt_.jpeg_replicate_chroma, index, warnings);
         if (st) return convert_frame(plan, info_, tmp, out, index);
     }
     if (!st) st.message = "frame " + std::to_string(index) + ": " + st.message;
@@ -800,6 +850,13 @@ Status FrameReader::decode_range(std::uint32_t first, std::uint32_t count, std::
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "frames: out of memory");
     }
+    // The memory budget covers every worker together (R-055): scratch frames are charged to a
+    // shared gate, and each codec call may use an equal share as working memory. A frame refused
+    // for its share is decoded again alone with the whole budget, so the result is the same as
+    // decoding one frame at a time.
+    ScratchGate gate;
+    gate.cap = opt_.memory_budget;
+    const std::uint64_t share = std::max<std::uint64_t>(opt_.memory_budget / threads, 1);
     std::atomic<std::uint32_t> next{0};
     std::atomic<bool> stop{false};
     // Frames are claimed in increasing order, so when a frame fails every lower frame has already
@@ -809,8 +866,8 @@ Status FrameReader::decode_range(std::uint32_t first, std::uint32_t count, std::
             if (stop.load(std::memory_order_relaxed)) return;
             const std::uint32_t i = next.fetch_add(1);
             if (i >= count) return;
-            Status s = decode(first + i, out.subspan(i * fb, fb));
-            if (!s) stop.store(true, std::memory_order_relaxed);
+            Status s = decode_one(first + i, out.subspan(i * fb, fb), nullptr, &gate, share);
+            if (!s && s.code != Errc::LimitExceeded) stop.store(true, std::memory_order_relaxed);
             results[i] = std::move(s);
         }
     };
@@ -823,8 +880,11 @@ Status FrameReader::decode_range(std::uint32_t first, std::uint32_t count, std::
     }
     work();
     for (auto& t : pool) t.join();
-    for (auto& s : results)
-        if (!s) return s;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (results[i].code == Errc::LimitExceeded)  // over its share: alone, with the whole budget
+            results[i] = decode(first + i, out.subspan(i * fb, fb));
+        if (!results[i]) return results[i];
+    }
     return Status::ok();
 }
 

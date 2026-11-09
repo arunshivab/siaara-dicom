@@ -76,7 +76,12 @@ struct FrameOptions {
     // vector, decode_range() returning a vector, multi-fragment reassembly). Default 4 GiB.
     std::uint64_t memory_budget = 4ull << 30;
     // Worker threads for decode_range(): 0 = hardware concurrency (at most 8), 1 = calling thread only.
+    // memory_budget covers all workers together: their scratch frames share it, and each codec
+    // call gets an equal share of it as working memory (R-055).
     unsigned threads = 0;
+    // Lenient mode: a codestream larger than Columns x Rows is decoded and cropped only when it is
+    // at most this many times larger per axis; larger ones are Malformed (R-055). 0 = never crop.
+    std::uint32_t max_crop_factor = 2;
     bool lenient = true;  // accept common non-conformances (recorded in warnings())
     // JPEG chroma upsampling: false = triangular interpolation like libjpeg (default), true =
     // sample replication (the toolkit's behaviour before F5).
@@ -144,8 +149,11 @@ private:
 
     Status index_fragments(const Dataset& ds);
     Status decode_native(std::uint32_t index, std::span<std::uint8_t> out) const;
-    Status decode_encapsulated(std::uint32_t index, std::span<std::uint8_t> out,
-                               std::vector<FrameWarning>* warnings) const;
+    struct ScratchGate;  // shared scratch-memory budget of the decode_range() workers
+    Status decode_one(std::uint32_t index, std::span<std::uint8_t> out, std::vector<FrameWarning>* warnings,
+                      ScratchGate* gate, std::uint64_t codec_budget) const;
+    Status decode_encapsulated(std::uint32_t index, std::span<std::uint8_t> out, std::vector<FrameWarning>* warnings,
+                               ScratchGate* gate, std::uint64_t codec_budget) const;
     Status frame_data(std::uint32_t index, std::span<const std::uint8_t>& data, std::vector<std::uint8_t>& joined) const;
     void probe_first_frame();
 
