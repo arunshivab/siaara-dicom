@@ -794,6 +794,9 @@ bool shift_date(std::string_view value, VR vr, std::int32_t days, std::string& o
         // Query ranges "A-B", "-B", "A-" (PS3.4 C.2.2.2.5) and the ACR-NEMA "YYYY.MM.DD" form.
         const std::size_t dash = value.find('-');
         if (dash != std::string_view::npos) {
+            // A range has exactly one '-'; checking here also bounds the recursion below (each
+            // side is shifted as a single date), which a value of thousands of dashes overflowed.
+            if (value.find('-', dash + 1) != std::string_view::npos) return false;
             std::string a, b;
             const std::string_view l = value.substr(0, dash), r = value.substr(dash + 1);
             if ((l.empty() && r.empty()) || (!l.empty() && !shift_date(l, vr, days, a)) ||
