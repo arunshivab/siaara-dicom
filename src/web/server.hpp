@@ -38,7 +38,9 @@ struct SearchQuery {
     std::vector<Tag> include_fields;
     bool include_all = false;
     bool fuzzy_matching = false;
-    // Limit and offset are applied by the server to the store's results.
+    // Paging (WEB-05). The server applies offset and limit to the store's results, so a store may
+    // return every match; but it may also stop once it has offset + limit matches (limit is
+    // already capped at max_qido_results + 1, so the server can still tell that results were cut).
     std::optional<std::uint32_t> limit;
     std::uint32_t offset = 0;
 };
@@ -70,10 +72,15 @@ struct DicomwebServerConfig {
     // Binary values longer than this are returned as BulkDataURI in metadata responses.
     std::uint64_t bulk_data_threshold = 1024;
     std::size_t max_qido_results = 10000;  // hard cap; more matches are cut with a Warning header
+    // WADO-RS frames: largest multipart response built in memory (413 above it; PARSE-31).
+    std::uint64_t max_frames_response_bytes = 256ull << 20;
     multipart::Limits multipart;
     // Access control: return false to answer 401. Default: everything allowed.
+    // Off loopback, start() requires TLS plus authorize or client certificates
+    // (http.tls.require_client_certificate), unless http.allow_insecure_remote is set (APP-01).
     std::function<bool(const http::Request&)> authorize;
-    // CORS is off unless an origin is configured ("*" or an exact origin).
+    // CORS is off unless an origin is configured ("*" or an exact origin). "*" is refused together
+    // with authorize (WEB-04): name the origin that may send credentials.
     std::string cors_allow_origin;
 };
 

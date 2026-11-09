@@ -1,5 +1,5 @@
 // Test-only helper for tests/crosscheck/jpeg_crosscheck.py (never shipped).
-//   jpeg_tool decode <in.jpg> <out.raw> rows cols spp bits_alloc bits_stored signed planar
+//   jpeg_tool decode <in.jpg> <out.raw> rows cols spp bits_alloc bits_stored signed planar [replicate]
 //   jpeg_tool encode <in.raw> <out.jpg> rows cols spp bits_alloc bits_stored signed planar
 //                    lossless predictor quality ybr luma_h luma_v restart point_transform
 //   jpeg_tool bench  <in.jpg> rows cols spp bits_alloc bits_stored signed planar iterations
@@ -59,12 +59,14 @@ int usage() {
 int main(int argc, char** argv) {
     if (argc < 2) return usage();
     const std::string_view mode = argv[1];
-    if (mode == "decode" && argc == 11) {
+    if (mode == "decode" && (argc == 11 || argc == 12)) {
         std::vector<std::uint8_t> in;
         if (!read_file(argv[2], in)) return 3;
         const FrameInfo fi = parse_info(argv + 4);
         std::vector<std::uint8_t> out(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
-        const siaara::Status st = decode_jpeg(in, fi, out);
+        siaara::codec::JpegDecodeOptions jo;
+        jo.replicate_chroma = argc == 12 && std::string_view(argv[11]) == "replicate";
+        const siaara::Status st = decode_jpeg_ex(in, fi, jo, out);
         if (!st) {
             std::fprintf(stderr, "decode failed: %s (offset %llu)\n", st.message.c_str(),
                          static_cast<unsigned long long>(st.offset));

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Internal interop layer: [LibraryImport] declarations generated from include/siaara/siaara.h by
+       tools/gen_csharp_interop.py, SafeHandles, the native library resolver and callback trampolines.
+       The only project allowed to use unsafe code. Shipped inside the Siaara package. -->
+  <PropertyGroup>
+    <AssemblyName>Siaara.Interop</AssemblyName>
+    <RootNamespace>Siaara.Interop</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- The native library for the build host's RID goes next to the assembly in
+       runtimes/<rid>/native/ (copied to every project that references this one). -->
+  <ItemGroup Condition="'$(SiaaraNativeLibrary)' != ''">
+    <None Include="$(SiaaraNativeLibrary)"
+          Link="runtimes/$(SiaaraNativeRid)/native/$(SiaaraNativeFileName)"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+</Project>

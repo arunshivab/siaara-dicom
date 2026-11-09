@@ -1,5 +1,8 @@
 // SIAARA DICOM Toolkit - TLS transport: backend-independent parts (policy, PEM, listener, the
 // engine-driven transport used by the OpenSSL and SChannel backends).
+#if defined(__APPLE__) && !defined(__STDC_WANT_LIB_EXT1__)
+#define __STDC_WANT_LIB_EXT1__ 1  // memset_s
+#endif
 #include "net/tls.hpp"
 
 #include <algorithm>
@@ -28,9 +31,19 @@ namespace detail {
 
 // ---------------------------------------------------------------- secrets
 void secure_wipe(void* p, std::size_t n) noexcept {
-    if (!p) return;
+    if (!p || n == 0) return;
+    // The platform's guaranteed-not-elided clear.
+#if defined(_WIN32)
+    ::SecureZeroMemory(p, n);
+#elif defined(__APPLE__)
+    (void)::memset_s(p, n, 0, n);
+#elif defined(__GLIBC__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || \
+    (defined(__linux__) && !defined(__GLIBC__))
+    ::explicit_bzero(p, n);
+#else
     volatile unsigned char* v = static_cast<volatile unsigned char*>(p);
     for (std::size_t i = 0; i < n; ++i) v[i] = 0;
+#endif
 }
 
 void secure_wipe(std::string& s) noexcept {
@@ -132,8 +145,51 @@ Status check_session(const TlsSettings& s, TlsContext::Role role, const TlsSessi
     return Status::ok();
 }
 
+Status check_chain_cert(const TlsSettings& s, std::size_t index, bool anchor, CertKey key, int bits, CertSig sig) {
+    const bool b12 = s.profile == TlsProfile::Bcp195Rfc8996;
+    const std::string which = index == 0 ? std::string("peer certificate")
+                                         : "certificate " + std::to_string(index) + " of the peer chain";
+    switch (key) {
+        case CertKey::Rsa:
+        case CertKey::RsaPss:
+            if (bits < 2048) return Status(Errc::NetworkError, which + ": RSA key shorter than 2048 bits");
+            break;
+        case CertKey::Ec:
+            if (bits < 256) return Status(Errc::NetworkError, which + ": EC key shorter than 256 bits");
+            break;
+        case CertKey::Ed25519:
+        case CertKey::Ed448:
+            if (!b12) return Status(Errc::NetworkError, which + ": EdDSA keys are not allowed by the PS3.15 B.13 profile");
+            break;
+        case CertKey::Other:
+            return Status(Errc::NetworkError, which + ": key algorithm not allowed by PS3.15");
+    }
+    if (anchor) return Status::ok();
+    switch (sig) {
+        case CertSig::Sha256Plus:
+            break;
+        case CertSig::Weak:
+            return Status(Errc::NetworkError, which + ": signed with MD5, SHA-1 or SHA-224");
+        case CertSig::EdDsa:
+            if (!b12) return Status(Errc::NetworkError, which + ": EdDSA signatures are not allowed by the PS3.15 B.13 profile");
+            break;
+        case CertSig::Other:
+            return Status(Errc::NetworkError, which + ": signature algorithm not allowed by PS3.15");
+    }
+    return Status::ok();
+}
+
 std::string expected_name(const TlsSettings& s, const std::string& host) {
     return s.expected_identity.empty() ? host : s.expected_identity;
+}
+
+Status check_client_identity(const TlsSettings& s, const std::string& name) {
+    // Without a name the server certificate can only be checked against the trust anchors, and
+    // any certificate from any trusted CA would be accepted: fail closed on every backend.
+    if (name.empty() && !s.insecure_skip_validation)
+        return Status(Errc::InvalidArgument,
+                      "TLS client: no host name and no expected_identity to verify the server certificate against");
+    return Status::ok();
 }
 
 bool is_ip_literal(const std::string& s) noexcept {
@@ -415,7 +471,7 @@ void EngineTransport::shutdown() noexcept {
 
 void EngineTransport::close() noexcept {
     if (!inner_) return;
-    if (inner_->is_open() && done_ && !broken_ && !sent_close_ && !eof_) {
+    if (inner_->is_open() && done_ && !broken_ && !eof_ && !sent_close_.exchange(true)) {
         try {
             std::lock_guard<std::mutex> lock(mu_);
             std::vector<std::uint8_t> out;
@@ -423,7 +479,6 @@ void EngineTransport::close() noexcept {
             (void)send_locked(out, kAlertWriteMs);
         } catch (...) {
         }
-        sent_close_ = true;
     }
     inner_->close();
 }
@@ -467,7 +522,9 @@ Result<std::unique_ptr<TlsTransport>> EngineContext::wrap_client(std::unique_ptr
                                                                  const std::string& peer_name) {
     if (role() != Role::Client) return Status(Errc::InvalidArgument, "wrap_client() needs a client TLS context");
     if (!stream) return Status(Errc::InvalidArgument, "no stream");
-    Result<std::unique_ptr<TlsEngine>> e = make_engine(expected_name(settings_, peer_name));
+    const std::string name = expected_name(settings_, peer_name);
+    if (Status v = check_client_identity(settings_, name); !v) return v;
+    Result<std::unique_ptr<TlsEngine>> e = make_engine(name);
     if (!e) return e.take_error();
     auto t = std::make_unique<EngineTransport>(shared_from_this(), std::move(stream), std::move(e).value());
     if (Status h = t->handshake(settings_.handshake_timeout_ms); !h) return h;
@@ -517,7 +574,11 @@ Result<std::shared_ptr<TlsContext>> TlsContext::create(const TlsSettings& settin
     if (sources > 1) return Status(Errc::InvalidArgument, "set exactly one TLS identity source");
     std::string why;
     if (!detail::backend_available(why)) return Status(Errc::Unsupported, "TLS is not available: " + why);
-    return detail::backend_create_context(settings, role);
+    Result<std::shared_ptr<TlsContext>> ctx = detail::backend_create_context(settings, role);
+    // Every backend has loaded the identity by now: the context keeps no copy of the password
+    // (settings() would expose it). The caller's own TlsSettings is the caller's to wipe.
+    if (ctx) detail::secure_wipe(ctx.value()->settings_.identity.password);
+    return ctx;
 }
 
 TlsListener::TlsListener() = default;

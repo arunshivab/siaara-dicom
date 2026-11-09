@@ -40,7 +40,9 @@ struct Member {
 };
 
 struct ParseLimits {
-    std::uint32_t max_depth = 512;                  // nesting of arrays + objects
+    // Nesting of arrays + objects. The parser recurses (about two frames per level), so this
+    // bounds stack use on small (1 MB) thread stacks (PARSE-20).
+    std::uint32_t max_depth = 128;
     std::uint64_t max_input = 1ull << 30;           // bytes of JSON text
     std::uint64_t max_string = 1ull << 30;          // bytes of one decoded string
     std::uint64_t max_values = 50'000'000;          // total number of values in the document

@@ -1,0 +1,152 @@
+name: release
+
+# On a version tag (v*): build Release for every platform of the CI matrix, run the full test
+# suite on each, install, check the installed package with find_package(siaara), check the runtime
+# dependencies, package it reproducibly (archive + SPDX 2.3 SBOM + SHA-256), attest the build
+# provenance, and create a DRAFT GitHub release with everything attached. See docs/RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write      # build provenance attestation (Sigstore)
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: linux-x64,       os: ubuntu-24.04,     cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { platform: linux-x86,       os: ubuntu-24.04,     cmake: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32", multilib: true }
+          - { platform: linux-arm64,     os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { platform: windows-x64,     os: windows-2022,     cmake: "-A x64" }
+          - { platform: windows-x86,     os: windows-2022,     cmake: "-A Win32" }
+          - { platform: windows-arm64,   os: "${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}",   cmake: "-A ARM64" }
+          - { platform: macos-universal, os: macos-15,         cmake: "-DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 1
+      - name: Version, commit and SOURCE_DATE_EPOCH
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cmake_version=$(sed -n 's/^project(siaara VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          capi_version=$(sed -n 's/.*siaara_version_string(void) { return "\([^"]*\)".*/\1/p' src/capi/capi.cpp)
+          if [ "$version" != "$cmake_version" ] || [ "$version" != "$capi_version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match CMakeLists.txt ($cmake_version) / siaara_version_string ($capi_version)"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - name: Install 32-bit toolchain
+        if: matrix.multilib
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
+      - name: Put dumpbin on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $db = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value $db.DirectoryName
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake }} -DSIAARA_REPRODUCIBLE=ON -DSIAARA_STATIC_RUNTIME=ON -DSIAARA_HARDENING=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Test the x86_64 slice under Rosetta (universal macOS build)
+        if: runner.os == 'macOS'
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 build/tests/siaara_tests --data tests/data
+          else
+            echo "::warning::Rosetta is not available on this runner; only the arm64 slice was tested"
+          fi
+          lipo -archs build/libsiaara.dylib | grep -q x86_64
+          lipo -archs build/libsiaara.dylib | grep -q arm64
+      - name: Install
+        run: cmake --install build --config Release --prefix "stage/siaara-$VERSION-${{ matrix.platform }}"
+      - name: The installed package works with find_package(siaara)
+        run: |
+          prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
+          cmake -S tests/package -B build-consumer ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build-consumer --config Release
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PATH="$prefix/bin:$PATH" build-consumer/Release/consumer_shared.exe
+            build-consumer/Release/consumer_static.exe
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            DYLD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_shared
+            build-consumer/consumer_static
+          else
+            LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_shared
+            build-consumer/consumer_static
+          fi
+      - name: Runtime dependencies of the shipped binaries
+        run: |
+          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          python3 tools/ci/check_binaries.py deps --profile release $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib')
+      - name: Hardening of the shipped binaries
+        run: |
+          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          python3 tools/ci/check_binaries.py hardening $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib')
+      - name: Exported symbols match the ABI baseline
+        run: |
+          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          lib=$(find "$prefix" -type f \( -name 'libsiaara.so' -o -name 'libsiaara.dylib' -o -name 'siaara.dll' \) | head -1)
+          python3 tools/ci/check_binaries.py symbols --header include/siaara/siaara.h "$lib"
+      - name: Package (archive, SBOM, checksums)
+        run: >
+          python3 tools/release/package.py --stage "stage/siaara-$VERSION-${{ matrix.platform }}"
+          --version "$VERSION" --platform ${{ matrix.platform }} --commit "$COMMIT" --out dist
+      - name: Attest build provenance
+        # Attestations need a public repository or GitHub Enterprise Cloud: on a private repository
+        # without it this step reports the failure but does not stop the release.
+        continue-on-error: ${{ github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  draft-release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write      # create the draft release
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Combined checksum file
+        run: |
+          cd dist
+          cat *.sha256 | sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "SIAARA DICOM Toolkit ${GITHUB_REF_NAME#v}" \
+            --notes "Draft release built from ${GITHUB_SHA}. Each archive has an SPDX 2.3 SBOM and a SHA-256 checksum (SHA256SUMS lists all). Verify provenance with: gh attestation verify <file> --repo ${GITHUB_REPOSITORY}. License: to be decided (see NOTICE in each archive)." \
+            dist/*

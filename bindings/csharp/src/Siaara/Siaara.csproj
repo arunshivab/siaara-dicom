@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Public, idiomatic C# API over the SIAARA C API. No unsafe code: all pointer work is in
+       Siaara.Interop, which is packed into this package (it is not a separate package). -->
+  <PropertyGroup>
+    <AssemblyName>Siaara</AssemblyName>
+    <RootNamespace>Siaara</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <PackageId>Siaara</PackageId>
+    <Description>SIAARA DICOM Toolkit: C# bindings (internal package; native libraries in runtimes/&lt;rid&gt;/native).</Description>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)../../artifacts/packages</PackageOutputPath>
+    <IncludeSymbols>false</IncludeSymbols>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);SiaaraPackInterop</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Siaara.Interop/Siaara.Interop.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Siaara.Interop.dll goes into lib/net10.0 of this package. -->
+  <Target Name="SiaaraPackInterop" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths)"
+                            Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' and '%(ReferenceCopyLocalPaths.Extension)' == '.dll'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Native libraries: runtimes/<rid>/native/ for every supported RID. The build host's library
+       comes from the CMake build (SiaaraNativeLibrary); CI provides the rest through
+       SiaaraNativeArtifactsDir/<rid>/<file>. linux-x86 is not a .NET runtime identifier. -->
+  <ItemGroup>
+    <SiaaraPackRid Include="linux-x64;linux-arm64;win-x64;win-x86;win-arm64;osx-x64;osx-arm64" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(SiaaraNativeLibrary)' != '' and '$(SiaaraNativeArtifactsDir)' == ''">
+    <None Include="$(SiaaraNativeLibrary)" Pack="true" PackagePath="runtimes/$(SiaaraNativeRid)/native/$(SiaaraNativeFileName)"
+          CopyToOutputDirectory="Never" Visible="false" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);SiaaraPackNativeArtifacts</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+  <Target Name="SiaaraPackNativeArtifacts" Condition="'$(SiaaraNativeArtifactsDir)' != ''">
+    <ItemGroup>
+      <_SiaaraNativeArtifact Include="$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara*.*">
+        <Rid>%(SiaaraPackRid.Identity)</Rid>
+      </_SiaaraNativeArtifact>
+      <TfmSpecificPackageFile Include="@(_SiaaraNativeArtifact)" PackagePath="runtimes/%(_SiaaraNativeArtifact.Rid)/native/%(_SiaaraNativeArtifact.Filename)%(_SiaaraNativeArtifact.Extension)" />
+    </ItemGroup>
+  </Target>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" Visible="false" Condition="Exists('../../README.md')" />
+  </ItemGroup>
+</Project>

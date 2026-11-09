@@ -1,12 +1,15 @@
 // SIAARA DICOM Toolkit - spooling received data sets to disk (see net/spool.hpp).
 #include "net/spool.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
+#include <mutex>
 #include <random>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -22,6 +25,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <aclapi.h>
 #else
 #include <cerrno>
 #include <cstdio>
@@ -45,7 +49,7 @@ std::string utf8_of(const std::filesystem::path& p) {
     return std::string(reinterpret_cast<const char*>(u.data()), u.size());
 }
 
-std::string unique_name() {
+std::string unique_name(const char* prefix = "siaara-spool-", const char* suffix = ".part") {
     static std::atomic<std::uint64_t> counter{0};
     static const std::uint64_t seed = [] {
         std::random_device rd;
@@ -53,13 +57,13 @@ std::string unique_name() {
     }();
     const std::uint64_t n = counter.fetch_add(1) + 1;
     static const char* hex = "0123456789abcdef";
-    std::string s = "siaara-spool-";
+    std::string s = prefix;
     std::uint64_t v = seed ^ (n * 0x9E3779B97F4A7C15ull);
     for (int i = 0; i < 16; ++i) {
         s += hex[v & 15u];
         v >>= 4;
     }
-    s += '-' + std::to_string(n) + ".part";
+    s += '-' + std::to_string(n) + suffix;
     return s;
 }
 
@@ -73,25 +77,245 @@ std::wstring widen(const std::string& s) {
     return w;
 }
 
+// Owner-only security descriptor (the current user's SID, full control; inheritance blocked).
+class OwnerOnlySecurity {
+public:
+    OwnerOnlySecurity() {
+        HANDLE token = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
+        DWORD len = 0;
+        (void)GetTokenInformation(token, TokenUser, nullptr, 0, &len);
+        user_.resize(len);
+        const bool got = len != 0 && GetTokenInformation(token, TokenUser, user_.data(), len, &len);
+        CloseHandle(token);
+        if (!got) return;
+        PSID sid = reinterpret_cast<TOKEN_USER*>(user_.data())->User.Sid;
+        const DWORD acl_len = static_cast<DWORD>(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + GetLengthSid(sid));
+        acl_.resize(acl_len);
+        PACL acl = reinterpret_cast<PACL>(acl_.data());
+        if (!InitializeAcl(acl, acl_len, ACL_REVISION)) return;
+        if (!AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE, GENERIC_ALL, sid)) return;
+        if (!InitializeSecurityDescriptor(&sd_, SECURITY_DESCRIPTOR_REVISION)) return;
+        if (!SetSecurityDescriptorDacl(&sd_, TRUE, acl, FALSE)) return;
+        if (!SetSecurityDescriptorControl(&sd_, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) return;
+        sa_.nLength = sizeof sa_;
+        sa_.lpSecurityDescriptor = &sd_;
+        sa_.bInheritHandle = FALSE;
+        ok_ = true;
+    }
+    SECURITY_ATTRIBUTES* get() noexcept { return ok_ ? &sa_ : nullptr; }
+
+private:
+    std::vector<std::uint8_t> user_;
+    std::vector<std::uint8_t> acl_;
+    SECURITY_DESCRIPTOR sd_{};
+    SECURITY_ATTRIBUTES sa_{};
+    bool ok_ = false;
+};
 #endif
 
-// Copies `from` to a temporary name next to `to`, then renames it over `to` (used when a plain
-// rename is impossible, e.g. across volumes).
+// Native, exclusively created, owner-only file handle (R-005): O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC
+// with mode 0600 on POSIX; CREATE_NEW with an owner-only DACL on Windows.
+class ExclusiveFile {
+public:
+    ExclusiveFile() = default;
+    ~ExclusiveFile() { close(); }
+    ExclusiveFile(const ExclusiveFile&) = delete;
+    ExclusiveFile& operator=(const ExclusiveFile&) = delete;
+
+    Status create(const std::string& path) {
+#if defined(_WIN32)
+        const std::wstring w = widen(path);
+        if (w.empty()) return Status(Errc::InvalidArgument, "spool path is not valid UTF-8");
+        OwnerOnlySecurity sec;
+        if (!sec.get()) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
+        h_ = CreateFileW(w.c_str(), GENERIC_WRITE, 0, sec.get(), CREATE_NEW,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot create spool file");
+#else
+        fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd_ < 0) return Status(Errc::IoError, "cannot create spool file");
+#endif
+        return Status::ok();
+    }
+    Status write(const std::uint8_t* p, std::size_t n) {
+#if defined(_WIN32)
+        while (n > 0) {
+            const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(n, 1u << 30));
+            DWORD done = 0;
+            if (!WriteFile(h_, p, chunk, &done, nullptr) || done == 0) return Status(Errc::IoError, "cannot write spool file");
+            p += done;
+            n -= done;
+        }
+#else
+        while (n > 0) {
+            const ssize_t r = ::write(fd_, p, std::min<std::size_t>(n, 1u << 30));
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0) return Status(Errc::IoError, "cannot write spool file");
+            p += r;
+            n -= static_cast<std::size_t>(r);
+        }
+#endif
+        return Status::ok();
+    }
+    // Closes; false when the final flush failed.
+    bool close() noexcept {
+#if defined(_WIN32)
+        if (h_ == INVALID_HANDLE_VALUE) return true;
+        const bool ok = CloseHandle(h_) != 0;
+        h_ = INVALID_HANDLE_VALUE;
+        return ok;
+#else
+        if (fd_ < 0) return true;
+        const bool ok = ::close(fd_) == 0;
+        fd_ = -1;
+        return ok;
+#endif
+    }
+    bool is_open() const noexcept {
+#if defined(_WIN32)
+        return h_ != INVALID_HANDLE_VALUE;
+#else
+        return fd_ >= 0;
+#endif
+    }
+
+private:
+#if defined(_WIN32)
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+#else
+    int fd_ = -1;
+#endif
+};
+
+// Copies `from` to a new, exclusively created temporary name next to `to`, then renames it over
+// `to` (used when a plain rename is impossible, e.g. across volumes). The temporary name is
+// unpredictable and never follows an existing link (R-035).
 bool copy_into_place(const std::string& from, const std::string& to) {
     std::error_code ec;
     const std::filesystem::path target = fs_path(to);
-    std::filesystem::path tmp = target;
-    tmp += ".siaara-tmp";
-    std::filesystem::copy_file(fs_path(from), tmp, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) return false;
-    std::filesystem::rename(tmp, target, ec);
-    if (ec) {
+    const std::filesystem::path tmp = target.parent_path() / unique_name(".siaara-tmp-", ".part");
+    const std::string tmp8 = utf8_of(tmp);
+    ExclusiveFile out;
+    if (!out.create(tmp8)) return false;
+    bool ok = true;
+#if defined(_WIN32)
+    HANDLE in = CreateFileW(widen(from).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (in == INVALID_HANDLE_VALUE) ok = false;
+    std::vector<std::uint8_t> buf(1u << 20);
+    while (ok) {
+        DWORD got = 0;
+        if (!ReadFile(in, buf.data(), static_cast<DWORD>(buf.size()), &got, nullptr)) ok = false;
+        else if (got == 0) break;
+        else ok = static_cast<bool>(out.write(buf.data(), got));
+    }
+    if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
+#else
+    const int in = ::open(from.c_str(), O_RDONLY | O_CLOEXEC);
+    if (in < 0) ok = false;
+    std::vector<std::uint8_t> buf(1u << 20);
+    while (ok) {
+        const ssize_t got = ::read(in, buf.data(), buf.size());
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0) ok = false;
+        else if (got == 0) break;
+        else ok = static_cast<bool>(out.write(buf.data(), static_cast<std::size_t>(got)));
+    }
+    if (in >= 0) ::close(in);
+#endif
+    ok = out.close() && ok;
+    if (ok) {
+        std::filesystem::rename(tmp, target, ec);
+        ok = !ec;
+    }
+    if (!ok) {
         std::error_code ec2;
         std::filesystem::remove(tmp, ec2);
-        return false;
     }
-    return true;
+    return ok;
 }
+
+// Creates (or checks) the private per-user default spool directory under `base`.
+Result<std::filesystem::path> private_spool_dir(const std::filesystem::path& base) {
+#if defined(_WIN32)
+    // %TEMP% is already per user; the subdirectory gets an owner-only DACL as well.
+    const std::filesystem::path dir = base / "siaara-spool";
+    const std::wstring w = dir.wstring();
+    OwnerOnlySecurity sec;
+    if (!sec.get()) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
+    if (!CreateDirectoryW(w.c_str(), sec.get()) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return Status(Errc::IoError, "cannot create the spool directory");
+    const DWORD attr = GetFileAttributesW(w.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY) || (attr & FILE_ATTRIBUTE_REPARSE_POINT))
+        return Status(Errc::IoError, "spool directory is not a plain directory");
+    // Re-apply the owner-only DACL in case the directory existed with other permissions; this fails
+    // unless we own it.
+    PACL acl = nullptr;
+    BOOL present = FALSE, defaulted = FALSE;
+    if (!GetSecurityDescriptorDacl(sec.get()->lpSecurityDescriptor, &present, &acl, &defaulted) ||
+        SetNamedSecurityInfoW(const_cast<wchar_t*>(w.c_str()), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, acl,
+                              nullptr) != ERROR_SUCCESS)
+        return Status(Errc::IoError, "cannot restrict the spool directory to its owner");
+    return dir;
+#else
+    const std::filesystem::path dir = base / ("siaara-spool-" + std::to_string(::geteuid()));
+    const std::string d = utf8_of(dir);
+    if (::mkdir(d.c_str(), 0700) != 0 && errno != EEXIST) return Status(Errc::IoError, "cannot create the spool directory");
+    struct stat st {};
+    if (::lstat(d.c_str(), &st) != 0) return Status(Errc::IoError, "cannot inspect the spool directory");
+    if (!S_ISDIR(st.st_mode)) return Status(Errc::IoError, "spool directory is not a plain directory");
+    if (st.st_uid != ::geteuid()) return Status(Errc::IoError, "spool directory is owned by another user");
+    if ((st.st_mode & 077) != 0) return Status(Errc::IoError, "spool directory is accessible to other users");
+    return dir;
+#endif
+}
+
+std::mutex g_cleaned_mu;
+std::set<std::string>& cleaned_dirs() {
+    static std::set<std::string> s;
+    return s;
+}
+
+std::size_t remove_stale_in(const std::filesystem::path& dir, int minutes) {
+    if (minutes <= 0) return 0;
+    std::size_t removed = 0;
+    std::error_code ec;
+    const auto cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::minutes(minutes);
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = utf8_of(it->path().filename());
+        if (name.rfind("siaara-spool-", 0) != 0 || name.size() < 5 || name.compare(name.size() - 5, 5, ".part") != 0)
+            continue;
+        std::error_code e2;
+        if (!it->is_regular_file(e2) || e2) continue;  // never follows links (symlink_status for links)
+        if (it->is_symlink(e2)) continue;
+        const auto t = it->last_write_time(e2);
+        if (e2 || t > cutoff) continue;
+        if (std::filesystem::remove(it->path(), e2)) ++removed;
+    }
+    return removed;
+}
+
+}  // namespace
+
+Result<std::string> spool_directory(const SpoolConfig& cfg) {
+    if (!cfg.directory.empty()) return cfg.directory;
+    std::error_code ec;
+    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    if (ec) return Status(Errc::IoError, "no temporary directory for spooling");
+    Result<std::filesystem::path> dir = private_spool_dir(base);
+    if (!dir) return dir.take_error();
+    return utf8_of(dir.value());
+}
+
+Result<std::size_t> remove_stale_spool_files(const SpoolConfig& cfg) {
+    Result<std::string> dir = spool_directory(cfg);
+    if (!dir) return dir.take_error();
+    return remove_stale_in(fs_path(dir.value()), cfg.stale_after_minutes);
+}
+
+namespace {
 
 }  // namespace
 
@@ -239,7 +463,8 @@ Status SpoolFile::commit(const std::string& target) {
 // ------------------------------------------------------------------ SpoolWriter
 
 struct SpoolWriter::Impl {
-    std::ofstream out;
+    ExclusiveFile out;
+    bool failed = false;
 };
 
 SpoolWriter::~SpoolWriter() {
@@ -251,22 +476,22 @@ SpoolWriter::~SpoolWriter() {
 }
 
 Result<std::unique_ptr<SpoolWriter>> SpoolWriter::open(const SpoolConfig& cfg, const std::vector<std::uint8_t>& prefix) {
-    std::error_code ec;
-    std::filesystem::path dir = cfg.directory.empty() ? std::filesystem::temp_directory_path(ec) : fs_path(cfg.directory);
-    if (ec) return Status(Errc::IoError, "no temporary directory for spooling");
+    Result<std::string> dir8 = spool_directory(cfg);
+    if (!dir8) return dir8.take_error();
+    const std::filesystem::path dir = fs_path(dir8.value());
+    {
+        // First use of this directory in the process: clear leftovers of earlier runs.
+        std::lock_guard<std::mutex> l(g_cleaned_mu);
+        if (cleaned_dirs().insert(dir8.value()).second) (void)remove_stale_in(dir, cfg.stale_after_minutes);
+    }
     std::unique_ptr<SpoolWriter> w(new SpoolWriter());
-    w->impl_ = std::make_unique<Impl>();
+    auto impl = std::make_unique<Impl>();
     const std::filesystem::path p = dir / unique_name();
     w->path_ = utf8_of(p);
-    w->impl_->out.open(p, std::ios::binary | std::ios::out | std::ios::trunc);
-    if (!w->impl_->out) {
-        w->impl_.reset();
-        return Status(Errc::IoError, "cannot create spool file");
-    }
-    if (!prefix.empty()) {
-        w->impl_->out.write(reinterpret_cast<const char*>(prefix.data()), static_cast<std::streamsize>(prefix.size()));
-        if (!w->impl_->out) return Status(Errc::IoError, "cannot write spool file");
-    }
+    if (Status s = impl->out.create(w->path_); !s) return s;  // nothing created: no cleanup needed
+    w->impl_ = std::move(impl);
+    if (!prefix.empty())
+        if (Status s = w->impl_->out.write(prefix.data(), prefix.size()); !s) return s;  // destructor removes it
     w->prefix_size_ = prefix.size();
     return w;
 }
@@ -274,17 +499,17 @@ Result<std::unique_ptr<SpoolWriter>> SpoolWriter::open(const SpoolConfig& cfg, c
 Status SpoolWriter::write(const std::uint8_t* data, std::size_t n) {
     if (!impl_) return Status(Errc::InvalidArgument, "spool file is closed");
     if (n == 0) return Status::ok();
-    impl_->out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(n));
-    if (!impl_->out) return Status(Errc::IoError, "cannot write spool file");
+    if (Status s = impl_->out.write(data, n); !s) {
+        impl_->failed = true;
+        return s;
+    }
     written_ += n;
     return Status::ok();
 }
 
 Result<SpoolWriter::Finished> SpoolWriter::finish() {
     if (!impl_) return Status(Errc::InvalidArgument, "spool file is closed");
-    impl_->out.flush();
-    const bool good = static_cast<bool>(impl_->out);
-    impl_->out.close();
+    const bool good = impl_->out.close() && !impl_->failed;
     impl_.reset();
     if (!good) {
         std::error_code ec;

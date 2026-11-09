@@ -1,0 +1,22 @@
+<Project>
+  <!-- Native library location (CMake build output). Override on the command line, e.g.
+       -p:SiaaraNativeBuildDir=/path/to/build  or  -p:SiaaraNativeLibrary=/path/to/siaara.dll
+       CI may also provide -p:SiaaraNativeArtifactsDir=dir holding <rid>/<library> for every RID. -->
+  <PropertyGroup>
+    <SiaaraRepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</SiaaraRepoRoot>
+    <SiaaraNativeBuildDir Condition="'$(SiaaraNativeBuildDir)' == ''">$(SiaaraRepoRoot)build-rel</SiaaraNativeBuildDir>
+    <SiaaraNativeRid Condition="'$(SiaaraNativeRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</SiaaraNativeRid>
+    <SiaaraNativeFileName Condition="$([MSBuild]::IsOSPlatform('Windows'))">siaara.dll</SiaaraNativeFileName>
+    <SiaaraNativeFileName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libsiaara.dylib</SiaaraNativeFileName>
+    <SiaaraNativeFileName Condition="'$(SiaaraNativeFileName)' == ''">libsiaara.so</SiaaraNativeFileName>
+    <SiaaraNativeLibrary Condition="'$(SiaaraNativeLibrary)' == '' and Exists('$(SiaaraNativeBuildDir)/$(SiaaraNativeFileName)')">$(SiaaraNativeBuildDir)/$(SiaaraNativeFileName)</SiaaraNativeLibrary>
+    <SiaaraNativeLibrary Condition="'$(SiaaraNativeLibrary)' == '' and Exists('$(SiaaraNativeBuildDir)/Release/$(SiaaraNativeFileName)')">$(SiaaraNativeBuildDir)/Release/$(SiaaraNativeFileName)</SiaaraNativeLibrary>
+  </PropertyGroup>
+  <!-- Zero external dependencies: fail the build if any project references a NuGet package.
+       (Packs the SDK itself downloads for a RID-specific publish, such as the NativeAOT compiler,
+       are SDK components, not PackageReference items.) -->
+  <Target Name="SiaaraNoPackageReferences" BeforeTargets="CollectPackageReferences;Restore;Build">
+    <Error Condition="'@(PackageReference)' != ''"
+           Text="The SIAARA bindings take no NuGet dependencies, found: @(PackageReference)" />
+  </Target>
+</Project>

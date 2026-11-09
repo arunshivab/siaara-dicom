@@ -27,7 +27,7 @@ struct Node {
 };
 
 struct ParseLimits {
-    std::uint32_t max_depth = 512;
+    std::uint32_t max_depth = 128;  // element nesting; bounds the parser's recursion (PARSE-20)
     std::uint64_t max_input = 1ull << 30;
     std::uint64_t max_nodes = 50'000'000;
     std::uint32_t max_attributes = 64;      // per element

@@ -4,13 +4,15 @@
 Oracles (only used to produce reference pixels):
   - pylibjpeg-libjpeg (Thomas Richter's libjpeg), colour_transform=0: every process incl. 12-bit and
     lossless. Its chroma upsampling interpolates.
-  - jpeglib (pip package wrapping IJG libjpeg 6b and libjpeg-turbo 2.1) with do_fancy_upsampling
-    off, i.e. sample replication like SIAARA, and no colour conversion: 8-bit DCT streams.
+  - jpeglib (pip package wrapping IJG libjpeg 6b and libjpeg-turbo 2.1), no colour conversion,
+    8-bit DCT streams: with do_fancy_upsampling on (triangular upsampling, SIAARA's default) and
+    off (sample replication, SIAARA's JpegDecodeOptions::replicate_chroma).
   - imagecodecs.jpeg8_decode (libjpeg-turbo 3.x): second opinion for grey-scale lossless and
     12-bit streams, and the verdict for lossless point transform (Pt > 0), where pylibjpeg-libjpeg
     seeds the first prediction with 2^(P-1) instead of the 2^(P-Pt-1) of T.81 H.1.2.1.
 T.81 does not define how subsampled components are upsampled, so for subsampled lossy streams the
-verdict uses the replicating oracle; the difference to the interpolating oracle is still printed.
+verdict compares SIAARA's default (fancy) decode with libjpeg's fancy upsampling, and SIAARA's
+replicating decode with libjpeg's replication; the difference to pylibjpeg is still printed.
 Pillow (libjpeg-turbo) is used to write test streams.
 
 Parts:
@@ -54,13 +56,14 @@ TMP = tempfile.mkdtemp(prefix="siaara_jpeg_")
 results = []  # (name, ok, detail)
 
 
-def siaara_decode(stream, rows, cols, spp, alloc, stored, signed=0):
+def siaara_decode(stream, rows, cols, spp, alloc, stored, signed=0, replicate=False):
     src = os.path.join(TMP, "in.jpg")
     dst = os.path.join(TMP, "out.raw")
     with open(src, "wb") as f:
         f.write(stream)
     r = subprocess.run([TOOL, "decode", src, dst, str(rows), str(cols), str(spp), str(alloc),
-                        str(stored), str(signed), "0"], capture_output=True, text=True)
+                        str(stored), str(signed), "0"] + (["replicate"] if replicate else []),
+                       capture_output=True, text=True)
     if r.returncode != 0:
         return None, r.stderr.strip()
     dt = np.uint8 if alloc == 8 else np.dtype("<u2")
@@ -92,14 +95,15 @@ def turbo3(stream):
     return np.asarray(imagecodecs.jpeg8_decode(bytes(stream)))
 
 
-def replicating_oracle(stream, version):
-    """Decode with jpeglib (given libjpeg build), replication upsampling, no colour conversion."""
+def libjpeg_oracle(stream, version, fancy):
+    """Decode with jpeglib (given libjpeg build), no colour conversion; fancy or replicated chroma."""
     path = os.path.join(TMP, "oracle.jpg")
     with open(path, "wb") as f:
         f.write(stream)
     with jpeglib.version(version):
         cs = jpeglib.read_dct(path).jpeg_color_space
-        im = jpeglib.read_spatial(path, out_color_space=cs, flags=["-DO_FANCY_UPSAMPLING", "-DO_BLOCK_SMOOTHING"])
+        flags = ["+DO_FANCY_UPSAMPLING" if fancy else "-DO_FANCY_UPSAMPLING", "-DO_BLOCK_SMOOTHING"]
+        im = jpeglib.read_spatial(path, out_color_space=cs, flags=flags)
         a = np.asarray(im.spatial)
     return a[..., 0] if a.ndim == 3 and a.shape[2] == 1 else a
 
@@ -115,8 +119,8 @@ def subsampled(stream):
     return False
 
 
-def compare_lossy8(name, stream, ours, note=""):
-    """8-bit DCT stream: verdict from the replicating oracle when subsampled, else pylibjpeg."""
+def compare_lossy8(name, stream, ours, note="", ours_replicated=None):
+    """8-bit DCT stream: verdict from libjpeg (fancy and replicating) when subsampled, else pylibjpeg."""
     ref_interp = oracle(stream)
     if not subsampled(stream):
         compare(name, ours, ref_interp, False, note)
@@ -124,16 +128,17 @@ def compare_lossy8(name, stream, ours, note=""):
     details = []
     ok = ours is not None
     for ver in ("6b", "turbo210"):
-        try:
-            ref = replicating_oracle(stream, ver)
-        except Exception as e:
-            details.append(f"{ver}: oracle failed {e}")
-            continue
-        if ours is None:
-            break
-        err = int(np.max(np.abs(ours.astype(np.int64) - ref.reshape(ours.shape).astype(np.int64))))
-        ok &= err <= 1
-        details.append(f"libjpeg-{ver} (replicating) max error {err}")
+        for fancy, mine in ((True, ours), (False, ours_replicated)):
+            if mine is None:
+                continue
+            try:
+                ref = libjpeg_oracle(stream, ver, fancy)
+            except Exception as e:
+                details.append(f"{ver}: oracle failed {e}")
+                continue
+            err = int(np.max(np.abs(mine.astype(np.int64) - ref.reshape(mine.shape).astype(np.int64))))
+            ok &= err <= 1
+            details.append(f"libjpeg-{ver} ({'fancy' if fancy else 'replicating'}) max error {err}")
     if ours is not None:
         r = ref_interp.reshape(ours.shape).astype(np.int64)
         d = np.abs(ours.astype(np.int64) - r)
@@ -214,7 +219,8 @@ def part_a():
                 ref = (v & 0xFFFF).astype(np.uint16)
             ours, err = siaara_decode(frame, rows, cols, spp, alloc, stored, signed)
             if not lossless_mode and alloc == 8:
-                compare_lossy8(label, oracle_stream, ours, err)
+                rep_, _ = siaara_decode(frame, rows, cols, spp, alloc, stored, signed, replicate=True)
+                compare_lossy8(label, oracle_stream, ours, err, rep_)
             else:
                 compare(label, ours, ref, lossless_mode, err)
             if spp == 1 and ours is not None and not signed:
@@ -255,7 +261,8 @@ def part_b():
         stream = bio.getvalue()
         spp = 1 if mode == "L" else 3
         ours, err = siaara_decode(stream, h, w, spp, 8, 8)
-        compare_lossy8(f"B {name}", stream, ours, err)
+        rep_, _ = siaara_decode(stream, h, w, spp, 8, 8, replicate=True)
+        compare_lossy8(f"B {name}", stream, ours, err, rep_)
 
 
 # ------------------------------------------------------------------ C. SIAARA encoder -> oracle
@@ -318,7 +325,8 @@ def part_c():
     for lh, lv in ((1, 1), (2, 2), (2, 1)):
         stream = siaara_encode(col, 8, 8, False, quality=90, ybr=1, lh=lh, lv=lv)
         ours, err = siaara_decode(stream, 41, 50, 3, 8, 8)
-        compare_lossy8(f"C lossy YCbCr {lh}x{lv} -> oracle", stream, ours, err)
+        rep_, _ = siaara_decode(stream, 41, 50, 3, 8, 8, replicate=True)
+        compare_lossy8(f"C lossy YCbCr {lh}x{lv} -> oracle", stream, ours, err, rep_)
 
 
 part_a()

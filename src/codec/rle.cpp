@@ -59,26 +59,42 @@ void segment_placement(const Layout& l, bool planar, std::uint32_t seg, std::uin
 
 // Decodes one segment into `need` bytes at dst, dst + stride, ... Data after the last needed byte
 // (such as the even-length pad) is ignored; a run reaching past the end is cut at the end.
+// With `clamped` set (lenient decoding), a run cut off by the end of the segment yields the bytes
+// that are there, a segment that ends early leaves the rest of its bytes as they are, and
+// *clamped records that this happened.
 Status decode_segment(const std::uint8_t* src, std::size_t n, std::uint8_t* dst, std::size_t stride,
-                      std::size_t need, std::uint64_t seg_offset) {
+                      std::size_t need, std::uint64_t seg_offset, bool* clamped = nullptr) {
     std::size_t i = 0, k = 0;
     while (k < need) {
-        if (i >= n)
+        if (i >= n) {
+            if (clamped) {
+                *clamped = true;
+                return Status::ok();
+            }
             return Status(Errc::Truncated, "rle: segment decodes to fewer bytes than the frame needs", seg_offset + i);
+        }
         const std::uint8_t h = src[i++];
         if (h < 128) {
-            const std::size_t count = std::min<std::size_t>(h + 1u, need - k);
-            if (n - i < count) return Status(Errc::Truncated, "rle: literal run past segment end", seg_offset + i);
+            std::size_t count = std::min<std::size_t>(h + 1u, need - k);
+            if (n - i < count) {
+                if (!clamped) return Status(Errc::Truncated, "rle: literal run past segment end", seg_offset + i);
+                *clamped = true;
+                count = n - i;
+            }
             if (stride == 1) {
                 std::memcpy(dst + k, src + i, count);
             } else {
                 std::uint8_t* d = dst + k * stride;
                 for (std::size_t j = 0; j < count; ++j, d += stride) *d = src[i + j];
             }
-            i += h + 1u;  // a cut-off literal run still consumes its bytes (only matters if k == need)
+            i = std::min<std::size_t>(i + h + 1u, n);  // a cut-off literal run still consumes its bytes
             k += count;
         } else if (h > 128) {
-            if (i >= n) return Status(Errc::Truncated, "rle: replicate run past segment end", seg_offset + i);
+            if (i >= n) {
+                if (!clamped) return Status(Errc::Truncated, "rle: replicate run past segment end", seg_offset + i);
+                *clamped = true;
+                return Status::ok();
+            }
             const std::uint8_t v = src[i++];
             const std::size_t count = std::min<std::size_t>(257u - h, need - k);
             if (stride == 1) {
@@ -126,7 +142,25 @@ void encode_row(const std::uint8_t* r, std::size_t n, std::vector<std::uint8_t>&
 
 }  // namespace
 
+namespace {
+Status decode_rle_impl(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                       bool* clamped);
+}  // namespace
+
 Status decode_rle(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
+    return decode_rle_impl(in, info, out, nullptr);
+}
+
+Status decode_rle_lenient(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                          bool& clamped) {
+    clamped = false;
+    std::fill(out.begin(), out.end(), std::uint8_t{0});
+    return decode_rle_impl(in, info, out, &clamped);
+}
+
+namespace {
+Status decode_rle_impl(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                       bool* clamped) {
     Layout l;
     if (Status s = make_layout(info, l); !s) return s;
     if (out.size() != l.frame)
@@ -150,12 +184,14 @@ Status decode_rle(std::span<const std::uint8_t> in, const FrameInfo& info, std::
         std::uint64_t base = 0, stride = 0;
         segment_placement(l, info.planar, s, base, stride);
         if (Status st = decode_segment(in.data() + start, end - start, out.data() + base,
-                                       static_cast<std::size_t>(stride), static_cast<std::size_t>(l.pixels), start);
+                                       static_cast<std::size_t>(stride), static_cast<std::size_t>(l.pixels), start,
+                                       clamped);
             !st)
             return st;
     }
     return Status::ok();
 }
+}  // namespace
 
 Status encode_rle(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,
                   std::vector<std::uint8_t>& out) {

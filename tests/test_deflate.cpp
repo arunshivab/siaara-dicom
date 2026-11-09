@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "codec/deflate.hpp"
+#include "core/transfer_syntax.hpp"
+#include "image/frames.hpp"
 #include "test.hpp"
 
 using namespace siaara;
@@ -828,4 +830,52 @@ TEST_CASE("inflate: consumed excludes trailing bytes") {
         CHECK(out == data);
         CHECK_EQ(used, n);
     }
+}
+
+// ---------------------------------------------------------------- F6a: Deflated Image Frame Compression
+
+TEST_CASE("deflate: Deflated Image Frame Compression frames decode (1-bit, not byte aligned)") {
+    // 3x3 1-bit frames: 9 bits each, so natively frame 1 would start mid-byte; deflated frames
+    // each start on a byte boundary (PS3.5 A.4.13).
+    const std::uint8_t frame_bits[2][2] = {{0x5B, 0x01}, {0xA4, 0x00}};
+    Dataset ds;
+    (void)ds.set_uint16(tags::SamplesPerPixel, 1);
+    (void)ds.set_string(tags::PhotometricInterpretation, VR::CS, "MONOCHROME2");
+    (void)ds.set_string(tags::NumberOfFrames, VR::IS, "2");
+    (void)ds.set_uint16(tags::Rows, 3);
+    (void)ds.set_uint16(tags::Columns, 3);
+    (void)ds.set_uint16(tags::BitsAllocated, 1);
+    (void)ds.set_uint16(tags::BitsStored, 1);
+    (void)ds.set_uint16(tags::HighBit, 0);
+    (void)ds.set_uint16(tags::PixelRepresentation, 0);
+    Element px;
+    px.tag = tags::PixelData;
+    px.vr = VR::OB;
+    px.undefined_length = true;
+    px.fragments.push_back(Bytes{});
+    for (const auto& f : frame_bits) {
+        std::vector<std::uint8_t> z;
+        REQUIRE(deflate_raw(f, 2, 6, z).is_ok());
+        if (z.size() & 1u) z.push_back(0);  // trailing NUL for odd streams
+        px.fragments.push_back(Bytes::copy_of(z.data(), z.size()));
+    }
+    ds.put(std::move(px));
+    REQUIRE(find_transfer_syntax("1.2.840.10008.1.2.8.1") != nullptr);
+    auto fr = image::FrameReader::open(ds, "1.2.840.10008.1.2.8.1");
+    REQUIRE(fr.is_ok());
+    REQUIRE(fr->frame_count() == 2);
+    for (std::uint32_t i = 0; i < 2; ++i) {
+        auto f = fr->decode(i);
+        REQUIRE(f.is_ok());
+        REQUIRE(f->size() == 2u);
+        CHECK_EQ((*f)[0], frame_bits[i][0]);
+        CHECK_EQ((*f)[1], frame_bits[i][1]);
+    }
+    // A frame that inflates to more than the frame is rejected.
+    std::vector<std::uint8_t> big(64, 7), z;
+    REQUIRE(deflate_raw(big.data(), big.size(), 6, z).is_ok());
+    ds.find(tags::PixelData)->fragments[1] = Bytes::copy_of(z.data(), z.size());
+    auto fr2 = image::FrameReader::open(ds, "1.2.840.10008.1.2.8.1");
+    REQUIRE(fr2.is_ok());
+    CHECK(!fr2->decode(0).is_ok());
 }

@@ -2,9 +2,10 @@
 // OpenSSL 3.x, loaded at run time.
 //
 // Nothing is linked at build time and no OpenSSL header is needed. On first use libcrypto.so.3 and
-// libssl.so.3 are opened by soname (the dynamic loader's system search path; never a path relative
-// to the current directory), the version is checked (>= 3.0.0) and every entry point below is
-// resolved before any is called. The libraries stay loaded for the life of the process.
+// libssl.so.3 are opened by absolute path from a fixed list of system library folders (never
+// through LD_LIBRARY_PATH, RUNPATH or the current directory), the version is checked (>= 3.0.0)
+// and every entry point below is resolved before any is called. On success the libraries stay
+// loaded for the life of the process; on any failure both are closed again.
 //
 // The prototypes are written from the OpenSSL 3.0 manual pages; every OpenSSL object is opaque
 // here (void*). Constants are the documented numeric values of the macros named in the comments.
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "core/io.hpp"
 #include "net/tls_internal.hpp"
 
 namespace siaara::net::detail {
@@ -54,6 +56,16 @@ constexpr int kVersionText = 0;              // OPENSSL_VERSION
 constexpr int kPkeyRsa = 6;                  // EVP_PKEY_RSA (NID_rsaEncryption)
 constexpr int kPkeyRsaPss = 912;             // EVP_PKEY_RSA_PSS
 constexpr int kPkeyEc = 408;                 // EVP_PKEY_EC (NID_X9_62_id_ecPublicKey)
+constexpr int kPkeyEd25519 = 1087;           // EVP_PKEY_ED25519 (NID_ED25519)
+constexpr int kPkeyEd448 = 1088;             // EVP_PKEY_ED448 (NID_ED448)
+constexpr int kNidMd5 = 4, kNidSha1 = 64, kNidSha224 = 675, kNidSha256 = 672, kNidSha384 = 673, kNidSha512 = 674;
+constexpr int kNidSha3_256 = 1097, kNidSha3_384 = 1098, kNidSha3_512 = 1099;
+constexpr unsigned long kFlagCrlCheck = 0x4;     // X509_V_FLAG_CRL_CHECK
+constexpr unsigned long kFlagCrlCheckAll = 0x8;  // X509_V_FLAG_CRL_CHECK_ALL
+constexpr int kErrUnableToGetCrl = 3;            // X509_V_ERR_UNABLE_TO_GET_CRL
+constexpr int kErrCrlNotYetValid = 11;           // X509_V_ERR_CRL_NOT_YET_VALID
+constexpr int kErrCrlHasExpired = 12;            // X509_V_ERR_CRL_HAS_EXPIRED
+constexpr int kErrUnableToGetCrlIssuer = 33;     // X509_V_ERR_UNABLE_TO_GET_CRL_ISSUER
 constexpr unsigned long kMinVersion = 0x30000000UL;  // OpenSSL 3.0.0
 
 using PasswordCb = int (*)(char*, int, int, void*);
@@ -75,6 +87,13 @@ struct Api {
     long (*BIO_ctrl)(void*, int, long, void*);
     std::size_t (*BIO_ctrl_pending)(void*);
     int (*X509_VERIFY_PARAM_set1_ip_asc)(void*, const char*);
+    int (*X509_VERIFY_PARAM_set_flags)(void*, unsigned long);
+    int (*X509_STORE_CTX_get_error)(const void*);
+    void (*X509_STORE_CTX_set_error)(void*, int);
+    int (*X509_STORE_add_crl)(void*, void*);
+    void* (*d2i_X509_CRL)(void**, const unsigned char**, long);
+    void (*X509_CRL_free)(void*);
+    int (*X509_get_signature_info)(void*, int*, int*, int*, std::uint32_t*);
     void (*X509_VERIFY_PARAM_set_hostflags)(void*, unsigned int);
     const char* (*X509_verify_cert_error_string)(long);
     void* (*X509_get0_pubkey)(const void*);
@@ -130,6 +149,9 @@ struct Api {
     const void* (*SSL_get_current_cipher)(const void*);
     std::uint16_t (*SSL_CIPHER_get_protocol_id)(const void*);
     void* (*SSL_get0_peer_certificate)(const void*);
+    void* (*SSL_CTX_get0_param)(void*);
+    void* (*SSL_CTX_get_cert_store)(const void*);
+    void* (*SSL_get0_verified_chain)(const void*);
 };
 
 struct Library {
@@ -153,43 +175,104 @@ bool resolve(void* lib, const char* name, F& fn, std::string& missing) {
 
 #define SIAARA_SSL_SYM(lib, name) ok = resolve(lib, #name, a.name, missing) && ok
 
+// The system library folders searched for OpenSSL, most specific first. Only these absolute
+// paths are ever passed to dlopen: LD_LIBRARY_PATH, the executable's RUNPATH/RPATH and the
+// current directory play no part, so a planted libcrypto.so.3 cannot run its constructors in
+// this process (dlopen runs them before any check after it could). A folder holding a library of
+// the wrong ELF class (32/64-bit) fails dlopen without running anything; the next one is tried.
+#if defined(__x86_64__) && defined(__ILP32__)
+#define SIAARA_LIB_TRIPLET "x86_64-linux-gnux32"
+#elif defined(__x86_64__)
+#define SIAARA_LIB_TRIPLET "x86_64-linux-gnu"
+#elif defined(__i386__)
+#define SIAARA_LIB_TRIPLET "i386-linux-gnu"
+#elif defined(__aarch64__)
+#define SIAARA_LIB_TRIPLET "aarch64-linux-gnu"
+#elif defined(__arm__) && defined(__ARM_PCS_VFP)
+#define SIAARA_LIB_TRIPLET "arm-linux-gnueabihf"
+#elif defined(__arm__)
+#define SIAARA_LIB_TRIPLET "arm-linux-gnueabi"
+#elif defined(__riscv) && __riscv_xlen == 64
+#define SIAARA_LIB_TRIPLET "riscv64-linux-gnu"
+#elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
+#define SIAARA_LIB_TRIPLET "powerpc64le-linux-gnu"
+#elif defined(__s390x__)
+#define SIAARA_LIB_TRIPLET "s390x-linux-gnu"
+#elif defined(__loongarch64)
+#define SIAARA_LIB_TRIPLET "loongarch64-linux-gnu"
+#endif
+
+const char* const kLibDirs[] = {
+#if defined(SIAARA_LIB_TRIPLET)
+    "/usr/lib/" SIAARA_LIB_TRIPLET "/",
+    "/lib/" SIAARA_LIB_TRIPLET "/",
+#endif
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    "/usr/lib64/",
+    "/lib64/",
+#else
+    "/usr/lib32/",
+#endif
+    "/usr/lib/",
+    "/lib/",
+    "/usr/local/lib64/",
+    "/usr/local/lib/",
+};
+
+// dlopen of `soname` from the first system folder that has a loadable copy, or null.
+void* open_system_library(const char* soname, std::string& path) {
+    for (const char* dir : kLibDirs) {
+        const std::string p = std::string(dir) + soname;
+        if (void* h = ::dlopen(p.c_str(), RTLD_NOW | RTLD_LOCAL)) {
+            path = p;
+            return h;
+        }
+    }
+    return nullptr;
+}
+
+// The file a symbol of `lib` lives in, or empty.
+std::string symbol_file(void* lib, const char* name) {
+    void* sym = ::dlsym(lib, name);
+    Dl_info info{};
+    if (!sym || ::dladdr(sym, &info) == 0 || !info.dli_fname) return {};
+    return info.dli_fname;
+}
+
 void load(Library& L) {
-    // By soname only: the loader searches its configured system paths (ld.so.cache, /lib, /usr/lib,
-    // LD_LIBRARY_PATH as set by the administrator); a name without '/' is never looked up in the
-    // current directory.
-    void* crypto = ::dlopen("libcrypto.so.3", RTLD_NOW | RTLD_LOCAL);
+    // Absolute system paths only (see kLibDirs). libssl's own DT_NEEDED entry for libcrypto.so.3
+    // is satisfied by the copy loaded here first (the loader matches already loaded sonames).
+    std::string crypto_path, ssl_path;
+    void* crypto = open_system_library("libcrypto.so.3", crypto_path);
     if (!crypto) {
-        L.reason = "the system OpenSSL 3 library (libcrypto.so.3) was not found";
+        L.reason = "the system OpenSSL 3 library (libcrypto.so.3) was not found in the system library folders";
         return;
     }
-    void* ssl = ::dlopen("libssl.so.3", RTLD_NOW | RTLD_LOCAL);
+    void* ssl = open_system_library("libssl.so.3", ssl_path);
     if (!ssl) {
-        L.reason = "the system OpenSSL 3 library (libssl.so.3) was not found";
+        ::dlclose(crypto);
+        L.reason = "the system OpenSSL 3 library (libssl.so.3) was not found in the system library folders";
         return;
     }
+    auto refuse = [&](const std::string& why) {
+        ::dlclose(ssl);
+        ::dlclose(crypto);
+        L.reason = why;
+    };
     Api a{};
     std::string missing;
     bool ok = true;
     SIAARA_SSL_SYM(crypto, OpenSSL_version_num);
     SIAARA_SSL_SYM(crypto, OpenSSL_version);
-    if (!ok) {
-        L.reason = "libcrypto.so.3 lacks " + missing;
-        return;
-    }
-    // Refuse a library that the loader found through a relative search path entry.
-    for (void* lib : {crypto, ssl}) {
-        void* sym = ::dlsym(lib, lib == crypto ? "OpenSSL_version_num" : "SSL_new");
-        Dl_info info{};
-        if (!sym || ::dladdr(sym, &info) == 0 || !info.dli_fname || info.dli_fname[0] != '/') {
-            L.reason = "refusing an OpenSSL library that was not loaded from an absolute system path";
-            return;
-        }
-    }
+    if (!ok) return refuse("libcrypto.so.3 lacks " + missing);
+    // Both libraries really come from absolute paths, and libssl uses the libcrypto loaded above.
+    const std::string crypto_file = symbol_file(crypto, "OpenSSL_version_num");
+    const std::string ssl_file = symbol_file(ssl, "SSL_new");
+    if (crypto_file.empty() || crypto_file[0] != '/' || ssl_file.empty() || ssl_file[0] != '/' ||
+        symbol_file(ssl, "OpenSSL_version_num") != crypto_file)
+        return refuse("refusing an OpenSSL library that was not loaded from an absolute system path");
     const unsigned long v = a.OpenSSL_version_num();
-    if (v < kMinVersion) {
-        L.reason = "OpenSSL 3.0 or newer is required";
-        return;
-    }
+    if (v < kMinVersion) return refuse("OpenSSL 3.0 or newer is required");
     SIAARA_SSL_SYM(crypto, ERR_get_error);
     SIAARA_SSL_SYM(crypto, ERR_error_string_n);
     SIAARA_SSL_SYM(crypto, ERR_clear_error);
@@ -201,6 +284,13 @@ void load(Library& L) {
     SIAARA_SSL_SYM(crypto, BIO_ctrl);
     SIAARA_SSL_SYM(crypto, BIO_ctrl_pending);
     SIAARA_SSL_SYM(crypto, X509_VERIFY_PARAM_set1_ip_asc);
+    SIAARA_SSL_SYM(crypto, X509_VERIFY_PARAM_set_flags);
+    SIAARA_SSL_SYM(crypto, X509_STORE_CTX_get_error);
+    SIAARA_SSL_SYM(crypto, X509_STORE_CTX_set_error);
+    SIAARA_SSL_SYM(crypto, X509_STORE_add_crl);
+    SIAARA_SSL_SYM(crypto, d2i_X509_CRL);
+    SIAARA_SSL_SYM(crypto, X509_CRL_free);
+    SIAARA_SSL_SYM(crypto, X509_get_signature_info);
     SIAARA_SSL_SYM(crypto, X509_VERIFY_PARAM_set_hostflags);
     SIAARA_SSL_SYM(crypto, X509_verify_cert_error_string);
     SIAARA_SSL_SYM(crypto, X509_get0_pubkey);
@@ -255,14 +345,12 @@ void load(Library& L) {
     SIAARA_SSL_SYM(ssl, SSL_get_current_cipher);
     SIAARA_SSL_SYM(ssl, SSL_CIPHER_get_protocol_id);
     SIAARA_SSL_SYM(ssl, SSL_get0_peer_certificate);
-    if (!ok) {
-        L.reason = "the system OpenSSL lacks " + missing;
-        return;
-    }
-    if (a.OPENSSL_init_ssl(kInitLoadSslStrings | kInitLoadCryptoStrings, nullptr) != 1) {
-        L.reason = "OpenSSL initialisation failed";
-        return;
-    }
+    SIAARA_SSL_SYM(ssl, SSL_CTX_get0_param);
+    SIAARA_SSL_SYM(ssl, SSL_CTX_get_cert_store);
+    SIAARA_SSL_SYM(ssl, SSL_get0_verified_chain);
+    if (!ok) return refuse("the system OpenSSL lacks " + missing);
+    if (a.OPENSSL_init_ssl(kInitLoadSslStrings | kInitLoadCryptoStrings, nullptr) != 1)
+        return refuse("OpenSSL initialisation failed");
     // "OpenSSL 3.0.13 30 Jan 2024" -> "OpenSSL 3.0.13"
     std::string text = a.OpenSSL_version(kVersionText) ? a.OpenSSL_version(kVersionText) : "OpenSSL 3";
     const std::size_t sp = text.find(' ');
@@ -304,6 +392,46 @@ int password_cb(char* buf, int size, int, void* user) {
 
 int accept_any_certificate(int, void*) { return 1; }
 
+// Revocation soft-fail: a revocation status that cannot be determined (no CRL for an issuer, a
+// CRL that is not current) is not an error; everything else, including "revoked", is.
+int soft_fail_revocation(int ok, void* store) {
+    if (ok) return 1;
+    const Api& a = library().api;
+    const int e = a.X509_STORE_CTX_get_error(store);
+    if (e == kErrUnableToGetCrl || e == kErrCrlNotYetValid || e == kErrCrlHasExpired || e == kErrUnableToGetCrlIssuer) {
+        a.X509_STORE_CTX_set_error(store, 0);
+        return 1;
+    }
+    return 0;
+}
+
+CertKey cert_key(const Api& a, void* cert, int& bits) {
+    bits = 0;
+    const void* key = a.X509_get0_pubkey(cert);
+    if (!key) return CertKey::Other;
+    bits = a.EVP_PKEY_get_bits(key);
+    switch (a.EVP_PKEY_get_base_id(key)) {
+        case kPkeyRsa: return CertKey::Rsa;
+        case kPkeyRsaPss: return CertKey::RsaPss;
+        case kPkeyEc: return CertKey::Ec;
+        case kPkeyEd25519: return CertKey::Ed25519;
+        case kPkeyEd448: return CertKey::Ed448;
+        default: return CertKey::Other;
+    }
+}
+
+CertSig cert_sig(const Api& a, void* cert) {
+    int md = 0, pk = 0, secbits = 0;
+    std::uint32_t flags = 0;
+    if (a.X509_get_signature_info(cert, &md, &pk, &secbits, &flags) != 1) return CertSig::Other;
+    if (pk == kPkeyEd25519 || pk == kPkeyEd448) return CertSig::EdDsa;
+    if (md == kNidMd5 || md == kNidSha1 || md == kNidSha224) return CertSig::Weak;
+    const bool strong = md == kNidSha256 || md == kNidSha384 || md == kNidSha512 || md == kNidSha3_256 ||
+                        md == kNidSha3_384 || md == kNidSha3_512;
+    if (strong && (pk == kPkeyRsa || pk == kPkeyRsaPss || pk == kPkeyEc)) return CertSig::Sha256Plus;
+    return CertSig::Other;
+}
+
 std::string protocol_name(int v) {
     if (v == kTls13) return "TLSv1.3";
     if (v == kTls12) return "TLSv1.2";
@@ -331,6 +459,7 @@ private:
 
     Status fail(const std::string& what) { return Status(Errc::InvalidArgument, what + ": " + errors(api_)); }
     Status load_identity();
+    Status setup_revocation();
 };
 
 Status OsslContext::load_identity() {
@@ -386,6 +515,35 @@ Status OsslContext::load_identity() {
     return Status::ok();
 }
 
+Status OsslContext::setup_revocation() {
+    const TlsSettings& s = settings_;
+    if (s.revocation == TlsRevocation::Off || s.insecure_skip_validation) return Status::ok();
+    if (!s.crl_file.empty()) {
+        Result<Bytes> b = io::read_file(s.crl_file);
+        if (!b) return Status(Errc::IoError, "cannot read the CRL file " + s.crl_file);
+        if (b->size() > (64u << 20)) return Status(Errc::LimitExceeded, s.crl_file + " is too large");
+        const auto blocks = pem_blocks(std::string(b->as_chars()), "X509 CRL");
+        if (blocks.empty()) return Status(Errc::InvalidArgument, "no PEM CRL (X509 CRL block) in " + s.crl_file);
+        void* store = api_.SSL_CTX_get_cert_store(ctx_);
+        if (!store) return fail("no certificate store");
+        for (const std::vector<std::uint8_t>& der : blocks) {
+            const unsigned char* p = der.data();
+            void* crl = api_.d2i_X509_CRL(nullptr, &p, static_cast<long>(der.size()));
+            if (!crl) return fail("invalid CRL in " + s.crl_file);
+            const int added = api_.X509_STORE_add_crl(store, crl);
+            api_.X509_CRL_free(crl);
+            if (added != 1) return fail("cannot use a CRL from " + s.crl_file);
+        }
+    } else if (s.revocation == TlsRevocation::HardFail) {
+        return Status(Errc::InvalidArgument,
+                      "hard-fail revocation checking with OpenSSL needs TlsSettings::crl_file (OpenSSL fetches no CRLs)");
+    }
+    // Every certificate of the chain; CRLs also come from CRL blocks in ca_file.
+    if (api_.X509_VERIFY_PARAM_set_flags(api_.SSL_CTX_get0_param(ctx_), kFlagCrlCheck | kFlagCrlCheckAll) != 1)
+        return fail("cannot enable revocation checking");
+    return Status::ok();
+}
+
 Status OsslContext::init() {
     const bool server = role_ == Role::Server;
     const TlsSettings& s = settings_;
@@ -415,19 +573,22 @@ Status OsslContext::init() {
     } else if (api_.SSL_CTX_set_default_verify_paths(ctx_) != 1) {
         return fail("cannot load the system trust store");
     }
+    if (Status st = setup_revocation(); !st) return st;
+    const VerifyCb verify_cb = s.insecure_skip_validation             ? &accept_any_certificate
+                               : s.revocation == TlsRevocation::SoftFail ? &soft_fail_revocation
+                                                                         : nullptr;
     if (server) {
         static const unsigned char sid[] = {'s', 'i', 'a', 'a', 'r', 'a'};
         (void)api_.SSL_CTX_set_session_id_context(ctx_, sid, static_cast<unsigned>(sizeof sid));
         if (s.require_client_certificate) {
-            api_.SSL_CTX_set_verify(ctx_, kVerifyPeer | kVerifyFailIfNoPeerCert,
-                                    s.insecure_skip_validation ? &accept_any_certificate : nullptr);
+            api_.SSL_CTX_set_verify(ctx_, kVerifyPeer | kVerifyFailIfNoPeerCert, verify_cb);
             if (!s.ca_file.empty())
                 if (void* names = api_.SSL_load_client_CA_file(s.ca_file.c_str())) api_.SSL_CTX_set_client_CA_list(ctx_, names);
         } else {
             api_.SSL_CTX_set_verify(ctx_, kVerifyNone, nullptr);
         }
     } else {
-        api_.SSL_CTX_set_verify(ctx_, s.insecure_skip_validation ? kVerifyNone : kVerifyPeer, nullptr);
+        api_.SSL_CTX_set_verify(ctx_, s.insecure_skip_validation ? kVerifyNone : kVerifyPeer, verify_cb);
     }
     if (Status st = load_identity(); !st) return st;
     api_.ERR_clear_error();
@@ -463,7 +624,13 @@ public:
             return Status::ok();
         }
         a_.SSL_set_connect_state(ssl_);
-        if (peer_name.empty()) return Status::ok();
+        if (peer_name.empty()) {
+            // EngineContext::wrap_client refuses this already (check_client_identity); never
+            // run a client handshake without a host name or address check.
+            if (!s_.insecure_skip_validation)
+                return Status(Errc::InvalidArgument, "TLS client: no name to verify the server certificate against");
+            return Status::ok();
+        }
         if (is_ip_literal(peer_name)) {
             // No SNI for addresses (RFC 6066 section 3); match an iPAddress subjectAltName.
             if (!s_.insecure_skip_validation &&
@@ -521,12 +688,17 @@ public:
             if (s_.require_client_certificate) return Status(Errc::NetworkError, "the client sent no certificate");
             return Status::ok();
         }
-        if (const void* key = a_.X509_get0_pubkey(peer)) {
-            const int id = a_.EVP_PKEY_get_base_id(key);
-            const int bits = a_.EVP_PKEY_get_bits(key);
-            if ((id == kPkeyRsa || id == kPkeyRsaPss) && bits < 2048)
-                return Status(Errc::NetworkError, "peer RSA key shorter than 2048 bits");
-            if (id == kPkeyEc && bits < 256) return Status(Errc::NetworkError, "peer EC key shorter than 256 bits");
+        if (s_.insecure_skip_validation) return Status::ok();
+        // PS3.15 algorithms for every certificate of the verified chain (leaf first, anchor last).
+        void* chain = a_.SSL_get0_verified_chain(ssl_);
+        const int n = chain ? a_.OPENSSL_sk_num(chain) : 0;
+        if (n <= 0) return Status(Errc::NetworkError, "no verified peer certificate chain");
+        for (int i = 0; i < n; ++i) {
+            void* cert = a_.OPENSSL_sk_value(chain, i);
+            int bits = 0;
+            const CertKey key = cert_key(a_, cert, bits);
+            if (Status bad = check_chain_cert(s_, static_cast<std::size_t>(i), i == n - 1, key, bits, cert_sig(a_, cert)); !bad)
+                return bad;
         }
         return Status::ok();
     }

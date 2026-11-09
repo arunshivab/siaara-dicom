@@ -18,3 +18,10 @@ foreach(tool findscu movescu getscu storescu)
   target_link_libraries(siaara-${tool} PRIVATE siaara_static)
   target_compile_options(siaara-${tool} PRIVATE ${SIAARA_WARN})
 endforeach()
+foreach(t siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
+          siaara-findscu siaara-movescu siaara-getscu siaara-storescu)
+  siaara_harden(${t})
+endforeach()
+install(TARGETS siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
+        siaara-findscu siaara-movescu siaara-getscu siaara-storescu
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

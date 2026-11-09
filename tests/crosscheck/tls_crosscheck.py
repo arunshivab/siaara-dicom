@@ -203,7 +203,7 @@ def main():
         port = free_port()
         rx = os.path.join(work, "rx")
         os.makedirs(rx)
-        scp = start([storescp, "-v", "-aet", "SIAARA_TLS", "-od", rx, "--tls", "--tls-cert", srv, "--tls-key", srv_key,
+        scp = start([storescp, "-v", "--allow-any", "-aet", "SIAARA_TLS", "-od", rx, "--tls", "--tls-cert", srv, "--tls-key", srv_key,
                      "--tls-ca", ca, "--tls-require-client-cert", str(port)], port)
         try:
             if dcmtk:

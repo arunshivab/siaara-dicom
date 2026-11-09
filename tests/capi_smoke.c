@@ -105,6 +105,64 @@ int main(int argc, char** argv) {
         siaara_file_free(f);
         f = NULL;
     }
+    /* F1/F3: an unedited big-endian file saves back byte for byte; stored-order raw bytes. */
+    {
+        static const uint8_t meta[] = {
+            0x02, 0, 0, 0, 'U', 'L', 4, 0, 0x42, 0, 0, 0,
+            0x02, 0, 0x01, 0, 'O', 'B', 0, 0, 2, 0, 0, 0, 0, 1,
+            0x02, 0, 0x10, 0, 'U', 'I', 20, 0, '1', '.', '2', '.', '8', '4', '0', '.', '1', '0', '0', '0', '8',
+            '.', '1', '.', '2', '.', '2', 0,
+            0x02, 0, 0x12, 0, 'U', 'I', 6, 0, '2', '.', '2', '5', '.', '1',
+            0x02, 0, 0x13, 0, 'S', 'H', 2, 0, 'X', ' '};
+        static const uint8_t body[] = {
+            0, 0x08, 0, 0, 'U', 'L', 0, 4, 0, 0, 0, 10,
+            0, 0x08, 0, 0x60, 'C', 'S', 0, 2, 'O', 'T',
+            0, 0x28, 0, 0x10, 'U', 'S', 0, 2, 0x01, 0x02,
+            0, 0x29, 0, 0x10, 'L', 'O', 0, 3, 'A', 'B', 'C'};
+        uint8_t in[128 + 4 + sizeof meta + sizeof body];
+        uint8_t back[sizeof in + 16];
+        const uint8_t* raw = NULL;
+        size_t raw_size = 0, got = 0;
+        uint8_t stored[2];
+        siaara_save_options so;
+        char path2[512];
+        FILE* fp;
+        memset(in, 0, 128);
+        memcpy(in + 128, "DICM", 4);
+        memcpy(in + 132, meta, sizeof meta);
+        memcpy(in + 132 + sizeof meta, body, sizeof body);
+        EXPECT(siaara_file_open_memory(in, sizeof in, NULL, &f) == SIAARA_OK);
+        EXPECT(siaara_file_dataset(f, &ds) == SIAARA_OK);
+        EXPECT(siaara_dataset_get_raw(ds, 0x00280010u, &raw, &raw_size) == SIAARA_OK && raw_size == 2);
+        EXPECT(raw[0] == 0x02 && raw[1] == 0x01); /* little endian in memory */
+        EXPECT(siaara_file_get_raw_stored(f, ds, 0x00280010u, NULL, 0, &needed) == SIAARA_ERR_BUFFER_TOO_SMALL && needed == 2);
+        EXPECT(siaara_file_get_raw_stored(f, ds, 0x00280010u, stored, sizeof stored, &needed) == SIAARA_OK);
+        EXPECT(stored[0] == 0x01 && stored[1] == 0x02); /* as stored: big endian */
+        snprintf(path2, sizeof path2, "%s.be.dcm", path);
+        EXPECT(siaara_file_save_ex(f, path2, strlen(path2), NULL, NULL) == SIAARA_OK);
+        fp = fopen(path2, "rb");
+        EXPECT(fp != NULL);
+        got = fread(back, 1, sizeof back, fp);
+        fclose(fp);
+        EXPECT(got == sizeof in && memcmp(back, in, sizeof in) == 0);
+        memset(&so, 0, sizeof so);
+        so.struct_size = sizeof so;
+        so.group_lengths = SIAARA_GROUP_LENGTHS_DROP;
+        so.odd_lengths = SIAARA_ODD_LENGTHS_PAD;
+        EXPECT(siaara_file_save_ex(f, path2, strlen(path2), NULL, &so) == SIAARA_OK);
+        fp = fopen(path2, "rb");
+        EXPECT(fp != NULL);
+        got = fread(back, 1, sizeof back, fp);
+        fclose(fp);
+        EXPECT(got == sizeof in - 12 + 1); /* group length dropped, "ABC" padded */
+        so.odd_lengths = 7;
+        EXPECT(siaara_file_save_ex(f, path2, strlen(path2), NULL, &so) == SIAARA_ERR_INVALID_ARGUMENT);
+        so.struct_size = sizeof(uint32_t) + sizeof(int32_t); /* older, shorter struct: rest default */
+        EXPECT(siaara_file_save_ex(f, path2, strlen(path2), NULL, &so) == SIAARA_OK);
+        remove(path2);
+        siaara_file_free(f);
+        f = NULL;
+    }
     puts("capi_smoke: all checks passed");
     return 0;
 }

@@ -9,11 +9,16 @@
 //
 // Certificates are validated by the toolkit (SCH_CRED_MANUAL_CRED_VALIDATION): chain to the OS
 // roots, or to one of the PEM anchors of TlsSettings::ca_file (then only those), validity dates,
-// key usage, and the host name (CERT_CHAIN_POLICY_SSL) or the iPAddress subjectAltName.
+// key usage, revocation (TlsSettings::revocation, the OS CRL/OCSP sources, the root excluded),
+// the PS3.15 algorithms of every chain certificate, and the host name (CERT_CHAIN_POLICY_SSL) or
+// the iPAddress subjectAltName. TLS 1.2 renegotiation is refused (fatal); only TLS 1.3
+// post-handshake messages are processed.
 //
-// Identities: PKCS#12 files (imported for the life of the context; the imported key is deleted
-// again when the context is released) or a certificate in the "MY" store selected by thumbprint.
-// PEM private keys are not supported by this backend.
+// Identities: PKCS#12 files or a certificate in the "MY" store selected by thumbprint. A PKCS#12
+// key is imported as an ephemeral CNG key (PKCS12_NO_PERSIST_KEY | PKCS12_ALWAYS_CNG_KSP) that
+// is never written to the user's key store. Only if SChannel cannot use such a key for a server
+// credential is it imported persistently (with a logged warning) and deleted again when the
+// context is released. PEM private keys are not supported by this backend.
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -84,18 +89,33 @@ std::string chain_text(DWORD err) {
         case static_cast<DWORD>(CERT_E_CN_NO_MATCH): name = "hostname mismatch"; break;
         case static_cast<DWORD>(CERT_E_WRONG_USAGE): name = "certificate not valid for this usage"; break;
         case static_cast<DWORD>(CERT_E_REVOKED): name = "certificate revoked"; break;
+        case static_cast<DWORD>(CRYPT_E_REVOKED): name = "certificate revoked"; break;
+        case static_cast<DWORD>(CRYPT_E_REVOCATION_OFFLINE): name = "revocation server offline"; break;
+        case static_cast<DWORD>(CRYPT_E_NO_REVOCATION_CHECK): name = "revocation status unknown"; break;
         case static_cast<DWORD>(TRUST_E_CERT_SIGNATURE): name = "bad certificate signature"; break;
         default: break;
     }
     return std::string("certificate verification failed: ") + (name ? name : "error " + hex32(err));
 }
 
+// UTF-8 to UTF-16. False when `s` is not valid UTF-8 (or too long); `w` is then empty.
+bool widen(const std::string& s, std::wstring& w) {
+    w.clear();
+    if (s.empty()) return true;
+    if (s.size() > 0x7FFFFFFFu) return false;
+    const int n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return false;
+    w.assign(static_cast<std::size_t>(n), L'\0');
+    if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), w.data(), n) != n) {
+        w.clear();
+        return false;
+    }
+    return true;
+}
+
 std::wstring widen(const std::string& s) {
-    if (s.empty()) return std::wstring();
-    const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    if (n <= 0) return std::wstring();
-    std::wstring w(static_cast<std::size_t>(n), L'\0');
-    (void)::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    std::wstring w;
+    (void)widen(s, w);
     return w;
 }
 
@@ -178,6 +198,52 @@ bool strong_curve(const CRYPT_OBJID_BLOB& params) {
     return is(p256, sizeof p256) || is(p384, sizeof p384) || is(p521, sizeof p521);
 }
 
+bool oid_is(const char* oid, const char* want) { return oid && std::strcmp(oid, want) == 0; }
+
+CertKey chain_key(PCCERT_CONTEXT c, int& bits) {
+    CERT_PUBLIC_KEY_INFO& spki = c->pCertInfo->SubjectPublicKeyInfo;
+    const char* alg = spki.Algorithm.pszObjId;
+    bits = static_cast<int>(::CertGetPublicKeyLength(X509_ASN_ENCODING, &spki));
+    if (oid_is(alg, szOID_RSA_RSA)) return CertKey::Rsa;
+    if (oid_is(alg, "1.2.840.113549.1.1.10")) return CertKey::RsaPss;
+    if (oid_is(alg, szOID_ECC_PUBLIC_KEY)) {
+        if (!strong_curve(spki.Algorithm.Parameters)) bits = 0;  // only P-256, P-384, P-521
+        return CertKey::Ec;
+    }
+    if (oid_is(alg, "1.3.101.112")) return CertKey::Ed25519;
+    if (oid_is(alg, "1.3.101.113")) return CertKey::Ed448;
+    return CertKey::Other;
+}
+
+CertSig chain_sig(PCCERT_CONTEXT c) {
+    const char* a = c->pCertInfo->SignatureAlgorithm.pszObjId;
+    static const char* const strong[] = {"1.2.840.113549.1.1.11", "1.2.840.113549.1.1.12", "1.2.840.113549.1.1.13",
+                                         "1.2.840.113549.1.1.10", "1.2.840.10045.4.3.2",  "1.2.840.10045.4.3.3",
+                                         "1.2.840.10045.4.3.4"};
+    static const char* const weak[] = {"1.2.840.113549.1.1.4", "1.2.840.113549.1.1.5", "1.2.840.113549.1.1.14",
+                                       "1.2.840.10045.4.1",    "1.2.840.10045.4.3.1",  "1.2.840.10040.4.3",
+                                       "1.3.14.3.2.29"};
+    for (const char* o : strong)
+        if (oid_is(a, o)) return CertSig::Sha256Plus;
+    for (const char* o : weak)
+        if (oid_is(a, o)) return CertSig::Weak;
+    if (oid_is(a, "1.3.101.112") || oid_is(a, "1.3.101.113")) return CertSig::EdDsa;
+    return CertSig::Other;
+}
+
+// Windows build number (RtlGetVersion: not subject to the manifest-based version lie).
+DWORD windows_build() {
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+    HMODULE nt = ::GetModuleHandleW(L"ntdll.dll");
+    FARPROC p = nt ? ::GetProcAddress(nt, "RtlGetVersion") : nullptr;
+    if (!p) return 0;
+    RtlGetVersionFn fn = nullptr;
+    std::memcpy(&fn, &p, sizeof p);
+    OSVERSIONINFOW v{};
+    v.dwOSVersionInfoSize = sizeof v;
+    return fn(&v) == 0 ? v.dwBuildNumber : 0;
+}
+
 bool ip_matches_san(PCCERT_CONTEXT cert, const std::string& ip) {
     BYTE want[16] = {0};
     std::size_t want_len = 0;
@@ -209,11 +275,7 @@ public:
     SchContext(const TlsSettings& s, Role r) : EngineContext(s, r) {}
     ~SchContext() override {
         if (have_cred_) ::FreeCredentialsHandle(&cred_);
-        if (cert_) {
-            if (imported_key_) delete_imported_key(cert_);
-            ::CertFreeCertificateContext(cert_);
-        }
-        if (id_store_) ::CertCloseStore(id_store_, 0);
+        release_identity();
         if (roots_) ::CertCloseStore(roots_, 0);
     }
     Status init();
@@ -233,12 +295,26 @@ private:
     bool imported_key_ = false;
     HCERTSTORE roots_ = nullptr;  // anchors from ca_file (instead of the OS roots)
 
-    Status load_identity();
+    Status load_identity(bool persist_key);
     Status load_trust();
     Status acquire();
+    void release_identity() noexcept;
 };
 
-Status SchContext::load_identity() {
+void SchContext::release_identity() noexcept {
+    if (cert_) {
+        if (imported_key_) delete_imported_key(cert_);
+        ::CertFreeCertificateContext(cert_);
+        cert_ = nullptr;
+    }
+    imported_key_ = false;
+    if (id_store_) {
+        ::CertCloseStore(id_store_, 0);
+        id_store_ = nullptr;
+    }
+}
+
+Status SchContext::load_identity(bool persist_key) {
     const TlsIdentity& id = settings_.identity;
     if (!id.certificate_file.empty())
         return Status(Errc::Unsupported, "PEM private keys are not supported by the SChannel backend; use a PKCS#12 "
@@ -251,9 +327,16 @@ Status SchContext::load_identity() {
         CRYPT_DATA_BLOB blob{};
         blob.cbData = static_cast<DWORD>(bytes.size());
         blob.pbData = bytes.data();
-        std::wstring pw = widen(id.password);
-        id_store_ = ::PFXImportCertStore(&blob, pw.c_str(), CRYPT_USER_KEYSET);
-        if (!id_store_ && pw.empty()) id_store_ = ::PFXImportCertStore(&blob, nullptr, CRYPT_USER_KEYSET);
+        std::wstring pw;
+        if (!widen(id.password, pw)) {
+            secure_wipe(bytes);
+            return Status(Errc::InvalidArgument, "the PKCS#12 password is not valid UTF-8");
+        }
+        // Ephemeral CNG key by default: nothing is written to the user's key store.
+        const DWORD import = persist_key ? static_cast<DWORD>(CRYPT_USER_KEYSET)
+                                         : static_cast<DWORD>(PKCS12_NO_PERSIST_KEY | PKCS12_ALWAYS_CNG_KSP);
+        id_store_ = ::PFXImportCertStore(&blob, pw.c_str(), import);
+        if (!id_store_ && pw.empty()) id_store_ = ::PFXImportCertStore(&blob, nullptr, import);
         const DWORD err = ::GetLastError();
         wipe(pw);
         secure_wipe(bytes);
@@ -264,14 +347,17 @@ Status SchContext::load_identity() {
         PCCERT_CONTEXT c = nullptr;
         while ((c = ::CertEnumCertificatesInStore(id_store_, c)) != nullptr) {
             DWORD size = 0;
-            if (::CertGetCertificateContextProperty(c, CERT_KEY_PROV_INFO_PROP_ID, nullptr, &size)) {
+            // A persisted key has provider info; an ephemeral one only a key handle property.
+            if (::CertGetCertificateContextProperty(c, CERT_KEY_PROV_INFO_PROP_ID, nullptr, &size) ||
+                ::CertGetCertificateContextProperty(c, CERT_NCRYPT_KEY_HANDLE_PROP_ID, nullptr, &size) ||
+                ::CertGetCertificateContextProperty(c, CERT_KEY_CONTEXT_PROP_ID, nullptr, &size)) {
                 cert_ = ::CertDuplicateCertificateContext(c);
                 ::CertFreeCertificateContext(c);
                 break;
             }
         }
         if (!cert_) return Status(Errc::InvalidArgument, "the PKCS#12 file holds no certificate with a private key");
-        imported_key_ = true;
+        imported_key_ = persist_key;
         return Status::ok();
     }
     if (!id.windows_thumbprint.empty()) {
@@ -355,13 +441,25 @@ Status SchContext::acquire() {
     SECURITY_STATUS st = ::AcquireCredentialsHandleW(nullptr, const_cast<LPWSTR>(UNISP_NAME_W),
                                                      server ? SECPKG_CRED_INBOUND : SECPKG_CRED_OUTBOUND, nullptr, &sc,
                                                      nullptr, nullptr, &cred_, &expiry);
-    if (st != SEC_E_OK && !only13) {
-        // Systems before Windows 10 1809 do not know SCH_CREDENTIALS: TLS 1.2 only.
+    // Systems before Windows 10 1809 (build 17763) do not know SCH_CREDENTIALS and refuse it as
+    // unknown credentials or an invalid parameter. Only then fall back to SCHANNEL_CRED (TLS 1.2
+    // only), keeping the cipher policy through the algorithm list; any other failure, or any
+    // failure on a newer system, is reported as it is.
+    const DWORD build = windows_build();
+    if ((st == SEC_E_UNKNOWN_CREDENTIALS || st == SEC_E_INVALID_PARAMETER) && !only13 && build != 0 && build < 17763) {
+        tls_log(settings_, "WARNING: TLS: this Windows version (build " + std::to_string(build) +
+                               ") does not support SCH_CREDENTIALS; using SCHANNEL_CRED with TLS 1.2 only");
+        // ECDHE key exchange, AES (the negotiated suite is still checked against the AEAD
+        // allow-list after the handshake), ECDSA or RSA signatures, SHA-2.
+        ALG_ID algs[] = {CALG_ECDH_EPHEM, CALG_AES_128, CALG_AES_256, CALG_SHA_256, CALG_SHA_384, CALG_ECDSA, CALG_RSA_SIGN};
         SCHANNEL_CRED old{};
         old.dwVersion = SCHANNEL_CRED_VERSION;
         old.cCreds = ncreds;
         old.paCred = ncreds ? creds : nullptr;
         old.grbitEnabledProtocols = server ? SP_PROT_TLS1_2_SERVER : SP_PROT_TLS1_2_CLIENT;
+        old.cSupportedAlgs = static_cast<DWORD>(sizeof algs / sizeof algs[0]);
+        old.palgSupportedAlgs = algs;
+        old.dwMinimumCipherStrength = 128;
         old.dwFlags = flags;
         st = ::AcquireCredentialsHandleW(nullptr, const_cast<LPWSTR>(UNISP_NAME_W),
                                          server ? SECPKG_CRED_INBOUND : SECPKG_CRED_OUTBOUND, nullptr, &old, nullptr,
@@ -373,9 +471,19 @@ Status SchContext::acquire() {
 }
 
 Status SchContext::init() {
-    if (Status s = load_identity(); !s) return s;
+    if (Status s = load_identity(false); !s) return s;
     if (Status s = load_trust(); !s) return s;
-    return acquire();
+    Status a = acquire();
+    if (!a && role_ == Role::Server && !settings_.identity.pkcs12_file.empty()) {
+        // Some SChannel versions cannot use an ephemeral key for a server credential: import the
+        // key persistently instead (deleted again with the context) and say so.
+        release_identity();
+        if (Status s = load_identity(true); !s) return s;
+        tls_log(settings_, "WARNING: TLS: SChannel refused the ephemeral PKCS#12 key (" + a.message +
+                               "); the key was imported into the user's key store until the context is released");
+        a = acquire();
+    }
+    return a;
 }
 
 Status SchContext::verify(PCCERT_CONTEXT peer, bool server_auth, const std::string& name) const {
@@ -391,10 +499,37 @@ Status SchContext::verify(PCCERT_CONTEXT peer, bool server_auth, const std::stri
     cp.RequestedUsage.Usage.cUsageIdentifier = 1;
     cp.RequestedUsage.Usage.rgpszUsageIdentifier = &usage;
     PCCERT_CHAIN_CONTEXT chain = nullptr;
-    const BOOL built = ::CertGetCertificateChain(nullptr, peer, nullptr, extra, &cp, 0, nullptr, &chain);
+    const TlsRevocation rev = settings_.revocation;
+    const DWORD chain_flags = rev == TlsRevocation::Off ? 0u : static_cast<DWORD>(CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT);
+    const BOOL built = ::CertGetCertificateChain(nullptr, peer, nullptr, extra, &cp, chain_flags, nullptr, &chain);
     ::CertCloseStore(extra, 0);
     if (!built || !chain)
         return Status(Errc::NetworkError, "cannot build the certificate chain, error " + hex32(::GetLastError()));
+    if (rev != TlsRevocation::Off) {
+        const DWORD e = chain->TrustStatus.dwErrorStatus;
+        Status bad;
+        if (e & CERT_TRUST_IS_REVOKED)
+            bad = Status(Errc::NetworkError, "certificate verification failed: certificate revoked");
+        else if (rev == TlsRevocation::HardFail && (e & (CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION)))
+            bad = Status(Errc::NetworkError, "certificate verification failed: revocation status unknown (hard-fail)");
+        if (!bad) {
+            ::CertFreeCertificateChain(chain);
+            return bad;
+        }
+    }
+    // PS3.15 algorithms of every certificate of the chain (leaf first, anchor last).
+    if (chain->cChain > 0) {
+        const CERT_SIMPLE_CHAIN* sc = chain->rgpChain[0];
+        for (DWORD i = 0; i < sc->cElement; ++i) {
+            PCCERT_CONTEXT c = sc->rgpElement[i]->pCertContext;
+            int bits = 0;
+            const CertKey key = chain_key(c, bits);
+            if (Status bad = check_chain_cert(settings_, i, i + 1 == sc->cElement, key, bits, chain_sig(c)); !bad) {
+                ::CertFreeCertificateChain(chain);
+                return bad;
+            }
+        }
+    }
     DWORD checks = 0;
     if (roots_) {
         // Trusted only when the chain ends in one of the configured anchors; the OS roots do not
@@ -428,6 +563,8 @@ Status SchContext::verify(PCCERT_CONTEXT peer, bool server_auth, const std::stri
     CERT_CHAIN_POLICY_PARA pp{};
     pp.cbSize = sizeof pp;
     pp.pvExtraPolicyPara = &ex;
+    // Soft-fail: an unknown or offline revocation status is not an error (revoked still is, above).
+    if (rev != TlsRevocation::HardFail) pp.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
     CERT_CHAIN_POLICY_STATUS ps{};
     ps.cbSize = sizeof ps;
     const BOOL ran = ::CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_SSL, chain, &pp, &ps);
@@ -493,6 +630,7 @@ public:
     Status finish(TlsSessionInfo& info) override {
         SecPkgContext_ConnectionInfo ci{};
         if (::QueryContextAttributesW(&ctx_, SECPKG_ATTR_CONNECTION_INFO, &ci) == SEC_E_OK) {
+            tls13_ = (ci.dwProtocol & SP_PROT_TLS1_3) != 0;
             if (ci.dwProtocol & SP_PROT_TLS1_3) info.protocol = "TLSv1.3";
             else if (ci.dwProtocol & SP_PROT_TLS1_2) info.protocol = "TLSv1.2";
             else info.protocol = "protocol " + hex32(ci.dwProtocol);
@@ -510,15 +648,9 @@ public:
             if (s_.require_client_certificate) return Status(Errc::NetworkError, "the client sent no certificate");
             return Status::ok();
         }
+        // verify() checks the chain, its revocation status and every certificate's algorithms.
         Status st;
-        const CERT_PUBLIC_KEY_INFO& spki = peer->pCertInfo->SubjectPublicKeyInfo;
-        const char* alg = spki.Algorithm.pszObjId;
-        if (alg && std::strcmp(alg, szOID_RSA_RSA) == 0 &&
-            ::CertGetPublicKeyLength(X509_ASN_ENCODING, const_cast<CERT_PUBLIC_KEY_INFO*>(&spki)) < 2048)
-            st = Status(Errc::NetworkError, "peer RSA key shorter than 2048 bits");
-        else if (alg && std::strcmp(alg, szOID_ECC_PUBLIC_KEY) == 0 && !strong_curve(spki.Algorithm.Parameters))
-            st = Status(Errc::NetworkError, "peer EC key not on P-256, P-384 or P-521");
-        if (st && !s_.insecure_skip_validation) {
+        if (!s_.insecure_skip_validation) {
             st = c_.verify(peer, !server_, name_);
             info.peer_verified = st.is_ok();
         }
@@ -562,8 +694,14 @@ public:
             }
             in_.swap(rest);
             if (st == SEC_I_RENEGOTIATE) {
+                // TLS 1.2: the peer asks for a renegotiation. The policy is no renegotiation, and a
+                // renegotiated handshake could bring a different, unchecked peer certificate: fatal.
+                if (!tls13_) {
+                    in_.clear();
+                    return Status(Errc::NetworkError, "the peer requested a TLS 1.2 renegotiation, which is refused");
+                }
                 // TLS 1.3 post-handshake message (NewSessionTicket, KeyUpdate): the handshake call
-                // consumes the remaining records (renegotiation itself is never enabled).
+                // consumes the remaining records.
                 renegotiating_ = true;
                 if (Status r = post_handshake(out); !r) return r;
                 if (renegotiating_) return Status::ok();
@@ -631,6 +769,7 @@ private:
     CtxtHandle ctx_{};
     bool have_ctx_ = false;
     bool renegotiating_ = false;
+    bool tls13_ = false;  // set by finish(); false (TLS 1.2 rules) until then
     SecPkgContext_StreamSizes sizes_{};
     std::vector<std::uint8_t> in_;
 

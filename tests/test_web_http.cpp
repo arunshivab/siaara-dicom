@@ -169,7 +169,7 @@ TEST_CASE("web/http limits") {
     p = parse_request("POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n3;long-extension\r\nabc\r\n0\r\n\r\n", lim);
     CHECK(!p.rq.is_ok());
     // A lying Content-Length does not allocate up front and ends as truncated.
-    p = parse_request("POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 1000000000\r\n\r\nabc");
+    p = parse_request("POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 100000000\r\n\r\nabc");
     CHECK(!p.rq.is_ok());
     CHECK(p.rq.error().code == Errc::Truncated);
 }

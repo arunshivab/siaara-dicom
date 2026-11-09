@@ -30,6 +30,11 @@ enum class PduType : std::uint8_t {
 // Hard limits applied while parsing anything that came from the wire.
 struct PduLimits {
     std::uint64_t max_pdu_length = 16u << 20;   // PDU-length field cap, checked before allocation
+    // A-ASSOCIATE-RQ/AC (and unknown PDU types) are held to this smaller cap; A-ASSOCIATE-RJ,
+    // A-RELEASE-RQ/RP and A-ABORT must be exactly 4 bytes long. Checked before allocation.
+    std::uint64_t max_associate_length = 64u << 10;
+    // P-DATA-TF cap when non-zero (an association sets it from its advertised maximum length).
+    std::uint64_t max_pdata_length = 0;
     std::size_t max_presentation_contexts = 128; // PS3.8: context IDs are odd numbers 1..255
     std::size_t max_transfer_syntaxes = 64;      // per presentation context
     std::size_t max_user_items = 256;            // user information sub-items
@@ -224,10 +229,13 @@ void encode_single_pdv_header(std::uint8_t context_id, bool command, bool last, 
 // Error codes: Malformed (bad structure/values), Truncated, LimitExceeded, Unsupported (unknown type).
 Result<Pdu> parse_pdu(const Bytes& buf, const PduLimits& limits = {});
 
-// Reads one PDU from a transport. The PDU length field is checked against limits.max_pdu_length
-// before any allocation. Each read waits at most `timeout_ms` for progress.
+// Reads one PDU from a transport. The PDU length field is checked against the cap for its type
+// (pdu_length_cap) before any allocation, and the buffer grows only as bytes arrive.
+// `timeout_ms` bounds the whole PDU (absolute deadline), not each read.
 // Unknown PDU types still have their body read (bounded by the cap) and return Errc::Unsupported.
 Result<Pdu> read_pdu(Transport& t, int timeout_ms, const PduLimits& limits = {});
+// Largest PDU length field accepted for a PDU of `type` under `limits`.
+std::uint64_t pdu_length_cap(std::uint8_t type, const PduLimits& limits) noexcept;
 
 // Validation helpers (PS3.5 9.1 UID syntax; PS3.5 6.2 AE).
 bool is_valid_uid(std::string_view uid) noexcept;

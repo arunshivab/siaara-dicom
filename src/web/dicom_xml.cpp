@@ -230,6 +230,12 @@ private:
     }
 };
 
+xml::ParseLimits derived_limits(const ModelReadOptions& opt) {
+    xml::ParseLimits l = opt.xml_limits;
+    if (l.max_depth == 0) l.max_depth = static_cast<std::uint32_t>(std::min<std::uint64_t>(2ull * opt.max_depth + 4u, 0xFFFFFFFFu));
+    return l;
+}
+
 // ---------------------------------------------------------------- decoder
 class Decoder {
 public:
@@ -238,6 +244,9 @@ public:
 
     Status dataset(const xml::Node& parent, Dataset& ds, std::uint32_t depth) {
         std::vector<std::pair<Tag, std::string>> creators;
+        // Appended in document order and sorted once (R-002); repeated attributes stay an error.
+        const std::size_t first = ds.size();
+        bool ordered = true;
         for (const auto& n : parent.children) {
             if (local_name(n.name) != "DicomAttribute") return bad("unexpected element", 0);
             const std::string* ts = n.attr("tag");
@@ -246,7 +255,7 @@ public:
             if (!tag) return bad("tag is not 8 hex digits", 0);
             if (++count_ > opt_.max_elements) return Status(Errc::LimitExceeded, "DICOM XML: too many elements");
             if (tag_group(*tag) == 0xFFFE) return bad("item tags are not attributes", *tag);
-            if (ds.contains(*tag)) return bad("duplicate attribute", *tag);
+            if (ordered && first == 0 && ds.contains(*tag)) return bad("duplicate attribute", *tag);
             if (const std::string* pc = n.attr("privateCreator"); pc && is_private_data(*tag))
                 creators.emplace_back(make_tag(tag_group(*tag), static_cast<std::uint16_t>(tag_element(*tag) >> 8)), *pc);
             Element e;
@@ -255,7 +264,13 @@ public:
             Status st = element(n, e, depth);
             path_.pop_back();
             if (!st) return st;
-            ds.append_sorted(std::move(e));
+            if (ordered && !ds.empty() && !(ds.elements().back().tag < e.tag)) ordered = false;
+            ds.append_unsorted(std::move(e));
+        }
+        if (!ordered || first != 0) {
+            std::vector<Tag> dups;
+            ds.sort_by_tag(&dups);
+            if (!dups.empty()) return bad("duplicate attribute", dups.front());
         }
         for (auto& [ct, name] : creators) {
             if (ds.contains(ct)) continue;
@@ -479,7 +494,7 @@ Status dataset_to_xml(const Dataset& ds, std::string& out, const ModelWriteOptio
 }
 
 Result<Dataset> dataset_from_xml(std::string_view text, const ModelReadOptions& opt) {
-    auto root = xml::parse(text, opt.xml_limits);
+    auto root = xml::parse(text, derived_limits(opt));
     if (!root) return root.take_error();
     if (local_name(root->name) != "NativeDicomModel")
         return Status(Errc::Malformed, "DICOM XML: root element is not NativeDicomModel");

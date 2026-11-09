@@ -267,6 +267,7 @@ bool can_decode(std::string_view ts_uid) noexcept {
     switch (t->codec) {
         case Codec::None: case Codec::Rle: case Codec::JpegBaseline: case Codec::JpegExtended:
         case Codec::JpegLossless: case Codec::JpegLs: case Codec::Jpeg2000: case Codec::Htj2k:
+        case Codec::DeflateFrame:
             return true;
         default: return false;
     }

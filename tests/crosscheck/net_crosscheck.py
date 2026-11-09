@@ -167,7 +167,7 @@ def main():
     rx = os.path.join(work, "rx")
     os.makedirs(rx)
     port = free_port()
-    scp = start([storescp_bin, "-aet", "SIAARA_SCP", "-od", rx, "--all-ts", "-v", str(port)], port)
+    scp = start([storescp_bin, "--allow-any", "-aet", "SIAARA_SCP", "-od", rx, "--all-ts", "-v", str(port)], port)
     rc, out = run(["echoscu", "-v", "-aec", "SIAARA_SCP", "127.0.0.1", str(port)])
     check("DCMTK echoscu -> siaara-storescp", rc == 0 and "Received Echo Response (Success)" in out)
     rc, out = run(["echoscu", "-aec", "SIAARA_SCP", "--max-pdu", "4096", "127.0.0.1", str(port)])
@@ -225,7 +225,7 @@ def main():
     mport = free_port()
     mscp = start(["storescp", "-aet", "DCMDEST", "-od", mrx, str(mport)], mport)
     qport = free_port()
-    qscp = start([storescp_bin, "-aet", "SIAARA_QR", "--qr-dir", qr, "--move-dest", "DCMDEST=127.0.0.1:%d" % mport,
+    qscp = start([storescp_bin, "--allow-any", "-aet", "SIAARA_QR", "--qr-dir", qr, "--move-dest", "DCMDEST=127.0.0.1:%d" % mport,
                   "-v", str(qport)], qport)
     rc, out = run(["findscu", "-v", "-S", "-aec", "SIAARA_QR", "-k", "QueryRetrieveLevel=IMAGE",
                    "-k", "StudyInstanceUID=2.25.8000", "-k", "SeriesInstanceUID=2.25.7000", "-k", "SOPInstanceUID",
@@ -269,7 +269,7 @@ def main():
     srx = os.path.join(work, "siaara_move_rx")
     os.makedirs(srx)
     sport = free_port()
-    sdest = start([storescp_bin, "-aet", "SIAARA_DEST", "-od", srx, str(sport)], sport)
+    sdest = start([storescp_bin, "--allow-any", "-aet", "SIAARA_DEST", "-od", srx, str(sport)], sport)
     qrport = free_port()
     cfg = os.path.join(work, "dcmqrscp.cfg")
     with open(cfg, "w") as f:

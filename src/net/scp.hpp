@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -84,8 +85,15 @@ struct ScpConfig {
     bool require_called_ae = true;          // reject associations addressed to another AE title
     std::string bind_address;               // empty: all interfaces
     std::uint16_t port = 11112;             // 0: ephemeral (see ScpServer::port())
-    std::vector<std::string> allowed_calling_aes;  // empty: any
+    // Calling AE titles allowed to associate. An empty list is refused by start() unless
+    // allow_any_calling_ae is set explicitly (NET-05).
+    std::vector<std::string> allowed_calling_aes;
+    bool allow_any_calling_ae = false;      // accept any calling AE title when the list is empty
     std::size_t max_associations = 8;       // also the size of the association thread pool
+    // Resource limits (NET-04); 0 = unlimited.
+    std::size_t max_associations_per_ip = 4;            // concurrent (queued or served) per peer address
+    int max_association_lifetime_ms = 2 * 60 * 60 * 1000;  // from acceptance; then A-ABORT
+    std::uint64_t max_operations_per_association = 100000;  // DIMSE requests; then A-ABORT
     // Presentation context policy. When empty it is derived from the handlers that are set:
     // Verification always; storage classes for on_store / on_get; Q/R models for find/move/get.
     std::vector<AcceptedSyntax> accepted;
@@ -141,6 +149,8 @@ private:
     void worker_loop();
     void serve(std::unique_ptr<Transport> t);
     void quick_reject(std::unique_ptr<Transport> t);
+    void reject_loop();
+    void release_peer(const std::string& peer);
     bool register_assoc(Association* a);
     void unregister_assoc(Association* a);
     void log(const std::string& s) const;
@@ -174,6 +184,12 @@ private:
     std::deque<std::unique_ptr<Transport>> queue_;
     std::size_t busy_ = 0;
     std::set<Association*> live_;
+    std::map<std::string, std::size_t> per_ip_;  // queued or served associations per peer; under mu_
+    // Connections refused because the server is full: answered by reject_thread_, never on the
+    // accept thread (NET-03). Bounded; under mu_.
+    std::deque<std::unique_ptr<Transport>> reject_queue_;
+    std::condition_variable reject_cv_;
+    std::thread reject_thread_;
     std::mutex stop_mu_;
 };
 

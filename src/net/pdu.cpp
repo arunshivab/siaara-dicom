@@ -1,6 +1,7 @@
 // SIAARA DICOM Toolkit - Upper Layer PDU encoding and parsing (PS3.8 9.3, PS3.7 D.3.3).
 #include "net/pdu.hpp"
 
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -754,17 +755,50 @@ Result<Pdu> parse_pdu(const Bytes& buf, const PduLimits& limits) {
     }
 }
 
+std::uint64_t pdu_length_cap(std::uint8_t type, const PduLimits& limits) noexcept {
+    std::uint64_t cap = limits.max_pdu_length;
+    switch (type) {
+        case 0x04:  // P-DATA-TF: the general cap (and max_pdata_length when set)
+            if (limits.max_pdata_length != 0) cap = std::min(cap, limits.max_pdata_length);
+            break;
+        case 0x03: case 0x05: case 0x06: case 0x07:  // fixed 4-byte bodies (PS3.8 9.3.4, 9.3.6-9.3.8)
+            cap = std::min<std::uint64_t>(cap, 4);
+            break;
+        default:  // A-ASSOCIATE-RQ/AC, and unknown types (read so the error can be reported)
+            cap = std::min(cap, limits.max_associate_length);
+            break;
+    }
+    return cap;
+}
+
 Result<Pdu> read_pdu(Transport& t, int timeout_ms, const PduLimits& limits) {
+    // One absolute deadline for the whole PDU, header included (NET-03).
+    const Deadline deadline = deadline_after(timeout_ms);
     std::uint8_t hdr[6];
-    if (Status s = read_exact(t, hdr, 6, timeout_ms); !s) return s;
+    if (Status s = read_exact_until(t, hdr, 6, deadline); !s) return s;
     const std::uint64_t len = load_be32(hdr + 2);
-    if (len > limits.max_pdu_length) return Status(Errc::LimitExceeded, "PDU length exceeds limit", 2);
+    // The cap depends on the PDU type and is checked before anything is allocated (NET-01).
+    if (len > pdu_length_cap(hdr[0], limits)) {
+        const std::uint8_t ty = hdr[0];
+        if (ty == 0x03 || ty == 0x05 || ty == 0x06 || ty == 0x07)
+            return Status(Errc::Malformed, "fixed-size PDU length is not 4", 2);
+        return Status(Errc::LimitExceeded, "PDU length exceeds limit", 2);
+    }
     std::uint64_t total = 0;
     if (!checked_add(len, 6, total) || total > SIZE_MAX) return Status(Errc::LimitExceeded, "PDU too large");
-    auto storage = std::make_shared<std::vector<std::uint8_t>>(static_cast<std::size_t>(total));
+    // The buffer grows with the bytes that actually arrive: a header claiming a large PDU costs at
+    // most one step until the peer really sends that much.
+    constexpr std::size_t kStep = 64u << 10;
+    const auto want = static_cast<std::size_t>(total);
+    auto storage = std::make_shared<std::vector<std::uint8_t>>(std::min(want, 6 + kStep));
     std::memcpy(storage->data(), hdr, 6);
-    if (len > 0)
-        if (Status s = read_exact(t, storage->data() + 6, static_cast<std::size_t>(len), timeout_ms); !s) return s;
+    std::size_t got = 6;
+    while (got < want) {
+        if (got == storage->size()) storage->resize(std::min(want, storage->size() * 2));
+        const std::size_t room = storage->size() - got;
+        if (Status s = read_exact_until(t, storage->data() + got, room, deadline); !s) return s;
+        got += room;
+    }
     const std::uint8_t* data = storage->data();
     Bytes buf(std::shared_ptr<const void>(storage, storage.get()), data, storage->size());
     return parse_pdu(buf, limits);

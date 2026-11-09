@@ -17,6 +17,10 @@
 #include <thread>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -260,6 +264,7 @@ struct TlsScp {
         c.bind_address = "127.0.0.1";
         c.port = 0;
         c.max_associations = 4;
+        c.allow_any_calling_ae = true;
         c.timeouts = fast();
         c.tls = std::move(tls);
         c.tls.enabled = use_tls;
@@ -713,3 +718,389 @@ TEST_CASE("tls/dicomweb over https") {
     CHECK(siaara_web_client_create_tls(base.data(), base.size(), 10000, &o, &wc) == SIAARA_ERR_INVALID_ARGUMENT);
     server.stop();
 }
+
+// R-009: a client with neither a peer name nor TlsSettings::expected_identity has nothing to check
+// the server certificate against. Every backend must refuse (fail closed) instead of accepting any
+// certificate issued by a trusted CA; insecure_skip_validation is the only way around it.
+TEST_CASE("tls/R-009 client without a peer name or expected identity fails closed") {
+    if (skip("tls/R-009")) return;
+    TlsScp scp(server_tls());
+    REQUIRE(scp.start().is_ok());
+    Result<std::shared_ptr<TlsContext>> ctx = TlsContext::create(client_tls(), TlsContext::Role::Client);
+    REQUIRE(ctx.is_ok());
+#if defined(__APPLE__)
+    // Network.framework owns the TCP connection: connect() is the only client entry point.
+    Result<std::unique_ptr<TlsTransport>> c = ctx.value()->connect("", scp.port(), 3000);
+    REQUIRE(!c.is_ok());
+    CHECK_EQ(c.error().code, Errc::InvalidArgument);
+#else
+    Result<std::unique_ptr<Transport>> tcp = tcp_connect("127.0.0.1", scp.port(), 3000);
+    REQUIRE(tcp.is_ok());
+    Result<std::unique_ptr<TlsTransport>> c = ctx.value()->wrap_client(std::move(tcp).value(), "");
+    CHECK(!c.is_ok());
+    if (!c) CHECK_EQ(c.error().code, Errc::InvalidArgument);
+    // With the expected identity set, the same empty peer name is fine (the identity is checked).
+    TlsSettings named = client_tls();
+    named.expected_identity = "localhost";
+    Result<std::shared_ptr<TlsContext>> nctx = TlsContext::create(named, TlsContext::Role::Client);
+    REQUIRE(nctx.is_ok());
+    Result<std::unique_ptr<Transport>> tcp2 = tcp_connect("127.0.0.1", scp.port(), 3000);
+    REQUIRE(tcp2.is_ok());
+    Result<std::unique_ptr<TlsTransport>> ok = nctx.value()->wrap_client(std::move(tcp2).value(), "");
+    CHECK(ok.is_ok());
+    if (ok) ok.value()->close();
+    // insecure_skip_validation: allowed (and warned about).
+    TlsSettings insecure = client_tls();
+    insecure.insecure_skip_validation = true;
+    LogSink warn;
+    insecure.log = warn.fn();
+    Result<std::shared_ptr<TlsContext>> ictx = TlsContext::create(insecure, TlsContext::Role::Client);
+    REQUIRE(ictx.is_ok());
+    Result<std::unique_ptr<Transport>> tcp3 = tcp_connect("127.0.0.1", scp.port(), 3000);
+    REQUIRE(tcp3.is_ok());
+    Result<std::unique_ptr<TlsTransport>> any = ictx.value()->wrap_client(std::move(tcp3).value(), "");
+    CHECK(any.is_ok());
+    if (any) any.value()->close();
+    CHECK(warn.contains("WARNING: TLS certificate validation is disabled"));
+#endif
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+// R-021: OpenSSL must be loaded only from absolute system paths, decided before dlopen runs any
+// library constructor. The child test runs in a fresh process (the library is loaded once per
+// process) with a relative LD_LIBRARY_PATH entry pointing at planted copies of the system
+// libraries; afterwards none of the planted files may be mapped into the process.
+TEST_CASE("tls/R-021 child: loads OpenSSL with a relative LD_LIBRARY_PATH") {
+    if (!std::getenv("SIAARA_R021_CHILD")) return;  // only meaningful in the child process
+    std::string why;
+    const bool avail = tls_available(&why);
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    bool planted = false;
+    while (std::getline(maps, line))
+        if (line.find("siaara_planted_ssl") != std::string::npos) planted = true;
+    std::printf("  child: TLS %s (%s), planted copy mapped: %s\n", avail ? "available" : "unavailable", why.c_str(),
+                planted ? "YES" : "no");
+    CHECK(!planted);
+}
+
+TEST_CASE("tls/R-021 planted OpenSSL on a relative LD_LIBRARY_PATH is never loaded") {
+    if (std::getenv("SIAARA_R021_CHILD")) return;
+    std::string why;
+    if (!tls_available(&why)) {
+        std::printf("  SKIPPED tls/R-021: TLS is not available (%s)\n", why.c_str());
+        return;
+    }
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    REQUIRE(!ec);
+    // The real libraries, as this process loaded them.
+    std::string crypto, ssl;
+    {
+        std::ifstream maps("/proc/self/maps");
+        std::string line;
+        while (std::getline(maps, line)) {
+            const std::size_t slash = line.find('/');
+            if (slash == std::string::npos) continue;
+            const std::string path = line.substr(slash);
+            if (crypto.empty() && path.find("/libcrypto.so.3") != std::string::npos) crypto = path;
+            if (ssl.empty() && path.find("/libssl.so.3") != std::string::npos) ssl = path;
+        }
+    }
+    REQUIRE(!crypto.empty() && !ssl.empty());
+    const fs::path work = fs::temp_directory_path(ec) / ("siaara_r021_" + std::to_string(::getpid()));
+    const fs::path planted = work / "siaara_planted_ssl";
+    fs::create_directories(planted, ec);
+    REQUIRE(!ec);
+    fs::copy_file(crypto, planted / "libcrypto.so.3", fs::copy_options::overwrite_existing, ec);
+    REQUIRE(!ec);
+    fs::copy_file(ssl, planted / "libssl.so.3", fs::copy_options::overwrite_existing, ec);
+    REQUIRE(!ec);
+    // Relative entry: resolved against the child's working folder, where the copies are.
+    const std::string cmd = "cd " + q(work) + " && SIAARA_R021_CHILD=1 LD_LIBRARY_PATH=siaara_planted_ssl " + q(exe) +
+                            " \"tls/R-021 child\"";
+    const int rc = std::system(cmd.c_str());
+    CHECK_EQ(rc, 0);
+    fs::remove_all(work, ec);
+}
+#endif
+
+// R-041: the identity password is wiped once the identity is loaded; settings() never exposes it.
+TEST_CASE("tls/R-041 identity password is not kept in the context settings") {
+    if (skip("tls/R-041")) return;
+    TlsSettings st;
+    st.enabled = true;
+    st.identity.pkcs12_file = pki().server_p12.string();
+    st.identity.password = kP12Password;
+    Result<std::shared_ptr<TlsContext>> ctx = TlsContext::create(st, TlsContext::Role::Server);
+    REQUIRE(ctx.is_ok());
+    CHECK(ctx.value()->settings().identity.password.empty());
+    CHECK(ctx.value()->settings().identity.pkcs12_file == st.identity.pkcs12_file);
+    // The caller's own copy is untouched (it is the caller's to wipe).
+    CHECK(st.identity.password == kP12Password);
+    // The context still works after the wipe.
+    TlsListener l;
+    REQUIRE(l.listen(ctx.value(), "127.0.0.1", 0).is_ok());
+    std::thread th([&] {
+        Result<std::unique_ptr<TlsTransport>> a = l.accept(5000);
+        if (a) (void)a.value()->handshake(5000);
+    });
+    Result<std::unique_ptr<TlsTransport>> c = tls_connect(client_tls(), "127.0.0.1", l.port(), 5000);
+    CHECK(c.is_ok());
+    th.join();
+}
+
+// R-024: the documented threading contract of a TlsTransport: one thread reads (read_some,
+// wait_readable), another writes (write_all) at the same time, and close() may come from a
+// third. The transport's state flags are shared between them. (Run under ThreadSanitizer to
+// see the data races this used to have; under ASan it checks the behaviour.)
+TEST_CASE("tls/R-024 concurrent reader, writer and close") {
+    if (skip("tls/R-024")) return;
+    Result<std::shared_ptr<TlsContext>> sctx = TlsContext::create(server_tls(), TlsContext::Role::Server);
+    REQUIRE(sctx.is_ok());
+    TlsListener l;
+    REQUIRE(l.listen(sctx.value(), "127.0.0.1", 0).is_ok());
+    std::thread server([&] {
+        Result<std::unique_ptr<TlsTransport>> a = l.accept(5000);
+        if (!a) return;
+        std::unique_ptr<TlsTransport> t = std::move(a).value();
+        if (!t->handshake(5000)) return;
+        std::vector<std::uint8_t> buf(4096);
+        // Echo until the client goes away.
+        while (true) {
+            Result<std::size_t> r = t->read_some(buf.data(), buf.size(), 5000);
+            if (!r || *r == 0) break;
+            if (!t->write_all(buf.data(), *r, 5000)) break;
+        }
+    });
+    Result<std::unique_ptr<TlsTransport>> c = tls_connect(client_tls(), "127.0.0.1", l.port(), 5000);
+    REQUIRE(c.is_ok());
+    std::unique_ptr<TlsTransport> t = std::move(c).value();
+    std::atomic<std::size_t> received{0};
+    std::atomic<bool> stop{false};
+    std::thread reader([&] {
+        std::vector<std::uint8_t> buf(8192);
+        while (!stop.load()) {
+            Result<bool> ready = t->wait_readable(50);
+            if (!ready) break;
+            if (!*ready) continue;
+            Result<std::size_t> r = t->read_some(buf.data(), buf.size(), 1000);
+            if (!r || *r == 0) break;
+            received += *r;
+        }
+    });
+    std::thread writer([&] {
+        std::vector<std::uint8_t> msg(1000, 0x5A);
+        for (int i = 0; i < 200 && !stop.load(); ++i)
+            if (!t->write_all(msg.data(), msg.size(), 2000)) break;
+    });
+    writer.join();
+    for (int i = 0; i < 100 && received.load() < 200000; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK_EQ(received.load(), 200000u);
+    // close() from this (third) thread while the reader is still waiting.
+    std::thread closer([&] { t->close(); });
+    closer.join();
+    stop = true;
+    reader.join();
+    CHECK(!t->is_open());
+    server.join();
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+namespace {
+// Extra certificates for the revocation and chain-algorithm tests, issued from the test PKI.
+struct ExtraPki {
+    bool ok = false;
+    fs::path revoked, revoked_key, crl, ca_with_crl, other_crl, ed25519, ed25519_key, p224_chain, p224_leaf_key;
+    ExtraPki() {
+        const Pki& k = pki();
+        if (!k.ok) return;
+        auto p = [&](const char* n) { return k.dir / n; };
+        const std::string ec_key =
+            " -config " + q(p("req.cnf")) + " -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -sha256";
+        const std::string ca_cmd = "openssl ca -batch -notext -config " + q(p("ca.cnf")) + " -cert " + q(k.ca) +
+                                   " -keyfile " + q(k.ca_key);
+        revoked = p("revoked.pem");
+        revoked_key = p("revoked.key");
+        crl = p("crl.pem");
+        ca_with_crl = p("ca_with_crl.pem");
+        // Usable as server and as client certificate (revocation is checked on both sides).
+        if (!write_text(p("both.ext"), "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                                       "extendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                                       "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n") ||
+            !run("openssl req" + ec_key + " -keyout " + q(revoked_key) + " -out " + q(p("revoked.csr")) +
+                 " -subj \"/CN=localhost\"") ||
+            !run(ca_cmd + " -days 3 -in " + q(p("revoked.csr")) + " -out " + q(revoked) + " -extfile " + q(p("both.ext"))) ||
+            !run(ca_cmd + " -revoke " + q(revoked)) || !run(ca_cmd + " -gencrl -crldays 2 -out " + q(crl)))
+            return;
+        std::ifstream a(k.ca, std::ios::binary), b(crl, std::ios::binary);
+        std::ofstream o(ca_with_crl, std::ios::binary);
+        o << a.rdbuf() << b.rdbuf();
+        o.close();
+        // An (empty) CRL from the other CA only: no revocation data for the test CA.
+        const std::string d = k.dir.generic_string();
+        (void)write_text(p("other_index.txt"), "");
+        (void)write_text(p("other_ca.cnf"), "[ca]\ndefault_ca=d\n[d]\ndatabase=" + d + "/other_index.txt\nnew_certs_dir=" +
+                                                d + "\nserial=" + d + "/serial\ndefault_md=sha256\npolicy=p\n"
+                                                "unique_subject=no\n[p]\ncommonName=supplied\n");
+        other_crl = p("other_crl.pem");
+        if (!run("openssl ca -batch -config " + q(p("other_ca.cnf")) + " -cert " + q(k.other_ca) + " -keyfile " +
+                 q(p("other_ca.key")) + " -gencrl -crldays 2 -out " + q(other_crl)))
+            return;
+        // Ed25519 server certificate issued by the test CA.
+        ed25519 = p("ed25519.pem");
+        ed25519_key = p("ed25519.key");
+        if (!run("openssl genpkey -algorithm ed25519 -out " + q(ed25519_key)) ||
+            !run("openssl req -new -config " + q(p("req.cnf")) + " -key " + q(ed25519_key) + " -subj \"/CN=localhost\" -out " +
+                 q(p("ed25519.csr"))) ||
+            !run("openssl x509 -req -sha256 -in " + q(p("ed25519.csr")) + " -CA " + q(k.ca) + " -CAkey " + q(k.ca_key) +
+                 " -set_serial 40 -days 3 -out " + q(ed25519) + " -extfile " + q(p("server.ext"))))
+            return;
+        // P-256 server certificate under a P-224 intermediate CA (112-bit security, below PS3.15).
+        (void)write_text(p("int.ext"), "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n"
+                                       "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n");
+        const fs::path ik = p("p224_int.key"), ic = p("p224_int.pem"), lc = p("p224_leaf.pem");
+        p224_leaf_key = p("p224_leaf.key");
+        p224_chain = p("p224_chain.pem");
+        if (!run("openssl req -config " + q(p("req.cnf")) + " -newkey ec -pkeyopt ec_paramgen_curve:secp224r1 -nodes -keyout " +
+                 q(ik) + " -out " + q(p("p224_int.csr")) + " -subj \"/CN=SIAARA P-224 Intermediate\"") ||
+            !run("openssl x509 -req -sha256 -in " + q(p("p224_int.csr")) + " -CA " + q(k.ca) + " -CAkey " + q(k.ca_key) +
+                 " -set_serial 41 -days 3 -out " + q(ic) + " -extfile " + q(p("int.ext"))) ||
+            !run("openssl req" + ec_key + " -keyout " + q(p224_leaf_key) + " -out " + q(p("p224_leaf.csr")) +
+                 " -subj \"/CN=localhost\"") ||
+            !run("openssl x509 -req -sha256 -in " + q(p("p224_leaf.csr")) + " -CA " + q(ic) + " -CAkey " + q(ik) +
+                 " -set_serial 42 -days 3 -out " + q(lc) + " -extfile " + q(p("server.ext"))))
+            return;
+        std::ifstream l1(lc, std::ios::binary), l2(ic, std::ios::binary);
+        std::ofstream ch(p224_chain, std::ios::binary);
+        ch << l1.rdbuf() << l2.rdbuf();
+        ch.close();
+        ok = true;
+    }
+};
+
+ExtraPki& extra() {
+    static ExtraPki e;
+    return e;
+}
+
+TlsSettings pem_server(const fs::path& cert, const fs::path& key) {
+    TlsSettings s;
+    s.enabled = true;
+    s.identity.certificate_file = cert.string();
+    s.identity.private_key_file = key.string();
+    return s;
+}
+}  // namespace
+
+// R-042: every certificate of the server chain is held to the PS3.15 algorithm rules, not
+// only the leaf's key size: an Ed25519 leaf (not a B.13 algorithm) and a P-224 intermediate
+// (below 256 bits) are refused by a default client.
+TEST_CASE("tls/R-042 whole peer chain checked against the PS3.15 algorithms") {
+    if (skip("tls/R-042")) return;
+    REQUIRE(extra().ok);
+    TlsScp ed(pem_server(extra().ed25519, extra().ed25519_key));
+    REQUIRE(ed.start().is_ok());
+    Status st = echo(scu(ed.port(), client_tls()));
+    std::printf("  Ed25519 leaf: %s\n", st.is_ok() ? "accepted" : st.message.c_str());
+    CHECK(!st.is_ok());
+    TlsScp p224(pem_server(extra().p224_chain, extra().p224_leaf_key));
+    REQUIRE(p224.start().is_ok());
+    st = echo(scu(p224.port(), client_tls()));
+    std::printf("  P-224 intermediate: %s\n", st.is_ok() ? "accepted" : st.message.c_str());
+    CHECK(!st.is_ok());
+    // The ordinary chain is still accepted.
+    TlsScp good(server_tls());
+    REQUIRE(good.start().is_ok());
+    CHECK(echo(scu(good.port(), client_tls())).is_ok());
+}
+
+// R-022: revocation is checked by default (soft-fail): a CRL that is available (here in the
+// ca_file) is used, and a revoked server certificate is refused.
+TEST_CASE("tls/R-022 revoked server certificate refused with the default revocation setting") {
+    if (skip("tls/R-022")) return;
+    REQUIRE(extra().ok);
+    TlsScp rev(pem_server(extra().revoked, extra().revoked_key));
+    REQUIRE(rev.start().is_ok());
+    TlsSettings ct = client_tls();
+    ct.ca_file = extra().ca_with_crl.string();
+    Status st = echo(scu(rev.port(), ct));
+    std::printf("  revoked: %s\n", st.is_ok() ? "accepted" : st.message.c_str());
+    CHECK(!st.is_ok());
+    // A certificate that is not on the CRL is accepted with the same settings.
+    TlsScp good(server_tls());
+    REQUIRE(good.start().is_ok());
+    CHECK(echo(scu(good.port(), ct)).is_ok());
+}
+
+// R-049 / R-042: TlsSettings::profile. B.13 is the default; B.12 also accepts EdDSA certificates.
+TEST_CASE("tls/R-049 profile B.12 accepts an Ed25519 leaf, B.13 (default) refuses it") {
+    if (skip("tls/R-049")) return;
+    REQUIRE(extra().ok);
+    CHECK(TlsSettings{}.profile == TlsProfile::ModifiedBcp195Rfc8996);
+    TlsScp ed(pem_server(extra().ed25519, extra().ed25519_key));
+    REQUIRE(ed.start().is_ok());
+    TlsSettings ct = client_tls();
+    ct.profile = TlsProfile::Bcp195Rfc8996;
+    CHECK(echo(scu(ed.port(), ct)).is_ok());
+    ct.profile = TlsProfile::ModifiedBcp195Rfc8996;
+    CHECK(!echo(scu(ed.port(), ct)).is_ok());
+    // Both profiles refuse the 224-bit intermediate.
+    TlsScp p224(pem_server(extra().p224_chain, extra().p224_leaf_key));
+    REQUIRE(p224.start().is_ok());
+    ct.profile = TlsProfile::Bcp195Rfc8996;
+    CHECK(!echo(scu(p224.port(), ct)).is_ok());
+    // Secrets are cleared by the platform wipe.
+    std::string secret = "do-not-keep";
+    tls_wipe_secret(secret);
+    CHECK(secret.empty());
+}
+
+// R-022: TlsSettings::revocation {Off, SoftFail, HardFail} with an OpenSSL CRL file.
+TEST_CASE("tls/R-022 revocation modes and crl_file") {
+    if (skip("tls/R-022 modes")) return;
+    REQUIRE(extra().ok);
+    CHECK(TlsSettings{}.revocation == TlsRevocation::SoftFail);
+    TlsScp rev(pem_server(extra().revoked, extra().revoked_key));
+    REQUIRE(rev.start().is_ok());
+    TlsScp good(server_tls());
+    REQUIRE(good.start().is_ok());
+    TlsSettings ct = client_tls();
+    ct.crl_file = extra().crl.string();
+    for (TlsRevocation m : {TlsRevocation::SoftFail, TlsRevocation::HardFail}) {
+        ct.revocation = m;
+        CHECK(!echo(scu(rev.port(), ct)).is_ok());
+        CHECK(echo(scu(good.port(), ct)).is_ok());
+    }
+    ct.revocation = TlsRevocation::Off;
+    CHECK(echo(scu(rev.port(), ct)).is_ok());
+    // Only a CRL of another CA: no status for the test CA's certificates.
+    ct.crl_file = extra().other_crl.string();
+    ct.revocation = TlsRevocation::SoftFail;
+    CHECK(echo(scu(good.port(), ct)).is_ok());
+    ct.revocation = TlsRevocation::HardFail;
+    Status hard = echo(scu(good.port(), ct));
+    std::printf("  hard-fail without status: %s\n", hard.message.c_str());
+    CHECK(!hard.is_ok());
+    // Hard-fail needs a CRL source with OpenSSL; a crl_file without CRLs is an error.
+    ct.crl_file.clear();
+    CHECK_EQ(TlsContext::create(ct, TlsContext::Role::Client).error().code, Errc::InvalidArgument);
+    ct.crl_file = pki().ca.string();
+    CHECK_EQ(TlsContext::create(ct, TlsContext::Role::Client).error().code, Errc::InvalidArgument);
+    // Server side: a revoked client certificate is refused with require_client_certificate.
+    TlsSettings st = server_tls();
+    st.require_client_certificate = true;
+    st.ca_file = extra().ca_with_crl.string();
+    TlsScp mtls(st);
+    REQUIRE(mtls.start().is_ok());
+    TlsSettings revoked_client = client_tls();
+    revoked_client.identity.certificate_file = extra().revoked.string();
+    revoked_client.identity.private_key_file = extra().revoked_key.string();
+    CHECK(!echo(scu(mtls.port(), revoked_client)).is_ok());
+    for (int i = 0; i < 100 && !mtls.log.contains("revoked"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(mtls.log.contains("revoked"));
+    TlsSettings good_client = client_tls();
+    good_client.identity = identity(pki().client, pki().client_key, pki().client_p12);
+    CHECK(echo(scu(mtls.port(), good_client)).is_ok());
+}
+#endif

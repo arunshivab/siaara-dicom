@@ -2,6 +2,7 @@
 #include "siaara/siaara.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -26,19 +27,43 @@ namespace {
 using siaara::Errc;
 using siaara::Status;
 
-thread_local std::string g_last_error;
+// Error text for siaara_last_error_message(): a fixed per-thread buffer, so recording an error
+// never allocates and never throws (CAPI-03, R-013). Longer messages are cut at a UTF-8
+// character boundary.
+constexpr std::size_t kErrorCap = 512;
+thread_local char g_last_error[kErrorCap] = {};
 
-siaara_status fail(Errc code, std::string msg) {
-    g_last_error = std::move(msg);
+void set_error(std::string_view a, std::string_view b = {}) noexcept {
+    std::size_t n = 0;
+    for (std::string_view part : {a, b}) {
+        std::size_t take = std::min(part.size(), kErrorCap - 1 - n);
+        if (take < part.size())  // cut: do not split a multi-byte UTF-8 sequence
+            while (take > 0 && (static_cast<unsigned char>(part[take]) & 0xC0u) == 0x80u) --take;
+        if (take) std::memcpy(g_last_error + n, part.data(), take);
+        n += take;
+    }
+    g_last_error[n] = '\0';
+}
+
+siaara_status fail(Errc code, std::string_view msg) noexcept {
+    set_error(msg);
     return static_cast<siaara_status>(code);
 }
-siaara_status fail(const Status& s) {
-    g_last_error = s.message;
-    if (s.offset) g_last_error += " (offset " + std::to_string(s.offset) + ")";
+siaara_status fail(const Status& s) noexcept {
+    char suffix[40] = " (offset ";
+    std::size_t k = 9;
+    if (s.offset) {
+        char digits[24];
+        std::size_t d = 0;
+        for (std::uint64_t v = s.offset; v != 0 && d < sizeof digits; v /= 10) digits[d++] = static_cast<char>('0' + v % 10);
+        while (d > 0) suffix[k++] = digits[--d];
+        suffix[k++] = ')';
+    }
+    set_error(s.message, s.offset ? std::string_view(suffix, k) : std::string_view());
     return static_cast<siaara_status>(s.code);
 }
-siaara_status ok() {
-    g_last_error.clear();
+siaara_status ok() noexcept {
+    g_last_error[0] = '\0';
     return SIAARA_OK;
 }
 
@@ -58,6 +83,19 @@ siaara_status guarded(F&& f) noexcept {
     } catch (...) {
         return fail(Errc::Internal, "internal error");
     }
+}
+
+// Same, for exports that return a value instead of a status (`fallback` on any exception).
+template <class T, class F>
+T guarded_value(T fallback, F&& f) noexcept {
+    try {
+        return f();
+    } catch (const std::bad_alloc&) {
+        (void)fail(Errc::OutOfMemory, "out of memory");
+    } catch (...) {
+        (void)fail(Errc::Internal, "internal error");
+    }
+    return fallback;
 }
 
 siaara_status copy_out(std::string_view s, char* buf, size_t cap, size_t* needed) {
@@ -82,6 +120,38 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
     r.lenient = o->strict == 0;
     if (o->max_depth) r.max_depth = o->max_depth;
     return r;
+}
+
+// siaara_save_options -> WriteOptions. Fields past struct_size keep their defaults.
+Status to_write_options(const siaara_save_options* o, siaara::WriteOptions& w) {
+    if (!o) return Status::ok();
+    if (o->struct_size < sizeof(uint32_t))
+        return Status(Errc::InvalidArgument, "options must be set up with struct_size");
+    const auto has = [&](std::size_t end) { return o->struct_size >= end; };
+    if (has(offsetof(siaara_save_options, sequence_lengths) + sizeof(int32_t))) {
+        switch (o->sequence_lengths) {
+            case SIAARA_SEQ_LENGTHS_KEEP: w.sequence_lengths = siaara::SequenceLengths::KeepAsRead; break;
+            case SIAARA_SEQ_LENGTHS_EXPLICIT: w.sequence_lengths = siaara::SequenceLengths::Explicit; break;
+            case SIAARA_SEQ_LENGTHS_UNDEFINED: w.sequence_lengths = siaara::SequenceLengths::Undefined; break;
+            default: return Status(Errc::InvalidArgument, "unknown sequence_lengths");
+        }
+    }
+    if (has(offsetof(siaara_save_options, group_lengths) + sizeof(int32_t))) {
+        switch (o->group_lengths) {
+            case SIAARA_GROUP_LENGTHS_KEEP: w.group_lengths = siaara::GroupLengths::Keep; break;
+            case SIAARA_GROUP_LENGTHS_DROP: w.group_lengths = siaara::GroupLengths::Drop; break;
+            case SIAARA_GROUP_LENGTHS_RECOMPUTE: w.group_lengths = siaara::GroupLengths::Recompute; break;
+            default: return Status(Errc::InvalidArgument, "unknown group_lengths");
+        }
+    }
+    if (has(offsetof(siaara_save_options, odd_lengths) + sizeof(int32_t))) {
+        switch (o->odd_lengths) {
+            case SIAARA_ODD_LENGTHS_KEEP: w.odd_lengths = siaara::OddLengths::Keep; break;
+            case SIAARA_ODD_LENGTHS_PAD: w.odd_lengths = siaara::OddLengths::Pad; break;
+            default: return Status(Errc::InvalidArgument, "unknown odd_lengths");
+        }
+    }
+    return Status::ok();
 }
 
 bool parse_vr(const char* vr, siaara::VR& out) {
@@ -110,9 +180,9 @@ void fill_entry(const siaara::dict::Entry& e, siaara_dict_entry* out) {
 
 extern "C" {
 
-SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void) { return SIAARA_ABI_VERSION; }
-SIAARA_API const char* SIAARA_CALL siaara_version_string(void) { return "0.1.0"; }
-SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void) { return g_last_error.c_str(); }
+SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void) SIAARA_NOEXCEPT { return SIAARA_ABI_VERSION; }
+SIAARA_API const char* SIAARA_CALL siaara_version_string(void) SIAARA_NOEXCEPT { return "0.1.0"; }
+SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void) SIAARA_NOEXCEPT { return g_last_error; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* path, size_t path_len,
                                                       const siaara_read_options* options,
@@ -140,7 +210,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open_memory(const uint8_t* data
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_file_free(siaara_file* file) { delete file; }
+SIAARA_API void SIAARA_CALL siaara_file_free(siaara_file* file) SIAARA_NOEXCEPT { delete file; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_create(siaara_file** out) {
     return guarded([&]() -> siaara_status {
@@ -152,32 +222,48 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_create(siaara_file** out) {
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_dataset(siaara_file* file, siaara_dataset** out) {
-    if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
-    *out = ds_out(&file->file.dataset);
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        *out = ds_out(&file->file.dataset);
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_meta(siaara_file* file, siaara_dataset** out) {
-    if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
-    *out = ds_out(&file->file.meta);
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        *out = ds_out(&file->file.meta);
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_transfer_syntax(const siaara_file* file, char* buf,
                                                                  size_t cap, size_t* needed) {
-    if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
-    return copy_out(file->file.transfer_syntax, buf, cap, needed);
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        return copy_out(file->file.transfer_syntax, buf, cap, needed);
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file* file, uint32_t* out) {
-    if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
-    *out = static_cast<uint32_t>(file->file.warnings.size());
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        *out = static_cast<uint32_t>(file->file.warnings.size());
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, const char* path,
                                                       size_t path_len, const char* ts_uid) {
+    return guarded([&]() -> siaara_status { return siaara_file_save_ex(file, path, path_len, ts_uid, nullptr); });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_save_ex(const siaara_file* file, const char* path,
+                                                         size_t path_len, const char* ts_uid,
+                                                         const siaara_save_options* options) {
     return guarded([&]() -> siaara_status {
+        siaara::WriteOptions wo;
+        if (Status s = to_write_options(options, wo); !s) return fail(s);
         if (!file || !path) return fail(Errc::InvalidArgument, "file and path must not be NULL");
         if (ts_uid && !siaara::find_transfer_syntax(ts_uid))
             return fail(Errc::Unsupported, "unknown transfer syntax");
@@ -194,31 +280,35 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, c
             }
             copy.transfer_syntax = ts_uid;
         }
-        if (Status s = siaara::write_file(copy, std::string(path, path_len)); !s) return fail(s);
+        if (Status s = siaara::write_file(copy, std::string(path, path_len), wo); !s) return fail(s);
         return ok();
     });
 }
 
-SIAARA_API int32_t SIAARA_CALL siaara_dataset_contains(const siaara_dataset* ds, uint32_t tag) {
+SIAARA_API int32_t SIAARA_CALL siaara_dataset_contains(const siaara_dataset* ds, uint32_t tag) SIAARA_NOEXCEPT {
     return ds && ds_cast(ds)->contains(tag) ? 1 : 0;
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_vr(const siaara_dataset* ds, uint32_t tag, char out_vr[3]) {
-    if (!ds || !out_vr) return fail(Errc::InvalidArgument, "ds and out_vr must not be NULL");
-    const auto* e = ds_cast(ds)->find(tag);
-    if (!e) return fail(Errc::NotFound, "element not present");
-    const auto n = siaara::vr_name(e->vr);
-    out_vr[0] = n[0];
-    out_vr[1] = n[1];
-    out_vr[2] = 0;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out_vr) return fail(Errc::InvalidArgument, "ds and out_vr must not be NULL");
+        const auto* e = ds_cast(ds)->find(tag);
+        if (!e) return fail(Errc::NotFound, "element not present");
+        const auto n = siaara::vr_name(e->vr);
+        out_vr[0] = n[0];
+        out_vr[1] = n[1];
+        out_vr[2] = 0;
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_vm(const siaara_dataset* ds, uint32_t tag, uint32_t* out) {
-    if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
-    if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
-    *out = static_cast<uint32_t>(ds_cast(ds)->value_multiplicity(tag));
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
+        *out = static_cast<uint32_t>(ds_cast(ds)->value_multiplicity(tag));
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_string(const siaara_dataset* ds, uint32_t tag,
@@ -235,70 +325,84 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_string(const siaara_data
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_int64(const siaara_dataset* ds, uint32_t tag,
                                                               uint32_t vm, int64_t* out) {
-    if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
-    if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
-    auto v = ds_cast(ds)->get_int(tag, vm);
-    if (!v) return fail(Errc::TypeMismatch, "value cannot be read as an integer at this index");
-    *out = *v;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
+        auto v = ds_cast(ds)->get_int(tag, vm);
+        if (!v) return fail(Errc::TypeMismatch, "value cannot be read as an integer at this index");
+        *out = *v;
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_double(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t vm, double* out) {
-    if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
-    if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
-    auto v = ds_cast(ds)->get_double(tag, vm);
-    if (!v) return fail(Errc::TypeMismatch, "value cannot be read as a number at this index");
-    *out = *v;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
+        auto v = ds_cast(ds)->get_double(tag, vm);
+        if (!v) return fail(Errc::TypeMismatch, "value cannot be read as a number at this index");
+        *out = *v;
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_raw(const siaara_dataset* ds, uint32_t tag,
                                                             const uint8_t** out_data, size_t* out_size) {
-    if (!ds || !out_data || !out_size) return fail(Errc::InvalidArgument, "arguments must not be NULL");
-    const auto* e = ds_cast(ds)->find(tag);
-    if (!e) return fail(Errc::NotFound, "element not present");
-    if (e->is_sequence() || e->is_encapsulated())
-        return fail(Errc::TypeMismatch, "element has no single value (sequence or encapsulated)");
-    *out_data = e->value.data();
-    *out_size = e->value.size();
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out_data || !out_size) return fail(Errc::InvalidArgument, "arguments must not be NULL");
+        const auto* e = ds_cast(ds)->find(tag);
+        if (!e) return fail(Errc::NotFound, "element not present");
+        if (e->is_sequence() || e->is_encapsulated())
+            return fail(Errc::TypeMismatch, "element has no single value (sequence or encapsulated)");
+        *out_data = e->value.data();
+        *out_size = e->value.size();
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item_count(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t* out) {
-    if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
-    const auto* e = ds_cast(ds)->find(tag);
-    if (!e) return fail(Errc::NotFound, "element not present");
-    if (!e->is_sequence()) return fail(Errc::TypeMismatch, "element is not a sequence");
-    *out = static_cast<uint32_t>(e->items.size());
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        const auto* e = ds_cast(ds)->find(tag);
+        if (!e) return fail(Errc::NotFound, "element not present");
+        if (!e->is_sequence()) return fail(Errc::TypeMismatch, "element is not a sequence");
+        *out = static_cast<uint32_t>(e->items.size());
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item(siaara_dataset* ds, uint32_t tag, uint32_t index,
                                                          siaara_dataset** out) {
-    if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
-    auto* e = ds_cast(ds)->find(tag);
-    if (!e) return fail(Errc::NotFound, "element not present");
-    if (!e->is_sequence()) return fail(Errc::TypeMismatch, "element is not a sequence");
-    if (index >= e->items.size()) return fail(Errc::NotFound, "item index out of range");
-    *out = ds_out(&e->items[index]);
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        auto* e = ds_cast(ds)->find(tag);
+        if (!e) return fail(Errc::NotFound, "element not present");
+        if (!e->is_sequence()) return fail(Errc::TypeMismatch, "element is not a sequence");
+        if (index >= e->items.size()) return fail(Errc::NotFound, "item index out of range");
+        *out = ds_out(&e->items[index]);
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_element_count(const siaara_dataset* ds, uint32_t* out) {
-    if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
-    *out = static_cast<uint32_t>(ds_cast(ds)->size());
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        *out = static_cast<uint32_t>(ds_cast(ds)->size());
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_element_tag(const siaara_dataset* ds, uint32_t index,
                                                                 uint32_t* out_tag) {
-    if (!ds || !out_tag) return fail(Errc::InvalidArgument, "ds and out_tag must not be NULL");
-    const auto& els = ds_cast(ds)->elements();
-    if (index >= els.size()) return fail(Errc::NotFound, "index out of range");
-    *out_tag = els[index].tag;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out_tag) return fail(Errc::InvalidArgument, "ds and out_tag must not be NULL");
+        const auto& els = ds_cast(ds)->elements();
+        if (index >= els.size()) return fail(Errc::NotFound, "index out of range");
+        *out_tag = els[index].tag;
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_string(siaara_dataset* ds, uint32_t tag, const char* vr,
@@ -339,29 +443,35 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_bytes(siaara_dataset* ds
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_remove(siaara_dataset* ds, uint32_t tag) {
-    if (!ds) return fail(Errc::InvalidArgument, "ds must not be NULL");
-    if (!ds_cast(ds)->remove(tag)) return fail(Errc::NotFound, "element not present");
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!ds) return fail(Errc::InvalidArgument, "ds must not be NULL");
+        if (!ds_cast(ds)->remove(tag)) return fail(Errc::NotFound, "element not present");
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup(uint32_t tag, siaara_dict_entry* out) {
-    if (!out || out->struct_size < sizeof(siaara_dict_entry))
-        return fail(Errc::InvalidArgument, "out must be set up with struct_size");
-    const auto* e = siaara::dict::lookup(tag);
-    if (!e) return fail(Errc::NotFound, "tag not in dictionary");
-    fill_entry(*e, out);
-    out->tag = tag;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!out || out->struct_size < sizeof(siaara_dict_entry))
+            return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        const auto* e = siaara::dict::lookup(tag);
+        if (!e) return fail(Errc::NotFound, "tag not in dictionary");
+        fill_entry(*e, out);
+        out->tag = tag;
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyword, size_t len,
                                                                 siaara_dict_entry* out) {
-    if (!keyword || !out || out->struct_size < sizeof(siaara_dict_entry))
-        return fail(Errc::InvalidArgument, "bad argument");
-    const auto* e = siaara::dict::lookup_keyword(std::string_view(keyword, len));
-    if (!e) return fail(Errc::NotFound, "keyword not in dictionary");
-    fill_entry(*e, out);
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!keyword || !out || out->struct_size < sizeof(siaara_dict_entry))
+            return fail(Errc::InvalidArgument, "bad argument");
+        const auto* e = siaara::dict::lookup_keyword(std::string_view(keyword, len));
+        if (!e) return fail(Errc::NotFound, "keyword not in dictionary");
+        fill_entry(*e, out);
+        return ok();
+    });
 }
 
 }  // extern "C"
@@ -644,7 +754,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create(const char* base_u
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client) { delete client; }
+SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client) SIAARA_NOEXCEPT { delete client; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_authorization(siaara_web_client* client, const char* value,
                                                                          size_t len) {
@@ -895,7 +1005,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t 
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) { delete store; }
+SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) SIAARA_NOEXCEPT { delete store; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_store_add_file(siaara_store* store, const char* path, size_t path_len,
                                                            int32_t policy, int32_t mode, int32_t* outcome) {
@@ -983,11 +1093,13 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_get_instances(const siaara_sto
 
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_store_result* res, uint32_t* count,
                                                                uint32_t* total, int32_t* total_exact) {
-    if (!res || !count) return fail(Errc::InvalidArgument, "result and count must not be NULL");
-    *count = static_cast<uint32_t>(res->rows.size());
-    if (total) *total = static_cast<uint32_t>(std::min<std::size_t>(res->total, UINT32_MAX));
-    if (total_exact) *total_exact = res->exact ? 1 : 0;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!res || !count) return fail(Errc::InvalidArgument, "result and count must not be NULL");
+        *count = static_cast<uint32_t>(res->rows.size());
+        if (total) *total = static_cast<uint32_t>(std::min<std::size_t>(res->total, UINT32_MAX));
+        if (total_exact) *total_exact = res->exact ? 1 : 0;
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_result* res, uint32_t index,
@@ -1000,7 +1112,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* res) { delete res; }
+SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* res) SIAARA_NOEXCEPT { delete res; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_store_patient_key(const siaara_store_result* res, uint32_t index, char* buf,
                                                               size_t cap, size_t* needed) {
@@ -1352,18 +1464,15 @@ siaara::net::TlsSettings tls_from_options(const siaara_tls_options* o) {
 extern "C" {
 
 SIAARA_API int32_t SIAARA_CALL siaara_tls_available(void) {
-    try {
+    return guarded_value<int32_t>(0, [&]() -> int32_t {
         std::string why;
         if (siaara::net::tls_available(&why)) {
-            ok();
+            (void)ok();
             return 1;
         }
         (void)fail(Errc::Unsupported, "TLS is not available: " + why);
         return 0;
-    } catch (...) {
-        (void)fail(Errc::Internal, "internal error");
-        return 0;
-    }
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* base_url, size_t len, int32_t timeout_ms,
@@ -1613,7 +1722,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_sr_open(const siaara_file* file, sia
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr) { delete sr; }
+SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr) SIAARA_NOEXCEPT { delete sr; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_count(const siaara_sr* sr, uint32_t* out) {
     return guarded([&]() -> siaara_status {
@@ -1731,7 +1840,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_seg_open(const siaara_file* file, si
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg) { delete seg; }
+SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg) SIAARA_NOEXCEPT { delete seg; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_seg_info(const siaara_seg* seg, int32_t* type, uint32_t* frames,
                                                      uint32_t* max_fractional) {
@@ -1813,7 +1922,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* fil
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt) { delete rt; }
+SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt) SIAARA_NOEXCEPT { delete rt; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_count(const siaara_rtstruct* rt, uint32_t* out) {
     return guarded([&]() -> siaara_status {
@@ -2026,7 +2135,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_volume_data(const siaara_volume* vol
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume) { delete volume; }
+SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume) SIAARA_NOEXCEPT { delete volume; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_view_create(const siaara_volume* volume, uint32_t width, uint32_t height,
                                                         siaara_view** out) {
@@ -2042,7 +2151,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_create(const siaara_volume* vol
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view) { delete view; }
+SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view) SIAARA_NOEXCEPT { delete view; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_view_set_plane(siaara_view* view, const double point[3],
                                                            const double normal[3], const double up[3],
@@ -2200,6 +2309,133 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_pick(const siaara_view* view, d
         out->overlay_inside = r->overlay_inside ? 1 : 0;
         out->overlay_value = r->overlay_value;
         return ok();
+    });
+}
+
+}  // extern "C"
+
+// ---------------------------------------------------------------- GPU rendering (appended)
+#include "gpu/gpu.hpp"
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_gpu_devices(siaara_gpu_device_info* out, uint32_t cap, uint32_t* count) {
+    return guarded([&]() -> siaara_status {
+        if (!count) return fail(Errc::InvalidArgument, "count must not be NULL");
+        if (cap && !out) return fail(Errc::InvalidArgument, "out must not be NULL when cap > 0");
+        for (uint32_t i = 0; i < cap; ++i)
+            if (out[i].struct_size < sizeof(siaara_gpu_device_info))
+                return fail(Errc::InvalidArgument, "out[i].struct_size is too small");
+        const std::vector<siaara::gpu::DeviceInfo> devs = siaara::gpu::devices();
+        *count = static_cast<uint32_t>(devs.size());
+        for (uint32_t i = 0; i < cap && i < devs.size(); ++i) {
+            const auto& d = devs[i];
+            siaara_gpu_device_info& o = out[i];
+            const uint32_t size = o.struct_size;
+            std::memset(&o, 0, sizeof o);
+            o.struct_size = size;
+            o.api = static_cast<int32_t>(d.api);
+            o.type = static_cast<int32_t>(d.type);
+            o.vendor_id = d.vendor_id;
+            o.device_id = d.device_id;
+            o.memory_bytes = d.memory_bytes;
+            o.max_texture_3d = d.max_texture_3d;
+            o.selected = d.selected ? 1 : 0;
+            o.float32_filtering = d.float32_filtering ? 1 : 0;
+            o.int16_filtering = d.int16_filtering ? 1 : 0;
+            std::memcpy(o.name, d.name.data(), std::min(d.name.size(), sizeof o.name - 1));
+            std::memcpy(o.driver, d.driver.data(), std::min(d.driver.size(), sizeof o.driver - 1));
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_backend(siaara_view* view, int32_t backend) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        vol::RenderBackend b;
+        switch (backend) {
+            case SIAARA_BACKEND_AUTO: b = vol::RenderBackend::Auto; break;
+            case SIAARA_BACKEND_CPU: b = vol::RenderBackend::Cpu; break;
+            case SIAARA_BACKEND_GPU: b = vol::RenderBackend::Gpu; break;
+            default: return fail(Errc::InvalidArgument, "unknown backend");
+        }
+        if (Status s = view->view.set_backend(b); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view* view, int32_t* out_backend) {
+    return guarded([&]() -> siaara_status {
+        if (!view || !out_backend) return fail(Errc::InvalidArgument, "view and out_backend must not be NULL");
+        *out_backend = view->view.last_backend() == vol::RenderBackend::Gpu ? SIAARA_BACKEND_GPU : SIAARA_BACKEND_CPU;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_file* file, const siaara_dataset* ds,
+                                                                uint32_t tag, uint8_t* buf, size_t cap,
+                                                                size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !ds || !needed || (!buf && cap)) return fail(Errc::InvalidArgument, "file, ds and needed must not be NULL");
+        const siaara::Dataset* d = ds_cast(ds);
+        const auto* e = d->find(tag);
+        if (!e) return fail(Errc::NotFound, "element not present");
+        // The file meta group is always explicit VR little endian (PS3.10 7.1).
+        const bool meta = d == &file->file.meta;
+        const std::uint16_t bits = static_cast<std::uint16_t>(d->get_int(siaara::tags::BitsAllocated).value_or(0));
+        std::vector<std::uint8_t> v;
+        if (Status s = siaara::stored_value_bytes(*e, meta ? std::string_view(siaara::ts::ExplicitVRLittleEndian)
+                                                           : std::string_view(file->file.transfer_syntax),
+                                                  bits, v, d == &file->file.dataset);
+            !s)
+            return fail(s);
+        *needed = v.size();
+        if (cap < v.size()) return fail(Errc::BufferTooSmall, "buffer too small");
+        if (!v.empty()) std::memcpy(buf, v.data(), v.size());
+        return ok();
+    });
+}
+
+}  // extern "C"
+
+// ---------------------------------------------------------------- lenient frame decoding
+namespace {
+
+siaara_status frame_warnings_of(const siaara_file* file, uint32_t frame, std::vector<siaara::image::FrameWarning>& out) {
+    auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax);
+    if (!fr) return fail(fr.error());
+    if (frame >= fr->frame_count()) return fail(Errc::InvalidArgument, "frame index out of range");
+    // Decoding (not only the header probe) also finds the repairs made inside the codecs.
+    auto px = fr->decode(frame);
+    if (!px) return fail(px.error());
+    if (Status s = fr->decode(frame, *px, &out); !s) return fail(s);
+    return SIAARA_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning_count(const siaara_file* file, uint32_t frame, uint32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        std::vector<siaara::image::FrameWarning> w;
+        if (siaara_status st = frame_warnings_of(file, frame, w); st != SIAARA_OK) return st;
+        *out = static_cast<uint32_t>(w.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning(const siaara_file* file, uint32_t frame, uint32_t index,
+                                                          int32_t* code, char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        std::vector<siaara::image::FrameWarning> w;
+        if (siaara_status st = frame_warnings_of(file, frame, w); st != SIAARA_OK) return st;
+        if (index >= w.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        if (code) *code = static_cast<int32_t>(w[index].code);
+        return copy_out(w[index].message, buf, cap, needed);
     });
 }
 
