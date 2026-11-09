@@ -689,7 +689,7 @@ struct Store::Impl {
     std::uint32_t generation = 0;
     StoreStats counters;  // journal/snapshot counters only
     mutable std::shared_mutex rw;
-    std::mutex writer;
+    mutable std::mutex writer;  // serialises changes; also guards `counters` and `generation`
     std::mutex cb_mutex;
     EventCallback callback;
 
@@ -825,6 +825,8 @@ struct Store::Impl {
         if (load_le32(p + 8) != kFormatVersion) return Status(Errc::Unsupported, "unsupported snapshot version");
         gen = load_le32(p + 12);
         counters.snapshot_bytes = n;
+        // Instance records take at least ~250 bytes: size the map once instead of rehashing.
+        out.instances.reserve(n / 250);
         FrameReader fr(p, n);
         std::vector<Patient*> pv;
         std::vector<Study*> sv;
@@ -1661,6 +1663,7 @@ void Store::set_callback(EventCallback cb) {
 }
 
 StoreStats Store::stats() const {
+    std::lock_guard<std::mutex> w(impl_->writer);
     std::shared_lock<std::shared_mutex> g(impl_->rw);
     StoreStats s = impl_->counters;
     s.patients = impl_->st.patients.size();
