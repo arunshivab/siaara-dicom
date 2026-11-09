@@ -161,6 +161,7 @@ struct Message {
     std::string transfer_syntax;  // of the presentation context
     std::string abstract_syntax;
     std::shared_ptr<SpoolFile> spool;  // set when the data set was received to disk (net/spool.hpp)
+    bool discarded = false;  // data set drained, not kept: spool quota / free-space floor (R-074)
 };
 
 enum class DimseKind { Message, PeerReleaseRequest };

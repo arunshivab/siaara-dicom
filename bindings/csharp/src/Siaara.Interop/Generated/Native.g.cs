@@ -521,6 +521,8 @@ internal struct siaara_store_options
     public int durable;
     public int rebuild_if_corrupt;
     public ulong compact_min_records;
+    public ulong max_total_bytes;
+    public ulong min_free_disk_bytes;
 }
 
 /// <summary>siaara_store_filter (blittable, C layout).</summary>
@@ -1141,6 +1143,11 @@ internal struct siaara_scp_options
     public int allow_any_calling_ae;
     public nint tls;
     public int strict_store_uids;
+    public uint reserved0;
+    public nint spool_directory;
+    public ulong spool_threshold;
+    public ulong spool_max_total_bytes;
+    public ulong spool_min_free_disk_bytes;
 }
 
 /// <summary>siaara_scp_event (blittable, C layout).</summary>

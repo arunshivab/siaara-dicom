@@ -1183,3 +1183,39 @@ TEST_CASE("store: a study shared by two Patient IDs keeps the store loadable") {
     CHECK_EQ(st->stats().patients, 2u);
     CHECK_EQ(st->stats().instances, 3u);
 }
+
+// ================================================================ R-074 disk limits
+
+TEST_CASE("store: R-074 byte cap and free-space floor refuse new copies") {
+    TempDir tmp("r074");
+    const fs::path src = tmp.path() / "src";
+    fs::create_directories(src);
+    {
+        StoreOptions o;
+        o.max_total_bytes = 1;  // nothing fits
+        auto st = open_store(tmp.path() / "capped", o);
+        REQUIRE(st);
+        const fs::path p = src / "a.dcm";
+        store_synth::write_spec(p, spec(1, 1, 1, 1));
+        auto r = st->add_file(p.string());
+        REQUIRE(!r);
+        CHECK(r.error().code == Errc::LimitExceeded);
+        CHECK(st->add_file(p.string(), DuplicatePolicy::Keep, AddMode::Reference).is_ok());  // no copy: allowed
+    }
+    {
+        StoreOptions o;
+        o.min_free_disk_bytes = std::uint64_t{1} << 62;
+        auto st = open_store(tmp.path() / "floor", o);
+        REQUIRE(st);
+        const fs::path p = src / "b.dcm";
+        store_synth::write_spec(p, spec(1, 1, 1, 2));
+        auto r = st->add_file(p.string());
+        REQUIRE(!r);
+        CHECK(r.error().code == Errc::LimitExceeded);
+    }
+    {
+        auto st = open_store(tmp.path() / "default");  // defaults: fine
+        REQUIRE(st);
+        add_spec(*st, src, spec(1, 1, 1, 3));
+    }
+}

@@ -1181,3 +1181,42 @@ TEST_CASE("net/services: R-073 matching UIDs are not flagged") {
     CHECK(!rec.got[0].uid_mismatch);
     CHECK(rec.got[0].command_sop_instance_uid.empty());
 }
+
+// ===================================================================== R-074 disk quota
+
+TEST_CASE("net/services: R-074 spool quota and free-space floor answer 0xA700 and keep the association") {
+    const auto dir = temp_dir("r074");
+    for (int mode = 0; mode < 2; ++mode) {
+        StoreSink rec;
+        ScpConfig cfg = scp_cfg();
+        SpoolConfig sp;
+        sp.directory = (dir / ("spool" + std::to_string(mode))).string();
+        std::filesystem::create_directories(sp.directory);
+        sp.threshold = 1024;
+        if (mode == 0) sp.max_total_bytes = 3000;           // quota
+        else sp.min_free_disk_bytes = std::uint64_t{1} << 62;  // floor no volume meets
+        cfg.spool = sp;
+        ScpHandlers h;
+        h.on_store = std::ref(rec);
+        ScpServer scp(cfg, h);
+        REQUIRE(scp.start().is_ok());
+        Scu scu(scu_cfg(scp.port()));
+        scu.add_context(kSC, {kExplicit});
+        REQUIRE(scu.connect().is_ok());
+        Result<std::uint16_t> big = scu.store(make_image(1, 64, 64));  // 4 KiB of pixels: spooled
+        REQUIRE(big.is_ok());
+        CHECK_EQ(*big, dimse_status::OutOfResources);
+        Result<std::uint16_t> small = scu.store(make_image(2, 8, 8));  // in memory: still accepted
+        REQUIRE(small.is_ok());
+        CHECK_EQ(*small, dimse_status::Success);
+        if (mode == 0) {
+            Result<std::uint16_t> fits = scu.store(make_image(3, 40, 40));  // 1.6 KiB: within the quota
+            REQUIRE(fits.is_ok());
+            CHECK_EQ(*fits, dimse_status::Success);
+        }
+        (void)scu.release();
+        std::lock_guard<std::mutex> l(rec.mu);
+        CHECK_EQ(rec.got.size(), mode == 0 ? 2u : 1u);
+        rec.got.clear();  // releases the spool files
+    }
+}

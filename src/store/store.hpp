@@ -77,6 +77,11 @@ struct StoreOptions {
     bool rebuild_if_corrupt = false;        // re-index data/ when the snapshot is unreadable
     std::uint64_t compact_min_records = 50'000;  // compact when the journal has more records
     double compact_ratio = 0.5;             //   than max(min, ratio * instances)
+    // Disk limits for copied instances (R-074): adding fails with Errc::LimitExceeded (a DIMSE
+    // receiver answers 0xA700) when the files would pass max_total_bytes (0 = no cap) or leave less
+    // than min_free_disk_bytes free on the volume (0 = no floor).
+    std::uint64_t max_total_bytes = 0;
+    std::uint64_t min_free_disk_bytes = 64ull << 20;
 };
 
 enum class DuplicatePolicy { Keep, Replace };

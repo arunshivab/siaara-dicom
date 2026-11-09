@@ -289,8 +289,11 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
         rq.move_originator_message_id = m.command.move_originator_message_id;
         rq.raw = m.data;
         rq.spool = m.spool;
-        Result<Dataset> ds = decode_message_dataset(m);
-        if (!ds) {
+        Result<Dataset> ds = m.discarded ? Result<Dataset>(Status(Errc::LimitExceeded, "discarded"))
+                                         : decode_message_dataset(m);
+        if (m.discarded) {
+            st = dimse_status::OutOfResources;  // R-074: spool disk quota or free-space floor
+        } else if (!ds) {
             st = dimse_status::CannotUnderstand;
         } else {
             rq.dataset = std::move(ds.value());

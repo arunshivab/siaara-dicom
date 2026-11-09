@@ -138,6 +138,9 @@ struct RawMessage {
     Bytes data;
     // Set when the data set was spooled to disk (see net/spool.hpp); `data` then views the mapping.
     std::shared_ptr<SpoolFile> spool;
+    // The data set was received but not kept: the spool disk quota or free-space floor would have
+    // been passed (R-074). `data` is empty; the receiver answers Out of Resources (0xA700).
+    bool discarded = false;
 };
 
 // What receive() returned.

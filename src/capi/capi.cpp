@@ -980,12 +980,17 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t 
         *out = nullptr;
         st::StoreOptions o;
         if (options) {
-            if (options->struct_size < sizeof(siaara_store_options))
+            if (options->struct_size < offsetof(siaara_store_options, compact_min_records) + sizeof(uint64_t))
                 return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            const auto has = [&](std::size_t end) { return options->struct_size >= end; };
             o.create = options->create != 0;
             o.durable = options->durable != 0;
             o.rebuild_if_corrupt = options->rebuild_if_corrupt != 0;
             if (options->compact_min_records) o.compact_min_records = options->compact_min_records;
+            if (has(offsetof(siaara_store_options, max_total_bytes) + sizeof(uint64_t)))
+                o.max_total_bytes = options->max_total_bytes;
+            if (has(offsetof(siaara_store_options, min_free_disk_bytes) + sizeof(uint64_t)) && options->min_free_disk_bytes)
+                o.min_free_disk_bytes = options->min_free_disk_bytes;
         }
         auto s = st::Store::open(std::string(root, root_len), o);
         if (!s) return fail(s.error());

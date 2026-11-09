@@ -31,6 +31,13 @@ struct SpoolConfig {
     // Files are always created exclusively (no symlinks followed), readable by the owner only.
     std::string directory;
     std::uint64_t max_size = 64ull << 30;     // largest data set accepted on disk (bytes)
+    // Disk quota (R-074): all spool files of this directory in the process together (written or
+    // received and not yet committed) may take at most this many bytes; 0 = no cap. A data set
+    // that would pass it is drained and answered 0xA700 (Out of Resources).
+    std::uint64_t max_total_bytes = 0;
+    // Free space the spool leaves on the volume; a data set that would go below it is drained and
+    // answered 0xA700. 0 = no floor.
+    std::uint64_t min_free_disk_bytes = 64ull << 20;
     // Leftover "siaara-spool-*.part" files (e.g. from a crash) not modified for this long are
     // removed from the directory the first time it is used in a process. 0: never.
     int stale_after_minutes = 60;
@@ -49,6 +56,8 @@ Result<std::size_t> remove_stale_spool_files(const SpoolConfig& cfg);
 // rename it while it is mapped; deletion waits until the view and the handles are closed (a mapped
 // file cannot be deleted on Windows). Other code that keeps the file open without
 // FILE_SHARE_DELETE (e.g. core io::map_file) blocks the rename and the deletion while it does so.
+struct SpoolQuota;  // per-directory accounting of the bytes on disk (R-074)
+
 class SpoolFile {
 public:
     // Opens and maps `path`; the data set starts at `data_offset`. On failure the file is removed.
@@ -72,8 +81,12 @@ public:
     bool committed() const;
 
 private:
+    friend class SpoolWriter;
     SpoolFile() = default;
+    void release_quota() noexcept;
     struct Native;
+    std::shared_ptr<SpoolQuota> quota_;  // charged `charged_` bytes until committed or destroyed
+    std::uint64_t charged_ = 0;
     mutable std::mutex mu_;
     std::string path_;
     std::uint64_t data_offset_ = 0;
@@ -94,6 +107,8 @@ public:
     SpoolWriter(const SpoolWriter&) = delete;
     SpoolWriter& operator=(const SpoolWriter&) = delete;
 
+    // Errc::LimitExceeded (nothing written) when the disk quota or free-space floor would be
+    // passed: the file is then useless and the caller should drop the writer.
     Status write(const std::uint8_t* data, std::size_t n);
     std::uint64_t data_bytes() const noexcept { return written_; }
     // Closes and memory-maps the file. `data` views the data set bytes; `file` owns the file.
@@ -110,6 +125,12 @@ private:
     std::string path_;
     std::uint64_t prefix_size_ = 0;
     std::uint64_t written_ = 0;
+    std::shared_ptr<SpoolQuota> quota_;
+    std::uint64_t charged_ = 0;
+    std::uint64_t max_total_ = 0, min_free_ = 0;
+    std::uint64_t next_space_check_ = 0;  // bytes written when the free space is checked again
+    std::string dir_;
+    Status charge(std::uint64_t n);
 };
 
 // Part 10 header (preamble, "DICM", file meta) for a received instance, as the spool file starts.

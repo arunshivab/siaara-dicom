@@ -7,6 +7,7 @@
 #include <memory>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <random>
 #include <set>
@@ -268,6 +269,7 @@ Result<std::shared_ptr<SpoolFile>> SpoolFile::open(const std::string& path, std:
 }
 
 SpoolFile::~SpoolFile() {
+    release_quota();
     if (!native_) return;
     const bool remove_file = !committed_ || delete_original_;
     const std::string& doomed = delete_original_ ? original_ : path_;
@@ -323,6 +325,7 @@ Status SpoolFile::commit(const std::string& target) {
         original_ = path_;
         path_ = target;
         committed_ = true;
+        release_quota();
         return Status::ok();
     }
 #else
@@ -333,11 +336,60 @@ Status SpoolFile::commit(const std::string& target) {
         original_ = path_;
         path_ = target;
         committed_ = true;
+        release_quota();
         return Status::ok();
     }
 #endif
     path_ = target;
     committed_ = true;
+    release_quota();
+    return Status::ok();
+}
+
+// ------------------------------------------------------------------ disk quota (R-074)
+
+struct SpoolQuota {
+    std::atomic<std::uint64_t> used{0};
+};
+
+namespace {
+std::mutex g_quota_mu;
+std::shared_ptr<SpoolQuota> quota_for(const std::string& dir) {
+    static std::map<std::string, std::shared_ptr<SpoolQuota>> all;
+    const std::lock_guard<std::mutex> l(g_quota_mu);
+    std::shared_ptr<SpoolQuota>& q = all[dir];
+    if (!q) q = std::make_shared<SpoolQuota>();
+    return q;
+}
+}  // namespace
+
+void SpoolFile::release_quota() noexcept {
+    if (quota_ && charged_) quota_->used.fetch_sub(charged_);
+    charged_ = 0;
+    quota_.reset();
+}
+
+Status SpoolWriter::charge(std::uint64_t n) {
+    if (!quota_) return Status::ok();
+    if (max_total_ != 0) {
+        std::uint64_t cur = quota_->used.load();
+        for (;;) {
+            if (n > max_total_ || cur > max_total_ - n)
+                return Status(Errc::LimitExceeded, "spool disk quota reached");
+            if (quota_->used.compare_exchange_weak(cur, cur + n)) break;
+        }
+    } else {
+        quota_->used.fetch_add(n);
+    }
+    charged_ += n;
+    if (min_free_ != 0 && written_ + prefix_size_ + n >= next_space_check_) {
+        std::error_code ec;
+        const std::filesystem::space_info si = std::filesystem::space(fs_path(dir_), ec);
+        // Checked every 16 MiB: keep that much headroom above the floor.
+        constexpr std::uint64_t kStep = 16ull << 20;
+        if (!ec && si.available < min_free_ + n + kStep) return Status(Errc::LimitExceeded, "spool disk free-space floor reached");
+        next_space_check_ = written_ + prefix_size_ + n + kStep;
+    }
     return Status::ok();
 }
 
@@ -349,6 +401,7 @@ struct SpoolWriter::Impl {
 };
 
 SpoolWriter::~SpoolWriter() {
+    if (quota_ && charged_) quota_->used.fetch_sub(charged_);
     if (impl_) {
         impl_->out.close();
         std::error_code ec;
@@ -366,6 +419,11 @@ Result<std::unique_ptr<SpoolWriter>> SpoolWriter::open(const SpoolConfig& cfg, c
         if (cleaned_dirs().insert(dir8.value()).second) (void)remove_stale_in(dir, cfg.stale_after_minutes);
     }
     std::unique_ptr<SpoolWriter> w(new SpoolWriter());
+    w->quota_ = quota_for(dir8.value());
+    w->max_total_ = cfg.max_total_bytes;
+    w->min_free_ = cfg.min_free_disk_bytes;
+    w->dir_ = dir8.value();
+    if (Status q = w->charge(prefix.size()); !q) return q;  // nothing created yet
     auto impl = std::make_unique<Impl>();
     const std::filesystem::path p = dir / unique_name();
     w->path_ = utf8_of(p);
@@ -380,6 +438,10 @@ Result<std::unique_ptr<SpoolWriter>> SpoolWriter::open(const SpoolConfig& cfg, c
 Status SpoolWriter::write(const std::uint8_t* data, std::size_t n) {
     if (!impl_) return Status(Errc::InvalidArgument, "spool file is closed");
     if (n == 0) return Status::ok();
+    if (Status q = charge(n); !q) {
+        impl_->failed = true;
+        return q;
+    }
     if (Status s = impl_->out.write(data, n); !s) {
         impl_->failed = true;
         return s;
@@ -401,6 +463,10 @@ Result<SpoolWriter::Finished> SpoolWriter::finish() {
     Result<std::shared_ptr<SpoolFile>> file = SpoolFile::open(path_, prefix_size_);
     if (!file) return file.take_error();
     std::shared_ptr<SpoolFile> sf = std::move(file.value());
+    // The file keeps the quota charge until it is committed or deleted.
+    sf->quota_ = std::move(quota_);
+    sf->charged_ = charged_;
+    charged_ = 0;
     if (sf->size() != prefix_size_ + written_) return Status(Errc::IoError, "spool file size mismatch");
     // Every view keeps the SpoolFile (and so the mapping) alive.
     Finished f;

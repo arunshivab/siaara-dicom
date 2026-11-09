@@ -433,6 +433,10 @@ typedef struct siaara_store_options {
     int32_t durable;               /* 0/1: fsync every change (slower, survives power loss) */
     int32_t rebuild_if_corrupt;    /* 0/1: re-index the data folder if the index is unreadable */
     uint64_t compact_min_records;  /* 0 = default (50,000) */
+    /* Fields below are read only when struct_size covers them. */
+    uint64_t max_total_bytes;      /* copied instances may take at most this much; 0 = no cap. Adding
+                                      more fails with SIAARA_ERR_LIMIT_EXCEEDED (a Storage SCP answers 0xA700) */
+    uint64_t min_free_disk_bytes;  /* free space adding leaves on the volume; 0 = default (64 MiB) */
 } siaara_store_options;
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
@@ -1719,7 +1723,7 @@ typedef struct siaara_scp_options {
     const char* bind_address;        /* NULL: all interfaces */
     const char* const* allowed_calling_aes; /* peers accepted; empty needs allow_any_calling_ae */
     uint32_t allowed_count;
-    uint32_t max_associations;       /* 0 = 8 */
+    uint32_t max_associations;       /* 0 = 8; at most 64 */
     int32_t accept_any_called_ae;    /* 0/1: also accept associations addressed to another AE title */
     int32_t accept_any_sop_class;    /* 0/1: store any SOP class (default: the toolkit's storage list) */
     int32_t accept_compressed;       /* 0/1: also accept the compressed transfer syntaxes the toolkit knows */
@@ -1733,6 +1737,13 @@ typedef struct siaara_scp_options {
     int32_t strict_store_uids;       /* 0/1: refuse (0xA900) a C-STORE whose command UIDs differ from
                                         (0008,0016)/(0008,0018) of the data set; 0: store it under the data set's
                                         UIDs (event uid_mismatch, command UIDs reported) */
+    uint32_t reserved0;              /* set to 0 */
+    /* Data sets larger than spool_threshold are received to disk, so memory per association stays
+     * below it (at most max_associations x spool_threshold in all). */
+    const char* spool_directory;     /* NULL: a private per-user folder under the system temp folder */
+    uint64_t spool_threshold;        /* 0 = 16 MiB */
+    uint64_t spool_max_total_bytes;  /* all spool files together; 0 = no cap. Over it: 0xA700 */
+    uint64_t spool_min_free_disk_bytes; /* free space the spool leaves; 0 = default (64 MiB). Below: 0xA700 */
 } siaara_scp_options;
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };

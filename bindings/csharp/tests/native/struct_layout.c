@@ -79,6 +79,8 @@ int main(void) {
     printf("F siaara_store_options durable %u\n", (unsigned)offsetof(siaara_store_options, durable));
     printf("F siaara_store_options rebuild_if_corrupt %u\n", (unsigned)offsetof(siaara_store_options, rebuild_if_corrupt));
     printf("F siaara_store_options compact_min_records %u\n", (unsigned)offsetof(siaara_store_options, compact_min_records));
+    printf("F siaara_store_options max_total_bytes %u\n", (unsigned)offsetof(siaara_store_options, max_total_bytes));
+    printf("F siaara_store_options min_free_disk_bytes %u\n", (unsigned)offsetof(siaara_store_options, min_free_disk_bytes));
     printf("S siaara_store_filter %u\n", (unsigned)sizeof(siaara_store_filter));
     printf("F siaara_store_filter struct_size %u\n", (unsigned)offsetof(siaara_store_filter, struct_size));
     printf("F siaara_store_filter level %u\n", (unsigned)offsetof(siaara_store_filter, level));
@@ -514,6 +516,11 @@ int main(void) {
     printf("F siaara_scp_options allow_any_calling_ae %u\n", (unsigned)offsetof(siaara_scp_options, allow_any_calling_ae));
     printf("F siaara_scp_options tls %u\n", (unsigned)offsetof(siaara_scp_options, tls));
     printf("F siaara_scp_options strict_store_uids %u\n", (unsigned)offsetof(siaara_scp_options, strict_store_uids));
+    printf("F siaara_scp_options reserved0 %u\n", (unsigned)offsetof(siaara_scp_options, reserved0));
+    printf("F siaara_scp_options spool_directory %u\n", (unsigned)offsetof(siaara_scp_options, spool_directory));
+    printf("F siaara_scp_options spool_threshold %u\n", (unsigned)offsetof(siaara_scp_options, spool_threshold));
+    printf("F siaara_scp_options spool_max_total_bytes %u\n", (unsigned)offsetof(siaara_scp_options, spool_max_total_bytes));
+    printf("F siaara_scp_options spool_min_free_disk_bytes %u\n", (unsigned)offsetof(siaara_scp_options, spool_min_free_disk_bytes));
     printf("S siaara_scp_event %u\n", (unsigned)sizeof(siaara_scp_event));
     printf("F siaara_scp_event struct_size %u\n", (unsigned)offsetof(siaara_scp_event, struct_size));
     printf("F siaara_scp_event kind %u\n", (unsigned)offsetof(siaara_scp_event, kind));

@@ -731,3 +731,43 @@ TEST_CASE("capi/net: R-072 C-GET into a folder honours SIAARA_DUP_KEEP") {
     srv.stop();
     siaara_file_free(idf);
 }
+
+TEST_CASE("capi/net: R-074 store quota through siaara_store_options; SCP association ceiling and spool options") {
+    const auto dir = temp_dir("r074");
+    siaara_store_options so;
+    std::memset(&so, 0, sizeof so);
+    so.struct_size = sizeof so;
+    so.create = 1;
+    so.max_total_bytes = 1;
+    siaara_store* store = nullptr;
+    const std::string root = (dir / "store").string();
+    REQUIRE(siaara_store_open(root.c_str(), root.size(), &so, &store) == SIAARA_OK);
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(write_part10(make_ct(40), bytes).is_ok());
+    CHECK(siaara_store_add_memory(store, bytes.data(), bytes.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_ERR_LIMIT_EXCEEDED);
+    // An older, smaller struct_size is still accepted (the new fields keep their defaults).
+    so.struct_size = static_cast<uint32_t>(offsetof(siaara_store_options, max_total_bytes));
+    siaara_store* old = nullptr;
+    const std::string root2 = (dir / "store2").string();
+    REQUIRE(siaara_store_open(root2.c_str(), root2.size(), &so, &old) == SIAARA_OK);
+    CHECK(siaara_store_add_memory(old, bytes.data(), bytes.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_OK);
+    siaara_store_free(old);
+
+    siaara_scp_options o;
+    std::memset(&o, 0, sizeof o);
+    o.struct_size = sizeof o;
+    o.ae_title = "CAPI_SCP";
+    o.bind_address = "127.0.0.1";
+    o.allow_any_calling_ae = 1;
+    o.max_associations = 100;
+    siaara_scp* scp = nullptr;
+    CHECK(siaara_scp_start(&o, store, nullptr, nullptr, &scp) == SIAARA_ERR_INVALID_ARGUMENT);
+    o.max_associations = 4;
+    const std::string spool = (dir / "spool").string();
+    std::filesystem::create_directories(spool);
+    o.spool_directory = spool.c_str();
+    o.spool_threshold = 4096;
+    REQUIRE(siaara_scp_start(&o, store, nullptr, nullptr, &scp) == SIAARA_OK);
+    siaara_scp_free(scp);
+    siaara_store_free(store);
+}

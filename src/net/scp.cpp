@@ -469,8 +469,12 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
         rq.move_originator_message_id = m.command.move_originator_message_id;
         rq.raw = m.data;
         rq.spool = m.spool;
-        Result<Dataset> ds = decode_message_dataset(m);
-        if (!ds) {
+        Result<Dataset> ds = m.discarded ? Result<Dataset>(Status(Errc::LimitExceeded, "discarded"))
+                                         : decode_message_dataset(m);
+        if (m.discarded) {
+            st = dimse_status::OutOfResources;  // R-074: spool disk quota or free-space floor
+            log("C-STORE: data set not kept: spool disk quota or free-space floor reached (0xA700)");
+        } else if (!ds) {
             st = dimse_status::CannotUnderstand;
         } else {
             rq.dataset = std::move(ds.value());

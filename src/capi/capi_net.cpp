@@ -875,7 +875,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
         if (cfg.allowed_calling_aes.empty() && !cfg.allow_any_calling_ae)
             return fail(Errc::InvalidArgument, "no allowed_calling_aes: list the peers, or set allow_any_calling_ae");
         if (o->max_associations) cfg.max_associations = o->max_associations;
-        if (cfg.max_associations > 256) return fail(Errc::InvalidArgument, "max_associations must be at most 256");
+        // R-074: bounded so that associations x in-memory data set (the spool threshold) stays modest.
+        if (cfg.max_associations > 64) return fail(Errc::InvalidArgument, "max_associations must be at most 64");
         cfg.require_called_ae = o->accept_any_called_ae == 0;
         cfg.accept_any_sop_class = o->accept_any_sop_class != 0;
         cfg.transfer_syntaxes = net::native_transfer_syntaxes();
@@ -894,6 +895,18 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
         }
         if (has(offsetof(siaara_scp_options, strict_store_uids) + sizeof(int32_t)))
             cfg.strict_store_uids = o->strict_store_uids != 0;
+        // R-074: always receive large data sets to disk, with the quota and free-space floor.
+        net::SpoolConfig spool;
+        spool.threshold = 16ull << 20;
+        if (has(offsetof(siaara_scp_options, spool_directory) + sizeof(void*)) && o->spool_directory)
+            spool.directory = o->spool_directory;
+        if (has(offsetof(siaara_scp_options, spool_threshold) + sizeof(uint64_t)) && o->spool_threshold)
+            spool.threshold = o->spool_threshold;
+        if (has(offsetof(siaara_scp_options, spool_max_total_bytes) + sizeof(uint64_t)))
+            spool.max_total_bytes = o->spool_max_total_bytes;
+        if (has(offsetof(siaara_scp_options, spool_min_free_disk_bytes) + sizeof(uint64_t)) && o->spool_min_free_disk_bytes)
+            spool.min_free_disk_bytes = o->spool_min_free_disk_bytes;
+        cfg.spool = spool;
         auto h = std::make_unique<siaara_scp>();
         h->store = store;
         h->policy = o->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;

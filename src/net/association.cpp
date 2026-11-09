@@ -596,6 +596,8 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
     Accumulator acc;
     RawMessage msg;
     std::unique_ptr<SpoolWriter> sink;  // data set going to disk
+    bool discarding = false;            // over the spool quota: drain the data set, keep nothing
+    std::uint64_t discarded_bytes = 0;
     bool started = false;
     while (true) {
         UlEvent evt = E::Evt18;
@@ -633,29 +635,53 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
             const std::uint64_t cap = phase == Phase::Command ? lim_.max_command_size
                                       : spool ? std::max(lim_.max_dataset_size, spool->threshold)
                                               : lim_.max_dataset_size;
-            if (phase == Phase::Data && spool && !sink && acc.total() + v.data.size() > spool->threshold) {
+            // Over the disk quota or free-space floor (R-074): the rest of the data set is read and
+            // dropped so the association stays usable and the peer gets 0xA700.
+            auto start_discarding = [&](std::uint64_t so_far) {
+                sink.reset();  // removes the partial file and its quota charge
+                acc.clear();
+                discarding = true;
+                discarded_bytes = so_far;
+            };
+            if (phase == Phase::Data && spool && !sink && !discarding && acc.total() + v.data.size() > spool->threshold) {
                 Result<std::vector<std::uint8_t>> pre = prefix ? prefix(msg.command, *pc) : std::vector<std::uint8_t>{};
                 Result<std::unique_ptr<SpoolWriter>> w =
                     pre ? SpoolWriter::open(*spool, pre.value()) : Result<std::unique_ptr<SpoolWriter>>(pre.take_error());
-                if (!w) {
+                if (!w && w.error().code == Errc::LimitExceeded) {
+                    start_discarding(acc.total());
+                } else if (!w) {
                     abort(abort_src::Provider, abort_reason::NotSpecified);
                     return Status(w.error().code, "cannot spool data set: " + w.error().message);
+                } else {
+                    sink = std::move(w.value());
+                    if (Status ws = sink->write(acc.data(), static_cast<std::size_t>(acc.total())); !ws) {
+                        if (ws.code != Errc::LimitExceeded) {
+                            abort(abort_src::Provider, abort_reason::NotSpecified);
+                            return ws;
+                        }
+                        start_discarding(acc.total());
+                    } else {
+                        acc.clear();
+                    }
                 }
-                sink = std::move(w.value());
-                if (Status ws = sink->write(acc.data(), static_cast<std::size_t>(acc.total())); !ws) {
-                    abort(abort_src::Provider, abort_reason::NotSpecified);
-                    return ws;
-                }
-                acc.clear();
             }
-            if (sink) {
+            if (discarding) {
+                discarded_bytes += v.data.size();
+                if (discarded_bytes > spool->max_size) {
+                    abort(abort_src::Provider, abort_reason::NotSpecified);
+                    return Status(Errc::LimitExceeded, "data set too large");
+                }
+            } else if (sink) {
                 if (sink->data_bytes() + v.data.size() > spool->max_size) {
                     abort(abort_src::Provider, abort_reason::NotSpecified);
                     return Status(Errc::LimitExceeded, "data set too large");
                 }
                 if (Status ws = sink->write(v.data.data(), v.data.size()); !ws) {
-                    abort(abort_src::Provider, abort_reason::NotSpecified);
-                    return ws;
+                    if (ws.code != Errc::LimitExceeded) {
+                        abort(abort_src::Provider, abort_reason::NotSpecified);
+                        return ws;
+                    }
+                    start_discarding(sink->data_bytes() + v.data.size());
                 }
             } else if (!acc.add(v.data, cap)) {
                 abort(abort_src::Provider, abort_reason::NotSpecified);
@@ -674,6 +700,9 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                 msg.has_data = *hd;
                 if (msg.has_data) phase = Phase::Data;
                 else complete = true;
+            } else if (discarding) {
+                msg.discarded = true;
+                complete = true;
             } else if (sink) {
                 Result<SpoolWriter::Finished> fin = sink->finish();
                 sink.reset();
