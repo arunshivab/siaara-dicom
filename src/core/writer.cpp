@@ -208,8 +208,11 @@ private:
 
     Status sequence(const Element& e) {
         // A sequence read as UN with undefined length goes back out the same way: VR UN in
-        // explicit VR syntaxes, items always implicit VR little endian (PS3.5 6.2.2).
-        const bool as_un = e.read.parsed && e.read.un_sequence &&
+        // explicit VR syntaxes, items always implicit VR little endian (PS3.5 6.2.2). Not in
+        // Explicit VR Big Endian: pydicom and GDCM read such a value with big-endian item tags
+        // and cannot find its end (gdcmData CT-SIEMENS-MissingPixelDataInIconSQ.dcm), so there
+        // it is written as a normal SQ in the file's own encoding (testing-chat BE finding).
+        const bool as_un = e.read.parsed && e.read.un_sequence && !enc_.big_endian &&
                            opt_.sequence_lengths == SequenceLengths::KeepAsRead;
         const bool undef = as_un || sequence_undefined(e);
         std::size_t len_at = 0;
