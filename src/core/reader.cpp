@@ -1,6 +1,8 @@
 #include "core/reader.hpp"
 
 #include <cstdint>
+#include <cstring>
+#include <string>
 #include <vector>
 
 #include "codec/deflate.hpp"
@@ -11,6 +13,18 @@
 namespace siaara {
 
 namespace {
+
+// "(gggg,eeee)" for messages.
+std::string hex_tag(Tag t) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    std::string out = "(gggg,eeee)";
+    for (int i = 0; i < 4; ++i) {
+        out[static_cast<std::size_t>(1 + i)] = kHex[(t >> (28 - 4 * i)) & 0xFu];
+        out[static_cast<std::size_t>(6 + i)] = kHex[(t >> (12 - 4 * i)) & 0xFu];
+    }
+    return out;
+}
+
 
 struct Syntax {
     bool explicit_vr = true;
@@ -102,7 +116,18 @@ public:
                     vend = size_;
                 }
                 if (e.vr == VR::SQ) {
-                    if (Status s = parse_items(e, syn, vend, false, depth); !s) return s;
+                    const std::size_t vstart = pos_;
+                    if (Status s = parse_items(e, syn, vend, false, depth); !s) {
+                        // A broken private sequence (odd group, defined length) is kept as its
+                        // raw bytes (VR UN) and parsing resumes after it.
+                        if (!opt_.lenient || (tag_group(tag) & 1u) == 0 ||
+                            (s.code != Errc::Malformed && s.code != Errc::Truncated))
+                            return s;
+                        warn("private sequence " + hex_tag(tag) + " unreadable (" + s.message + "); kept as UN bytes");
+                        e.items.clear();
+                        e.vr = VR::UN;
+                        e.value = buf_.sub(vstart, static_cast<std::size_t>(vend) - vstart);
+                    }
                     pos_ = static_cast<std::size_t>(vend);
                 } else {
                     std::size_t unit = 0;
@@ -223,13 +248,37 @@ private:
             const Tag tag = read_tag(syn);
             const std::uint32_t len = read_u32(syn);
             if (tag == tags::SequenceDelimitationItem) return Status::ok();
-            if (tag != tags::Item)
-                return Status(Errc::Malformed, "expected fragment item", start, e.tag);
+            if (tag != tags::Item) {
+                if (!opt_.lenient) return Status(Errc::Malformed, "expected fragment item", start, e.tag);
+                if (e.fragments.empty()) {
+                    // No item structure at all: the bytes up to the sequence delimiter become one
+                    // fragment, after an empty Basic Offset Table.
+                    static constexpr std::uint8_t delim[8] = {0xFE, 0xFF, 0xDD, 0xE0, 0, 0, 0, 0};
+                    std::size_t d = start;
+                    while (d + 8 <= size_ && std::memcmp(p_ + d, delim, 8) != 0) ++d;
+                    const std::size_t stop = d + 8 <= size_ ? d : size_;
+                    warn("encapsulated pixel data without items; " + std::to_string(stop - start) +
+                         " bytes read as one fragment");
+                    e.fragments.push_back(Bytes());
+                    e.fragments.push_back(buf_.sub(start, stop - start));
+                    pos_ = stop + 8 <= size_ ? stop + 8 : size_;
+                    return Status::ok();
+                }
+                warn("pixel data fragments end without a sequence delimiter; " + std::to_string(size_ - start) +
+                     " trailing bytes ignored");
+                pos_ = size_;
+                return Status::ok();
+            }
             if (e.fragments.size() >= opt_.max_fragments)
                 return Status(Errc::LimitExceeded, "too many pixel data fragments", start, e.tag);
             std::uint64_t fend = 0;
-            if (len == kUndefinedLength || !checked_add(pos_, len, fend) || fend > size_)
-                return Status(Errc::Truncated, "fragment runs past end of data", start, e.tag);
+            if (len == kUndefinedLength || !checked_add(pos_, len, fend) || fend > size_) {
+                if (!opt_.lenient) return Status(Errc::Truncated, "fragment runs past end of data", start, e.tag);
+                warn("last pixel data fragment truncated at end of data");
+                if (pos_ < size_) e.fragments.push_back(buf_.sub(pos_, size_ - pos_));
+                pos_ = size_;
+                return Status::ok();
+            }
             e.fragments.push_back(buf_.sub(pos_, len));
             pos_ = static_cast<std::size_t>(fend);
         }

@@ -60,6 +60,11 @@ struct EncodeParams {
 Status decode_rle(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out);
 Status encode_rle(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,
                   std::vector<std::uint8_t>& out);
+// Lenient RLE: a run cut off by the end of its segment yields the bytes that are there and a
+// segment that ends early leaves its remaining bytes 0; `clamped` tells whether either happened.
+// Header and segment-table errors still fail.
+Status decode_rle_lenient(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                          bool& clamped);
 
 Status decode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out);
 Status encode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,

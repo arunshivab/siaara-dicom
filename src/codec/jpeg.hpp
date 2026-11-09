@@ -47,6 +47,15 @@ struct JpegEncodeOptions {
 Status encode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,
                       const JpegEncodeOptions& opt, std::vector<std::uint8_t>& out);
 
+// Decoder controls that decode_jpeg() leaves at their defaults.
+struct JpegDecodeOptions {
+    // A Huffman code that matches no table entry is replaced by symbol 0 (17 bits consumed, as the
+    // IJG-derived decoders do) instead of failing; the count is reported. For lenient reading.
+    bool tolerate_bad_codes = false;
+};
+Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                      const JpegDecodeOptions& opt, std::uint64_t& bad_codes);
+
 // Frame header summary, read without decoding (for callers that need to inspect a codestream).
 struct JpegHeaderInfo {
     int sof_marker = 0;       // 0xC0 .. 0xCF

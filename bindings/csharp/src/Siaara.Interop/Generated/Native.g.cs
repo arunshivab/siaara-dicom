@@ -267,6 +267,17 @@ internal static class C
     public const int SIAARA_BACKEND_AUTO = 0;
     public const int SIAARA_BACKEND_CPU = 1;
     public const int SIAARA_BACKEND_GPU = 2;
+    public const int SIAARA_FRAME_WARN_PRECISION_BELOW_BITS_STORED = 1;
+    public const int SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_STORED = 2;
+    public const int SIAARA_FRAME_WARN_SIGNEDNESS_MISMATCH = 3;
+    public const int SIAARA_FRAME_WARN_EXTRA_COMPONENTS = 4;
+    public const int SIAARA_FRAME_WARN_CODESTREAM_CROPPED = 5;
+    public const int SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_ALLOCATED = 6;
+    public const int SIAARA_FRAME_WARN_CONTAINER_WIDENED = 7;
+    public const int SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM = 8;
+    public const int SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9;
+    public const int SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10;
+    public const int SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11;
 }
 
 [InlineArray(3)]
@@ -1356,6 +1367,14 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_view_last_backend(nint view, int* out_backend);
 
+    [LibraryImport(Library, EntryPoint = "siaara_frame_warning_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_warning_count(nint file, uint frame, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_warning")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_warning(nint file, uint frame, uint index, int* code, byte* buf, nuint cap, nuint* needed);
+
 }
 
 /// <summary>Safe overloads of every C function: spans instead of pointer + length, ref/in/out
@@ -2257,6 +2276,23 @@ internal static unsafe class Native
         out_backend = default;
         fixed (int* p_out_backend = &out_backend)
             return Raw.siaara_view_last_backend(view, p_out_backend);
+    }
+
+    internal static int siaara_frame_warning_count(nint file, uint frame, out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_frame_warning_count(file, frame, p_out);
+    }
+
+    internal static int siaara_frame_warning(nint file, uint frame, uint index, out int code, Span<byte> buf, out nuint needed)
+    {
+        code = default;
+        needed = default;
+        fixed (int* p_code = &code)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_frame_warning(file, frame, index, p_code, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
 }

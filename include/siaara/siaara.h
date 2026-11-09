@@ -1231,6 +1231,32 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_set_backend(siaara_view* view, 
 /* SIAARA_BACKEND_CPU or SIAARA_BACKEND_GPU: the renderer of the last siaara_view_render_rgba8. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view* view, int32_t* out_backend);
 
+/* ---------------------------------------------------------------- lenient frame decoding */
+/* Adjustments siaara_frame_decode / siaara_render_rgba8 make (lenient reading, the default) when a
+ * compressed frame's codestream header (JPEG SOF, JPEG-LS SOF55, JPEG 2000 SIZ) disagrees with the
+ * Image Pixel module. The values are stable. Messages hold codestream / attribute values only. */
+enum {
+    SIAARA_FRAME_WARN_PRECISION_BELOW_BITS_STORED = 1,    /* values used as decoded */
+    SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_STORED = 2,    /* values kept; pixel info bits_stored = precision */
+    SIAARA_FRAME_WARN_SIGNEDNESS_MISMATCH = 3,            /* JPEG 2000: low precision bits reinterpreted per
+                                                             Pixel Representation */
+    SIAARA_FRAME_WARN_EXTRA_COMPONENTS = 4,               /* first Samples per Pixel components used */
+    SIAARA_FRAME_WARN_CODESTREAM_CROPPED = 5,             /* larger than Rows x Columns: top-left part used */
+    SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_ALLOCATED = 6, /* decodes only if the values fit Bits Allocated */
+    SIAARA_FRAME_WARN_CONTAINER_WIDENED = 7,              /* decoded samples widened into Bits Allocated */
+    SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM = 8,           /* invalid Bits Allocated: depth from the codestream */
+    SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9,           /* single frame: Rows/Columns from the codestream */
+    SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10,               /* RLE run cut at its segment end; missing bytes 0 */
+    SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11           /* JPEG: invalid Huffman codes read as symbol 0 */
+};
+/* Number of adjustments made for frame `frame` (0-based). Decodes the frame to find them. The pixel
+ * info (siaara_file_pixel_info) already reports adjusted Bits Allocated / Bits Stored / size. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning_count(const siaara_file* file, uint32_t frame, uint32_t* out);
+/* Adjustment `index` (< count) of frame `frame`: *code (may be NULL) receives SIAARA_FRAME_WARN_*;
+ * the message follows the string buffer rules. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning(const siaara_file* file, uint32_t frame, uint32_t index,
+                                                          int32_t* code, char* buf, size_t cap, size_t* needed);
+
 #ifdef __cplusplus
 }
 #endif
