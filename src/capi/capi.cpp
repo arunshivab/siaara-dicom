@@ -1671,13 +1671,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, 
         const uint32_t size = out->struct_size < sizeof(siaara_suv) ? out->struct_size : static_cast<uint32_t>(sizeof(siaara_suv));
         siaara_suv full{};
         siaara_suv* const dst = out;
-        out = &full;
-        struct CopyBack {
-            siaara_suv* to; const siaara_suv* from; uint32_t n;
-            ~CopyBack() { std::memcpy(to, from, n); }
-        } copy_back{dst, &full, size};
-        out->struct_size = dst->struct_size;
-        out->warnings = r.warnings;
+        siaara_suv* const o = &full;
+        o->struct_size = dst->struct_size;
+        o->warnings = r.warnings;
         const auto src = [](const std::string& s) -> int32_t {
             if (s == "Series Date/Time") return SIAARA_SUV_SRC_SERIES;
             if (s == "Acquisition Date/Time") return SIAARA_SUV_SRC_ACQUISITION;
@@ -1688,26 +1684,27 @@ SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, 
             if (s == "Radiopharmaceutical Start Time + scan date") return SIAARA_SUV_SRC_START_TIME_SCAN_DATE;
             return SIAARA_SUV_SRC_NONE;
         };
-        out->scan_time_source = src(r.scan_time_source);
-        out->injection_time_source = src(r.injection_time_source);
-        out->decay_correction = r.decay_correction == "START"   ? SIAARA_SUV_DECAY_START
+        o->scan_time_source = src(r.scan_time_source);
+        o->injection_time_source = src(r.injection_time_source);
+        o->decay_correction = r.decay_correction == "START"   ? SIAARA_SUV_DECAY_START
                                 : r.decay_correction == "ADMIN" ? SIAARA_SUV_DECAY_ADMIN
                                 : r.decay_correction == "NONE"  ? SIAARA_SUV_DECAY_NONE
                                                                 : SIAARA_SUV_DECAY_UNKNOWN;
-        out->weight_kg = r.weight_kg.value_or(0.0);
-        out->injected_dose_bq = r.injected_dose_bq.value_or(0.0);
-        out->half_life_s = r.half_life_s.value_or(0.0);
+        o->weight_kg = r.weight_kg.value_or(0.0);
+        o->injected_dose_bq = r.injected_dose_bq.value_or(0.0);
+        o->half_life_s = r.half_life_s.value_or(0.0);
         auto put = [](const std::optional<double>& v, int32_t& has, double& d) {
             has = v ? 1 : 0;
             d = v.value_or(0.0);
         };
-        put(r.bw, out->has_bw, out->bw);
-        put(r.lbm_james, out->has_lbm_james, out->lbm_james);
-        put(r.lbm_janmahasatian, out->has_lbm_janmahasatian, out->lbm_janmahasatian);
-        put(r.bsa, out->has_bsa, out->bsa);
-        put(r.ibw, out->has_ibw, out->ibw);
-        out->decay_seconds = r.decay_seconds.value_or(0.0);
-        out->decayed_dose_bq = r.decayed_dose_bq.value_or(0.0);
+        put(r.bw, o->has_bw, o->bw);
+        put(r.lbm_james, o->has_lbm_james, o->lbm_james);
+        put(r.lbm_janmahasatian, o->has_lbm_janmahasatian, o->lbm_janmahasatian);
+        put(r.bsa, o->has_bsa, o->bsa);
+        put(r.ibw, o->has_ibw, o->ibw);
+        o->decay_seconds = r.decay_seconds.value_or(0.0);
+        o->decayed_dose_bq = r.decayed_dose_bq.value_or(0.0);
+        std::memcpy(dst, &full, size);
         return ok();
     });
 }
