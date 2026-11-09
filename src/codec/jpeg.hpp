@@ -12,8 +12,12 @@
 //   - Colour values are returned AS STORED in the codestream: no YCbCr -> RGB conversion is done
 //     here, whatever the APP0/APP14 markers say. The image layer converts according to the
 //     Photometric Interpretation (YBR_FULL, YBR_FULL_422, RGB ...).
-//   - Subsampled components are brought to full size by sample replication (each stored sample
-//     covers Hmax/Hi x Vmax/Vi output samples); no interpolation filter is applied.
+//   - Subsampled components are brought to full size by triangular ("fancy") interpolation for
+//     2:1 ratios of DCT data (4:2:2 h2v1, 4:2:0 h2v2, 4:4:0 h1v2), which matches libjpeg-turbo's
+//     default (and IJG libjpeg 6b's for h2v1 / h2v2; 6b replicates h1v2) within IDCT rounding,
+//     +-1 (tests/crosscheck/jpeg_crosscheck.py); other ratios (4:1:1 ...), lossless data, and decode_jpeg_ex with
+//     JpegDecodeOptions::replicate_chroma use sample replication (each stored sample covers
+//     Hmax/Hi x Vmax/Vi output samples).
 //   - Output is DICOM native: 8-bit samples when bits_allocated == 8, little-endian 16-bit when
 //     bits_allocated == 16; colour-by-pixel unless FrameInfo::planar.
 //   - Lossless with FrameInfo::is_signed: samples are sign-extended from min(P, bits_stored) bits.
@@ -30,6 +34,14 @@
 #include "codec/codec.hpp"
 
 namespace siaara::codec {
+
+// Decoder controls beyond FrameInfo. decode_jpeg() uses the defaults.
+struct JpegDecodeOptions {
+    bool replicate_chroma = false;  // upsample subsampled components by replication, not interpolation
+};
+
+Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, const JpegDecodeOptions& opt,
+                      std::span<std::uint8_t> out);
 
 // Extra encoder controls that EncodeParams does not carry. encode_jpeg() uses the defaults.
 struct JpegEncodeOptions {

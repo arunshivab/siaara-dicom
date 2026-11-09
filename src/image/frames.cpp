@@ -11,6 +11,7 @@
 
 #include "codec/codec.hpp"
 #include "codec/deflate.hpp"
+#include "codec/jpeg.hpp"
 
 namespace siaara::image {
 
@@ -420,9 +421,12 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
             if (st) std::memcpy(out.data(), plain.data(), out.size());
             break;
         }
-        case Codec::JpegBaseline: case Codec::JpegExtended: case Codec::JpegLossless:
-            st = codec::decode_jpeg(data, fi, out);
+        case Codec::JpegBaseline: case Codec::JpegExtended: case Codec::JpegLossless: {
+            codec::JpegDecodeOptions jo;
+            jo.replicate_chroma = opt_.jpeg_replicate_chroma;
+            st = codec::decode_jpeg_ex(data, fi, jo, out);
             break;
+        }
         case Codec::JpegLs: st = codec::decode_jpegls(data, fi, out); break;
         case Codec::Jpeg2000: case Codec::Htj2k: st = codec::decode_j2k(data, fi, out); break;
         default: return Status(Errc::Unsupported, "frames: no decoder for this transfer syntax");

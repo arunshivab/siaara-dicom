@@ -163,8 +163,9 @@ Status malformed(const char* what, std::size_t off) { return Status(Errc::Malfor
 
 class Decoder {
 public:
-    Decoder(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out)
-        : d_(in.data()), n_(in.size()), info_(info), out_(out) {}
+    Decoder(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+            const JpegDecodeOptions& opt = {})
+        : d_(in.data()), n_(in.size()), info_(info), out_(out), opt_(opt) {}
     Status run();
 
 private:
@@ -183,6 +184,7 @@ private:
     Status mcu_status() const;
     Status finish_progressive();
     Status write_output();
+    void fancy_row(const Comp& c, std::uint32_t y, int rh, int rv, std::uint16_t* row) const;
 
     template <class F> Status for_each_block(const Scan& s, F&& f);
 
@@ -230,6 +232,7 @@ private:
     std::size_t n_;
     FrameInfo info_;
     std::span<std::uint8_t> out_;
+    JpegDecodeOptions opt_;
     std::size_t pos_ = 0;
     BitReader br_;
     bool err_ = false;
@@ -811,8 +814,16 @@ Status Decoder::write_output() {
     if (lossless && info_.is_signed) sbits = std::min<int>(precision_, info_.bits_stored ? info_.bits_stored : precision_);
     const std::uint32_t sbit = sbits ? (1u << (sbits - 1)) : 0;
     std::vector<std::uint32_t> xmap(cols);
+    std::vector<std::uint16_t> up;
     for (int i = 0; i < ncomp_; ++i) {
         const Comp& c = comps_[i];
+        // F5: triangular ("fancy") upsampling for 2:1 horizontal and/or vertical ratios of DCT
+        // data (4:2:2, 4:2:0, 4:4:0); replication otherwise, for lossless data, or on request.
+        const int rh = hmax_ % c.h == 0 ? hmax_ / c.h : 0;
+        const int rv = vmax_ % c.v == 0 ? vmax_ / c.v : 0;
+        const bool fancy = !lossless && !opt_.replicate_chroma && rh >= 1 && rh <= 2 && rv >= 1 && rv <= 2 &&
+                           (rh == 2 || rv == 2);
+        if (fancy) up.resize(static_cast<std::size_t>(c.cw) * static_cast<std::size_t>(rh));
         const int pt = lossless ? c.pt : 0;
         const std::uint32_t vmask = lossless ? ((1u << (precision_ - pt)) - 1u) : 0xFFFFu;
         const bool plain = !lossless || (pt == 0 && precision_ == 16 && sbits == 0);
@@ -824,6 +835,7 @@ Status Decoder::write_output() {
             const std::uint32_t sy = static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * static_cast<std::uint32_t>(c.v) /
                                                                 static_cast<std::uint32_t>(vmax_));
             const std::uint16_t* src = c.plane.data() + static_cast<std::size_t>(sy) * c.stride;
+            if (fancy) fancy_row(c, y, rh, rv, up.data());
             std::uint8_t* dst;
             std::size_t step;
             if (info_.planar || spp == 1) {
@@ -834,7 +846,7 @@ Status Decoder::write_output() {
                 step = bps * spp;
             }
             for (std::uint32_t x = 0; x < cols; ++x, dst += step) {
-                std::uint32_t v = src[full_x ? x : xmap[x]];
+                std::uint32_t v = fancy ? up[x] : src[full_x ? x : xmap[x]];
                 if (!plain) {
                     v = (v & vmask) << pt;
                     if (sbit) v = ((v ^ sbit) - sbit) & 0xFFFFu;
@@ -845,6 +857,43 @@ Status Decoder::write_output() {
         }
     }
     return Status::ok();
+}
+
+// Triangular upsampling by 2 (each output sample weights its nearer stored sample 3/4 and the
+// farther one 1/4; separable for 2x2), with edge samples repeated at the component's true width
+// and height (cw x ch). The rounding biases alternate between output phases so that the averages
+// are not systematically biased, which is also how the IJG/libjpeg-turbo decoders round.
+// Writes the upsampled row for output row y: cw * rh samples (>= the frame's columns).
+void Decoder::fancy_row(const Comp& c, std::uint32_t y, int rh, int rv, std::uint16_t* row) const {
+    const std::uint32_t cw = c.cw;
+    const std::uint32_t j = rv == 2 ? y / 2 : y * static_cast<std::uint32_t>(c.v) / static_cast<std::uint32_t>(vmax_);
+    const std::uint16_t* s0 = c.plane.data() + static_cast<std::size_t>(j) * c.stride;
+    if (rv == 2) {
+        // Vertical neighbour: the row above for the upper output row, below for the lower one.
+        const std::uint32_t jn = (y & 1u) == 0 ? (j == 0 ? 0 : j - 1) : (j + 1 < c.ch ? j + 1 : j);
+        const std::uint16_t* s1 = c.plane.data() + static_cast<std::size_t>(jn) * c.stride;
+        auto colsum = [&](std::uint32_t i) { return 3u * s0[i] + s1[i]; };  // weights 3/4, 1/4 (x4)
+        if (rh == 1) {
+            const std::uint32_t bias = (y & 1u) == 0 ? 1u : 2u;
+            for (std::uint32_t i = 0; i < cw; ++i) row[i] = static_cast<std::uint16_t>((colsum(i) + bias) >> 2);
+            return;
+        }
+        for (std::uint32_t i = 0; i < cw; ++i) {
+            const std::uint32_t here = colsum(i);
+            const std::uint32_t left = colsum(i == 0 ? 0 : i - 1);
+            const std::uint32_t right = colsum(i + 1 < cw ? i + 1 : i);
+            row[2 * i] = static_cast<std::uint16_t>((3u * here + left + 8u) >> 4);
+            row[2 * i + 1] = static_cast<std::uint16_t>((3u * here + right + 7u) >> 4);
+        }
+        return;
+    }
+    for (std::uint32_t i = 0; i < cw; ++i) {
+        const std::uint32_t here = 3u * s0[i];
+        const std::uint32_t left = s0[i == 0 ? 0 : i - 1];
+        const std::uint32_t right = s0[i + 1 < cw ? i + 1 : i];
+        row[2 * i] = static_cast<std::uint16_t>((here + left + 1u) >> 2);
+        row[2 * i + 1] = static_cast<std::uint16_t>((here + right + 2u) >> 2);
+    }
 }
 
 // ------------------------------------------------------------------ driver
@@ -911,8 +960,13 @@ Status Decoder::run() {
 }  // namespace
 
 Status decode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
+    return decode_jpeg_ex(in, info, JpegDecodeOptions{}, out);
+}
+
+Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, const JpegDecodeOptions& opt,
+                      std::span<std::uint8_t> out) {
     // The decoder carries ~55 KB of Huffman lookup tables: keep it off the stack.
-    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
+    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out, opt));
     if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
     return dec->run();
 }

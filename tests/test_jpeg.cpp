@@ -975,3 +975,64 @@ TEST_CASE("jpeg: EncodeParams subsampling and restart interval reach the encoder
     p.chroma_subsampling = 9;
     CHECK(!encode_jpeg(rgb, fi, p, out).is_ok());
 }
+
+TEST_CASE("jpeg: F5 triangular chroma upsampling (default) and replication (option)") {
+    // Odd sizes exercise the right and bottom edges; 4:1:1 has no 2:1 ratio and stays replicated.
+    const FrameInfo f = frame(37, 45, 3, 8, 8);
+    const Buf img = make_image(f, 8, 1.0);
+    struct Mode { int h, v; bool fancy; };
+    for (const Mode m : {Mode{2, 1, true}, Mode{2, 2, true}, Mode{1, 2, true}, Mode{4, 1, false}}) {
+        JpegEncodeOptions o;
+        o.luma_h = m.h;
+        o.luma_v = m.v;
+        Buf enc;
+        REQUIRE(encode_jpeg_ex(img, f, lossy(90, true), o, enc).is_ok());
+        Buf fancy(static_cast<std::size_t>(f.frame_bytes())), rep(fancy.size());
+        REQUIRE(decode_jpeg(enc, f, fancy).is_ok());
+        JpegDecodeOptions jo;
+        jo.replicate_chroma = true;
+        REQUIRE(decode_jpeg_ex(enc, f, jo, rep).is_ok());
+        // Luma is never resampled.
+        bool luma_same = true;
+        for (std::size_t i = 0; i < fancy.size(); i += 3) luma_same &= fancy[i] == rep[i];
+        CHECK(luma_same);
+        // Recover the stored chroma planes from the replicated decode, then upsample them here
+        // with the triangular filter (weights 3/4 and 1/4, edges repeated).
+        const std::uint32_t cw = (f.columns + static_cast<std::uint32_t>(m.h) - 1) / static_cast<std::uint32_t>(m.h);
+        const std::uint32_t ch = (f.rows + static_cast<std::uint32_t>(m.v) - 1) / static_cast<std::uint32_t>(m.v);
+        int worst = 0;
+        bool differs_from_rep = false;
+        for (int comp = 1; comp < 3; ++comp) {
+            auto s = [&](std::int64_t i, std::int64_t j) -> int {
+                i = std::clamp<std::int64_t>(i, 0, cw - 1);
+                j = std::clamp<std::int64_t>(j, 0, ch - 1);
+                const std::size_t x = static_cast<std::size_t>(i) * static_cast<std::size_t>(m.h);
+                const std::size_t y = static_cast<std::size_t>(j) * static_cast<std::size_t>(m.v);
+                return rep[(y * f.columns + x) * 3 + static_cast<std::size_t>(comp)];
+            };
+            for (std::uint32_t y = 0; y < f.rows; ++y) {
+                for (std::uint32_t x = 0; x < f.columns; ++x) {
+                    int want = 0;
+                    const std::int64_t i = x / static_cast<std::uint32_t>(m.h), j = y / static_cast<std::uint32_t>(m.v);
+                    const int ph = x & 1u, pv = y & 1u;
+                    if (!m.fancy) {
+                        want = s(i, j);
+                    } else if (m.h == 2 && m.v == 1) {
+                        want = (3 * s(i, j) + s(ph ? i + 1 : i - 1, j) + (ph ? 2 : 1)) >> 2;
+                    } else if (m.h == 1 && m.v == 2) {
+                        want = (3 * s(i, j) + s(i, pv ? j + 1 : j - 1) + (pv ? 2 : 1)) >> 2;
+                    } else {
+                        const std::int64_t jn = pv ? j + 1 : j - 1;
+                        auto col = [&](std::int64_t ii) { return 3 * s(ii, j) + s(ii, jn); };
+                        want = (3 * col(i) + col(ph ? i + 1 : i - 1) + (ph ? 7 : 8)) >> 4;
+                    }
+                    const int got = fancy[(static_cast<std::size_t>(y) * f.columns + x) * 3 + static_cast<std::size_t>(comp)];
+                    worst = std::max(worst, std::abs(got - want));
+                    differs_from_rep |= got != s(i, j);
+                }
+            }
+        }
+        CHECK_EQ(worst, 0);
+        CHECK(differs_from_rep == m.fancy);
+    }
+}
