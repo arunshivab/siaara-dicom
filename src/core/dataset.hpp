@@ -24,6 +24,16 @@ struct Element {
     Tag tag = 0;
     VR vr = VR::None;
     bool undefined_length = false;   // was encoded with undefined length
+    // How the reader found the element encoded. The writer's "keep as read" options use this to
+    // reproduce unedited elements byte for byte (F1). Elements built in memory leave it zeroed;
+    // see ReadInfo for what counts as an edit.
+    struct ReadInfo {
+        bool parsed = false;              // came from a parsed stream
+        bool un_sequence = false;         // SQ stored as UN with undefined length (items implicit VR LE)
+        std::uint32_t length = 0;         // stored value length (defined-length values)
+        std::uint32_t fragment_count = 0; // encapsulated: fragments as read (including the offset table)
+        std::uint32_t group_bytes = 0;    // group length (gggg,0000): actual size of the group as read
+    } read;
     // Byte offset of this element's header in the parsed stream (the file for native syntaxes; the
     // inflated stream for the deflated syntax, see DicomFile::offsets_are_file_offsets). 0 if built in memory.
     std::uint64_t offset = 0;
@@ -74,8 +84,16 @@ public:
     std::optional<Tag> resolve_private(std::uint16_t group, std::string_view creator,
                                        std::uint8_t element_offset) const;
 
+    // When this data set is a sequence item: how its length was encoded on read
+    // (0 = built in memory, 1 = explicit length, 2 = undefined length + delimiter). Used by the
+    // writer's "keep as read" sequence length mode.
+    enum : std::uint8_t { kItemLengthNew = 0, kItemLengthExplicit = 1, kItemLengthUndefined = 2 };
+    std::uint8_t item_length_mode() const noexcept { return item_length_mode_; }
+    void set_item_length_mode(std::uint8_t m) noexcept { item_length_mode_ = m; }
+
 private:
     std::vector<Element> elements_;
+    std::uint8_t item_length_mode_ = kItemLengthNew;
 };
 
 // Result of reading a Part 10 file or a raw data set.
@@ -84,6 +102,10 @@ struct DicomFile {
     Dataset dataset;              // everything else
     std::string transfer_syntax;  // UID string, padding removed
     bool had_preamble = false;
+    Bytes preamble;               // the 128-byte preamble as read (written back unless cleared)
+    // True when `meta` was parsed from a stream: the writer then keeps it as read (it does not add
+    // missing meta elements). Clear it after building a new meta group.
+    bool meta_as_read = false;
     std::vector<std::string> warnings;  // lenient-mode findings (never contain PHI)
     // Where a header-only parse stopped (offset of the Pixel Data element), or 0.
     std::uint64_t stopped_at_offset = 0;

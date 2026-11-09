@@ -364,5 +364,10 @@ int main(void) {
     printf("F siaara_gpu_device_info int16_filtering %u\n", (unsigned)offsetof(siaara_gpu_device_info, int16_filtering));
     printf("F siaara_gpu_device_info name %u\n", (unsigned)offsetof(siaara_gpu_device_info, name));
     printf("F siaara_gpu_device_info driver %u\n", (unsigned)offsetof(siaara_gpu_device_info, driver));
+    printf("S siaara_save_options %u\n", (unsigned)sizeof(siaara_save_options));
+    printf("F siaara_save_options struct_size %u\n", (unsigned)offsetof(siaara_save_options, struct_size));
+    printf("F siaara_save_options sequence_lengths %u\n", (unsigned)offsetof(siaara_save_options, sequence_lengths));
+    printf("F siaara_save_options group_lengths %u\n", (unsigned)offsetof(siaara_save_options, group_lengths));
+    printf("F siaara_save_options odd_lengths %u\n", (unsigned)offsetof(siaara_save_options, odd_lengths));
     return 0;
 }

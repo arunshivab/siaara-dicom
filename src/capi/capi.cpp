@@ -2,6 +2,7 @@
 #include "siaara/siaara.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -82,6 +83,38 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
     r.lenient = o->strict == 0;
     if (o->max_depth) r.max_depth = o->max_depth;
     return r;
+}
+
+// siaara_save_options -> WriteOptions. Fields past struct_size keep their defaults.
+Status to_write_options(const siaara_save_options* o, siaara::WriteOptions& w) {
+    if (!o) return Status::ok();
+    if (o->struct_size < sizeof(uint32_t))
+        return Status(Errc::InvalidArgument, "options must be set up with struct_size");
+    const auto has = [&](std::size_t end) { return o->struct_size >= end; };
+    if (has(offsetof(siaara_save_options, sequence_lengths) + sizeof(int32_t))) {
+        switch (o->sequence_lengths) {
+            case SIAARA_SEQ_LENGTHS_KEEP: w.sequence_lengths = siaara::SequenceLengths::KeepAsRead; break;
+            case SIAARA_SEQ_LENGTHS_EXPLICIT: w.sequence_lengths = siaara::SequenceLengths::Explicit; break;
+            case SIAARA_SEQ_LENGTHS_UNDEFINED: w.sequence_lengths = siaara::SequenceLengths::Undefined; break;
+            default: return Status(Errc::InvalidArgument, "unknown sequence_lengths");
+        }
+    }
+    if (has(offsetof(siaara_save_options, group_lengths) + sizeof(int32_t))) {
+        switch (o->group_lengths) {
+            case SIAARA_GROUP_LENGTHS_KEEP: w.group_lengths = siaara::GroupLengths::Keep; break;
+            case SIAARA_GROUP_LENGTHS_DROP: w.group_lengths = siaara::GroupLengths::Drop; break;
+            case SIAARA_GROUP_LENGTHS_RECOMPUTE: w.group_lengths = siaara::GroupLengths::Recompute; break;
+            default: return Status(Errc::InvalidArgument, "unknown group_lengths");
+        }
+    }
+    if (has(offsetof(siaara_save_options, odd_lengths) + sizeof(int32_t))) {
+        switch (o->odd_lengths) {
+            case SIAARA_ODD_LENGTHS_KEEP: w.odd_lengths = siaara::OddLengths::Keep; break;
+            case SIAARA_ODD_LENGTHS_PAD: w.odd_lengths = siaara::OddLengths::Pad; break;
+            default: return Status(Errc::InvalidArgument, "unknown odd_lengths");
+        }
+    }
+    return Status::ok();
 }
 
 bool parse_vr(const char* vr, siaara::VR& out) {
@@ -177,7 +210,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, const char* path,
                                                       size_t path_len, const char* ts_uid) {
+    return siaara_file_save_ex(file, path, path_len, ts_uid, nullptr);
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_save_ex(const siaara_file* file, const char* path,
+                                                         size_t path_len, const char* ts_uid,
+                                                         const siaara_save_options* options) {
     return guarded([&]() -> siaara_status {
+        siaara::WriteOptions wo;
+        if (Status s = to_write_options(options, wo); !s) return fail(s);
         if (!file || !path) return fail(Errc::InvalidArgument, "file and path must not be NULL");
         if (ts_uid && !siaara::find_transfer_syntax(ts_uid))
             return fail(Errc::Unsupported, "unknown transfer syntax");
@@ -194,7 +235,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, c
             }
             copy.transfer_syntax = ts_uid;
         }
-        if (Status s = siaara::write_file(copy, std::string(path, path_len)); !s) return fail(s);
+        if (Status s = siaara::write_file(copy, std::string(path, path_len), wo); !s) return fail(s);
         return ok();
     });
 }
@@ -2260,6 +2301,30 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view*
     return guarded([&]() -> siaara_status {
         if (!view || !out_backend) return fail(Errc::InvalidArgument, "view and out_backend must not be NULL");
         *out_backend = view->view.last_backend() == vol::RenderBackend::Gpu ? SIAARA_BACKEND_GPU : SIAARA_BACKEND_CPU;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_file* file, const siaara_dataset* ds,
+                                                                uint32_t tag, uint8_t* buf, size_t cap,
+                                                                size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !ds || !needed || (!buf && cap)) return fail(Errc::InvalidArgument, "file, ds and needed must not be NULL");
+        const siaara::Dataset* d = ds_cast(ds);
+        const auto* e = d->find(tag);
+        if (!e) return fail(Errc::NotFound, "element not present");
+        // The file meta group is always explicit VR little endian (PS3.10 7.1).
+        const bool meta = d == &file->file.meta;
+        const std::uint16_t bits = static_cast<std::uint16_t>(d->get_int(siaara::tags::BitsAllocated).value_or(0));
+        std::vector<std::uint8_t> v;
+        if (Status s = siaara::stored_value_bytes(*e, meta ? std::string_view(siaara::ts::ExplicitVRLittleEndian)
+                                                           : std::string_view(file->file.transfer_syntax),
+                                                  bits, v);
+            !s)
+            return fail(s);
+        *needed = v.size();
+        if (cap < v.size()) return fail(Errc::BufferTooSmall, "buffer too small");
+        if (!v.empty()) std::memcpy(buf, v.data(), v.size());
         return ok();
     });
 }

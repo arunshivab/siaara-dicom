@@ -267,6 +267,14 @@ internal static class C
     public const int SIAARA_BACKEND_AUTO = 0;
     public const int SIAARA_BACKEND_CPU = 1;
     public const int SIAARA_BACKEND_GPU = 2;
+    public const int SIAARA_SEQ_LENGTHS_KEEP = 0;
+    public const int SIAARA_SEQ_LENGTHS_EXPLICIT = 1;
+    public const int SIAARA_SEQ_LENGTHS_UNDEFINED = 2;
+    public const int SIAARA_GROUP_LENGTHS_KEEP = 0;
+    public const int SIAARA_GROUP_LENGTHS_DROP = 1;
+    public const int SIAARA_GROUP_LENGTHS_RECOMPUTE = 2;
+    public const int SIAARA_ODD_LENGTHS_KEEP = 0;
+    public const int SIAARA_ODD_LENGTHS_PAD = 1;
 }
 
 [InlineArray(3)]
@@ -865,6 +873,16 @@ internal struct siaara_gpu_device_info
     public FixedArray128OfByte driver;
 }
 
+/// <summary>siaara_save_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_save_options
+{
+    public uint struct_size;
+    public int sequence_lengths;
+    public int group_lengths;
+    public int odd_lengths;
+}
+
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
 internal static unsafe partial class Raw
 {
@@ -1355,6 +1373,14 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_view_last_backend")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_view_last_backend(nint view, int* out_backend);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_save_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_save_ex(nint file, byte* utf8_path, nuint path_len, byte* transfer_syntax_uid, siaara_save_options* options);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_get_raw_stored")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_get_raw_stored(nint file, nint ds, uint tag, byte* buf, nuint cap, nuint* needed);
 
 }
 
@@ -2257,6 +2283,23 @@ internal static unsafe class Native
         out_backend = default;
         fixed (int* p_out_backend = &out_backend)
             return Raw.siaara_view_last_backend(view, p_out_backend);
+    }
+
+    internal static int siaara_file_save_ex(nint file, ReadOnlySpan<byte> utf8_path, ReadOnlySpan<byte> transfer_syntax_uid, in siaara_save_options options)
+    {
+        if (!transfer_syntax_uid.IsEmpty && transfer_syntax_uid.IndexOf((byte)0) < 0) throw new ArgumentException("transfer_syntax_uid must be NUL-terminated", nameof(transfer_syntax_uid));
+        fixed (byte* p_utf8_path = utf8_path)
+        fixed (byte* p_transfer_syntax_uid = transfer_syntax_uid)
+        fixed (siaara_save_options* p_options = &options)
+            return Raw.siaara_file_save_ex(file, (byte*)p_utf8_path, (nuint)utf8_path.Length, (byte*)p_transfer_syntax_uid, p_options);
+    }
+
+    internal static int siaara_file_get_raw_stored(nint file, nint ds, uint tag, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_file_get_raw_stored(file, ds, tag, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
 }

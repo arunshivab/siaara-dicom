@@ -120,7 +120,7 @@ TEST_CASE("round trip: explicit VR big endian") {
 TEST_CASE("round trip: undefined-length sequences") {
     DicomFile f = make_sample();
     WriteOptions wo;
-    wo.sequences_undefined_length = true;
+    wo.sequence_lengths = SequenceLengths::Undefined;
     std::vector<std::uint8_t> buf;
     REQUIRE(write_part10(f, buf, wo).is_ok());
     auto g = read_part10(Bytes::copy_of(buf.data(), buf.size()));
@@ -166,7 +166,7 @@ TEST_CASE("malformed input never crashes: every truncation of a valid file") {
     DicomFile f = make_sample();
     f.transfer_syntax = std::string(ts::ExplicitVRLittleEndian);
     WriteOptions wo;
-    wo.sequences_undefined_length = true;
+    wo.sequence_lengths = SequenceLengths::Undefined;
     std::vector<std::uint8_t> buf;
     REQUIRE(write_part10(f, buf, wo).is_ok());
     for (std::size_t n = 0; n < buf.size(); ++n) {
