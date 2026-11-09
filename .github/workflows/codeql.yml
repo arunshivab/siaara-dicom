@@ -32,9 +32,13 @@ jobs:
           build-mode: manual
           queries: security-extended
       - name: Build
+        # The library and the tools only: the tests are not shipped code. A bounded -j: a bare
+        # --parallel lets make start every compile at once, and ~90 traced compiles ran the
+        # runner out of memory (it was shut down mid-build).
+        timeout-minutes: 75
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIAARA_BUILD_TESTS=OFF -DSIAARA_BUILD_TOOLS=ON
+          cmake --build build --parallel 2
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
         with:
           category: /language:c-cpp
