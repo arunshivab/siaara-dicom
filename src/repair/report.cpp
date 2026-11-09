@@ -64,9 +64,10 @@ bool parse_categories(std::string_view list, std::uint32_t& out) {
 
 std::string tag_string(Tag t) {
     std::string s = "(gggg,eeee)";
-    for (int i = 0; i < 4; ++i) {
-        s[static_cast<std::size_t>(1 + i)] = hex_digit(static_cast<unsigned>(tag_group(t)) >> static_cast<unsigned>(12 - 4 * i));
-        s[static_cast<std::size_t>(6 + i)] = hex_digit(static_cast<unsigned>(tag_element(t)) >> static_cast<unsigned>(12 - 4 * i));
+    for (std::size_t i = 0; i < 4; ++i) {
+        const unsigned shift = 12u - 4u * static_cast<unsigned>(i);
+        s[1 + i] = hex_digit(static_cast<unsigned>(tag_group(t)) >> shift);
+        s[6 + i] = hex_digit(static_cast<unsigned>(tag_element(t)) >> shift);
     }
     return s;
 }

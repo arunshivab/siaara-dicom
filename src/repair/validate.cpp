@@ -299,7 +299,8 @@ struct IodChecker {
         if (vr_is_string(e.vr)) {
             std::string_view s = trim_value(e.value.as_chars(), e.vr);
             if (s.empty()) return out;
-            for (std::size_t i = 0, n = split_count(s); i < n; ++i) out.emplace_back(trim_value(*split_value(s, i), e.vr));
+            for (std::size_t i = 0, n = split_count(s); i < n; ++i)
+                if (const auto piece = split_value(s, i)) out.emplace_back(trim_value(*piece, e.vr));
             return out;
         }
         const std::size_t w = vr_value_size(e.vr);

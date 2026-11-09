@@ -465,7 +465,9 @@ public:
             if (e.vr != VR::UI || is_class_uid_tag(e.tag)) continue;
             std::string_view v = trim_value(e.value.as_chars(), VR::UI);
             for (std::size_t i = 0, n = v.empty() ? 0 : split_count(v); i < n; ++i) {
-                std::string part(trim_value(*split_value(v, i), VR::UI));
+                const auto piece = split_value(v, i);
+                if (!piece) break;
+                std::string part(trim_value(*piece, VR::UI));
                 if (!part.empty() && !uid_is_valid(part) && !uid_map_.count(part)) uid_map_[part] = new_uid("uid|" + part);
             }
         }

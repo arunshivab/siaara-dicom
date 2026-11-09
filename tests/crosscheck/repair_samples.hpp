@@ -4,6 +4,7 @@
 // nothing is taken from other projects.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -413,7 +414,8 @@ inline std::vector<Sample> all_samples() {
     {  // native multi-frame truncated inside frame 3 of 4
         Dataset ds = base_sc("1.2.826.0.1.3680043.10.1408.1.6", 8, 8, 8, 4);
         Buf f = part10(ds);
-        f.resize(f.size() - 64 - 20);
+        const std::size_t cut = 64 + 20;
+        if (f.size() > cut) f.erase(f.end() - static_cast<std::ptrdiff_t>(cut), f.end());
         s.push_back({"rescue_native_truncated", f, {"value-truncated"}, "rescue", {"pixel-truncated", "pixel-length"}});
     }
     {  // RLE, 4 frames: frame 1 corrupt, file cut inside frame 3
@@ -422,7 +424,8 @@ inline std::vector<Sample> all_samples() {
         frames[1][0] = 99;  // 99 segments: not a valid RLE header
         Dataset enc = encapsulate(ds, frames, false);
         Buf f = part10(enc, "1.2.840.10008.1.2.5");
-        f.resize(f.size() - 8 - frames[3].size() / 2);
+        const std::size_t cut = 8 + frames[3].size() / 2;
+        if (f.size() > cut) f.erase(f.end() - static_cast<std::ptrdiff_t>(cut), f.end());
         s.push_back({"rescue_rle_damaged", f, {"fragment-truncated"}, "rescue", {"frames-missing"}});
     }
     return s;

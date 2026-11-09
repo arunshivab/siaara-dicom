@@ -144,7 +144,7 @@ std::size_t utf8_chars(std::string_view s) {
 VrLimit vr_limit(VR vr) noexcept {
     switch (vr) {
         case VR::AE: return {16, false, false};
-        case VR::AS: return {4, true, false};
+        case VR::AS:
         case VR::AT: return {4, true, false};
         case VR::CS: return {16, false, false};
         case VR::DA: return {8, false, false};

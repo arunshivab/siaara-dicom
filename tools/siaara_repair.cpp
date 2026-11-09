@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -64,7 +65,18 @@ void expand(const std::string& in, std::vector<std::string>& out) {
 
 }  // namespace
 
+int run(int argc, char** argv);
+
 int main(int argc, char** argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception&) {
+        std::fprintf(stderr, "siaara-repair: internal error (out of memory?)\n");
+        return 2;
+    }
+}
+
+int run(int argc, char** argv) {
     if (argc < 3) {
         usage();
         return 2;
