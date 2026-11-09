@@ -3,3 +3,13 @@ add_executable(siaara_tests ${SIAARA_TEST_SOURCES})
 target_link_libraries(siaara_tests PRIVATE siaara_static)
 target_compile_options(siaara_tests PRIVATE ${SIAARA_WARN})
 add_test(NAME siaara_tests COMMAND siaara_tests --data ${CMAKE_CURRENT_SOURCE_DIR}/data)
+
+# C API smoke test: plain C11 against the shared library.
+add_executable(siaara_capi_smoke capi_smoke.c)
+set_target_properties(siaara_capi_smoke PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_link_libraries(siaara_capi_smoke PRIVATE siaara)
+target_compile_options(siaara_capi_smoke PRIVATE ${SIAARA_WARN_C})
+add_test(NAME siaara_capi_smoke COMMAND siaara_capi_smoke ${CMAKE_CURRENT_BINARY_DIR}/capi_smoke.dcm)
+if(WIN32)
+  set_tests_properties(siaara_capi_smoke PROPERTIES ENVIRONMENT "PATH=$<TARGET_FILE_DIR:siaara>;$ENV{PATH}")
+endif()
