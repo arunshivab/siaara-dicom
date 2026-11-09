@@ -29,11 +29,17 @@ struct SpoolConfig {
     std::uint64_t max_size = 64ull << 30;     // largest data set accepted on disk (bytes)
 };
 
-// A received data set on disk (a complete Part 10 file).
+// A received data set on disk (a complete Part 10 file), memory-mapped read-only.
+// The file owns its mapping: every Bytes view of the data set keeps the SpoolFile alive, so the
+// mapping is released, and an uncommitted file deleted, exactly when the last reference goes.
+// On Windows the file is mapped through a handle opened with FILE_SHARE_DELETE, so commit() can
+// rename it while it is mapped; deletion waits until the view and the handles are closed (a mapped
+// file cannot be deleted on Windows). Other code that keeps the file open without
+// FILE_SHARE_DELETE (e.g. core io::map_file) blocks the rename and the deletion while it does so.
 class SpoolFile {
 public:
-    explicit SpoolFile(std::string path, std::uint64_t data_offset)
-        : path_(std::move(path)), data_offset_(data_offset) {}
+    // Opens and maps `path`; the data set starts at `data_offset`. On failure the file is removed.
+    static Result<std::shared_ptr<SpoolFile>> open(const std::string& path, std::uint64_t data_offset);
     ~SpoolFile();
     SpoolFile(const SpoolFile&) = delete;
     SpoolFile& operator=(const SpoolFile&) = delete;
@@ -42,18 +48,28 @@ public:
     std::string path() const;
     // Byte offset of the data set in the file (after preamble and file meta).
     std::uint64_t data_offset() const noexcept { return data_offset_; }
-    // Moves the file to `target` atomically, replacing an existing file. On POSIX systems the rename
-    // happens now. On Windows a mapped file cannot be renamed, so the rename is done when the last
-    // view of the data set is released; errors are then only visible through committed()/path().
+    // The whole mapped file.
+    const std::uint8_t* data() const noexcept { return base_; }
+    std::uint64_t size() const noexcept { return size_; }
+    // Moves the file to `target` now, replacing an existing file (an atomic rename when both are on
+    // the same volume; otherwise a copy to a temporary name next to `target` renamed into place).
+    // Synchronous on every platform; the mapping and all views stay valid. Returns IoError and
+    // leaves the spool file uncommitted on failure.
     Status commit(const std::string& target);
     bool committed() const;
 
 private:
+    SpoolFile() = default;
+    struct Native;
     mutable std::mutex mu_;
     std::string path_;
-    std::string pending_target_;
     std::uint64_t data_offset_ = 0;
     bool committed_ = false;
+    bool delete_original_ = false;  // a cross-volume commit copied the file; remove the original
+    std::string original_;          // the spool name, when delete_original_
+    const std::uint8_t* base_ = nullptr;
+    std::uint64_t size_ = 0;
+    std::unique_ptr<Native> native_;
 };
 
 // Writes one data set to a spool file. Used by Association::receive.

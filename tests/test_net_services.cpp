@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "codec/transcode.hpp"
+#include "core/io.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -125,7 +127,8 @@ struct StoreSink {
         std::lock_guard<std::mutex> l(mu);
         if (rq.spool) {
             spool_paths.push_back(rq.spool->path());
-            if (!commit_to.empty()) (void)rq.spool->commit(commit_to + "/" + rq.sop_instance_uid + ".dcm");
+            if (!commit_to.empty())
+                (void)rq.spool->commit((std::filesystem::path(commit_to) / (rq.sop_instance_uid + ".dcm")).string());
         }
         got.push_back(rq);
         return dimse_status::Success;
@@ -304,13 +307,17 @@ TEST_CASE("net/services: uncommitted spool files are removed; spooled + preferre
         REQUIRE(rec.got[0].spool != nullptr);
         CHECK_EQ(rec.got[0].transfer_syntax, std::string(kJls));
         path = rec.got[0].spool->path();
-        Result<DicomFile> rf = read_file(path);
-        REQUIRE(rf.is_ok());
-        CHECK_EQ(rf->transfer_syntax, std::string(kJls));
-        CHECK(decoded(rf->dataset, kJls) == decoded(big.dataset, kExplicit));
-        rec.got.clear();  // drop the last reference
+        {
+            // read_file maps the file without FILE_SHARE_DELETE: on Windows nothing can delete it
+            // while this mapping exists, so it is closed before the last spool reference goes.
+            Result<DicomFile> rf = read_file(path);
+            REQUIRE(rf.is_ok());
+            CHECK_EQ(rf->transfer_syntax, std::string(kJls));
+            CHECK(decoded(rf->dataset, kJls) == decoded(big.dataset, kExplicit));
+        }
+        rec.got.clear();  // drop the last reference: the file is deleted now, not later
     }
-    CHECK(wait_for([&] { return !std::filesystem::exists(path); }));
+    CHECK(!std::filesystem::exists(path));
     CHECK(wait_for([&] { return std::filesystem::is_empty(spool); }));
 }
 
@@ -1029,4 +1036,69 @@ TEST_CASE("net/services: asynchronous C-STORE window") {
     }
     std::lock_guard<std::mutex> l(rec.mu);
     CHECK_EQ(rec.got.size(), 80u);
+}
+
+TEST_CASE("net/services: spool file commit is synchronous and deletion happens with the last reference") {
+    const std::filesystem::path dir = temp_dir("spoolfile");
+    SpoolConfig sc;
+    sc.directory = dir.string();
+    const std::vector<std::uint8_t> prefix = {'H', 'D', 'R', '!'};
+    std::vector<std::uint8_t> body(10000);
+    for (std::size_t i = 0; i < body.size(); ++i) body[i] = static_cast<std::uint8_t>(i * 7);
+    auto make = [&]() -> SpoolWriter::Finished {
+        Result<std::unique_ptr<SpoolWriter>> w = SpoolWriter::open(sc, prefix);
+        if (!w || !(*w)->write(body.data(), body.size())) return {};
+        Result<SpoolWriter::Finished> f = (*w)->finish();
+        return f ? std::move(f.value()) : SpoolWriter::Finished{};
+    };
+    // Uncommitted: the file lives exactly as long as the last view of its data.
+    {
+        SpoolWriter::Finished f = make();
+        REQUIRE(f.file != nullptr);
+        const std::string p = f.file->path();
+        CHECK(std::filesystem::exists(p));
+        CHECK_EQ(f.file->data_offset(), 4u);
+        Bytes view = f.data;
+        f = SpoolWriter::Finished{};  // the SpoolFile pointer and the first view are gone
+        CHECK(std::filesystem::exists(p));
+        CHECK(view.size() == body.size() && std::equal(body.begin(), body.end(), view.data()));
+        view = Bytes{};
+        CHECK(!std::filesystem::exists(p));
+    }
+    // Committed while mapped: the rename is done when commit() returns, the views stay valid, an
+    // existing target is replaced, and the file stays after the last reference.
+    const std::string target = (dir / "final.dcm").string();
+    {
+        std::ofstream(std::filesystem::path(target)) << "old";
+        SpoolWriter::Finished f = make();
+        REQUIRE(f.file != nullptr);
+        const std::string tmp = f.file->path();
+        REQUIRE(f.file->commit(target).is_ok());
+        CHECK(f.file->committed());
+        CHECK_EQ(f.file->path(), target);
+        CHECK(!std::filesystem::exists(tmp));
+        CHECK_EQ(std::filesystem::file_size(target), 4u + body.size());
+        CHECK(std::equal(body.begin(), body.end(), f.data.data()));
+        // The committed file can be opened by ordinary readers while still mapped here.
+        Result<Bytes> other = io::read_file(target);
+        REQUIRE(other.is_ok());
+        CHECK_EQ(other->size(), 4u + body.size());
+        CHECK(!f.file->commit(target).is_ok());  // only once
+    }
+    CHECK(std::filesystem::exists(target));
+    CHECK_EQ(std::filesystem::file_size(target), 4u + body.size());
+    // A failing commit leaves the file uncommitted, and it is still removed afterwards.
+    {
+        SpoolWriter::Finished f = make();
+        REQUIRE(f.file != nullptr);
+        const std::string p = f.file->path();
+        CHECK(!f.file->commit((dir / "no_such_dir" / "x.dcm").string()).is_ok());
+        CHECK(!f.file->committed());
+        CHECK_EQ(f.file->path(), p);
+        f = SpoolWriter::Finished{};
+        CHECK(!std::filesystem::exists(p));
+    }
+    std::error_code ec;
+    std::filesystem::remove(target, ec);
+    CHECK(std::filesystem::is_empty(dir));
 }

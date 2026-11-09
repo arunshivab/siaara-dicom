@@ -2,6 +2,7 @@
 #include "net/spool.hpp"
 
 #include <atomic>
+#include <memory>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -11,8 +12,24 @@
 #include <vector>
 
 #include "core/dataset.hpp"
-#include "core/io.hpp"
 #include "core/writer.hpp"
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <cstdio>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace siaara::net {
 
@@ -46,24 +63,133 @@ std::string unique_name() {
     return s;
 }
 
-Status rename_over(const std::string& from, const std::string& to) {
+#if defined(_WIN32)
+std::wstring widen(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring w(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+#endif
+
+// Copies `from` to a temporary name next to `to`, then renames it over `to` (used when a plain
+// rename is impossible, e.g. across volumes).
+bool copy_into_place(const std::string& from, const std::string& to) {
     std::error_code ec;
-    std::filesystem::rename(fs_path(from), fs_path(to), ec);
-    if (ec) return Status(Errc::IoError, "cannot move spool file into place");
-    return Status::ok();
+    const std::filesystem::path target = fs_path(to);
+    std::filesystem::path tmp = target;
+    tmp += ".siaara-tmp";
+    std::filesystem::copy_file(fs_path(from), tmp, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) return false;
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::error_code ec2;
+        std::filesystem::remove(tmp, ec2);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
 
 // ------------------------------------------------------------------ SpoolFile
 
-SpoolFile::~SpoolFile() {
-    std::error_code ec;
-    if (!pending_target_.empty()) {
-        std::filesystem::rename(fs_path(path_), fs_path(pending_target_), ec);
-        if (!ec) return;
+#if defined(_WIN32)
+struct SpoolFile::Native {
+    HANDLE file = INVALID_HANDLE_VALUE;  // GENERIC_READ, shared for read and delete
+    HANDLE map = nullptr;
+    const void* view = nullptr;
+};
+#else
+struct SpoolFile::Native {
+    void* addr = nullptr;
+    std::size_t len = 0;
+};
+#endif
+
+Result<std::shared_ptr<SpoolFile>> SpoolFile::open(const std::string& path, std::uint64_t data_offset) {
+    std::shared_ptr<SpoolFile> f(new SpoolFile());
+    f->path_ = path;
+    f->data_offset_ = data_offset;
+    f->native_ = std::make_unique<Native>();
+    // From here on the destructor removes the file if anything below fails.
+#if defined(_WIN32)
+    const std::wstring w = widen(path);
+    if (w.empty()) return Status(Errc::InvalidArgument, "spool path is not valid UTF-8");
+    Native& n = *f->native_;
+    // FILE_SHARE_DELETE lets commit() rename the file while it is mapped. The handle itself asks only
+    // for GENERIC_READ, so other readers can still open the file with the usual FILE_SHARE_READ.
+    n.file = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (n.file == INVALID_HANDLE_VALUE) {
+        std::error_code ec;
+        std::filesystem::remove(fs_path(path), ec);
+        return Status(Errc::IoError, "cannot open spool file");
     }
-    if (!committed_) std::filesystem::remove(fs_path(path_), ec);
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(n.file, &size) || size.QuadPart <= 0) return Status(Errc::IoError, "cannot get spool file size");
+    if (static_cast<std::uint64_t>(size.QuadPart) > SIZE_MAX) return Status(Errc::LimitExceeded, "spool file too large to map");
+    n.map = CreateFileMappingW(n.file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!n.map) return Status(Errc::IoError, "cannot map spool file");
+    n.view = MapViewOfFile(n.map, FILE_MAP_READ, 0, 0, 0);
+    if (!n.view) return Status(Errc::IoError, "cannot map spool file");
+    f->base_ = static_cast<const std::uint8_t*>(n.view);
+    f->size_ = static_cast<std::uint64_t>(size.QuadPart);
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return Status(Errc::IoError, "cannot open spool file");
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
+        ::close(fd);
+        return Status(Errc::IoError, "cannot get spool file size");
+    }
+    if (static_cast<std::uint64_t>(st.st_size) > SIZE_MAX) {
+        ::close(fd);
+        return Status(Errc::LimitExceeded, "spool file too large to map");
+    }
+    const auto len = static_cast<std::size_t>(st.st_size);
+    void* addr = ::mmap(nullptr, len, PROT_READ, MAP_SHARED, fd, 0);
+    ::close(fd);  // the mapping keeps the file
+    if (addr == MAP_FAILED) return Status(Errc::IoError, "cannot map spool file");
+    f->native_->addr = addr;
+    f->native_->len = len;
+    f->base_ = static_cast<const std::uint8_t*>(addr);
+    f->size_ = len;
+#endif
+    return f;
+}
+
+SpoolFile::~SpoolFile() {
+    if (!native_) return;
+    const bool remove_file = !committed_ || delete_original_;
+    const std::string& doomed = delete_original_ ? original_ : path_;
+#if defined(_WIN32)
+    Native& n = *native_;
+    // The view and the section go first: a file with a mapped view cannot be deleted.
+    if (n.view) UnmapViewOfFile(n.view);
+    if (n.map) CloseHandle(n.map);
+    const bool opened = n.file != INVALID_HANDLE_VALUE;
+    if (opened) CloseHandle(n.file);
+    if (opened && remove_file) {
+        // Deleted only now that no view or handle of ours is left. A handle opened by someone else
+        // without FILE_SHARE_DELETE (a virus scanner looking at the new file, typically) makes
+        // DeleteFileW fail with a sharing violation; such holders are short-lived, so retry briefly.
+        const std::wstring w = widen(doomed);
+        for (int i = 0; i < 50; ++i) {
+            if (DeleteFileW(w.c_str())) break;
+            const DWORD e = GetLastError();
+            if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) break;
+            if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION) break;
+            Sleep(20);
+        }
+    }
+#else
+    if (native_->addr) ::munmap(native_->addr, native_->len);
+    if (remove_file) ::unlink(doomed.c_str());
+#endif
 }
 
 std::string SpoolFile::path() const {
@@ -73,23 +199,41 @@ std::string SpoolFile::path() const {
 
 bool SpoolFile::committed() const {
     std::lock_guard<std::mutex> l(mu_);
-    return committed_ || !pending_target_.empty();
+    return committed_;
 }
 
 Status SpoolFile::commit(const std::string& target) {
     std::lock_guard<std::mutex> l(mu_);
-    if (committed_ || !pending_target_.empty()) return Status(Errc::InvalidArgument, "spool file already committed");
+    if (committed_) return Status(Errc::InvalidArgument, "spool file already committed");
     if (target.empty()) return Status(Errc::InvalidArgument, "empty target path");
 #if defined(_WIN32)
-    // The data set is still mapped by the receiver; rename once the mapping is released.
-    pending_target_ = target;
-    return Status::ok();
+    const std::wstring w = widen(target);
+    if (w.empty()) return Status(Errc::InvalidArgument, "target path is not valid UTF-8");
+    // Our handles share FILE_SHARE_DELETE, so the mapped file can be renamed now. A rename only
+    // changes the name: the mapping and every view of the data set stay valid.
+    bool ok = MoveFileExW(widen(path_).c_str(), w.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) {
+        if (!copy_into_place(path_, target)) return Status(Errc::IoError, "cannot move spool file into place");
+        delete_original_ = true;  // the copy is in place; the original goes with the mapping
+        original_ = path_;
+        path_ = target;
+        committed_ = true;
+        return Status::ok();
+    }
 #else
-    if (Status s = rename_over(path_, target); !s) return s;
+    if (::rename(path_.c_str(), target.c_str()) != 0) {
+        if (errno != EXDEV || !copy_into_place(path_, target))
+            return Status(Errc::IoError, "cannot move spool file into place");
+        delete_original_ = true;
+        original_ = path_;
+        path_ = target;
+        committed_ = true;
+        return Status::ok();
+    }
+#endif
     path_ = target;
     committed_ = true;
     return Status::ok();
-#endif
 }
 
 // ------------------------------------------------------------------ SpoolWriter
@@ -142,25 +286,21 @@ Result<SpoolWriter::Finished> SpoolWriter::finish() {
     const bool good = static_cast<bool>(impl_->out);
     impl_->out.close();
     impl_.reset();
+    if (!good) {
+        std::error_code ec;
+        std::filesystem::remove(fs_path(path_), ec);
+        return Status(Errc::IoError, "cannot write spool file");
+    }
     // From here on the SpoolFile owns (and eventually deletes) the file.
-    auto file = std::make_shared<SpoolFile>(path_, prefix_size_);
-    if (!good) return Status(Errc::IoError, "cannot write spool file");
-    if (prefix_size_ + written_ > SIZE_MAX) return Status(Errc::LimitExceeded, "spool file too large to map");
-    Result<Bytes> m = io::map_file(path_, true);
-    if (!m) return m.take_error();
-    if (m->size() != prefix_size_ + written_) return Status(Errc::IoError, "spool file size mismatch");
-    // The view keeps the SpoolFile alive, and the mapping is released before the file is renamed
-    // or removed (members are destroyed in reverse order).
-    struct Holder {
-        std::shared_ptr<SpoolFile> file;
-        Bytes map;
-    };
-    auto h = std::make_shared<Holder>(Holder{file, m.value()});
-    const std::uint8_t* base = h->map.data();
+    Result<std::shared_ptr<SpoolFile>> file = SpoolFile::open(path_, prefix_size_);
+    if (!file) return file.take_error();
+    std::shared_ptr<SpoolFile> sf = std::move(file.value());
+    if (sf->size() != prefix_size_ + written_) return Status(Errc::IoError, "spool file size mismatch");
+    // Every view keeps the SpoolFile (and so the mapping) alive.
     Finished f;
-    f.data = Bytes(std::shared_ptr<const void>(h, base), base ? base + prefix_size_ : nullptr,
+    f.data = Bytes(std::shared_ptr<const void>(sf, sf->data()), sf->data() + prefix_size_,
                    static_cast<std::size_t>(written_));
-    f.file = std::move(file);
+    f.file = std::move(sf);
     return f;
 }
 
