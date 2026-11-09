@@ -1,5 +1,6 @@
 #include "core/reader.hpp"
 
+#include <cstdint>
 #include <vector>
 
 #include "codec/deflate.hpp"
@@ -289,7 +290,10 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
     if (info && info->codec == Codec::Deflate) {
         auto store = std::make_shared<std::vector<std::uint8_t>>();
         if (Status s = codec::inflate_raw(data.data() + start, data.size() - start,
-                                          static_cast<std::size_t>(opt.max_inflated_size), *store);
+                                          opt.max_inflated_size > SIZE_MAX
+                                              ? SIZE_MAX
+                                              : static_cast<std::size_t>(opt.max_inflated_size),
+                                          *store);
             !s)
             return s;
         const std::uint8_t* q = store->data();

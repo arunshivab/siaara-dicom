@@ -157,11 +157,8 @@ TEST_CASE("net/loopback: C-STORE several files and transfer syntaxes") {
     REQUIRE(scp.start().is_ok());
 
     const std::filesystem::path dir = temp_dir("store");
-    std::vector<std::string_view> tss = {ts::ExplicitVRLittleEndian, ts::ImplicitVRLittleEndian,
-                                         ts::ExplicitVRBigEndian};
-    // Deflated input is skipped on 32-bit targets: ReadOptions::max_inflated_size (4 GiB) is cast to
-    // a 32-bit size_t in core/reader.cpp and becomes 0 there (core bug, reported separately).
-    if (sizeof(std::size_t) >= 8) tss.push_back(ts::DeflatedExplicitVRLittleEndian);
+    const std::vector<std::string_view> tss = {ts::ExplicitVRLittleEndian, ts::ImplicitVRLittleEndian,
+                                               ts::ExplicitVRBigEndian, ts::DeflatedExplicitVRLittleEndian};
     const std::size_t nfiles = tss.size();
     std::vector<std::string> paths;
     for (int i = 0; i < static_cast<int>(nfiles); ++i) {
