@@ -653,6 +653,8 @@ struct TileComp {
     std::vector<float> fbuf;
 };
 
+constexpr int kMaxPasses = 3 * 64;
+
 int log2_gain(Orient o) { return o == kLL ? 0 : (o == kHH ? 2 : 1); }
 
 bool is_term(const CodeBlock& cb, std::uint8_t style, int i) {
@@ -848,6 +850,10 @@ struct PacketStreams {
     bool separate = false;
     bool sop = false, eph = false;
     bool done = false;  // data exhausted or corrupt: stop reading packets
+    // Interpretation of non-conformant streams (see decode_tile).
+    bool lblock_reset = false;  // Lblock restarts at 3 for every contribution
+    bool permissive = false;    // accept more passes than the block has bit-planes for
+    bool violation = false;     // a code-block was given more passes than it can have
 };
 
 struct Pending {
@@ -910,6 +916,7 @@ bool read_packet(PacketStreams& ps, TileComp& tc, Resolution& rs, std::size_t k,
                             }
                         }
                     }
+                    if (ps.lblock_reset) cb.lblock = 3;
                     while (hb.bit()) {
                         if (++cb.lblock > 32 || hb.overrun()) return false;
                     }
@@ -918,8 +925,14 @@ bool read_packet(PacketStreams& ps, TileComp& tc, Resolution& rs, std::size_t k,
                         if (cb.ht && (style & kCbHTMixed)) cb.ht = cb.lblock > 3;  // T.814 A.4
                         if (cb.ht) cb.p0 = (n - 1) / 3;
                     }
-                    const int maxp = cb.ht ? 3 * cb.p0 + 3 * (bd.planes - cb.zbp) + 3 : 3 * (bd.planes - cb.zbp) - 2;
-                    if (cb.passes + n > maxp) return false;
+                    // Pass budget: 3 (Mb - P) - 2 for a Part 1 block (D.3); one HT set per
+                    // bit-plane after the placeholder passes for an HT block (T.814 B).
+                    const int budget = cb.ht ? 3 * cb.p0 + 3 * (bd.planes - cb.zbp) : 3 * (bd.planes - cb.zbp) - 2;
+                    if (cb.passes + n > budget) {
+                        ps.violation = true;
+                        if (!ps.permissive) return false;
+                    }
+                    if (cb.passes + n > kMaxPasses) return false;
                     Pending pd{&cb, n, lens.size(), 0, style};
                     int start = cb.passes;
                     for (int i = cb.passes; i < cb.passes + n; ++i) {
@@ -1108,7 +1121,8 @@ Status Decoder::decode_tile(std::size_t t) {
         } else {
             for (const auto& p : tin->parts) body_buf.insert(body_buf.end(), p.begin(), p.end());
         }
-        PacketStreams ps;
+        PacketStreams ps0;
+        PacketStreams& ps = ps0;
         if (tin->parts.size() == 1) {
             ps.body = tin->parts[0].data();
             ps.blen = tin->parts[0].size();
@@ -1134,7 +1148,23 @@ Status Decoder::decode_tile(std::size_t t) {
         const std::uint8_t scod = (tp && tp->has_cod) ? tp->scod : cs.main.scod;
         ps.sop = (scod & 2u) != 0;
         ps.eph = (scod & 4u) != 0;
-        if (ps.body != nullptr || ps.blen == 0) read_packets(cs, tp, comps, ps, tx0, ty0, tx1, ty1);
+        // A conformant codestream never gives a code-block more coding passes than it has
+        // bit-planes for. If that happens, the packet headers are re-read with two known
+        // deviations: some encoders restart Lblock at 3 for every contribution (B.10.7.1 keeps it
+        // as code-block state), and some signal passes below the least significant bit-plane,
+        // which are then parsed and ignored. The first interpretation that reads consistently
+        // wins; the permissive one is the last resort.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            PacketStreams p = ps0;
+            p.lblock_reset = attempt == 1;
+            p.permissive = attempt == 2;
+            if (attempt > 0) {
+                comps.clear();
+                if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1); !s) return s;
+            }
+            read_packets(cs, tp, comps, p, tx0, ty0, tx1, ty1);
+            if (!p.violation) break;
+        }
     }
 
     // Block decoding and dequantisation into each tile-component buffer.
