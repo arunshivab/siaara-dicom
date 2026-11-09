@@ -17,3 +17,7 @@ endif()
 add_executable(jpegls_tool crosscheck/jpegls_tool.cpp)
 target_link_libraries(jpegls_tool PRIVATE siaara_static)
 target_compile_options(jpegls_tool PRIVATE ${SIAARA_WARN})
+# Test-only helper for tests/crosscheck/*.py and the codec benchmarks (not installed).
+add_executable(siaara_codec_tool crosscheck/codec_tool.cpp)
+target_link_libraries(siaara_codec_tool PRIVATE siaara_static)
+target_compile_options(siaara_codec_tool PRIVATE ${SIAARA_WARN})
