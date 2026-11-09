@@ -304,7 +304,15 @@ Status View::set_mode(ViewMode mode, Interpolation interp, SlabMode slab, double
     return Status::ok();
 }
 
+namespace {
+double min_spacing(const Grid& g) noexcept { return std::min({g.spacing[0], g.spacing[1], g.spacing[2]}); }
+// The smallest sample distance accepted: 1/64 of the smallest voxel spacing (R-061).
+constexpr double kMinSampleFraction = 1.0 / 64.0;
+}  // namespace
+
 Status View::set_render_settings(const RenderSettings& s) {
+    if (base_ && s.sample_distance > 0.0 && s.sample_distance < min_spacing(base_->grid()) * kMinSampleFraction)
+        return Status(Errc::InvalidArgument, "view: sample distance below 1/64 of the smallest voxel spacing");
     if (!std::isfinite(s.sample_distance) || s.sample_distance < 0.0 || !std::isfinite(s.interactive_sample_factor) ||
         !(s.interactive_sample_factor >= 1.0) || s.interactive_downsample == 0 || s.interactive_downsample > 16 ||
         !std::isfinite(s.early_termination) || !(s.early_termination > 0.0) || s.brick_size < 2 || s.brick_size > 256)
@@ -398,10 +406,26 @@ Status View::set_curve(std::span<const Vec3> points, bool spline) {
 
 double View::sample_distance(Quality q) const noexcept {
     const Grid& g = base_->grid();
-    double d = rs_.sample_distance > 0.0 ? rs_.sample_distance
-                                         : 0.5 * std::min({g.spacing[0], g.spacing[1], g.spacing[2]});
+    double d = rs_.sample_distance > 0.0 ? rs_.sample_distance : 0.5 * min_spacing(g);
+    d = std::max(d, min_spacing(g) * kMinSampleFraction);  // also if the volume changed since (R-061)
     if (q == Quality::Interactive) d *= rs_.interactive_sample_factor;
     return d;
+}
+
+// R-061: refuses a frame whose rays would take more samples than the budget, before rendering.
+Status View::check_frame_samples(Quality q) const {
+    const Grid& g = base_->grid();
+    double diag2 = 0;
+    for (int k = 0; k < 3; ++k) {
+        const double e = static_cast<double>(g.dims[static_cast<std::size_t>(k)]) * g.spacing[static_cast<std::size_t>(k)];
+        diag2 += e * e;
+    }
+    const double per_ray = std::sqrt(diag2) / sample_distance(q) + 2.0;
+    const double samples = per_ray * static_cast<double>(w_) * static_cast<double>(h_);
+    const std::uint64_t cap = rs_.max_frame_samples ? rs_.max_frame_samples : (std::uint64_t{1} << 32);
+    if (!(samples <= static_cast<double>(cap)))
+        return Status(Errc::LimitExceeded, "view: the frame would take more ray samples than the budget");
+    return Status::ok();
 }
 
 Status View::set_transfer_function(const TransferFunction& tf) {
@@ -892,6 +916,8 @@ Status View::render_rgba8(std::span<std::uint8_t> out) const {
     const bool vr = mode_ == ViewMode::VolumeRender || mode_ == ViewMode::VolumeMip || mode_ == ViewMode::VolumeMinIp;
     if (vr && (!bricks_ || brick_empty_.size() != bricks_->mn.size()))
         return Status(Errc::Internal, "view: volume rendering not prepared");
+    if (vr)
+        if (Status s = check_frame_samples(Quality::Final); !s) return s;
     try {
         const RenderAccess ra = RenderAccess::make(*this);
         const unsigned workers = detail::resolve_threads(rs_.threads);
@@ -996,6 +1022,8 @@ Status View::render_values(std::span<float> out, float outside) const {
     if (mode_ == ViewMode::VolumeRender) return Status(Errc::Unsupported, "view: composite volume rendering has no values");
     const bool vr = mode_ == ViewMode::VolumeMip || mode_ == ViewMode::VolumeMinIp;
     if (vr && !bricks_) return Status(Errc::Internal, "view: volume rendering not prepared");
+    if (vr)
+        if (Status s = check_frame_samples(Quality::Final); !s) return s;
     try {
         const RenderAccess ra = RenderAccess::make(*this);
         const unsigned workers = detail::resolve_threads(rs_.threads);

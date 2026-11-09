@@ -123,6 +123,9 @@ struct RenderSettings {
     bool empty_space_skipping = true;
     std::uint32_t brick_size = 8;
     unsigned threads = 0;                  // 0 = hardware concurrency
+    // Ray samples one volume-rendered frame may take (pixels x samples per ray, estimated from the
+    // volume's extent); more is LimitExceeded (R-061). 0 = default (2^32).
+    std::uint64_t max_frame_samples = 0;
 };
 
 struct PickResult {
@@ -167,6 +170,7 @@ public:
     ViewMode mode() const noexcept { return mode_; }
     Quality quality() const noexcept { return quality_; }
     double sample_distance(Quality q) const noexcept;
+    Status check_frame_samples(Quality q) const;
     const std::shared_ptr<const Volume>& base() const noexcept { return base_; }
 
     // width * height * 4 bytes, rows top to bottom. Thread-safe (const, no shared mutable state).
