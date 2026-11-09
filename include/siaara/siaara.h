@@ -302,6 +302,70 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_instance(siaara_web_client*
 SIAARA_API siaara_status SIAARA_CALL siaara_web_stow(siaara_web_client* client, const siaara_file* file,
                                                      const char* study_uid);
 
+/* ---------------------------------------------------------------- de-identification (PS3.15 Annex E) */
+/* Options of the Basic Application Level Confidentiality Profile (Table E.1-1 option columns). */
+enum {
+    SIAARA_DEID_RETAIN_SAFE_PRIVATE = 1u << 0,
+    SIAARA_DEID_RETAIN_UIDS = 1u << 1,
+    SIAARA_DEID_RETAIN_DEVICE_IDENTITY = 1u << 2,
+    SIAARA_DEID_RETAIN_INSTITUTION_IDENTITY = 1u << 3,
+    SIAARA_DEID_RETAIN_PATIENT_CHARACTERISTICS = 1u << 4,
+    SIAARA_DEID_RETAIN_LONG_FULL_DATES = 1u << 5,
+    SIAARA_DEID_RETAIN_LONG_MODIFIED_DATES = 1u << 6,
+    SIAARA_DEID_CLEAN_DESCRIPTORS = 1u << 7,
+    SIAARA_DEID_CLEAN_STRUCTURED_CONTENT = 1u << 8,
+    SIAARA_DEID_CLEAN_GRAPHICS = 1u << 9
+};
+/* How X/Z, X/D, X/Z/D, Z/D and X/Z/U* are resolved (the attribute's Type is not known here). */
+enum {
+    SIAARA_DEID_COMBINED_CONFORMANT = 0, /* D, Z or U: never breaks a Type 1/2 requirement (default) */
+    SIAARA_DEID_COMBINED_REMOVE = 1      /* X wherever allowed */
+};
+/* Result flags written to *out_flags by siaara_deidentify. */
+enum {
+    SIAARA_DEID_BURNED_IN_ANNOTATION_REMAINS = 1u << 0, /* pixel data, (0028,0301) YES or absent, not cleaned */
+    SIAARA_DEID_RECOGNIZABLE_FEATURES_REMAIN = 1u << 1, /* (0028,0302) YES */
+    SIAARA_DEID_NOT_FULLY_DEIDENTIFIED = 1u << 2,       /* either of the two above */
+    SIAARA_DEID_PIXEL_DATA_CLEANED = 1u << 3,           /* regions were blanked */
+    SIAARA_DEID_UNPARSEABLE_VALUES_REMOVED = 1u << 4    /* invalid dates/numbers were emptied */
+};
+#define SIAARA_DEID_ALL_FRAMES 0xFFFFFFFFu
+
+/* A rectangle to blank in native Pixel Data (Clean Pixel Data Option). frame is 0-based or
+ * SIAARA_DEID_ALL_FRAMES; x/y are the column/row of the top-left pixel. */
+typedef struct siaara_deid_region {
+    uint32_t frame;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} siaara_deid_region;
+
+typedef struct siaara_deid_options {
+    uint32_t struct_size;               /* set to sizeof(siaara_deid_options) */
+    uint32_t flags;                     /* SIAARA_DEID_RETAIN_* / SIAARA_DEID_CLEAN_* */
+    const uint8_t* key;                 /* secret key, at least 16 bytes; not retained after the call */
+    size_t key_len;
+    int32_t combined_policy;            /* SIAARA_DEID_COMBINED_* */
+    int32_t pixel_data_clean;           /* 0/1: caller asserts the regions cover all burned-in text */
+    const siaara_deid_region* regions;  /* may be NULL */
+    size_t region_count;
+    const char* safe_words;             /* words kept by the clean action, separated by spaces or
+                                           line breaks (ASCII); may be NULL */
+    size_t safe_words_len;
+    uint32_t max_shift_days;            /* Modified Dates offset range; 0 = default (3652) */
+} siaara_deid_options;
+
+/* De-identifies the file in place (data set, file meta, preamble). On failure the file is
+ * unchanged. out_flags (may be NULL) receives SIAARA_DEID_* result flags; check
+ * SIAARA_DEID_NOT_FULLY_DEIDENTIFIED before releasing the result. Messages never contain values
+ * from the data set. */
+SIAARA_API siaara_status SIAARA_CALL siaara_deidentify(siaara_file* file, const siaara_deid_options* options,
+                                                       uint32_t* out_flags);
+/* The replacement siaara_deidentify uses for a UID with this key (string buffer rules). */
+SIAARA_API siaara_status SIAARA_CALL siaara_deid_replacement_uid(const uint8_t* key, size_t key_len, const char* uid,
+                                                                 size_t uid_len, char* buf, size_t cap, size_t* needed);
+
 #ifdef __cplusplus
 }
 #endif
