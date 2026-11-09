@@ -35,10 +35,17 @@
     <None Include="$(SiaaraNativeLibrary)" Pack="true" PackagePath="runtimes/$(SiaaraNativeRid)/native/$(SiaaraNativeFileName)"
           CopyToOutputDirectory="Never" Visible="false" />
   </ItemGroup>
-  <ItemGroup Condition="'$(SiaaraNativeArtifactsDir)' != ''">
-    <None Include="$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara.*" Pack="true"
-          PackagePath="runtimes/%(SiaaraPackRid.Identity)/native/" CopyToOutputDirectory="Never" Visible="false" />
-  </ItemGroup>
+  <PropertyGroup>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);SiaaraPackNativeArtifacts</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+  <Target Name="SiaaraPackNativeArtifacts" Condition="'$(SiaaraNativeArtifactsDir)' != ''">
+    <ItemGroup>
+      <_SiaaraNativeArtifact Include="$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara*.*">
+        <Rid>%(SiaaraPackRid.Identity)</Rid>
+      </_SiaaraNativeArtifact>
+      <TfmSpecificPackageFile Include="@(_SiaaraNativeArtifact)" PackagePath="runtimes/%(_SiaaraNativeArtifact.Rid)/native/%(_SiaaraNativeArtifact.Filename)%(_SiaaraNativeArtifact.Extension)" />
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <None Include="../../README.md" Pack="true" PackagePath="/" Visible="false" Condition="Exists('../../README.md')" />
   </ItemGroup>
