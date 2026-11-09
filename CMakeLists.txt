@@ -17,7 +17,13 @@ option(SIAARA_TSAN "Build with ThreadSanitizer (GCC/Clang; not with SIAARA_SANIT
 option(SIAARA_FUZZ "Build the fuzz targets in fuzz/ (libFuzzer with Clang, replay executables otherwise); implies SIAARA_SANITIZE" OFF)
 option(SIAARA_REPRODUCIBLE "Strip build paths from binaries (-ffile-prefix-map, /pathmap) for reproducible builds" ON)
 
-if(SIAARA_FUZZ AND NOT MSVC)
+# OSS-Fuzz / ClusterFuzzLite: the build environment supplies the sanitizer and coverage flags in
+# CFLAGS/CXXFLAGS and the engine in $LIB_FUZZING_ENGINE; pass that as SIAARA_LIB_FUZZING_ENGINE and
+# no sanitizer or fuzzer flags are added here.
+set(SIAARA_LIB_FUZZING_ENGINE "" CACHE STRING "Link flags of an external fuzzing engine (OSS-Fuzz $LIB_FUZZING_ENGINE); implies SIAARA_FUZZ")
+if(SIAARA_LIB_FUZZING_ENGINE)
+  set(SIAARA_FUZZ ON)
+elseif(SIAARA_FUZZ AND NOT MSVC)
   set(SIAARA_SANITIZE ON)
   include(CheckCXXSourceCompiles)
   set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
