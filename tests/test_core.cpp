@@ -216,3 +216,20 @@ TEST_CASE("sequence depth limit") {
     REQUIRE(!g.is_ok());
     CHECK(g.error().code == Errc::LimitExceeded);
 }
+
+TEST_CASE("decimal string parsing is exact and locale independent") {
+    Dataset ds;
+    const std::pair<const char*, double> good[] = {
+        {"1.5", 1.5}, {"-0.25e2", -25.0}, {" 3 ", 3.0}, {".5", 0.5}, {"5.", 5.0},
+        {"+7E-1", 0.7}, {"0.1", 0.1}, {"1234567890123456", 1234567890123456.0},
+        {"-1024", -1024.0}, {"3.14159265358979", 3.14159265358979}};
+    for (const auto& [text, value] : good) {
+        (void)ds.set_string(tags::RescaleIntercept, VR::DS, text);
+        auto v = ds.get_double(tags::RescaleIntercept);
+        CHECK(v.has_value() && *v == value);
+    }
+    for (const char* bad : {"abc", "1e400", "", "1.2.3", "e5", "--1", "1e"}) {
+        (void)ds.set_string(tags::RescaleIntercept, VR::DS, bad);
+        CHECK(!ds.get_double(tags::RescaleIntercept).has_value());
+    }
+}

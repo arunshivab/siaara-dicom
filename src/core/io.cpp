@@ -64,8 +64,8 @@ Result<Bytes> map_file(const std::string& utf8_path) {
 Result<Bytes> read_file(const std::string& utf8_path) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
-    FILE* f = _wfopen(w.c_str(), L"rb");
-    if (!f) return Status(Errc::IoError, "cannot open file");
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, w.c_str(), L"rb") != 0 || !f) return Status(Errc::IoError, "cannot open file");
     std::unique_ptr<FILE, int (*)(FILE*)> guard(f, &std::fclose);
     if (_fseeki64(f, 0, SEEK_END) != 0) return Status(Errc::IoError, "seek failed");
     const long long len = _ftelli64(f);
