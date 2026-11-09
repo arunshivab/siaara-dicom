@@ -73,6 +73,7 @@ void Sha256::block(const std::uint8_t* p) noexcept {
 }
 
 void Sha256::update(const void* data, std::size_t size) noexcept {
+    if (size == 0) return;
     const auto* p = static_cast<const std::uint8_t*>(data);
     total_ += size;
     if (used_) {
