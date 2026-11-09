@@ -300,25 +300,57 @@ struct State {
 
     const std::string* intern(const std::string& s) { return &*pool.insert(s).first; }
 
+    // While bulk loading (at open) the ordered indexes are left empty and built once, sorted,
+    // by end_bulk(): inserting a million nodes one by one is dominated by cache misses.
+    bool bulk = false;
+
     void index_patient(Patient* p) {
         by_patient_id.emplace(std::string_view(p->f[0]), p);
+        if (bulk) return;
         for (const auto& form : p->forms)
             if (!form.empty()) by_name_form.emplace(std::string_view(form), p);
         ordered_patients.insert(p);
     }
     void unindex_patient(Patient* p) {
         multimap_erase(by_patient_id, std::string_view(p->f[0]), p);
+        if (bulk) return;
         for (const auto& form : p->forms)
             if (!form.empty()) multimap_erase(by_name_form, std::string_view(form), p);
         ordered_patients.erase(p);
     }
     void index_study(Study* s) {
         if (!s->f[3].empty()) by_accession.emplace(std::string_view(s->f[3]), s);
-        ordered_studies.insert(s);
+        if (!bulk) ordered_studies.insert(s);
     }
     void unindex_study(Study* s) {
         if (!s->f[3].empty()) multimap_erase(by_accession, std::string_view(s->f[3]), s);
-        ordered_studies.erase(s);
+        if (!bulk) ordered_studies.erase(s);
+    }
+    void begin_bulk() {
+        bulk = true;
+        by_name_form.clear();
+        ordered_patients.clear();
+        ordered_studies.clear();
+    }
+    void end_bulk() {
+        bulk = false;
+        std::vector<Patient*> ps;
+        ps.reserve(patients.size());
+        for (auto& kv : patients) ps.push_back(kv.second.get());
+        std::sort(ps.begin(), ps.end(), patient_less);
+        for (Patient* p : ps) ordered_patients.insert(ordered_patients.end(), p);
+        std::vector<std::pair<std::string_view, Patient*>> forms;
+        forms.reserve(ps.size());
+        for (Patient* p : ps)
+            for (const auto& form : p->forms)
+                if (!form.empty()) forms.emplace_back(form, p);
+        std::stable_sort(forms.begin(), forms.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& f : forms) by_name_form.emplace_hint(by_name_form.end(), f.first, f.second);
+        std::vector<Study*> ss;
+        ss.reserve(studies.size());
+        for (auto& kv : studies) ss.push_back(kv.second.get());
+        std::sort(ss.begin(), ss.end(), study_less);
+        for (Study* s : ss) ordered_studies.insert(ordered_studies.end(), s);
     }
 
     static void set_patient_fields(Patient& p, const IndexRecord& r, bool only_nonempty) {
@@ -428,12 +460,19 @@ struct State {
             series.emplace(e->uid(), std::move(ne));
             s->series.push_back(e);
         }
+        attach_instance(e, r);
+        return replaced;
+    }
+
+    // Creates the instance node under `e`. FilePath: absolute path when referenced, otherwise
+    // empty for the derived name (instance_relative_path) or the actual relative path.
+    Instance* attach_instance(Series* e, const IndexRecord& r) {
+        Study* s = e->study;
         auto in = std::make_unique<Instance>();
-        in->uid = uid;
+        in->uid = r[Str::SopInstanceUid];
         in->content_date = r[Str::ContentDate];
         in->content_time = r[Str::ContentTime];
-        const std::string& fp = r[Str::FilePath];
-        if ((r.flags & kReferenced) || fp != instance_relative_path(uid)) in->path = fp;
+        in->path = r[Str::FilePath];
         in->sop_class = intern(r[Str::SopClassUid]);
         in->ts = intern(r[Str::TransferSyntaxUid]);
         in->photometric = intern(r[Str::PhotometricInterpretation]);
@@ -463,7 +502,7 @@ struct State {
         data_bytes += in->file_size;
         Instance* raw = in.get();
         instances.emplace(raw->uid, std::move(in));
-        return replaced;
+        return raw;
     }
 };
 
@@ -733,7 +772,7 @@ struct Store::Impl {
                         wi.u32(eord);
                         IndexRecord ri;
                         fill_instance_only(*in, ri);
-                        ri[Str::FilePath] = in->stored_path();
+                        ri[Str::FilePath] = in->path;
                         encode_record(wi, ri);
                         frame(buf, 'I', wi.buf);
                         ++in_count;
@@ -787,18 +826,20 @@ struct Store::Impl {
         gen = load_le32(p + 12);
         counters.snapshot_bytes = n;
         FrameReader fr(p, n);
-        std::vector<IndexRecord> pats, studs, sers;
-        std::vector<std::uint32_t> stud_parent, ser_parent;
+        std::vector<Patient*> pv;
+        std::vector<Study*> sv;
+        std::vector<Series*> ev;
         char type = 0;
         const std::uint8_t* pl = nullptr;
         std::size_t len = 0;
         bool done = false;
         std::uint64_t ninst = 0;
+        const Status bad(Errc::Malformed, "index snapshot record is malformed");
         while (fr.next(type, pl, len)) {
             ByteReader rd(pl, len);
             if (type == 'Z') {
                 const std::uint32_t a = rd.u32(), b = rd.u32(), c = rd.u32(), d = rd.u32();
-                if (!rd.ok() || a != pats.size() || b != studs.size() || c != sers.size() || d != ninst)
+                if (!rd.ok() || a != pv.size() || b != sv.size() || c != ev.size() || d != ninst)
                     return Status(Errc::Malformed, "index snapshot counts do not match");
                 done = true;
                 break;
@@ -806,49 +847,60 @@ struct Store::Impl {
             std::uint32_t parent = 0;
             if (type != 'P') parent = rd.u32();
             IndexRecord r;
-            bool good = true;
-            if (type == 'P') {
-                for (Str k : kPatientFields) r[k] = rd.str();
-            } else if (type == 'S') {
-                for (Str k : kStudyFields) r[k] = rd.str();
-            } else if (type == 'E') {
-                for (Str k : kSeriesFields) r[k] = rd.str();
-                if (rd.u8()) r.flags |= kHasSeriesNumber;
-                r.series_number = rd.i32();
-            } else {
-                good = decode_record(rd, r);
-            }
-            if (!good || !rd.ok() || !rd.at_end()) return Status(Errc::Malformed, "index snapshot record is malformed");
             switch (type) {
-                case 'P': pats.push_back(std::move(r)); break;
-                case 'S':
-                    if (parent >= pats.size()) return Status(Errc::Malformed, "index snapshot parent out of range");
-                    studs.push_back(std::move(r));
-                    stud_parent.push_back(parent);
+                case 'P': {
+                    for (Str k : kPatientFields) r[k] = rd.str();
+                    if (!rd.ok() || !rd.at_end()) return bad;
+                    auto np = std::make_unique<Patient>();
+                    np->key = Store::patient_key(r);
+                    State::set_patient_fields(*np, r, false);
+                    Patient* q = np.get();
+                    if (!out.patients.emplace(q->key, std::move(np)).second) return bad;
+                    out.index_patient(q);
+                    pv.push_back(q);
                     break;
-                case 'E':
-                    if (parent >= studs.size()) return Status(Errc::Malformed, "index snapshot parent out of range");
-                    sers.push_back(std::move(r));
-                    ser_parent.push_back(parent);
+                }
+                case 'S': {
+                    for (Str k : kStudyFields) r[k] = rd.str();
+                    if (!rd.ok() || !rd.at_end() || parent >= pv.size()) return bad;
+                    auto ns = std::make_unique<Study>();
+                    ns->f[0] = r[Str::StudyInstanceUid];
+                    State::set_study_fields(*ns, r, false);
+                    ns->patient = pv[parent];
+                    Study* q = ns.get();
+                    if (!out.studies.emplace(q->uid(), std::move(ns)).second) return bad;
+                    pv[parent]->studies.push_back(q);
+                    out.index_study(q);
+                    sv.push_back(q);
                     break;
+                }
+                case 'E': {
+                    for (Str k : kSeriesFields) r[k] = rd.str();
+                    if (rd.u8()) r.flags |= kHasSeriesNumber;
+                    r.series_number = rd.i32();
+                    if (!rd.ok() || !rd.at_end() || parent >= sv.size()) return bad;
+                    auto ne = std::make_unique<Series>();
+                    ne->f[0] = r[Str::SeriesInstanceUid];
+                    State::set_series_fields(*ne, r, false);
+                    ne->study = sv[parent];
+                    Series* q = ne.get();
+                    if (!out.series.emplace(q->uid(), std::move(ne)).second) return bad;
+                    sv[parent]->series.push_back(q);
+                    ev.push_back(q);
+                    break;
+                }
                 case 'I': {
-                    if (parent >= sers.size()) return Status(Errc::Malformed, "index snapshot parent out of range");
-                    if (r[Str::SopInstanceUid].empty()) return Status(Errc::Malformed, "index snapshot instance without UID");
-                    const IndexRecord& e = sers[parent];
-                    const IndexRecord& s = studs[ser_parent[parent]];
-                    const IndexRecord& pr = pats[stud_parent[ser_parent[parent]]];
-                    for (Str k : kSeriesFields) r[k] = e[k];
-                    for (Str k : kStudyFields) r[k] = s[k];
-                    for (Str k : kPatientFields) r[k] = pr[k];
-                    r.series_number = e.series_number;
-                    r.flags |= (e.flags & kHasSeriesNumber);
-                    out.apply_add(r, false);
+                    if (!decode_record(rd, r) || !rd.at_end() || parent >= ev.size()) return bad;
+                    if (r[Str::SopInstanceUid].empty() || out.instances.count(r[Str::SopInstanceUid])) return bad;
+                    out.attach_instance(ev[parent], r);
                     ++ninst;
                     break;
                 }
                 default: return Status(Errc::Malformed, "index snapshot has an unknown record");
             }
         }
+        for (const Series* e : ev)
+            if (e->instances.empty()) return Status(Errc::Malformed, "index snapshot has an empty series");
         if (!done || fr.good_end() != n) return Status(Errc::Malformed, "index snapshot is truncated or corrupt");
         return Status::ok();
     }
@@ -914,8 +966,10 @@ struct Store::Impl {
     Status load() {
         State fresh;
         std::uint32_t gen = 0;
+        fresh.begin_bulk();
         if (Status s = load_snapshot(fresh, gen); !s) return s;
         if (Status s = replay_journal(fresh, gen); !s) return s;
+        fresh.end_bulk();
         st = std::move(fresh);
         generation = gen;
         return Status::ok();
@@ -963,7 +1017,7 @@ struct Store::Impl {
             rec.flags |= kReferenced;
             rec[Str::FilePath] = ref_path;
         } else {
-            rec[Str::FilePath] = instance_relative_path(uid);
+            rec[Str::FilePath].clear();  // derived from the UID
         }
         {
             std::shared_lock<std::shared_mutex> g(rw);
@@ -972,7 +1026,7 @@ struct Store::Impl {
         fs::path final_path, tmp;
         std::error_code ec;
         if (mode == AddMode::Copy) {
-            final_path = root / u8path(rec[Str::FilePath]);
+            final_path = root / u8path(instance_relative_path(uid));
             fs::create_directories(final_path.parent_path(), ec);
             if (ec) return Status(Errc::IoError, "cannot create data folder");
             tmp = final_path;
@@ -1086,6 +1140,7 @@ struct Store::Impl {
     // Builds a state from every file under data/ plus the referenced files of `old`.
     State scan_state(const State& old) {
         State fresh;
+        fresh.begin_bulk();
         std::error_code ec;
         const auto opts = fs::directory_options::skip_permission_denied;
         for (fs::recursive_directory_iterator it(data_dir, opts, ec), end; !ec && it != end; it.increment(ec)) {
@@ -1096,6 +1151,7 @@ struct Store::Impl {
             IndexRecord r;
             if (!extract_index_file(to_utf8(p), r) || r[Str::SopInstanceUid].empty()) continue;
             r[Str::FilePath] = rel_generic(p, root);
+            if (r[Str::FilePath] == instance_relative_path(r[Str::SopInstanceUid])) r[Str::FilePath].clear();
             r.added_time = now_seconds();
             fresh.apply_add(r, true);
         }
@@ -1108,6 +1164,7 @@ struct Store::Impl {
             r.added_time = in->added;
             fresh.apply_add(r, true);
         }
+        fresh.end_bulk();
         return fresh;
     }
 };
@@ -1528,7 +1585,7 @@ Result<VerifyReport> Store::verify(bool deep, bool repair) {
                     r.flags |= kReferenced;
                     r[Str::FilePath] = to_utf8(it.path);
                 } else {
-                    r[Str::FilePath] = instance_relative_path(it.uid);
+                    r[Str::FilePath].clear();
                 }
                 r.added_time = now_seconds();
                 reindex.push_back(std::move(r));

@@ -30,21 +30,31 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------- CRC-32 (reflected, 0xEDB88320)
 namespace {
 struct CrcTable {
-    std::uint32_t t[256];
+    std::uint32_t t[4][256];
     constexpr CrcTable() : t{} {
         for (std::uint32_t i = 0; i < 256; ++i) {
             std::uint32_t c = i;
             for (int k = 0; k < 8; ++k) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            t[i] = c;
+            t[0][i] = c;
         }
+        for (std::uint32_t i = 0; i < 256; ++i)
+            for (int k = 1; k < 4; ++k) t[k][i] = (t[k - 1][i] >> 8) ^ t[0][t[k - 1][i] & 0xFFu];
     }
 };
 constexpr CrcTable kCrc{};
 }  // namespace
 
+// Slicing-by-4: four table lookups per 32-bit word.
 std::uint32_t crc32(const std::uint8_t* data, std::size_t size, std::uint32_t seed) noexcept {
     std::uint32_t c = ~seed;
-    for (std::size_t i = 0; i < size; ++i) c = kCrc.t[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
+    while (size >= 4) {
+        c ^= static_cast<std::uint32_t>(data[0]) | (static_cast<std::uint32_t>(data[1]) << 8) |
+             (static_cast<std::uint32_t>(data[2]) << 16) | (static_cast<std::uint32_t>(data[3]) << 24);
+        c = kCrc.t[3][c & 0xFFu] ^ kCrc.t[2][(c >> 8) & 0xFFu] ^ kCrc.t[1][(c >> 16) & 0xFFu] ^ kCrc.t[0][c >> 24];
+        data += 4;
+        size -= 4;
+    }
+    while (size--) c = kCrc.t[0][(c ^ *data++) & 0xFFu] ^ (c >> 8);
     return ~c;
 }
 

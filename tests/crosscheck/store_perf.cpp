@@ -1,6 +1,6 @@
 // Store / scan benchmark (test-only, not part of ctest).
 //
-//   store_perf [--files N] [--records M] [--worst] [--threads T]
+//   store_perf [--files N] [--records M] [--worst | --worst-only] [--threads T]
 //
 // 1. writes N small synthetic DICOM files (default 20,000) to a temporary folder,
 // 2. scans them (header-only extraction) with 1, 2 and T threads,
@@ -179,14 +179,22 @@ void bench_index(const fs::path& dir, std::size_t total, std::size_t per_series,
     f.patient_name = "*son*";
     f.limit = 100;
     report("studies, patient name '*son*' (scan), first 100", time_query(q, f));
+    f.want_total = false;
+    report("  same, without the total (early exit)", time_query(q, f));
+    f.want_total = true;
     f.patient_name = "*\xC3\xA9*";  // é, accent-folded on both sides -> "*e*"
     report("studies, patient name '*\xC3\xA9*' (scan), first 100", time_query(q, f));
+    f.want_total = false;
+    report("  same, without the total (early exit)", time_query(q, f));
     f = {};
     f.level = Level::Study;
-    f.patient_id = "PID4242";
+    f.patient_id = "PID1234";
     report("studies, patient ID exact", time_query(q, f));
     f.patient_id = "PID42*";
     report("studies, patient ID 'PID42*' (scan)", time_query(q, f));
+    f.limit = 100;
+    f.want_total = false;
+    report("  same, first 100 without the total (early exit)", time_query(q, f));
     f = {};
     f.level = Level::Study;
     f.accession_number = "ACC1234";
@@ -203,6 +211,8 @@ void bench_index(const fs::path& dir, std::size_t total, std::size_t per_series,
     f.study_description = "*chest*";
     f.limit = 100;
     report("studies, description '*chest*', first 100", time_query(q, f));
+    f.want_total = false;
+    report("  same, without the total (early exit)", time_query(q, f));
     f = {};
     f.level = Level::Series;
     f.study_uid = "1.2.826.0.1.3680043.10.777";
@@ -245,12 +255,13 @@ void bench_index(const fs::path& dir, std::size_t total, std::size_t per_series,
 int main(int argc, char** argv) {
     std::size_t nfiles = 20'000, nrecords = 1'000'000;
     unsigned threads = std::max(2u, std::thread::hardware_concurrency());
-    bool worst = false;
+    bool worst = false, worst_only = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--files") && i + 1 < argc) nfiles = static_cast<std::size_t>(std::strtoull(argv[++i], nullptr, 10));
         else if (!std::strcmp(argv[i], "--records") && i + 1 < argc) nrecords = static_cast<std::size_t>(std::strtoull(argv[++i], nullptr, 10));
         else if (!std::strcmp(argv[i], "--threads") && i + 1 < argc) threads = static_cast<unsigned>(std::strtoul(argv[++i], nullptr, 10));
         else if (!std::strcmp(argv[i], "--worst")) worst = true;
+        else if (!std::strcmp(argv[i], "--worst-only")) worst = worst_only = true;
     }
     std::printf("store_perf: %u hardware threads\n", std::thread::hardware_concurrency());
     store_synth::TempDir td("siaara-perf");
@@ -332,7 +343,7 @@ int main(int argc, char** argv) {
     }
 
     if (nrecords) {
-        bench_index(td.path(), nrecords, 50, 5, 2, "typical");
+        if (!worst_only) bench_index(td.path(), nrecords, 50, 5, 2, "typical");
         if (worst) bench_index(td.path(), nrecords, 1, 1, 1, "worst case: one instance per study and patient");
     }
     return 0;
