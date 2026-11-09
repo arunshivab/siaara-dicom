@@ -578,6 +578,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
     });
 }
 
+extern "C++" {  // internal helpers inside the extern "C" block keep C++ linkage
 namespace {
 
 // Contexts for C-STORE of the given headers: as found, plus uncompressed ones per SOP class so
@@ -611,6 +612,7 @@ std::string sop_class_of(const siaara::DicomFile& f) {
 }
 
 }  // namespace
+}  // extern "C++"
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse_peer* peer, const char* const* paths,
                                                               const size_t* lens, uint32_t count, siaara_cancel* cancel,
