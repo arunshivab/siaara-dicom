@@ -430,7 +430,8 @@ struct IodChecker {
                 if (required) {
                     const bool t1 = n.type == AttrType::T1 || n.type == AttrType::T1C;
                     const bool uid = n.tag == tags::SOPInstanceUID || n.tag == tags::StudyInstanceUID ||
-                                     n.tag == tags::SeriesInstanceUID;
+                                     n.tag == tags::SeriesInstanceUID ||
+                                     (n.tag == tags::NumberOfFrames && top.contains(tags::PixelData));
                     sink.add(Severity::Error, t1 ? "missing-type1" : "missing-type2",
                              t1 ? (uid && path.empty() ? std::uint32_t{kAttributes} : 0u) : std::uint32_t{kAttributes}, here,
                              "Type " + std::string(attr_type_name(n.type)) + " attribute is missing" +

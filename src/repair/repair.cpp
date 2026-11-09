@@ -582,6 +582,19 @@ public:
                 e.vr = d->vr;
                 ds->put(std::move(e));
                 log(w, kAttributes, "add", x.path, "Type 2 attribute added empty (" + x.module + ")", nullptr, ds->find(t));
+            } else if (x.code == "missing-type1" && x.path.size() == 1 && t == tags::NumberOfFrames) {
+                // Derived from the pixel data, not invented: the frames it holds.
+                if (w.file.dataset.contains(t)) continue;
+                const PixelAnalysis pa = analyse_pixels(w.file.dataset, w.file.transfer_syntax, &w.scan.pixel);
+                std::uint64_t n = 0;
+                if (pa.encapsulated) n = pa.frames.size();
+                else if (pa.frame_bits && pa.native_actual * 8 % pa.frame_bits == 0) n = pa.native_actual * 8 / pa.frame_bits;
+                else if (pa.frame_bits && pa.native_actual > 0 && (pa.native_actual - 1) * 8 % pa.frame_bits == 0)
+                    n = (pa.native_actual - 1) * 8 / pa.frame_bits;
+                if (n == 0 || n > 0x7FFFFFFF) continue;
+                (void)w.file.dataset.set_string(t, VR::IS, std::to_string(n));
+                log(w, kAttributes, "add", x.path, "Number of Frames added from the frames the pixel data holds (" + x.module + ")",
+                    nullptr, w.file.dataset.find(t));
             } else if (x.code == "missing-type1" && x.path.size() == 1 &&
                        (t == tags::SOPInstanceUID || t == tags::StudyInstanceUID || t == tags::SeriesInstanceUID)) {
                 if (w.file.dataset.contains(t)) continue;

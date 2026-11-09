@@ -124,3 +124,8 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME csharp_interop_up_to_date
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/gen_csharp_interop.py --check)
 endif()
+# Test-only: writes the broken repair samples for tests/crosscheck/repair_crosscheck.py (not installed).
+add_executable(repair_samples crosscheck/repair_samples.cpp)
+target_link_libraries(repair_samples PRIVATE siaara_static)
+target_compile_options(repair_samples PRIVATE ${SIAARA_TEST_WARN})
+target_include_directories(repair_samples PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck)

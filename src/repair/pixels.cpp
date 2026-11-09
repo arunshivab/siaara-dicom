@@ -292,8 +292,9 @@ PixelAnalysis analyse_pixels(const Dataset& ds, std::string_view ts_uid, const P
             if ((actual * 8) % r.frame_bits == 0 || ((actual - 1) * 8) % r.frame_bits == 0) {
                 std::uint64_t n = (actual * 8) / r.frame_bits;
                 if (!fits(r.frame_bits, n)) n = ((actual - 1) * 8) / r.frame_bits;
+                // Only when Number of Frames is present: a single-frame object cannot hold more frames.
                 if (n >= 1 && n != static_cast<std::uint64_t>(a.frames) && n <= 0x7FFFFFFF && fits(r.frame_bits, n) &&
-                    (n > 1 || a.has_frames))
+                    a.has_frames)
                     cands.push_back({"Number of Frames", {text_fix(tags::NumberOfFrames, VR::IS, std::to_string(n),
                                                                    "Number of Frames set to the frames the pixel "
                                                                    "data holds")}});

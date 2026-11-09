@@ -62,7 +62,8 @@ using namespace detail;
 
 constexpr std::size_t kTableCount = sizeof(kAttrTables) / sizeof(kAttrTables[0]);
 constexpr std::size_t kCondCount = sizeof(kConditions) / sizeof(kConditions[0]);
-constexpr int kMaxIncludeDepth = 16;
+constexpr int kMaxIncludeDepth = 24;
+constexpr int kMaxRecursion = 3;
 
 struct Cache {
     std::mutex mu;
@@ -91,8 +92,11 @@ struct FlatRow {
 void flatten(int table, int depth_offset, int nesting, std::vector<int>& stack, std::vector<int>& guards,
              std::vector<FlatRow>& out) {
     if (table < 0 || static_cast<std::size_t>(table) >= kTableCount || nesting > kMaxIncludeDepth) return;
-    for (int s : stack)
-        if (s == table) return;  // recursive include (e.g. content items): stop at one level
+    // Recursive includes (SR content items include their own macro through the Content Sequence):
+    // expanded to kMaxRecursion levels; deeper levels are not checked.
+    int seen = 0;
+    for (int s : stack) seen += s == table ? 1 : 0;
+    if (seen >= kMaxRecursion) return;
     stack.push_back(table);
     const AttrTable& t = kAttrTables[table];
     for (std::uint32_t i = 0; i < t.count; ++i) {

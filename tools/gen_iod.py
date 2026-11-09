@@ -21,6 +21,7 @@ and, for 1C/2C, a condition when its text has one of a few simple shapes:
     <Attribute> (gggg,eeee) has a value of X [or Y ...] / equals X / is X -> EQUALS
     <Attribute> (gggg,eeee) has a value other than X / is not X      -> NOT_EQUALS
     <Attribute> (gggg,eeee) has a value greater than N / is greater than N -> GREATER
+plus the phrases listed in PHRASES (each with the PS3.3 section that defines it).
 Anything else is recorded as "not evaluated" (op NONE). Only the Python standard library is used.
 The output is deterministic (document order, no timestamps).
 """
@@ -149,8 +150,19 @@ ATTR_REF = r"[A-Za-z0-9'’ ,/\-\(\)]*?\(([0-9A-Fa-fx]{4}),([0-9A-Fa-fx]{4})\)"
 VALUE = r"(?:\"([^\"]+)\"|([A-Z0-9_]+|-?\d+(?:\.\d+)?))"
 
 
+# Condition phrases that name no attribute but whose meaning PS3.3 defines in terms of one.
+# PS3.3 C.17.3 (Document Relationship Macro): a Content Item is included by-reference exactly when
+# Referenced Content Item Identifier (0040,DB73) is present, and by-value otherwise.
+PHRASES = [
+    (r"the Target Content Item is included by-value in the Source Content Item", ("ABSENT", 0x0040DB73, 0xFFFFFFFF, [])),
+]
+
+
 def parse_condition(desc):
     """Returns (op, tag, mask, values) for the simple shapes, or None."""
+    for phrase, cond in PHRASES:
+        if re.search(r"Required if " + phrase, desc):
+            return cond
     m = re.search(r"Required if (.*?)(?:\.(?:\s|$)|;|$)", desc)
     if not m:
         return None
