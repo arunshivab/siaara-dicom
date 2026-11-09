@@ -198,7 +198,7 @@ TEST_CASE("gsps: rendering applies VOI, Presentation LUT, rotation, flip, displa
         PresentationState ps = window_ps();
         ps.shutters.rectangular = true;
         ps.shutters.left = 2, ps.shutters.right = 3, ps.shutters.upper = 1, ps.shutters.lower = 2;
-        ps.shutters.presentation_value = 65535;
+        ps.shutters.presentation_value = std::uint16_t{65535};
         auto r = render_with_presentation_state(*img, ps, 0, "1.2.3.100", o);
         CHECK(gray(*r, 0, 0) == 255 && gray(*r, 0, 1) == 255 && gray(*r, 1, 0) == 1);
     }
@@ -276,7 +276,7 @@ TEST_CASE("gsps: writer round trip") {
     l.name = "LAYER1";
     l.order = 1;
     l.cielab = std::array<std::uint16_t, 3>{65535, 32896, 32896};
-    l.gray = 65535;
+    l.gray = std::uint16_t{65535};
     req.layers.push_back(l);
     GraphicAnnotation a;
     a.layer = "LAYER1";
@@ -484,7 +484,7 @@ TEST_CASE("gsps: blending and colour states are parsed") {
     CHECK(ps->blending[0].position == "UNDERLYING" && ps->blending[1].position == "SUPERIMPOSED");
     CHECK(ps->blending[1].images.size() == 1 && ps->blending[1].images[0].series_uid == "1.2.3.21");
     CHECK(ps->blending[1].voi.size() == 1 && ps->blending[1].voi[0].windows[0].width == 6.0);
-    CHECK(ps->blending[1].modality && ps->blending[1].modality->slope == 0.001);
+    CHECK(ps->blending[1].modality && std::fabs(ps->blending[1].modality->slope - 0.001) < 1e-15);
     CHECK(ps->relative_opacity && std::fabs(*ps->relative_opacity - 0.4) < 1e-7);
     put(d, siaara::tags::SOPClassUID, VR::UI, sop::ColorSoftcopyPresentationState);
     const std::uint8_t icc[4] = {1, 2, 3, 4};

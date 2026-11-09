@@ -202,27 +202,32 @@ Status read_annotations(const Dataset& ds, PresentationState& ps, bool lenient) 
             GraphicObject go;
             auto u = get_text(g, tags::GraphicAnnotationUnits);
             auto ty = get_text(g, tags::GraphicType);
-            auto pu = u ? parse_units(*u) : std::nullopt;
-            auto pt = ty ? parse_type(*ty) : std::nullopt;
+            // Plain values instead of optionals: GCC 13 -O2 -m32 reports a false
+            // maybe-uninitialized for std::optional<enum> here.
+            const auto pu_opt = u ? parse_units(*u) : std::nullopt;
+            const auto pt_opt = ty ? parse_type(*ty) : std::nullopt;
+            const bool have_units = pu_opt.has_value(), have_type = pt_opt.has_value();
+            const AnnotationUnits pu = pu_opt.value_or(AnnotationUnits::Pixel);
+            const GraphicType pt = pt_opt.value_or(GraphicType::Polyline);
             const auto dims = g.get_int(tags::GraphicDimensions).value_or(2);
             auto data = get_numbers(g, tags::GraphicData, 1u << 24);
             const auto npts = g.get_int(tags::NumberOfGraphicPoints);
-            bool ok = pu && pt && dims == 2 && data && data->size() % 2 == 0;
+            bool ok = have_units && have_type && dims == 2 && data && data->size() % 2 == 0;
             if (ok && npts && static_cast<std::size_t>(*npts) * 2 != data->size()) ok = false;
             if (ok) {
                 for (std::size_t i = 0; i + 1 < data->size(); i += 2) {
                     if (!std::isfinite((*data)[i]) || !std::isfinite((*data)[i + 1])) ok = false;
                     go.points.push_back({(*data)[i], (*data)[i + 1]});
                 }
-                ok = ok && point_count_ok(*pt, go.points.size());
+                ok = ok && point_count_ok(pt, go.points.size());
             }
             if (!ok) {
                 if (!lenient) return Status(Errc::Malformed, "graphic object " + std::to_string(k) + " is malformed");
                 ps.warnings.push_back("malformed graphic object skipped");
                 continue;
             }
-            go.units = *pu;
-            go.type = *pt;
+            go.units = pu;
+            go.type = pt;
             go.filled = get_text(g, tags::GraphicFilled).value_or("N") == "Y";
             go.group_id = g.get_int(tags::GraphicGroupId);
             a.graphics.push_back(std::move(go));
@@ -716,6 +721,11 @@ Result<DicomFile> write_gsps(const GspsWriteRequest& req) {
     (void)ds.set_string(siaara::tags::Modality, VR::CS, "PR");
     (void)ds.set_string(siaara::tags::SeriesInstanceUID, VR::UI, req.series_uid.empty() ? new_uid() : req.series_uid);
     (void)ds.set_string(tags::SeriesNumber, VR::IS, format_is(req.series_number));
+    // Laterality (0020,0060) is Type 2C in General Series: copied from the source, else empty.
+    {
+        std::optional<std::string> lat = req.source ? get_text(*req.source, 0x00200060) : std::nullopt;
+        (void)ds.set_string(0x00200060, VR::CS, lat && (*lat == "R" || *lat == "L") ? *lat : std::string());
+    }
     put_text(ds, tags::Manufacturer, VR::LO, req.manufacturer, non_ascii);
     // Presentation State Identification
     (void)ds.set_string(tags::InstanceNumber, VR::IS, format_is(req.instance_number));
