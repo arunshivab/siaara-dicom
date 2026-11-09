@@ -69,16 +69,18 @@ public:
     }
 
     void reset() { reset_contexts(cx_); }
-    MqDecoder mq;
+    MqDecoder coder;
     RawDecoder raw;
 
     template <bool kRaw>
     void sigprop(int p) {
+        MqDecoder mq = coder;  // local copy: lets the coder registers live in registers
         const std::uint32_t one = 3u << p;
         for (int y0 = 0; y0 < h_; y0 += 4) {
             const int rows = std::min(4, h_ - y0);
             for (int x = 0; x < w_; ++x) {
                 std::uint32_t* fp = f_ + static_cast<std::size_t>(y0) * fs_ + static_cast<std::size_t>(x);
+                if (rows == 4 && ((fp[0] | fp[fs_] | fp[2 * fs_] | fp[3 * fs_]) & 0xFFu) == 0) continue;
                 for (int r = 0; r < rows; ++r, fp += fs_) {
                     std::uint32_t fl = *fp;
                     if (fl & kSig) continue;
@@ -104,15 +106,18 @@ public:
                 }
             }
         }
+        coder = mq;
     }
 
     template <bool kRaw>
     void magref(int p) {
+        MqDecoder mq = coder;
         const std::uint32_t half = 1u << p;
         for (int y0 = 0; y0 < h_; y0 += 4) {
             const int rows = std::min(4, h_ - y0);
             for (int x = 0; x < w_; ++x) {
                 std::uint32_t* fp = f_ + static_cast<std::size_t>(y0) * fs_ + static_cast<std::size_t>(x);
+                if (rows == 4 && ((fp[0] | fp[fs_] | fp[2 * fs_] | fp[3 * fs_]) & kSig) == 0) continue;
                 for (int r = 0; r < rows; ++r, fp += fs_) {
                     std::uint32_t fl = *fp;
                     if ((fl & (kSig | kVisit)) != kSig) continue;
@@ -130,9 +135,11 @@ public:
                 }
             }
         }
+        coder = mq;
     }
 
     void cleanup(int p, bool segsym) {
+        MqDecoder mq = coder;
         const std::uint32_t one = 3u << p;
         for (int y0 = 0; y0 < h_; y0 += 4) {
             const int rows = std::min(4, h_ - y0);
@@ -180,6 +187,7 @@ public:
         if (segsym) {
             for (int i = 0; i < 4; ++i) (void)mq.decode(cx_[kCtxUniform]);
         }
+        coder = mq;
     }
 
 private:
@@ -244,7 +252,7 @@ bool decode_t1_block(const BlockParams& bp, std::span<const Segment> segs, std::
             const int type = pass % 3;
             raw_seg = bypass && pass >= 10 && type != 0;
             if (raw_seg) dec.raw.init(segs[seg].data, segs[seg].len);
-            else dec.mq.init(segs[seg].data, segs[seg].len);
+            else dec.coder.init(segs[seg].data, segs[seg].len);
         }
         const int type = pass % 3;  // 0 cleanup, 1 significance propagation, 2 refinement
         const int plane = top - (pass + 2) / 3;
