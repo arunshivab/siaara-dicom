@@ -55,7 +55,11 @@ upstream), and issues that need an attacker who already controls the process.
 
 ## Hardening in place
 
-Every parser has a fuzz target (`fuzz/`), run for 60 s per target on every change and 30 minutes
-per target nightly with ASan and UBSan; ThreadSanitizer covers the threaded code; release binaries
-link only OS libraries (checked), export only the C API (checked against a baseline), and come
-with SHA-256 checksums, an SPDX SBOM and GitHub build provenance attestations.
+Every parser has a fuzz target (`fuzz/`): 60 s per target with libFuzzer + ASan + UBSan on every
+change, 30 minutes per target nightly, and ClusterFuzzLite on pull requests and daily. CI also
+runs ThreadSanitizer over the threaded code, MSVC AddressSanitizer, clang-tidy (new findings fail)
+and CodeQL. Release binaries are built with compiler and linker hardening (stack protector,
+FORTIFY_SOURCE, full RELRO, CFG/CET where the platform has them; checked on the binaries), link
+the C/C++ runtime statically and otherwise only OS libraries (checked), export only the C API
+(checked against a baseline), and come with SHA-256 checksums, an SPDX SBOM and GitHub build
+provenance attestations.
