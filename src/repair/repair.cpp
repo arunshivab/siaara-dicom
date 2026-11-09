@@ -27,7 +27,6 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr Tag kPerFrameFunctionalGroups = 0x52009230;
-constexpr Tag kInstanceNumber = 0x00200013;
 
 fs::path fs_path(const std::string& utf8) {
     return fs::path(std::u8string_view(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
