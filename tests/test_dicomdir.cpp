@@ -141,6 +141,16 @@ fs::path handmade(const fs::path& root, const std::vector<std::string>& file_ids
     return p2;
 }
 
+// Probes the folder's file system: does an upper-case spelling find a lower-case file?
+bool filesystem_is_case_sensitive(const fs::path& dir) {
+    const fs::path probe = dir / "case-probe";
+    store_synth::write_bytes(probe, {1});
+    std::error_code ec;
+    const bool same = fs::exists(dir / "CASE-PROBE", ec);
+    fs::remove(probe, ec);
+    return !same;
+}
+
 bool has_dcmmkdir() { return std::system("command -v dcmmkdir > /dev/null 2>&1") == 0; }
 
 }  // namespace
@@ -397,10 +407,21 @@ TEST_CASE("dicomdir: Referenced File IDs cannot escape the media root") {
     CHECK_EQ(s.files, 1u);
     CHECK_EQ(s.missing_files, 1u);
     CHECK_EQ(s.rejected_paths, have_link ? 12u : 11u);
+    // Without our own case-insensitive lookup the file system decides: on a case-sensitive one
+    // (Linux ext4) "DICOM\IM1" does not name "dicom/im1"; on a case-insensitive one (NTFS, APFS
+    // default) it is the same file and must resolve, still under the root.
     DicomdirReadOptions exact;
     exact.case_insensitive = false;
     const auto w = read_all(dd, nullptr, exact);
-    CHECK(w[3].file_status.code == Errc::NotFound);
+    REQUIRE(w.size() == v.size());
+    if (filesystem_is_case_sensitive(td.path())) {
+        CHECK(w[3].file_status.code == Errc::NotFound);
+        CHECK(w[3].keys[Str::FilePath].empty());
+    } else {
+        CHECK(w[3].file_status.is_ok());
+        CHECK(fs::equivalent(w[3].keys[Str::FilePath], media / "dicom" / "im1"));
+    }
+    for (std::size_t i = 4; i < w.size(); ++i) CHECK(w[i].file_status.code == v[i].file_status.code);
 }
 
 TEST_CASE("dicomdir: C API read and write") {
