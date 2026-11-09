@@ -1,6 +1,9 @@
 #include "core/io.hpp"
 
+#include "core/secure_file.hpp"
+
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <memory>
 
@@ -83,28 +86,40 @@ Result<Bytes> read_file(const std::string& utf8_path) {
     return Bytes(std::shared_ptr<const void>(store, store.get()), p, store->size());
 }
 
-Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size) {
+namespace {
+// The folder part of a path ("" when there is none), with its trailing separator.
+std::string folder_of(const std::string& p) {
+    const std::size_t k = p.find_last_of("/\\");
+    return k == std::string::npos ? std::string() : p.substr(0, k + 1);
+}
+}  // namespace
+
+Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
-    const std::wstring tmp = w + L".siaara-tmp";
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot create file");
-    std::size_t done = 0;
-    while (done < size) {
-        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(size - done, 1u << 30));
-        DWORD wrote = 0;
-        if (!WriteFile(h, data + done, chunk, &wrote, nullptr) || wrote == 0) {
-            CloseHandle(h);
-            DeleteFileW(tmp.c_str());
-            return Status(Errc::IoError, "write failed");
-        }
-        done += wrote;
+    ExclusiveFile f;
+    std::string tmp;
+    for (int attempt = 0;; ++attempt) {
+        tmp = folder_of(utf8_path) + unique_name(".siaara-tmp-", ".part");
+        bool exists = false;
+        Status s = f.create(tmp, &exists);
+        if (s) break;
+        if (!exists || attempt >= 8) return Status(Errc::IoError, "cannot create file");
     }
-    FlushFileBuffers(h);
-    CloseHandle(h);
-    if (!MoveFileExW(tmp.c_str(), w.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(tmp.c_str());
+    const std::wstring wtmp = widen(tmp);
+    Status st = f.write(data, size);
+    if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
+    if (!f.close() && st) st = Status(Errc::IoError, "close failed");
+    if (!st) {
+        DeleteFileW(wtmp.c_str());
+        return Status(Errc::IoError, "write failed");
+    }
+    const DWORD flags = MOVEFILE_WRITE_THROUGH | (mode == WriteMode::Replace ? MOVEFILE_REPLACE_EXISTING : 0);
+    if (!MoveFileExW(wtmp.c_str(), w.c_str(), flags)) {
+        const DWORD e = GetLastError();
+        DeleteFileW(wtmp.c_str());
+        if (mode == WriteMode::NoReplace && (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS))
+            return Status(Errc::Rejected, "file exists");
         return Status(Errc::IoError, "rename failed");
     }
     return Status::ok();
@@ -174,27 +189,64 @@ Result<Bytes> read_file(const std::string& utf8_path) {
     return Bytes(std::shared_ptr<const void>(store, store.get()), p, store->size());
 }
 
-Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size) {
-    const std::string tmp = utf8_path + ".siaara-tmp";
-    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-    if (fd < 0) return Status(Errc::IoError, "cannot create file");
-    std::size_t done = 0;
-    while (done < size) {
-        const ssize_t n = ::write(fd, data + done, size - done);
-        if (n <= 0) {
-            ::close(fd);
-            ::unlink(tmp.c_str());
-            return Status(Errc::IoError, "write failed");
-        }
-        done += static_cast<std::size_t>(n);
+namespace {
+std::string folder_of(const std::string& p) {
+    const std::size_t k = p.rfind('/');
+    return k == std::string::npos ? std::string() : p.substr(0, k + 1);
+}
+
+// Exclusive create of `path` itself, then write: the no-replace fallback for file systems
+// without hard links. Not atomic against crashes, but never replaces an existing file.
+Status write_exclusive_in_place(const std::string& path, const std::uint8_t* data, std::size_t size) {
+    ExclusiveFile f;
+    bool exists = false;
+    if (Status s = f.create(path, &exists); !s) return exists ? Status(Errc::Rejected, "file exists") : s;
+    Status st = f.write(data, size);
+    if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
+    if (!f.close() && st) st = Status(Errc::IoError, "close failed");
+    if (!st) ::unlink(path.c_str());
+    return st;
+}
+}  // namespace
+
+Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
+    if (utf8_path.empty()) return Status(Errc::InvalidArgument, "path is empty");
+    ExclusiveFile f;
+    std::string tmp;
+    for (int attempt = 0;; ++attempt) {
+        tmp = folder_of(utf8_path) + unique_name(".siaara-tmp-", ".part");
+        bool exists = false;
+        Status s = f.create(tmp, &exists);
+        if (s) break;
+        if (!exists || attempt >= 8) return Status(Errc::IoError, "cannot create file");
     }
-    ::fsync(fd);
-    ::close(fd);
-    if (::rename(tmp.c_str(), utf8_path.c_str()) != 0) {
+    Status st = f.write(data, size);
+    if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
+    if (!f.close() && st) st = Status(Errc::IoError, "close failed");
+    if (!st) {
         ::unlink(tmp.c_str());
-        return Status(Errc::IoError, "rename failed");
+        return st;
     }
-    return Status::ok();
+    if (mode == WriteMode::Replace) {
+        // rename() replaces a symlink at the target itself, it never writes through it.
+        if (::rename(tmp.c_str(), utf8_path.c_str()) != 0) {
+            ::unlink(tmp.c_str());
+            return Status(Errc::IoError, "rename failed");
+        }
+        return Status::ok();
+    }
+    // No replace: link() fails with EEXIST if the target exists (also a dangling symlink), with
+    // no window between a check and the write.
+    if (::link(tmp.c_str(), utf8_path.c_str()) == 0) {
+        ::unlink(tmp.c_str());
+        return Status::ok();
+    }
+    const int e = errno;
+    ::unlink(tmp.c_str());
+    if (e == EEXIST) return Status(Errc::Rejected, "file exists");
+    if (e == EPERM || e == ENOTSUP || e == EOPNOTSUPP || e == EMLINK || e == ENOSYS)
+        return write_exclusive_in_place(utf8_path, data, size);
+    return Status(Errc::IoError, "rename failed");
 }
 
 #endif
