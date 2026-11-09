@@ -165,7 +165,16 @@ private:
         const auto values = detail::split_values(e.value.as_chars(), vr);
         for (std::size_t i = 0; i < values.size(); ++i) {
             const auto v = values[i];
-            if (v.empty()) continue;  // empty values are omitted; numbering keeps their position
+            if (v.empty()) {
+                // Empty values of a multi-valued attribute are written as empty elements so the
+                // value count survives (a single empty value is simply no Value element).
+                if (values.size() > 1) {
+                    out_.append(vr == VR::PN ? "<PersonName number=\"" : "<Value number=\"");
+                    out_.append(std::to_string(i + 1));
+                    out_.append("\"/>");
+                }
+                continue;
+            }
             if (vr == VR::PN) {
                 if (Status st = person_name(v, i, cs, e.tag); !st) return st;
                 continue;

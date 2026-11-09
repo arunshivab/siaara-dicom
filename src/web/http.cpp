@@ -535,7 +535,7 @@ Status Connection::read_chunked(std::string& body) {
         if (!checked_add(body.size(), size, total) || total > lim_.max_body)
             return Status(Errc::LimitExceeded, "body too large");
         if (Status st = read_exact(size, body); !st) return st;
-        if (Status st = read_line(0, line, lim_.read_timeout_ms, any); !st) return st;
+        if (Status st = read_line(lim_.max_chunk_line, line, lim_.read_timeout_ms, any); !st) return st;
         if (!line.empty()) return Status(Errc::Malformed, "missing CRLF after chunk data");
     }
     // Trailer section: parsed with the header limits, then discarded.
