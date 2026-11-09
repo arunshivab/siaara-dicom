@@ -154,7 +154,9 @@ int main(int argc, char** argv) {
     int failures = 0, written = 0, skipped = 0, held = 0;
     for (std::size_t n = 0; n < inputs.size(); ++n) {
         auto f = read_file(inputs[n].string());
-        if (!f) {
+        // Files without the Part 10 header are accepted only if they parse as a data set with a
+        // SOP Class UID (lenient raw parsing turns arbitrary bytes into a few junk elements).
+        if (!f || (!f->had_preamble && !f->dataset.contains(tags::SOPClassUID))) {
             ++skipped;  // not DICOM, or unreadable
             continue;
         }
@@ -174,15 +176,18 @@ int main(int argc, char** argv) {
             ++held;
             continue;
         }
-        const fs::path target = out_dir / (name + ".dcm");
+        // Instances that share a SOP Instance UID (e.g. one image in several transfer syntaxes)
+        // must not overwrite each other.
+        fs::path target = out_dir / (name + ".dcm");
+        for (int k = 2; fs::exists(target, ec); ++k) target = out_dir / (name + "-" + std::to_string(k) + ".dcm");
         if (Status s = write_file(*f, target.string()); !s) {
             std::fprintf(stderr, "input %zu: write failed: %s\n", n + 1, s.message.c_str());
             ++failures;
             continue;
         }
         ++written;
-        std::printf("%s.dcm: removed %zu, emptied %zu, dummy %zu, cleaned %zu, uids %zu, dates %zu, private kept %zu%s\n",
-                    name.c_str(), rep.removed, rep.emptied, rep.dummied, rep.cleaned, rep.uids_replaced,
+        std::printf("%s: removed %zu, emptied %zu, dummy %zu, cleaned %zu, uids %zu, dates %zu, private kept %zu%s\n",
+                    target.filename().string().c_str(), rep.removed, rep.emptied, rep.dummied, rep.cleaned, rep.uids_replaced,
                     rep.dates_shifted, rep.private_kept,
                     (rep.flags & deid::NotFullyDeidentified) ? " [NOT FULLY DE-IDENTIFIED]" : "");
     }
