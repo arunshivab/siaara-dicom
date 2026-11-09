@@ -8,6 +8,7 @@
 
 #include "core/io.hpp"
 #include "core/reader.hpp"
+#include "net/tls.hpp"
 #include "web/client.hpp"
 #include "web/dicom_json.hpp"
 
@@ -15,6 +16,80 @@ using namespace siaara;
 using namespace siaara::web;
 
 namespace {
+
+// ---- TLS options (PS3.15 B.12/B.13; DIMSE over TLS uses its own port, 2762 is registered)
+std::string env_value(const char* name) {
+#if defined(_MSC_VER)
+    char* v = nullptr;
+    std::size_t n = 0;
+    if (_dupenv_s(&v, &n, name) != 0 || !v) return std::string();
+    std::string s(v);
+    std::free(v);
+    return s;
+#else
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+#endif
+}
+
+const char* const kTlsUsage =
+    "TLS options:\n"
+    "  --tls                 use TLS (default port for DIMSE over TLS: 2762)\n"
+    "  --tls-ca FILE         PEM trust anchors (default: the OS trust store)\n"
+    "  --tls-cert FILE       PEM certificate chain (Linux)\n"
+    "  --tls-key FILE        PEM private key (Linux)\n"
+    "  --tls-p12 FILE        PKCS#12 identity (all systems)\n"
+    "  --tls-password-env V  read the PKCS#12 / key password from environment variable V\n"
+    "  --tls-os-identity ID  Windows: certificate thumbprint in CurrentUser\\MY; macOS: keychain label\n"
+    "  --tls13               TLS 1.3 only (default: TLS 1.2 or 1.3)\n"
+    "  --tls-insecure        DANGEROUS: do not validate the peer certificate (warned per connection)\n";
+
+// Returns 1 when argv[i] was a TLS option (i advanced past its value), 0 when it is not one,
+// -1 when its value is missing or unusable.
+int parse_tls_option(int argc, char** argv, int& i, siaara::net::TlsSettings& t) {
+    const std::string a = argv[i];
+    const bool more = i + 1 < argc;
+    auto value = [&](std::string& dst) {
+        if (!more) return -1;
+        dst = argv[++i];
+        return 1;
+    };
+    if (a == "--tls") {
+        t.enabled = true;
+        return 1;
+    }
+    if (a == "--tls-ca") return value(t.ca_file);
+    if (a == "--tls-cert") return value(t.identity.certificate_file);
+    if (a == "--tls-key") return value(t.identity.private_key_file);
+    if (a == "--tls-p12") return value(t.identity.pkcs12_file);
+    if (a == "--tls-name") return value(t.expected_identity);
+    if (a == "--tls-os-identity") {
+#if defined(_WIN32)
+        return value(t.identity.windows_thumbprint);
+#else
+        return value(t.identity.keychain_identity);
+#endif
+    }
+    if (a == "--tls-password-env") {
+        std::string name;
+        if (value(name) < 0) return -1;
+        t.identity.password = env_value(name.c_str());
+        return t.identity.password.empty() ? -1 : 1;
+    }
+    if (a == "--tls13") {
+        t.min_version = siaara::net::TlsMinVersion::Tls13;
+        return 1;
+    }
+    if (a == "--tls-insecure") {
+        t.insecure_skip_validation = true;
+        return 1;
+    }
+    if (a == "--tls-require-client-cert") {
+        t.require_client_certificate = true;
+        return 1;
+    }
+    return 0;
+}
 
 int usage() {
     std::fputs(
@@ -26,8 +101,10 @@ int usage() {
         "  frames <url> STUDY SERIES INSTANCE LIST --out PREFIX [--ts UID]...  writes PREFIX.<n>\n"
         "  wado-uri <url> STUDY SERIES OBJECT --out FILE [--ts UID]\n"
         "  stow <url> [--study UID] FILE...\n"
-        "options: --token TOKEN (bearer) | --basic USER:PASSWORD, --timeout MS\n",
+        "options: --token TOKEN (bearer) | --basic USER:PASSWORD, --timeout MS\n"
+        "https:// URLs use TLS; --tls-name NAME sets the name the server certificate must carry.\n",
         stderr);
+    std::fputs(kTlsUsage, stderr);
     return 2;
 }
 
@@ -60,8 +137,18 @@ int main(int argc, char** argv) {
     std::vector<std::string> tss, includes;
     QidoParams q;
     int timeout = 30000;
+    net::TlsSettings tls;
+    bool tls_verbose = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        if (a == "--tls" || a == "--tls-require-client-cert") return usage();  // the URL scheme decides
+        if (a == "--tls-verbose") {
+            tls_verbose = true;
+            continue;
+        }
+        const int tls_opt = parse_tls_option(argc, argv, i, tls);
+        if (tls_opt < 0) return usage();
+        if (tls_opt > 0) continue;
         auto next = [&](std::string& dst) {
             if (i + 1 >= argc) return false;
             dst = argv[++i];
@@ -89,6 +176,12 @@ int main(int argc, char** argv) {
     cfg.limits.read_timeout_ms = timeout;
     cfg.limits.write_timeout_ms = timeout;
     cfg.connect_timeout_ms = timeout;
+    cfg.tls = tls;
+    cfg.tls.handshake_timeout_ms = timeout > 0 ? timeout : 30000;
+    cfg.tls.log = [tls_verbose](const std::string& s) {
+        if (tls_verbose || s.rfind("WARNING", 0) == 0) std::fprintf(stderr, "siaara-webcli: %s\n", s.c_str());
+    };
+    net::tls_wipe_secret(tls.identity.password);
     if (!token.empty()) cfg.authorization = [token] { return bearer_auth(token); };
     else if (!basic.empty()) {
         const auto colon = basic.find(':');

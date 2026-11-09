@@ -53,3 +53,7 @@ target_compile_options(pixel_tool PRIVATE ${SIAARA_WARN})
 add_executable(web_tool crosscheck/web_tool.cpp)
 target_link_libraries(web_tool PRIVATE siaara_static)
 target_compile_options(web_tool PRIVATE ${SIAARA_WARN})
+# Test-only TLS helper for tests/crosscheck/tls_crosscheck.py (not installed).
+add_executable(tls_tool crosscheck/tls_tool.cpp)
+target_link_libraries(tls_tool PRIVATE siaara_static)
+target_compile_options(tls_tool PRIVATE ${SIAARA_TEST_WARN})

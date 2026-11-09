@@ -113,11 +113,11 @@ void tls_log(const TlsSettings& s, const std::string& msg) {
 Status check_session(const TlsSettings& s, TlsContext::Role role, const TlsSessionInfo& info, const std::string& peer) {
     const bool v13 = info.protocol == "TLSv1.3";
     if (!v13 && info.protocol != "TLSv1.2")
-        return Status(Errc::Rejected, "TLS protocol version " + info.protocol + " is not allowed");
-    if (s.min_version == TlsMinVersion::Tls13 && !v13) return Status(Errc::Rejected, "TLS 1.3 is required");
+        return Status(Errc::NetworkError, "TLS protocol version " + info.protocol + " is not allowed");
+    if (s.min_version == TlsMinVersion::Tls13 && !v13) return Status(Errc::NetworkError, "TLS 1.3 is required");
     const CipherSuite* cs = find_allowed_cipher_suite(info.cipher_suite);
     if (!cs || cs->tls13 != v13)
-        return Status(Errc::Rejected, "cipher suite " + hex4(info.cipher_suite) + " is not allowed by the PS3.15 profile");
+        return Status(Errc::NetworkError, "cipher suite " + hex4(info.cipher_suite) + " is not allowed by the PS3.15 profile");
     const char* who = role == TlsContext::Role::Client ? "server" : "client";
     std::string summary = std::string("TLS: ") + (role == TlsContext::Role::Client ? "connected to " : "accepted ") +
                           peer + ", " + info.protocol + ", " + cs->name + ", " + who + " certificate ";

@@ -503,9 +503,9 @@ public:
         if (v != 0) {
             const char* why = a_.X509_verify_cert_error_string(v);
             a_.ERR_clear_error();
-            return Status(Errc::Rejected, std::string("certificate verification failed: ") + (why ? why : "?"));
+            return Status(Errc::NetworkError, std::string("certificate verification failed: ") + (why ? why : "?"));
         }
-        return Status(Errc::Rejected, errors(a_));
+        return Status(Errc::NetworkError, errors(a_));
     }
 
     Status finish(TlsSessionInfo& info) override {
@@ -517,16 +517,16 @@ public:
         info.peer_certificate = peer != nullptr;
         info.peer_verified = peer && !s_.insecure_skip_validation && a_.SSL_get_verify_result(ssl_) == 0;
         if (!peer) {
-            if (!server_) return Status(Errc::Rejected, "the server sent no certificate");
-            if (s_.require_client_certificate) return Status(Errc::Rejected, "the client sent no certificate");
+            if (!server_) return Status(Errc::NetworkError, "the server sent no certificate");
+            if (s_.require_client_certificate) return Status(Errc::NetworkError, "the client sent no certificate");
             return Status::ok();
         }
         if (const void* key = a_.X509_get0_pubkey(peer)) {
             const int id = a_.EVP_PKEY_get_base_id(key);
             const int bits = a_.EVP_PKEY_get_bits(key);
             if ((id == kPkeyRsa || id == kPkeyRsaPss) && bits < 2048)
-                return Status(Errc::Rejected, "peer RSA key shorter than 2048 bits");
-            if (id == kPkeyEc && bits < 256) return Status(Errc::Rejected, "peer EC key shorter than 256 bits");
+                return Status(Errc::NetworkError, "peer RSA key shorter than 2048 bits");
+            if (id == kPkeyEc && bits < 256) return Status(Errc::NetworkError, "peer EC key shorter than 256 bits");
         }
         return Status::ok();
     }
