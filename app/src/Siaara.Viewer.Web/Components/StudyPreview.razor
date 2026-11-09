@@ -1,0 +1,49 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Series thumbnails of the selected study. *@
+@inject ViewerRuntime Rt
+<div class="preview">
+    @if (Study is null)
+    {
+        <span class="muted">Select a study to see its series.</span>
+    }
+    else if (_series is null)
+    {
+        <span class="muted">Loading series...</span>
+    }
+    else
+    {
+        @foreach (var s in _series)
+        {
+            <figure class="thumb">
+                <img src="@($"api/thumb?series={Uri.EscapeDataString(s.SeriesInstanceUid)}")" width="128" height="128" alt="" loading="lazy" />
+                <figcaption>@(s.SeriesNumber?.ToString(CultureInfo.InvariantCulture) ?? "-") @s.Modality @s.Description<br /><span class="muted">@s.Instances images</span></figcaption>
+            </figure>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public StudyRow? Study { get; set; }
+    private string? _uid;
+    private IReadOnlyList<SeriesRow>? _series;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Study?.StudyInstanceUid == _uid)
+        {
+            return;
+        }
+        _uid = Study?.StudyInstanceUid;
+        _series = null;
+        if (_uid is not null)
+        {
+            try
+            {
+                _series = await Rt.Store.GetSeriesAsync(_uid).ConfigureAwait(true);
+            }
+            catch (Siaara.Viewer.Core.Toolkit.TkException)
+            {
+                _series = [];
+            }
+        }
+    }
+}

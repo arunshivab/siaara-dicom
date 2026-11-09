@@ -1,0 +1,242 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Study browser. *@
+@page "/"
+@implements IDisposable
+@inject ViewerRuntime Rt
+@inject NavigationManager Nav
+
+<PageTitle>SIAARA Viewer: studies</PageTitle>
+
+<div class="app browser">
+    <header class="topbar">
+        <div class="brand">SIAARA <span>Viewer</span></div>
+        <input class="search" type="search" placeholder="Search name, patient ID or accession" value="@_text" @oninput="OnSearch" aria-label="Search" />
+        <div class="chips" role="group" aria-label="Date">
+            @foreach (var d in DateChips)
+            {
+                <button class="chip @(_date == d ? "on" : "")" @onclick="() => SetDate(d)">@d</button>
+            }
+            @if (_date == "Range")
+            {
+                <input type="date" @bind="_from" @bind:after="Requery" aria-label="From" />
+                <input type="date" @bind="_to" @bind:after="Requery" aria-label="To" />
+            }
+        </div>
+        <div class="chips" role="group" aria-label="Modality">
+            @foreach (var m in ModalityChips)
+            {
+                <button class="chip @(_modality == m ? "on" : "")" @onclick="() => SetModality(m)">@m</button>
+            }
+        </div>
+        <div class="actions">
+            <button class="btn primary" disabled="@(_selected is null)" @onclick="OpenSelected">Open</button>
+            <button class="btn" @onclick="() => _importOpen = true">Import</button>
+            <button class="btn" @onclick="() => _settingsOpen = true">Settings</button>
+        </div>
+    </header>
+
+    <main class="browser-main">
+        <StudyGrid Rows="_page?.Rows" Selected="_selected" NewRows="_new" OnSelect="Select" OnOpen="Open" />
+        <div class="pager">
+            <button class="btn" disabled="@(_offset == 0)" @onclick="Prev">Previous</button>
+            <span>@PageText</span>
+            <button class="btn" disabled="@(!HasNext)" @onclick="Next">Next</button>
+            <span class="spacer"></span>
+            <button class="btn danger" disabled="@(_selected is null)" @onclick="() => _confirm = Confirm.Study">Delete study</button>
+            <button class="btn danger" disabled="@(_selected is null || _selected.PatientKey.Length == 0)" @onclick="() => _confirm = Confirm.Patient">Delete patient</button>
+        </div>
+        <StudyPreview Study="_selected" />
+    </main>
+
+    <StatusBar Left="@_statusText" />
+
+    @if (_importOpen)
+    {
+        <ImportSheet OnClose="() => _importOpen = false" />
+    }
+    @if (_settingsOpen)
+    {
+        <SettingsSheet OnClose="() => _settingsOpen = false" />
+    }
+    @if (_confirm != Confirm.None && _selected is not null)
+    {
+        <ConfirmDialog Title="@(_confirm == Confirm.Study ? "Delete study" : "Delete patient")"
+                       Text="@ConfirmText" ConfirmLabel="Delete" OnConfirm="DeleteConfirmed" OnCancel="() => _confirm = Confirm.None" />
+    }
+    @if (_error is not null)
+    {
+        <div class="toast error" @onclick="() => _error = null">@_error</div>
+    }
+</div>
+
+@code {
+    private enum Confirm { None, Study, Patient }
+
+    private static readonly string[] DateChips = ["All", "Today", "7d", "Range"];
+    private static readonly string[] ModalityChips = ["All", "CT", "MR", "PT", "NM", "CR/DX", "US", "MG"];
+    private const int PageSize = 50;
+
+    private string _text = "";
+    private string _date = "All";
+    private DateOnly? _from, _to;
+    private string _modality = "All";
+    private int _offset;
+    private StudyPage? _page;
+    private int? _exactTotal;
+    private StudyRow? _selected;
+    private readonly HashSet<string> _new = new(StringComparer.Ordinal);
+    private bool _importOpen, _settingsOpen;
+    private Confirm _confirm;
+    private string? _error;
+    private string _statusText = "";
+    private CancellationTokenSource? _debounce;
+    private CancellationTokenSource? _query;
+
+    private bool HasNext => _page is not null && (_offset + PageSize < (_exactTotal ?? _page.Total) || (!_page.TotalExact && _page.Rows.Count == PageSize && _exactTotal is null));
+
+    private string PageText => _page is null ? "" : _page.Rows.Count == 0 ? "No studies"
+        : $"{_offset + 1}-{_offset + _page.Rows.Count} of {(_exactTotal is int t ? t.ToString(CultureInfo.InvariantCulture) : "at least " + _page.Total.ToString(CultureInfo.InvariantCulture))}";
+
+    private string ConfirmText => _confirm == Confirm.Study
+        ? $"Delete the study \"{_selected!.Description}\" of {_selected.DisplayName} ({_selected.Images} images) from the local store? Copied files are removed; files indexed in place stay where they are."
+        : $"Delete ALL studies of patient {_selected!.DisplayName} ({_selected.PatientId}) from the local store? Copied files are removed; files indexed in place stay where they are.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Rt.Store.StudiesChanged += OnStudiesChanged;
+        await Requery().ConfigureAwait(true);
+    }
+
+    private StudyQuery CurrentQuery()
+    {
+        DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+        (DateOnly? f, DateOnly? t) = _date switch
+        {
+            "Today" => (today, today),
+            "7d" => (today.AddDays(-6), today),
+            "Range" => (_from, _to),
+            _ => ((DateOnly?)null, (DateOnly?)null),
+        };
+        IReadOnlyList<string> mods = _modality switch
+        {
+            "All" => [],
+            "CR/DX" => ["CR", "DX"],
+            string m => [m],
+        };
+        return new StudyQuery { Text = _text, From = f, To = t, Modalities = mods, Offset = _offset, Limit = PageSize };
+    }
+
+    private async Task Requery()
+    {
+        _query?.Cancel();
+        _query?.Dispose();
+        _query = new CancellationTokenSource();
+        CancellationToken ct = _query.Token;
+        StudyQuery q = CurrentQuery();
+        try
+        {
+            _page = await Rt.Store.QueryStudiesAsync(q, ct).ConfigureAwait(true);
+            _exactTotal = _page.TotalExact ? _page.Total : null;
+            if (_selected is not null)
+            {
+                _selected = _page.Rows.FirstOrDefault(r => r.StudyInstanceUid == _selected.StudyInstanceUid);
+            }
+            StateHasChanged();
+            if (_exactTotal is null)
+            {
+                _exactTotal = await Rt.Store.CountStudiesAsync(q, ct).ConfigureAwait(true);
+            }
+            var stats = await Rt.Store.GetStatisticsAsync(ct).ConfigureAwait(true);
+            _statusText = $"{_exactTotal} studies match  |  store: {stats.Studies} studies, {stats.Instances} images";
+            StateHasChanged();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Siaara.Viewer.Core.Toolkit.TkException e)
+        {
+            _error = "The store could not be queried: " + e.Message;
+        }
+    }
+
+    private async Task OnSearch(ChangeEventArgs e)
+    {
+        _text = e.Value?.ToString() ?? "";
+        _debounce?.Cancel();
+        _debounce?.Dispose();
+        _debounce = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(150, _debounce.Token).ConfigureAwait(true);
+            _offset = 0;
+            await Requery().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task SetDate(string d) { _date = d; _offset = 0; if (d != "Range") await Requery().ConfigureAwait(true); }
+    private async Task SetModality(string m) { _modality = m; _offset = 0; await Requery().ConfigureAwait(true); }
+    private async Task Prev() { _offset = Math.Max(0, _offset - PageSize); await Requery().ConfigureAwait(true); }
+    private async Task Next() { _offset += PageSize; await Requery().ConfigureAwait(true); }
+    private void Select(StudyRow r) => _selected = r;
+    private void OpenSelected() { if (_selected is not null) Open(_selected); }
+
+    private void Open(StudyRow r)
+    {
+        Nav.NavigateTo("/viewer/" + Uri.EscapeDataString(r.StudyInstanceUid));
+    }
+
+    private async Task DeleteConfirmed()
+    {
+        StudyRow s = _selected!;
+        Confirm what = _confirm;
+        _confirm = Confirm.None;
+        try
+        {
+            int removed;
+            if (what == Confirm.Study)
+            {
+                removed = await Rt.Store.DeleteStudyAsync(s.StudyInstanceUid).ConfigureAwait(true);
+                Rt.Audit.Append("study.delete", new Dictionary<string, string> { ["patientKey"] = s.PatientKey, ["study"] = s.StudyInstanceUid, ["instances"] = removed.ToString(CultureInfo.InvariantCulture) });
+            }
+            else
+            {
+                removed = await Rt.Store.DeletePatientAsync(s.PatientKey).ConfigureAwait(true);
+                Rt.Audit.Append("patient.delete", new Dictionary<string, string> { ["patientKey"] = s.PatientKey, ["instances"] = removed.ToString(CultureInfo.InvariantCulture) });
+            }
+            _selected = null;
+            await Requery().ConfigureAwait(true);
+        }
+        catch (Siaara.Viewer.Core.Toolkit.TkException e)
+        {
+            _error = "Delete failed: " + e.Message;
+        }
+    }
+
+    private void OnStudiesChanged(object? sender, StudiesChangedEventArgs e)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            bool onPage = _page is null || e.Rebuilt || _page.Rows.Count < PageSize || _page.Rows.Any(r => e.Studies.Contains(r.StudyInstanceUid)) || _offset == 0;
+            if (!onPage)
+            {
+                return;
+            }
+            foreach (string s in e.Studies)
+            {
+                _new.Add(s);
+            }
+            await Requery().ConfigureAwait(true);
+        });
+    }
+
+    public void Dispose()
+    {
+        Rt.Store.StudiesChanged -= OnStudiesChanged;
+        _debounce?.Cancel();
+        _debounce?.Dispose();
+        _query?.Cancel();
+        _query?.Dispose();
+    }
+}

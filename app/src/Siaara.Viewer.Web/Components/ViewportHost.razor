@@ -1,0 +1,11 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. One viewport: image canvas + annotation canvas. *@
+<div class="vp @(Active ? "active" : "")" data-vp="@Index" @ondragover:preventDefault="true" @ondragover="() => { }" @ondrop="OnDrop">
+    <canvas class="img"></canvas>
+    <canvas class="ann"></canvas>
+</div>
+
+@code {
+    [Parameter] public int Index { get; set; }
+    [Parameter] public bool Active { get; set; }
+    [Parameter] public EventCallback OnDrop { get; set; }
+}

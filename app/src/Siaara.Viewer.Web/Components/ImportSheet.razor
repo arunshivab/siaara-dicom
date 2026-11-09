@@ -1,0 +1,116 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Import sheet with a server-side folder picker. *@
+@implements IDisposable
+@inject ViewerRuntime Rt
+<div class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Import">
+        <h2>Import</h2>
+        <label class="field">Folder
+            <input type="text" @bind="_path" @bind:event="oninput" placeholder="/path/to/folder or CD" />
+        </label>
+        <div class="picker">
+            <div class="row">
+                @foreach (var r in FolderBrowser.Roots())
+                {
+                    <button class="chip" @onclick="() => Browse(r)">@r</button>
+                }
+                @if (_browse is not null && FolderBrowser.Parent(_browse) is string up)
+                {
+                    <button class="chip" @onclick="() => Browse(up)">Up</button>
+                }
+            </div>
+            @if (_browse is not null)
+            {
+                <div class="muted small">@_browse</div>
+                <ul class="folders">
+                    @foreach (var d in _folders)
+                    {
+                        <li><button class="link" @onclick="() => Browse(d)">@System.IO.Path.GetFileName(d)</button></li>
+                    }
+                </ul>
+                <button class="btn" @onclick="() => _path = _browse">Use this folder</button>
+            }
+        </div>
+        <div class="row">
+            <label><input type="radio" name="mode" checked="@(!_inPlace)" @onchange="() => _inPlace = false" /> Copy into store</label>
+            <label><input type="radio" name="mode" checked="@_inPlace" @onchange="() => _inPlace = true" /> Index in place</label>
+        </div>
+        @if (_job is not null)
+        {
+            var p = _job.Progress;
+            <div class="progress">
+                <div>@(p.UsedDicomdir ? "Reading DICOMDIR" : "Scanning folder")@(p.Finished ? (p.Cancelled ? ": cancelled" : ": done") : "...")</div>
+                <div class="counts">
+                    <span>Files @p.FilesSeen</span><span>Instances @p.Instances</span><span>Added @p.Added</span>
+                    <span>Duplicates @p.Duplicates</span><span>Skipped @p.Skipped</span><span class="@(p.Errors > 0 ? "err" : "")">Errors @p.Errors</span>
+                    <span>@p.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture) s</span>
+                </div>
+                @if (_job.Fault is not null)
+                {
+                    <div class="err">@_job.Fault</div>
+                }
+                @if (p.Errors > 0)
+                {
+                    <ul class="errors">
+                        @foreach (var e in _job.Errors.Take(200))
+                        {
+                            <li><span class="path">@e.Path</span>: @e.Status</li>
+                        }
+                    </ul>
+                }
+            </div>
+        }
+        @if (_message is not null)
+        {
+            <div class="err">@_message</div>
+        }
+        <div class="row end">
+            @if (_job is { Progress.Finished: false })
+            {
+                <button class="btn danger" @onclick="() => _job.Cancel()">Cancel</button>
+            }
+            else
+            {
+                <button class="btn primary" disabled="@string.IsNullOrWhiteSpace(_path)" @onclick="Start">Start</button>
+            }
+            <button class="btn" @onclick="OnClose">Close</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    private string? _path;
+    private string? _browse;
+    private IReadOnlyList<string> _folders = [];
+    private bool _inPlace;
+    private ImportJob? _job;
+    private string? _message;
+    private Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        _job = Rt.Import.Current is { Progress.Finished: false } running ? running : null;
+        _timer = new Timer(_ => InvokeAsync(StateHasChanged), null, 100, 100);
+    }
+
+    private void Browse(string path)
+    {
+        _browse = path;
+        _folders = FolderBrowser.SubFolders(path);
+    }
+
+    private void Start()
+    {
+        _message = null;
+        try
+        {
+            _job = Rt.Import.Start(new ImportRequest(_path!.Trim(), _inPlace));
+        }
+        catch (InvalidOperationException e)
+        {
+            _message = e.Message;
+        }
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

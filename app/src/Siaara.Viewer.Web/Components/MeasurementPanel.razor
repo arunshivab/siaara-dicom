@@ -1,0 +1,29 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Measurements of the image in the active viewport. *@
+@{
+    var vp = Session.GetViewport(Session.ActiveViewport);
+    var img = vp.CurrentImage;
+    var list = img is null ? [] : Session.GetAnnotations(img.Key);
+}
+<aside class="measurements">
+    <h3>Measurements</h3>
+    @if (list.Count == 0)
+    {
+        <p class="muted small">None on this image. Pick Length, Angle or an ROI tool and draw on the image.</p>
+    }
+    <ul>
+        @foreach (var a in list)
+        {
+            <li><span class="kind">@a.Kind</span> @(Session.Privacy ? "" : a.Label)
+                @foreach (var w in a.Warnings)
+                {
+                    <span class="warn">&#9888; @w</span>
+                }
+            </li>
+        }
+    </ul>
+    <p class="muted small">Mouse: left = tool, right-drag = W/L, middle-drag = pan, wheel = scroll, Ctrl+wheel = zoom.</p>
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public ViewerSession Session { get; set; } = default!;
+}

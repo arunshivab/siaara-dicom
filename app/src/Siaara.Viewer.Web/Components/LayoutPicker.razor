@@ -1,0 +1,31 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. 1x1 to 4x4 grid chooser. *@
+<div class="layoutpicker" @onmouseleave="() => _hover = null">
+    <button class="tool" @onclick="() => _open = !_open" title="Layout">Layout @Session.Layout</button>
+    @if (_open)
+    {
+        <div class="cells">
+            @for (int r = 1; r <= LayoutModel.MaxSide; r++)
+            {
+                @for (int c = 1; c <= LayoutModel.MaxSide; c++)
+                {
+                    int rr = r, cc = c;
+                    bool lit = _hover is (int hr, int hc) ? rr <= hr && cc <= hc : rr <= Session.Layout.Rows && cc <= Session.Layout.Columns;
+                    <button class="cell @(lit ? "on" : "")" aria-label="@($"{rr}x{cc}")" @onmouseover="() => _hover = (rr, cc)"
+                            @onclick="() => Pick(rr, cc)"></button>
+                }
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ViewerSession Session { get; set; } = default!;
+    private bool _open;
+    private (int, int)? _hover;
+
+    private void Pick(int r, int c)
+    {
+        _open = false;
+        Session.SetLayout(LayoutModel.Of(r, c));
+    }
+}

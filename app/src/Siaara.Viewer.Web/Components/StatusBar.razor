@@ -1,0 +1,36 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Status bar: decode / prefetch counts, store size, backend, toolkit version. *@
+@implements IDisposable
+@inject ViewerRuntime Rt
+<footer class="statusbar">
+    <span>@Left</span>
+    <span class="spacer"></span>
+    <span title="Decodes running or queued / prefetch queued">Decode @_decodes  Prefetch @_prefetch</span>
+    <span title="Decoded frames in memory">Cache @_frames fr (@_mb MB)</span>
+    <span>Store @_instances images</span>
+    <span class="tag">@ViewerRuntime.Backend</span>
+    <span class="muted">Toolkit @ViewerRuntime.ToolkitVersion</span>
+</footer>
+
+@code {
+    [Parameter] public string? Left { get; set; }
+    private Timer? _timer;
+    private int _decodes, _prefetch, _frames;
+    private long _mb, _instances;
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+        _timer = new Timer(_ => InvokeAsync(() => { Refresh(); StateHasChanged(); }), null, 1000, 1000);
+    }
+
+    private void Refresh()
+    {
+        _decodes = Rt.Cache.DecodesInProgress;
+        _prefetch = Rt.Cache.PrefetchQueued;
+        _frames = Rt.Cache.DecodedFrames;
+        _mb = Rt.Cache.DecodedBytes / (1024 * 1024);
+        _ = Rt.Store.GetStatisticsAsync().ContinueWith(t => { if (t.IsCompletedSuccessfully) _instances = t.Result.Instances; }, TaskScheduler.Default);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

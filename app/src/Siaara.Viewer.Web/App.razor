@@ -1,0 +1,18 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Root document (static); the routes are interactive (Blazor Server). *@
+@inject ViewerRuntime Rt
+<!DOCTYPE html>
+<html lang="en" data-theme="@(Rt.Settings.Current.Theme == "light" ? "light" : "dark")">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="/" />
+    <title>SIAARA Viewer</title>
+    <link rel="stylesheet" href="_content/Siaara.Viewer.Web/css/siaara.css" />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <script src="_framework/blazor.web.js"></script>
+    <script src="_content/Siaara.Viewer.Web/js/siaara-view.js"></script>
+</body>
+</html>

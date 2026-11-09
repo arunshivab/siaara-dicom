@@ -1,0 +1,32 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Series of the study; drag one onto a viewport or click to show it in the active one. *@
+<aside class="seriesstrip">
+    @{ var list = Session.Series; }
+    @for (int i = 0; i < list.Count; i++)
+    {
+        int idx = i;
+        var s = list[i];
+        <div class="series @(Session.GetViewport(Session.ActiveViewport).SeriesIndex == idx ? "on" : "")" draggable="true"
+             @ondragstart="() => OnDragSeries.InvokeAsync(idx)" @onclick="() => Session.AssignSeries(Session.ActiveViewport, idx)">
+            <img src="@($"api/thumb?series={Uri.EscapeDataString(s.SeriesInstanceUid)}")" width="96" height="96" alt="" draggable="false" />
+            <div class="label">@s.Label</div>
+            <div class="muted small">@s.Images.Count images @(s.IsMultiFrame ? "(cine)" : "")</div>
+            @if (s.AnyLossy)
+            {
+                <span class="badge warn">LOSSY</span>
+            }
+            @if (s.Warnings.Count > 0)
+            {
+                <span class="badge warn" title="@string.Join(" ", s.Warnings)">&#9888;</span>
+            }
+        </div>
+    }
+    @if (!Session.Loaded)
+    {
+        <div class="muted small">Reading headers...</div>
+    }
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public ViewerSession Session { get; set; } = default!;
+    [Parameter] public EventCallback<int> OnDragSeries { get; set; }
+}
