@@ -16,6 +16,17 @@
                python3 tools/ci/check_binaries.py symbols build/libsiaara.so
                python3 tools/ci/check_binaries.py symbols --update build/libsiaara.so
 
+  hardening  Checks the security properties of the given binaries (review R-014): Linux (readelf):
+           full RELRO (GNU_RELRO + BIND_NOW), non-executable stack, PIE/DSO, stack protector
+           references; with --fortify, _FORTIFY_SOURCE wrappers (__*_chk) referenced. Windows
+           (dumpbin /headers /loadconfig): DYNAMICBASE, NX, Control Flow Guard, and on x64 high
+           entropy VA and CET compatibility. macOS (otool): PIE executables, no executable stack.
+
+               python3 tools/ci/check_binaries.py hardening build/libsiaara.so build/tools/siaara-dump
+
+  --profile release (deps): additionally denies the C/C++ runtime libraries that release builds
+           link statically (libstdc++/libgcc_s on Linux, the MSVC runtime DLLs on Windows).
+
   list     Prints the dependencies of the given binaries (for the SBOM script).
 """
 import argparse
@@ -114,7 +125,9 @@ def cmd_deps(args):
     osname = args.os or host_os()
     with open(ALLOWLIST, encoding="utf-8") as f:
         cfg = json.load(f)[osname]
-    allow, deny = cfg["allow"], cfg.get("deny", [])
+    allow, deny = cfg["allow"], list(cfg.get("deny", []))
+    if args.profile == "release":
+        deny += cfg.get("deny_release", [])
     fold = (lambda s: s.lower()) if osname == "windows" else (lambda s: s)
     bad = 0
     for path in args.binaries:
@@ -184,6 +197,59 @@ def cmd_symbols(args):
     return rc
 
 
+def hardening_problems(path, osname, fortify):
+    problems = []
+    if osname == "linux":
+        hdr = run(["readelf", "-hlW", path])
+        dyn = run(["readelf", "-dW", path])
+        syms = run(["readelf", "-sW", path])  # .dynsym and .symtab (i386 PIC uses __stack_chk_fail_local)
+        if "GNU_RELRO" not in hdr:
+            problems.append("no GNU_RELRO segment (-z relro)")
+        if not re.search(r"\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW", dyn):
+            problems.append("no BIND_NOW (-z now): only partial RELRO")
+        m = re.search(r"GNU_STACK\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\S+)", hdr)
+        if not m:
+            problems.append("no GNU_STACK header (stack executable by default)")
+        elif "E" in m.group(1):
+            problems.append("executable stack (GNU_STACK %s)" % m.group(1))
+        if not re.search(r"Type:\s+DYN", hdr):
+            problems.append("not position independent (ELF type is not DYN)")
+        if "__stack_chk_fail" not in syms:
+            problems.append("no stack protector references (__stack_chk_fail)")
+        if fortify and not re.search(r"__\w+_chk\b", syms.replace("__stack_chk_fail", "")):
+            problems.append("no _FORTIFY_SOURCE wrappers (__*_chk) referenced")
+    elif osname == "windows":
+        out = run([dumpbin(), "/nologo", "/headers", "/loadconfig", path])
+        machine_x64 = "8664 machine (x64)" in out
+        if "Dynamic base" not in out:
+            problems.append("not /DYNAMICBASE")
+        if "NX compatible" not in out:
+            problems.append("not /NXCOMPAT")
+        if "Control Flow Guard" not in out and "Guard" not in out:
+            problems.append("no Control Flow Guard (/guard:cf)")
+        if machine_x64 and "High Entropy Virtual Addresses" not in out:
+            problems.append("not /HIGHENTROPYVA")
+        if machine_x64 and "CET compatible" not in out:
+            problems.append("not /CETCOMPAT")
+    elif osname == "macos":
+        out = run(["otool", "-hv", path])
+        if "EXECUTE" in out and "PIE" not in out:
+            problems.append("executable is not PIE")
+        if "ALLOW_STACK_EXECUTION" in out:
+            problems.append("stack execution allowed")
+    return problems
+
+
+def cmd_hardening(args):
+    osname = args.os or host_os()
+    bad = 0
+    for path in args.binaries:
+        p = hardening_problems(path, osname, args.fortify)
+        print("%s: %s" % (path, "ok" if not p else "; ".join(p)))
+        bad += len(p)
+    return 1 if bad else 0
+
+
 def cmd_list(args):
     osname = args.os or host_os()
     result = {p: dependencies(p, osname) for p in args.binaries}
@@ -196,7 +262,11 @@ def main():
     ap.add_argument("--os", choices=["linux", "macos", "windows"], help="default: the host OS")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("deps")
+    d.add_argument("--profile", choices=["default", "release"], default="default")
     d.add_argument("binaries", nargs="+")
+    h = sub.add_parser("hardening")
+    h.add_argument("--fortify", action="store_true", help="require _FORTIFY_SOURCE wrappers (Linux)")
+    h.add_argument("binaries", nargs="+")
     s = sub.add_parser("symbols")
     s.add_argument("--update", action="store_true")
     s.add_argument("--header", help="also check that every SIAARA_API function declared here is exported")
@@ -205,7 +275,7 @@ def main():
     lst.add_argument("binaries", nargs="+")
     args = ap.parse_args()
     try:
-        return {"deps": cmd_deps, "symbols": cmd_symbols, "list": cmd_list}[args.cmd](args)
+        return {"deps": cmd_deps, "symbols": cmd_symbols, "hardening": cmd_hardening, "list": cmd_list}[args.cmd](args)
     except RuntimeError as e:
         print(str(e))
         return 2

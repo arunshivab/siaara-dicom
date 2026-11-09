@@ -29,7 +29,10 @@ On Windows (multi-config generator) pass the configuration at build and test tim
 | `SIAARA_BUILD_TESTS` | ON | Unit tests (`tests/`), the C API smoke test, the fuzz regression replay (`fuzz_regressions`) and the test-only crosscheck helpers. |
 | `SIAARA_BUILD_TOOLS` | ON | Command-line tools: `siaara-dump`, `siaara-echoscu`, `siaara-storescp`, `siaara-webcli`, `siaara-deid`. |
 | `SIAARA_WERROR` | ON | Warnings are errors (`-Werror` / `/WX`). The code builds warning-free with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion` and MSVC `/W4`. |
-| `SIAARA_SANITIZE` | OFF | AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang). UBSan findings are fatal (`-fno-sanitize-recover=undefined`). |
+| `SIAARA_SANITIZE` | OFF | AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang; UBSan findings are fatal). With MSVC: `/fsanitize=address` (put the folder of `clang_rt.asan_dynamic-*.dll` on `PATH` to run). |
+| `SIAARA_HARDENING` | ON | `cmake/SiaaraHardening.cmake`: stack protector, stack clash protection, `_FORTIFY_SOURCE=3` (optimised builds), CET (`-fcf-protection=full`) on x86, BTI/PAC (`-mbranch-protection=standard`) on ARM64, full RELRO and non-executable stack on Linux; MSVC `/guard:cf /Qspectre /sdl`, `/DYNAMICBASE /NXCOMPAT`, x64 `/HIGHENTROPYVA /CETCOMPAT /guard:ehcont`. Debug builds of every target define `_GLIBCXX_ASSERTIONS` and `_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE`. |
+| `SIAARA_STATIC_RUNTIME` | OFF | Static C/C++ runtime (release builds turn it on): MSVC `/MT` (applications linking the static library must use `/MT` too), `-static-libstdc++ -static-libgcc` on Linux; macOS uses the system libc++, part of the OS. |
+| `SIAARA_LIB_FUZZING_ENGINE` | empty | OSS-Fuzz / ClusterFuzzLite: link flags of the fuzzing engine (`$LIB_FUZZING_ENGINE`); see [FUZZING.md](FUZZING.md). |
 | `SIAARA_TSAN` | OFF | ThreadSanitizer (GCC/Clang). Cannot be combined with `SIAARA_SANITIZE`. |
 | `SIAARA_FUZZ` | OFF | Fuzz targets in `fuzz/` (see [FUZZING.md](FUZZING.md)). Turns on `SIAARA_SANITIZE`; with Clang and libFuzzer available, everything is also built with `-fsanitize=fuzzer-no-link`. |
 | `SIAARA_REPRODUCIBLE` | ON | Build paths are mapped out of the binaries (`-ffile-prefix-map` on GCC/Clang, `/pathmap` and `/Brepro` on MSVC) and static archives are written in GNU ar's deterministic mode. |
@@ -102,4 +105,14 @@ The shared library exports only the C API (`siaara_*`): a linker version script 
 | Dependency allow-list | `python3 tools/ci/check_binaries.py deps <binaries>`: `readelf -d` / `otool -L` / `dumpbin /dependents` against `tools/ci/deps_allowlist.json`; on Linux `libssl`/`libcrypto` must never be linked. |
 | Exported-symbol baseline | `python3 tools/ci/check_binaries.py symbols --header include/siaara/siaara.h <shared library>`: only `siaara_*`, equal to `tools/ci/abi/exported_symbols.txt`. After a planned C API change run it with `--update` and commit the baseline diff. |
 | Sanitizers | ASan+UBSan job, TSan job, fuzz smoke test (60 s per target with libFuzzer) |
+| Hardening | `python3 tools/ci/check_binaries.py hardening [--fortify] <binaries>`: `readelf` (RELRO + BIND_NOW, NX stack, PIE, stack protector, FORTIFY wrappers), `dumpbin /headers /loadconfig` (DYNAMICBASE, NX, CFG, x64 high-entropy VA and CET), `otool -hv`. |
+| Release runtime | `deps --profile release`: no `libstdc++`/`libgcc_s` (Linux) and no MSVC runtime DLLs (Windows) in release binaries. |
+| Generated tables | `tools/ci/fetch_standard.py` downloads PS3.6/7/15/16 XML pinned by SHA-256 (`tools/ci/dicom_standard.json`); the dictionary and the de-identification table must equal the generators' output. |
+| Static analysis | `.clang-tidy` (run with `run-clang-tidy -p <build with compile_commands.json> "src/|tools/"`), CodeQL (`codeql.yml`). |
 | Action pinning | every `uses:` in `.github/workflows/` is a full commit SHA |
+
+On a private repository: set the repository variables `LINUX_ARM64_RUNNER` / `WINDOWS_ARM64_RUNNER`
+to available ARM64 runner labels (GitHub's free ARM64 runners are for public repositories),
+`CODEQL_ENABLED=true` only with GitHub Advanced Security; build provenance attestations need
+GitHub Enterprise Cloud for private repositories (the release step then reports the failure and
+continues).

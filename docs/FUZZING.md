@@ -54,8 +54,8 @@ One target, longer, continuing after findings (what the nightly workflow runs, 3
 Each target reads the committed seeds (`fuzz/corpus/<target>/`), the regression inputs
 (`tests/regress/<target>/`) and any `--extra` roots, and writes new inputs to
 `<work>/<target>/corpus/` (default work folder `build-fuzz/fuzz-work/`). Findings land in
-`<work>/<target>/artifacts/` as `crash-*`, `timeout-*` (an input slower than 2 s), `oom-*` or
-`leak-*`, with the log in `<work>/<target>/fuzz.log`.
+`<work>/<target>/artifacts/` as `crash-*`, `timeout-*`, `oom-*` or
+`leak-*` (hang limit `--hang-seconds`, default 10 s; memory limit `--rss-mb`, default 2048 MB, as the security review R-012 asks), with the log in `<work>/<target>/fuzz.log`.
 
 The libFuzzer binaries accept the usual flags directly, for example
 
@@ -88,3 +88,15 @@ DICOMDIR set) at seed-generation time; those are not committed. Pass the folder 
 
 `fuzz/corpus/**` and `tests/regress/**` are marked binary in `.gitattributes` so line endings are
 never converted.
+
+## ClusterFuzzLite and OSS-Fuzz
+
+`.clusterfuzzlite/` (Dockerfile on the pinned OSS-Fuzz `base-builder` image, `build.sh`,
+`project.yaml`) builds the same targets the OSS-Fuzz way: the environment supplies `CC`, `CXX`,
+`CFLAGS`, `CXXFLAGS` and `LIB_FUZZING_ENGINE`, and `build.sh` passes the engine as
+`-DSIAARA_LIB_FUZZING_ENGINE=...` (then CMake adds no sanitizer or fuzzer flags of its own), copies
+`fuzz_<target>` to `$OUT` with `fuzz_<target>_seed_corpus.zip` (from `fuzz/corpus/` and
+`tests/regress/`). Workflows: `cflite_pr.yml` (code-change fuzzing of pull requests, ASan and
+UBSan, 10 min), `cflite_batch.yml` (daily, 1 h), `cflite_cron.yml` (weekly corpus pruning and a
+coverage report). The same folder can be used for an OSS-Fuzz project once the repository has a
+license.

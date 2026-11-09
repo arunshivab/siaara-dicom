@@ -23,11 +23,11 @@ jobs:
         include:
           - { name: linux-x64-gcc-asan,   os: ubuntu-24.04,     cmake: "-DSIAARA_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug" }
           - { name: linux-x64-clang,      os: ubuntu-24.04,     cmake: "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release" }
-          - { name: linux-arm64-gcc,      os: ubuntu-24.04-arm, cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { name: linux-arm64-gcc,      os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", cmake: "-DCMAKE_BUILD_TYPE=Release" }
           - { name: linux-x86-gcc,        os: ubuntu-24.04,     cmake: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32", multilib: true }
           - { name: windows-x64-msvc,     os: windows-2022,     cmake: "-A x64" }
           - { name: windows-x86-msvc,     os: windows-2022,     cmake: "-A Win32" }
-          - { name: windows-arm64-msvc,   os: windows-11-arm,   cmake: "-A ARM64" }
+          - { name: windows-arm64-msvc,   os: "${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}",   cmake: "-A ARM64" }
           - { name: macos-arm64,          os: macos-15,         cmake: "-DCMAKE_BUILD_TYPE=Release" }
           - { name: macos-x64,            os: macos-15-intel,   cmake: "-DCMAKE_BUILD_TYPE=Release" }
     steps:
@@ -58,16 +58,23 @@ jobs:
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
       - run: python tests/crosscheck/pydicom_crosscheck.py build/tools/siaara-dump
 
-  dictionary-up-to-date:
+  standard-tables:
+    # The generated tables must equal the generators' output for the pinned edition of the
+    # standard (tools/ci/dicom_standard.json, SHA-256 checked): the data dictionary (PS3.6/PS3.7)
+    # and the de-identification table (PS3.15 E.1-1, PS3.16 CID 7050). Fails on any drift.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - name: Regenerate dictionary from the published standard and compare
+      - name: Download the pinned DocBook XML
+        run: python3 tools/ci/fetch_standard.py --out /tmp/dicom part06 part07 part15 part16
+      - name: Dictionary matches the generator
         run: |
-          curl -sSfo /tmp/part06.xml https://dicom.nema.org/medical/dicom/current/source/docbook/part06/part06.xml
-          curl -sSfo /tmp/part07.xml https://dicom.nema.org/medical/dicom/current/source/docbook/part07/part07.xml
-          python3 tools/gen_dictionary.py /tmp/part06.xml /tmp/part07.xml /tmp/dictionary_data.inc
-          diff -q src/dict/dictionary_data.inc /tmp/dictionary_data.inc || echo "::warning::Dictionary differs from the current published standard; regenerate."
+          python3 tools/gen_dictionary.py /tmp/dicom/part06.xml /tmp/dicom/part07.xml /tmp/dictionary_data.inc
+          diff -u src/dict/dictionary_data.inc /tmp/dictionary_data.inc
+      - name: De-identification table matches the generator (ctest deid_table_matches_generator)
+        run: |
+          cmake -S . -B build -DSIAARA_NEMA_PART15=/tmp/dicom/part15.xml -DSIAARA_NEMA_PART16=/tmp/dicom/part16.xml
+          ctest --test-dir build -R deid_table_matches_generator --output-on-failure --no-tests=error
 
   commit-rules:
     runs-on: ubuntu-24.04
@@ -113,7 +120,7 @@ jobs:
       - name: Build
         run: cmake --build build-fuzz --parallel
       - name: Fuzz every target for 60 s
-        run: python3 fuzz/run_fuzzers.py --bin build-fuzz/fuzz --seconds 60 --jobs 4 --work fuzz-work
+        run: python3 fuzz/run_fuzzers.py --bin build-fuzz/fuzz --seconds 60 --jobs 4 --hang-seconds 10 --rss-mb 2048 --work fuzz-work
       - name: Upload findings
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -160,8 +167,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x64,   os: ubuntu-24.04,     lib: build/libsiaara.so,        tools: "build/tools/siaara-*" }
-          - { name: linux-arm64, os: ubuntu-24.04-arm, lib: build/libsiaara.so,        tools: "build/tools/siaara-*" }
+          - { name: linux-x64,   os: ubuntu-24.04,     lib: build/libsiaara.so,        tools: "build/tools/siaara-*", fortify: "--fortify" }
+          - { name: linux-arm64, os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", lib: build/libsiaara.so,        tools: "build/tools/siaara-*", fortify: "--fortify" }
           - { name: macos,       os: macos-15,         lib: build/libsiaara.dylib,     tools: "build/tools/siaara-*" }
           - { name: windows-x64, os: windows-2022,     lib: build/Release/siaara.dll,  tools: "build/tools/Release/siaara-*.exe" }
     steps:
@@ -173,11 +180,15 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $db = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
           Add-Content -Path $env:GITHUB_PATH -Value $db.DirectoryName
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIAARA_BUILD_TESTS=OFF
+      # Same configuration as the release workflow: static C/C++ runtime, hardening on.
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIAARA_BUILD_TESTS=OFF -DSIAARA_STATIC_RUNTIME=ON
       - run: cmake --build build --config Release --parallel
-      - name: Check runtime dependencies
+      - name: Check runtime dependencies (release profile - no C/C++ runtime DLLs/shared objects)
         shell: bash
-        run: python3 tools/ci/check_binaries.py deps ${{ matrix.lib }} ${{ matrix.tools }}
+        run: python3 tools/ci/check_binaries.py deps --profile release ${{ matrix.lib }} ${{ matrix.tools }}
+      - name: Check hardening (RELRO/BIND_NOW/NX/stack protector, FORTIFY; DYNAMICBASE/NX/CFG/CET)
+        shell: bash
+        run: python3 tools/ci/check_binaries.py hardening ${{ matrix.fortify }} ${{ matrix.lib }} ${{ matrix.tools }}
 
   exported-symbols:
     # Only the C API (siaara_*) may be exported, and the set must match tools/ci/abi/exported_symbols.txt.
@@ -214,3 +225,34 @@ jobs:
         run: |
           if grep -rnE '^\s*(-\s*)?uses:\s*[^./][^@]*@' .github/workflows | grep -vE '@[0-9a-f]{40}(\s|$)'; then
             echo "Pin these actions to a full commit SHA"; exit 1; fi
+
+  windows-asan:
+    # MSVC AddressSanitizer (/fsanitize=address) over the full test suite.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Put the MSVC tools (dumpbin, ASan runtime DLLs) on PATH
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $db = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter clang_rt.asan_dynamic-x86_64.dll | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value $db.DirectoryName
+      - run: cmake -S . -B build -A x64 -DSIAARA_SANITIZE=ON
+      - run: cmake --build build --config RelWithDebInfo --parallel
+      - run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
+  clang-tidy:
+    # Static analysis with the committed .clang-tidy (every enabled check is an error).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Install clang-tidy
+        run: sudo apt-get update && sudo apt-get install -y clang-18 clang-tidy-18
+      - name: Configure (compile_commands.json)
+        run: >
+          cmake -S . -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DSIAARA_BUILD_TESTS=OFF
+      - name: clang-tidy over the library and tools
+        run: run-clang-tidy-18 -p build-tidy -j 4 -quiet -clang-tidy-binary clang-tidy-18 "src/|tools/"
