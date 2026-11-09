@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64-gcc-asan,   os: ubuntu-24.04,     cmake: "-DSIAARA_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug" }
+          - { name: linux-x64-clang,      os: ubuntu-24.04,     cmake: "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release" }
+          - { name: linux-arm64-gcc,      os: ubuntu-24.04-arm, cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { name: linux-x86-gcc,        os: ubuntu-24.04,     cmake: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32", multilib: true }
+          - { name: windows-x64-msvc,     os: windows-2022,     cmake: "-A x64" }
+          - { name: windows-x86-msvc,     os: windows-2022,     cmake: "-A Win32" }
+          - { name: windows-arm64-msvc,   os: windows-11-arm,   cmake: "-A ARM64" }
+          - { name: macos-arm64,          os: macos-15,         cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { name: macos-x64,            os: macos-15-intel,   cmake: "-DCMAKE_BUILD_TYPE=Release" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 32-bit toolchain
+        if: matrix.multilib
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake }}
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  pydicom-crosscheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pydicom
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
+      - run: python tests/crosscheck/pydicom_crosscheck.py build/tools/siaara-dump
+
+  dictionary-up-to-date:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Regenerate dictionary from the published standard and compare
+        run: |
+          curl -sSfo /tmp/part06.xml https://dicom.nema.org/medical/dicom/current/source/docbook/part06/part06.xml
+          curl -sSfo /tmp/part07.xml https://dicom.nema.org/medical/dicom/current/source/docbook/part07/part07.xml
+          python3 tools/gen_dictionary.py /tmp/part06.xml /tmp/part07.xml /tmp/dictionary_data.inc
+          diff -q src/dict/dictionary_data.inc /tmp/dictionary_data.inc || echo "::warning::Dictionary differs from the current published standard; regenerate."
+
+  commit-rules:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+      - name: No attribution trailers in commit messages
+        run: |
+          if git log -50 --format=%B | grep -Ei '^(Co-Authored-By|Claude-Session):|Generated with'; then
+            echo "Commit messages must not contain attribution lines"; exit 1; fi

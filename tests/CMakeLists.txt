@@ -1,0 +1,5 @@
+file(GLOB SIAARA_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+add_executable(siaara_tests ${SIAARA_TEST_SOURCES})
+target_link_libraries(siaara_tests PRIVATE siaara_static)
+target_compile_options(siaara_tests PRIVATE ${SIAARA_WARN})
+add_test(NAME siaara_tests COMMAND siaara_tests --data ${CMAKE_CURRENT_SOURCE_DIR}/data)
