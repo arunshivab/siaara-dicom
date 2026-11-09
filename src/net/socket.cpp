@@ -462,4 +462,59 @@ Result<std::unique_ptr<Transport>> TcpListener::accept(int timeout_ms) {
     return std::unique_ptr<Transport>(new TcpTransport(h));
 }
 
+namespace {
+// Parses an IPv4 or IPv6 literal (brackets and an IPv6 zone index allowed). family 4 or 6, 0 if neither.
+int parse_ip(std::string_view a, unsigned char out[16]) noexcept {
+    if (a.size() >= 2 && a.front() == '[' && a.back() == ']') a = a.substr(1, a.size() - 2);
+    if (const auto pct = a.find('%'); pct != std::string_view::npos) a = a.substr(0, pct);
+    if (a.empty() || a.size() > 63) return 0;
+    char buf[64];
+    std::memcpy(buf, a.data(), a.size());
+    buf[a.size()] = '\0';
+    if (::inet_pton(AF_INET, buf, out) == 1) return 4;
+    if (::inet_pton(AF_INET6, buf, out) == 1) return 6;
+    return 0;
+}
+bool v4_mapped(const unsigned char a[16]) noexcept {
+    for (int i = 0; i < 10; ++i)
+        if (a[i] != 0) return false;
+    return a[10] == 0xFF && a[11] == 0xFF;
+}
+}  // namespace
+
+std::string peer_group(std::string_view address, unsigned ipv6_prefix_bits) {
+    unsigned char a[16] = {};
+    const int fam = parse_ip(address, a);
+    if (fam == 0) return std::string(address);
+    if (fam == 4 || v4_mapped(a)) {
+        const unsigned char* v = fam == 4 ? a : a + 12;
+        return std::to_string(v[0]) + "." + std::to_string(v[1]) + "." + std::to_string(v[2]) + "." + std::to_string(v[3]);
+    }
+    const unsigned bits = ipv6_prefix_bits == 0 || ipv6_prefix_bits > 128 ? 128u : ipv6_prefix_bits;
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    for (unsigned i = 0; i < 16; ++i) {
+        unsigned char b = a[i];
+        if (8 * i >= bits) b = 0;
+        else if (8 * (i + 1) > bits) b = static_cast<unsigned char>(b & (0xFFu << (8 * (i + 1) - bits)));
+        out += hex[b >> 4];
+        out += hex[b & 15u];
+    }
+    return out + "/" + std::to_string(bits);
+}
+
+bool is_loopback_literal(std::string_view host) noexcept {
+    if (host == "localhost") return true;
+    unsigned char a[16] = {};
+    const int fam = parse_ip(host, a);
+    if (fam == 4) return a[0] == 127;
+    if (fam == 6) {
+        if (v4_mapped(a)) return a[12] == 127;
+        for (int i = 0; i < 15; ++i)
+            if (a[i] != 0) return false;
+        return a[15] == 1;
+    }
+    return false;
+}
+
 }  // namespace siaara::net

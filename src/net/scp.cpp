@@ -184,7 +184,7 @@ void ScpServer::accept_loop() {
             log("accept failed: " + t.error().message);
             continue;
         }
-        const std::string peer = t.value()->peer_address();
+        const std::string peer = peer_group(t.value()->peer_address(), cfg_.peer_ipv6_prefix_bits);
         bool full = false;
         {
             std::lock_guard<std::mutex> l(mu_);
@@ -279,7 +279,7 @@ void ScpServer::worker_loop() {
 }
 
 void ScpServer::serve(std::unique_ptr<Transport> t) {
-    const std::string peer = t->peer_address();
+    const std::string peer = peer_group(t->peer_address(), cfg_.peer_ipv6_prefix_bits);
     struct PeerSlot {
         ScpServer* s;
         const std::string& p;

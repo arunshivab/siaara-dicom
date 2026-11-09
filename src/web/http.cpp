@@ -423,28 +423,66 @@ Connection::Connection(std::unique_ptr<net::Transport> t, const Limits& limits) 
 Connection::~Connection() { release_body_budget(); }
 
 void Connection::release_body_budget() noexcept {
-    if (budget_ && reserved_) budget_->give(reserved_);
+    if (budget_ && reserved_) budget_->give(reserved_, budget_peer_);
     reserved_ = 0;
 }
 
-bool BodyBudget::take(std::uint64_t n) noexcept {
+bool BodyBudget::take(std::uint64_t n, const std::string& peer) noexcept {
     if (limit_ == 0) return true;
-    std::uint64_t cur = used_.load();
-    for (;;) {
-        if (n > limit_ || cur > limit_ - n) return false;
-        if (used_.compare_exchange_weak(cur, cur + n)) return true;
+    try {
+        const std::lock_guard<std::mutex> lk(mu_);
+        if (n > limit_ || used_ > limit_ - n) return false;
+        if (!peer.empty()) {
+            std::uint64_t& mine = per_peer_[peer];
+            if (n > peer_limit_ || mine > peer_limit_ - n) {
+                if (mine == 0) per_peer_.erase(peer);
+                return false;
+            }
+            mine += n;
+        }
+        used_ += n;
+        return true;
+    } catch (...) {
+        return false;  // std::bad_alloc for the map node, or a failed lock
     }
 }
 
-void BodyBudget::give(std::uint64_t n) noexcept {
+void BodyBudget::give(std::uint64_t n, const std::string& peer) noexcept {
     if (limit_ == 0) return;
-    used_.fetch_sub(n);
+    try {
+        const std::lock_guard<std::mutex> lk(mu_);
+        used_ -= std::min(used_, n);
+        if (!peer.empty()) {
+            auto it = per_peer_.find(peer);
+            if (it != per_peer_.end()) {
+                it->second -= std::min(it->second, n);
+                if (it->second == 0) per_peer_.erase(it);
+            }
+        }
+    } catch (...) {
+    }
 }
 
-bool is_loopback_address(std::string_view h) noexcept {
-    if (h == "localhost" || h == "::1" || h == "[::1]") return true;
-    return h.size() >= 4 && h.compare(0, 4, "127.") == 0;
+std::uint64_t BodyBudget::in_use() const noexcept {
+    try {
+        const std::lock_guard<std::mutex> lk(mu_);
+        return used_;
+    } catch (...) {
+        return 0;
+    }
 }
+
+std::uint64_t BodyBudget::in_use_by(const std::string& peer) const noexcept {
+    try {
+        const std::lock_guard<std::mutex> lk(mu_);
+        auto it = per_peer_.find(peer);
+        return it == per_peer_.end() ? 0 : it->second;
+    } catch (...) {
+        return 0;
+    }
+}
+
+bool is_loopback_address(std::string_view h) noexcept { return net::is_loopback_literal(h); }
 
 void Connection::close() noexcept {
     if (t_) {
@@ -608,10 +646,14 @@ Status Connection::read_headers(Headers& h) {
 Status Connection::read_exact(std::uint64_t n, std::string& out) {
     if (n > lim_.max_body) return Status(Errc::LimitExceeded, "body too large");
     if (n > SIZE_MAX / 2) return Status(Errc::LimitExceeded, "body too large");
-    if (budget_ && n > 0) {
-        if (!budget_->take(n)) return Status(Errc::Rejected, "server body budget exhausted");
-        reserved_ += n;
-    }
+    // The body is charged to the server budget as its bytes arrive (R-057): a declared length the
+    // peer never sends costs nothing.
+    auto charge = [&](std::size_t k) -> bool {
+        if (!budget_ || k == 0) return true;
+        if (!budget_->take(k, budget_peer_)) return false;
+        reserved_ += k;
+        return true;
+    };
     const auto want = static_cast<std::size_t>(n);
     if (want - std::min(want, out.size()) > 0 && out.capacity() < out.size() + want) {
         // Reserve gradually so a lying Content-Length cannot make us allocate up front.
@@ -621,6 +663,7 @@ Status Connection::read_exact(std::uint64_t n, std::string& out) {
     while (left > 0) {
         if (pos_ < buf_.size()) {
             const std::size_t take = std::min(left, buf_.size() - pos_);
+            if (!charge(take)) return Status(Errc::Rejected, "server body budget exhausted");
             out.append(buf_, pos_, take);
             pos_ += take;
             left -= take;
@@ -675,6 +718,10 @@ Status Connection::read_to_close(std::string& body) {
             std::uint64_t total = 0;
             if (!checked_add(body.size(), take, total) || total > lim_.max_body)
                 return Status(Errc::LimitExceeded, "body too large");
+            if (budget_) {
+                if (!budget_->take(take, budget_peer_)) return Status(Errc::Rejected, "server body budget exhausted");
+                reserved_ += take;
+            }
             body.append(buf_, pos_, take);
             pos_ = buf_.size();
         }
@@ -1021,7 +1068,7 @@ Status Server::start(const ServerConfig& cfg, Handler handler) {
     cfg_ = cfg;
     handler_ = std::move(handler);
     stopping_ = false;
-    budget_ = cfg_.max_inflight_body_bytes ? std::make_shared<BodyBudget>(cfg_.max_inflight_body_bytes) : nullptr;
+    budget_ = cfg_.max_inflight_body_bytes ? std::make_shared<BodyBudget>(cfg_.max_inflight_body_bytes, cfg_.max_inflight_body_peer_share) : nullptr;
     if (!is_loopback_address(cfg_.bind_address) && cfg_.allow_insecure_remote && cfg_.log)
         cfg_.log("http: warning: allow_insecure_remote is set; serving " +
                  std::string(cfg_.tls.enabled ? "HTTPS" : "plain HTTP") + " on " +
@@ -1037,8 +1084,36 @@ Status Server::start(const ServerConfig& cfg, Handler handler) {
     } else if (Status st = listener_.listen(cfg_.bind_address, cfg_.port); !st) {
         return st;
     }
+    reject_thread_ = std::thread([this] { reject_loop(); });
     accept_thread_ = std::thread([this] { accept_loop(); });
     return Status::ok();
+}
+
+void Server::reject_loop() {
+    for (;;) {
+        std::unique_ptr<net::Transport> t;
+        {
+            std::unique_lock<std::mutex> lk(reject_mu_);
+            reject_cv_.wait(lk, [&] { return stopping_.load() || !reject_queue_.empty(); });
+            if (reject_queue_.empty()) return;  // stopping
+            t = std::move(reject_queue_.front());
+            reject_queue_.pop_front();
+        }
+        if (stopping_.load()) {
+            t->close();
+            continue;
+        }
+        Connection c(std::move(t), cfg_.limits);
+        Response rs;
+        rs.status = 503;
+        rs.set("Content-Type", "text/plain");
+        rs.set("Retry-After", "1");
+        rs.body = "server busy\n";
+        (void)c.write_response(rs, false, true);
+        // The request was never read: drain it briefly so the peer (a Windows client in
+        // particular) reads the 503 instead of a reset (c39075a).
+        c.close_lingering(kLingerMs, kLingerBytes);
+    }
 }
 
 void Server::reap(bool all) {
@@ -1062,6 +1137,12 @@ void Server::reap(bool all) {
 void Server::stop() noexcept {
     stopping_ = true;
     if (accept_thread_.joinable()) accept_thread_.join();
+    { const std::lock_guard<std::mutex> lk(reject_mu_); }  // no lost wake-up: stopping_ is set
+    reject_cv_.notify_all();
+    if (reject_thread_.joinable()) reject_thread_.join();
+    for (auto& t : reject_queue_)
+        if (t) t->close();
+    reject_queue_.clear();
     listener_.close();
     tls_listener_.close();
     {
@@ -1096,7 +1177,7 @@ void Server::accept_loop() {
         }
         reap(false);
         std::size_t active = 0, from_peer = 0;
-        const std::string peer_addr = t.value()->peer_address();
+        const std::string peer_addr = net::peer_group(t.value()->peer_address(), cfg_.peer_ipv6_prefix_bits);
         {
             std::lock_guard<std::mutex> lk(mu_);
             active = workers_.size();
@@ -1113,14 +1194,18 @@ void Server::accept_loop() {
             continue;
         }
         if (active >= cfg_.max_connections) {
-            Connection c(std::move(t).value(), cfg_.limits);
-            Response rs;
-            rs.status = 503;
-            rs.set("Content-Type", "text/plain");
-            rs.set("Retry-After", "1");
-            rs.body = "server busy\n";
-            (void)c.write_response(rs, false, true);
-            c.close_lingering(kLingerMs, kLingerBytes);  // the request was never read
+            // Handed to the reject thread; the accept thread never writes to or waits on the peer.
+            constexpr std::size_t kMaxPendingRejects = 16;
+            bool queued = false;
+            {
+                std::lock_guard<std::mutex> lk(reject_mu_);
+                if (reject_queue_.size() < kMaxPendingRejects) {
+                    reject_queue_.push_back(std::move(t).value());
+                    queued = true;
+                }
+            }
+            if (queued) reject_cv_.notify_one();
+            else t.value()->close();
             if (cfg_.log) cfg_.log("http: connection refused (busy)");
             continue;
         }
@@ -1148,7 +1233,7 @@ void Server::accept_loop() {
             }
             const std::string peer = (*owned)->peer_address();
             Connection c(std::move(*owned), cfg_.limits);
-            c.set_body_budget(budget_);
+            c.set_body_budget(budget_, net::peer_group(peer, cfg_.peer_ipv6_prefix_bits));
             serve(c, peer);
             {
                 std::lock_guard<std::mutex> lk2(mu_);

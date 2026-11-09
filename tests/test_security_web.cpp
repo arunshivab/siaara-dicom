@@ -272,21 +272,22 @@ TEST_CASE("R-018: request body defaults and the server-wide in-flight body budge
     CHECK(http::Limits{}.max_body <= (256ull << 20));
     http::ServerConfig cfg;
     cfg.max_inflight_body_bytes = 1000;  // R-018 option
+    cfg.max_inflight_body_peer_share = 1;  // R-057 option: all clients here are one loopback peer
     cfg.limits.read_timeout_ms = 3000;
     http::Server s;
     REQUIRE(s.start(cfg, [](const http::Request& rq, http::Response& rs) { rs.body = std::to_string(rq.body.size()); }).is_ok());
-    // A holds 800 bytes of budget while its body is still arriving.
+    // A holds the 700 bytes of its body that have arrived (R-057: charged as they arrive).
     auto a = net::tcp_connect("127.0.0.1", s.port(), 2000);
     REQUIRE(a);
     const std::string head = "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 800\r\n\r\n";
-    const std::string part = head + std::string(100, 'a');
+    const std::string part = head + std::string(700, 'a');
     REQUIRE((*a)->write_all(reinterpret_cast<const std::uint8_t*>(part.data()), part.size(), 2000).is_ok());
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     // B would exceed the budget: 503.
     const std::string b = raw_exchange(s.port(), head + std::string(800, 'b'), 1500);
     CHECK(b.rfind("HTTP/1.1 503", 0) == 0);
     // A completes; afterwards the budget is free again.
-    const std::string rest(700, 'a');
+    const std::string rest(100, 'a');
     REQUIRE((*a)->write_all(reinterpret_cast<const std::uint8_t*>(rest.data()), rest.size(), 2000).is_ok());
     std::string ra;
     std::uint8_t buf[512];
