@@ -657,7 +657,8 @@ Status TileEncoder::encode(std::uint32_t index, std::int64_t x0, std::int64_t y0
         data.insert(data.end(), hdr.begin(), hdr.end());
         if (pl_.eph) put16(data, kEPH);
         for (const auto& [cb, sl] : bodies)
-            data.insert(data.end(), cb->eb.data.begin() + sl.first, cb->eb.data.begin() + sl.first + sl.second);
+            data.insert(data.end(), cb->eb.data.begin() + static_cast<std::ptrdiff_t>(sl.first),
+                        cb->eb.data.begin() + static_cast<std::ptrdiff_t>(sl.first) + static_cast<std::ptrdiff_t>(sl.second));
     };
     const int R = pl_.levels + 1;
     switch (pl_.prog) {
