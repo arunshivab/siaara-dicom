@@ -13,3 +13,5 @@ target_compile_options(siaara-webcli PRIVATE ${SIAARA_WARN})
 add_executable(siaara-deid siaara_deid.cpp)
 target_link_libraries(siaara-deid PRIVATE siaara_static)
 target_compile_options(siaara-deid PRIVATE ${SIAARA_WARN})
+install(TARGETS siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

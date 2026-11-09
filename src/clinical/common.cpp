@@ -113,7 +113,10 @@ std::optional<double> parse_decimal(std::string_view s) noexcept {
         while (e < -22) {
             v /= 1e22;
             e += 22;
-            if (v == 0.0) break;
+            if (v == 0.0) {
+                e = 0;  // underflowed to zero: nothing left to scale (kPow10 has only 23 entries)
+                break;
+            }
         }
         // Dividing by an exact power of ten keeps "0.1"-style values correctly rounded.
         v = e >= 0 ? v * kPow10[e] : v / kPow10[-e];
@@ -327,7 +330,10 @@ std::string format_ds(double v) {
     if (r.ec == std::errc() && r.ptr - buf <= 16) return std::string(buf, r.ptr);
     for (int prec = 15; prec >= 1; --prec) {
         r = std::to_chars(buf, buf + sizeof buf, v, std::chars_format::general, prec);
-        if (r.ec == std::errc() && r.ptr - buf <= 16) return std::string(buf, r.ptr);
+        // Rounding near the largest double can round up past it ("1.797693135e+308"), giving
+        // text that no longer parses as a finite number: try fewer digits then.
+        if (r.ec == std::errc() && r.ptr - buf <= 16 && parse_decimal(std::string_view(buf, static_cast<std::size_t>(r.ptr - buf))))
+            return std::string(buf, r.ptr);
     }
     return "0";
 }
