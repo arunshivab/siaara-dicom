@@ -1,0 +1,103 @@
+# clang-tidy findings accepted when the gate was introduced (tools/ci/clang_tidy_gate.py).
+# Remove entries as the code is fixed; never add entries for new code.
+src/capi/capi.cpp|bugprone-empty-catch|empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether
+src/capi/capi.cpp|bugprone-not-null-terminated-result|the result from calling '_' is not null-terminated
+src/charset/charset.cpp|bugprone-branch-clone|repeated branch body in conditional chain
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/clinical/geometry.hpp|clang-analyzer-core.uninitialized.Assign|Assigned value is garbage or undefined
+src/clinical/gsps.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/clinical/sr.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/sr.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/clinical/suv.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/codec/j2k_decode.cpp|bugprone-implicit-widening-of-multiplication-result|performing an implicit widening conversion to type '_' (aka '_') of a multiplication performed in type '_'
+src/codec/j2k_decode.cpp|clang-analyzer-core.CallAndMessage|1st function call argument is an uninitialized value
+src/codec/j2k_encode.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/codec/j2k_encode.cpp|clang-analyzer-core.BitwiseShift|Left shift by '_' overflows the capacity of '_'
+src/codec/j2k_tables.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/codec/jpeg_common.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/codec/jpeg_encode.cpp|clang-analyzer-core.DivideZero|Division by zero
+src/codec/jpegls_decode.cpp|clang-analyzer-deadcode.DeadStores|Value stored to '_' is never read
+src/codec/jpegls_internal.hpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/codec/jpegls_internal.hpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/codec/rle.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' (aka '_') is used as a pointer offset after an implicit widening conversion to type '_'
+src/codec/rle.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' (aka '_') is used as a pointer offset after an implicit widening conversion to type '_'
+src/core/reader.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/core/status.hpp|clang-analyzer-core.uninitialized.Assign|Value assigned to field '_' in implicit constructor is garbage or undefined
+src/deid/sha256.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/deid/sha256.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/deid/sha256.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/deid/sha256.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/deid/sha256.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|performing an implicit widening conversion to type '_' (aka '_') of a multiplication performed in type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' (aka '_') is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' (aka '_') is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/color.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/frames.cpp|bugprone-empty-catch|empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether
+src/image/lut.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' (aka '_') is used as a pointer offset after an implicit widening conversion to type '_'
+src/image/lut.hpp|clang-analyzer-core.uninitialized.Assign|Value assigned to field '_' in implicit constructor is garbage or undefined
+src/image/overlay.cpp|cert-flp30-c|loop induction expression should not have floating-point type
+src/image/overlay.cpp|cert-flp30-c|loop induction expression should not have floating-point type
+src/image/overlay.cpp|clang-analyzer-security.FloatLoopCounter|Variable '_' with floating point type '_' should not be used as a loop counter
+src/image/overlay.cpp|clang-analyzer-security.FloatLoopCounter|Variable '_' with floating point type '_' should not be used as a loop counter
+src/image/render.cpp|bugprone-incorrect-roundings|casting (double + 0.5) to integer leads to incorrect rounding; consider using lround (#include <cmath>) instead
+src/net/dimse.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/net/dimse.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/net/scp.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/net/tls.cpp|bugprone-empty-catch|empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether
+src/net/tls_openssl.cpp|bugprone-multi-level-implicit-pointer-conversion|multilevel pointer conversion from '_' to '_', please use explicit cast
+src/net/tls_openssl.cpp|bugprone-multi-level-implicit-pointer-conversion|multilevel pointer conversion from '_' to '_', please use explicit cast
+src/net/tls_openssl.cpp|bugprone-not-null-terminated-result|the result from calling '_' is not null-terminated
+src/store/common.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
+src/store/common.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/store.cpp|performance-no-automatic-move|constness of '_' prevents automatic move
+src/store/text.cpp|bugprone-assignment-in-if-condition|an assignment within an '_' condition is bug-prone
+src/store/text.cpp|bugprone-assignment-in-if-condition|an assignment within an '_' condition is bug-prone
+src/store/text.cpp|clang-analyzer-core.uninitialized.Assign|Assigned value is garbage or undefined
+src/web/client.cpp|bugprone-unchecked-optional-access|unchecked access to optional value
+src/web/dicom_model.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
+src/web/http.cpp|bugprone-empty-catch|empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether
+src/web/http.hpp|bugprone-implicit-widening-of-multiplication-result|performing an implicit widening conversion to type '_' (aka '_') of a multiplication performed in type '_'
+tools/siaara_deid.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
+tools/siaara_dump.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
+tools/siaara_echoscu.cpp|bugprone-branch-clone|repeated branch body in conditional chain
+tools/siaara_echoscu.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
+tools/siaara_webcli.cpp|bugprone-exception-escape|an exception may be thrown in function '_' which should not throw exceptions
+tools/siaara_webcli.cpp|cert-err34-c|'_' used to convert a string to an integer value, but function will not report conversion errors; consider using '_' instead

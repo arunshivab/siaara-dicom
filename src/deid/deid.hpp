@@ -66,6 +66,13 @@ struct PixelRegion {
 // an instance of `sop_class_uid`; 0 when unknown.
 using AttributeTypeFn = std::function<int(std::string_view sop_class_uid, std::span<const Tag> path, Tag tag)>;
 
+// Keyed derivations (see replacement_uid, date_offset_days). The secret key K is never used
+// directly: each purpose has its own sub-key, K_purpose = HMAC-SHA-256(K, "SIAARA-DEID-KEY\0" +
+// purpose) with purpose "uid", "date" and "patient-id", so no attribute value can be chosen to
+// make one derivation reveal another (e.g. a UI value that is MACed to the date offset).
+// Changed in 2.2 (review R-028, R-045): replacement UIDs, date offsets and Patient ID pseudonyms
+// differ from those of earlier versions for the same key; data sets de-identified with an
+// earlier version are not linked to new output.
 struct Options {
     std::uint32_t options = 0;                // OptionBits
     // Secret key for UID replacement, the Patient ID pseudonym and the date offset. At least 16
@@ -87,6 +94,15 @@ struct Options {
     bool dates_by_vr = true;          // DA/DT/TM and PN attributes not in Table E.1-1 are handled
                                       // like listed dates (X/Z, K, C) and names (X/Z)
     std::uint32_t max_shift_days = 3652;  // Modified Dates: offset in 1..max_shift_days days back
+    // Clean Recognizable Visual Features Option (E.3.2, CID 7050 113102). The toolkit does not
+    // detect or remove faces or other recognizable features itself; set this hook to do it (e.g.
+    // defacing a CT volume or blanking a photograph). It is called with the working copy of the
+    // data set (after pixel_regions are applied, before the attribute rules) when the instance
+    // has pixel data. When it returns Ok, code 113102 is recorded and Recognizable Visual
+    // Features (0028,0302) is set to NO; an error from it fails deidentify(), leaving the file
+    // unchanged. Without the hook the option is not supported, and (0028,0302) YES is reported
+    // as RecognizableFeaturesRemain.
+    std::function<Status(Dataset&)> clean_recognizable_visual_features;
 };
 
 // Report bits (also the C API's out_flags).
@@ -96,6 +112,13 @@ enum ReportBits : std::uint32_t {
     NotFullyDeidentified = 1u << 2,           // either of the above
     PixelDataCleaned = 1u << 3,               // pixel_regions were applied
     UnparseableValuesRemoved = 1u << 4,       // dates/UIDs that could not be processed were emptied
+    // No Patient ID: the date offset and pseudonym are those of every instance without one.
+    EmptyPatientId = 1u << 5,
+    InvalidUidValues = 1u << 6,               // UI values with characters other than 0-9 and '.' were replaced
+    // An overlay embedded in Pixel Data bits could not be cleared (encapsulated pixel data, or a
+    // bit position inside the stored image bits); its overlay group is kept. Also sets
+    // NotFullyDeidentified.
+    EmbeddedOverlayRemains = 1u << 7,
 };
 
 struct Report {
@@ -121,11 +144,16 @@ Status deidentify(DicomFile& file, const Options& opt, Report* report = nullptr)
 // Interpretation). Fails with Unsupported for encapsulated pixel data.
 Status blank_pixel_regions(Dataset& ds, std::span<const PixelRegion> regions);
 
-// The replacement for a UID: 2.25.<decimal of the first 128 bits of HMAC-SHA-256(key, uid)>,
+// The replacement for a UID: 2.25.<decimal of the first 128 bits of HMAC-SHA-256(K_uid, uid)>,
 // with the UUID version 8 / RFC 9562 variant bits set. `uid` has its padding removed first.
 std::string replacement_uid(std::span<const std::uint8_t> key, std::string_view uid);
 
-// The Modified Dates offset (whole days, negative) for a patient.
+// The Modified Dates offset (whole days, negative) for a patient: HMAC-SHA-256(K_date, patient)
+// where the patient is identified by Patient ID and Issuer of Patient ID (0010,0021) together
+// (the same ID from two issuers is two patients). Values have their padding removed.
+std::int32_t date_offset_days(std::span<const std::uint8_t> key, std::string_view patient_id,
+                              std::string_view issuer_of_patient_id, std::uint32_t max_shift_days = 3652);
+// Same, for a Patient ID without an issuer.
 std::int32_t date_offset_days(std::span<const std::uint8_t> key, std::string_view patient_id,
                               std::uint32_t max_shift_days = 3652);
 

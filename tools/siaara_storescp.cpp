@@ -108,7 +108,8 @@ void usage() {
                  "  -od DIR            write received instances to DIR (default: do not write)\n"
                  "  --accept-any       accept any SOP class (default: common storage classes)\n"
                  "  --all-ts           also accept compressed transfer syntaxes known to the toolkit\n"
-                 "  --allow AE         allowed calling AE title (repeatable; default any)\n"
+                 "  --allow AE         allowed calling AE title (repeatable; one of --allow / --allow-any is required)\n"
+                 "  --allow-any        accept any calling AE title\n"
                  "  --max-assoc N      maximum concurrent associations (default 8)\n"
                  "  --max-pdu N        maximum PDU length to receive (default 65536)\n"
                  "  --exit-after N     stop after N associations were handled\n"
@@ -246,6 +247,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(a, "--accept-any")) cfg.accept_any_sop_class = true;
         else if (!std::strcmp(a, "--all-ts")) all_ts = true;
         else if (!std::strcmp(a, "--allow") && more) cfg.allowed_calling_aes.push_back(argv[++i]);
+        else if (!std::strcmp(a, "--allow-any")) cfg.allow_any_calling_ae = true;
         else if (!std::strcmp(a, "--max-assoc") && more && parse_uint(argv[++i], 256, tmp)) cfg.max_associations = tmp;
         else if (!std::strcmp(a, "--max-pdu") && more && parse_uint(argv[++i], 0xFFFFFFFFul, tmp))
             cfg.limits.max_receive_pdu = static_cast<std::uint32_t>(tmp);

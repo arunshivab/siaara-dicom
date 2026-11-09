@@ -202,12 +202,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_uri(siaara_web_client* clie
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_web_parts_free(siaara_web_parts* parts) { delete parts; }
+SIAARA_API void SIAARA_CALL siaara_web_parts_free(siaara_web_parts* parts) SIAARA_NOEXCEPT { delete parts; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_count(const siaara_web_parts* parts, uint32_t* out) {
-    if (!parts || !out) return fail(Errc::InvalidArgument, "parts and out must not be NULL");
-    *out = static_cast<uint32_t>(parts->parts.size());
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!parts || !out) return fail(Errc::InvalidArgument, "parts and out must not be NULL");
+        *out = static_cast<uint32_t>(parts->parts.size());
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_get(const siaara_web_parts* parts, uint32_t index,

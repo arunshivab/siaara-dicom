@@ -1,0 +1,74 @@
+name: fuzz-nightly
+
+# libFuzzer + ASan + UBSan, 30 minutes per target (fork mode: findings do not stop the run).
+# The grown corpus is kept between runs in the Actions cache; findings are uploaded as artifacts
+# and fail the job. Reproduce one locally with build-fuzz/fuzz/fuzz_<target> <file> (docs/FUZZING.md).
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        required: false
+        default: "1800"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: fuzz (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '1800' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Install clang with the sanitizer and libFuzzer runtimes
+        run: sudo apt-get update && sudo apt-get install -y clang-18 libclang-rt-18-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSIAARA_FUZZ=ON -DSIAARA_BUILD_TESTS=OFF -DSIAARA_BUILD_TOOLS=OFF
+      - name: Build
+        run: cmake --build build-fuzz --parallel
+      - name: Restore the corpus of earlier runs
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            fuzz-work/*/corpus
+          key: fuzz-corpus-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.shard }}-
+      - name: Drop findings of earlier runs
+        run: rm -rf fuzz-work/*/artifacts
+      - name: Fuzz (targets of this shard run 4 at a time)
+        run: >
+          python3 fuzz/run_fuzzers.py --bin build-fuzz/fuzz --seconds "$SECONDS_PER_TARGET" --jobs 4
+          --shard ${{ matrix.shard }}/4 --keep-going --work fuzz-work
+      - name: Save the corpus
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            fuzz-work/*/corpus
+          key: fuzz-corpus-${{ matrix.shard }}-${{ github.run_id }}
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-findings-shard-${{ matrix.shard }}
+          path: |
+            fuzz-work/*/artifacts/
+            fuzz-work/*/fuzz.log
+          if-no-files-found: ignore
+          retention-days: 30

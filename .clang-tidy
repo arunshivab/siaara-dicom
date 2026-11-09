@@ -1,0 +1,17 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  clang-analyzer-*,
+  -clang-analyzer-optin.*,
+  cert-dcl58-cpp,
+  cert-err34-c,
+  cert-flp30-c,
+  cert-oop58-cpp,
+  misc-redundant-expression,
+  misc-unconventional-assign-operator,
+  performance-move-const-arg,
+  performance-no-automatic-move
+HeaderFilterRegex: '(src|include|fuzz|tools)/.*'
+FormatStyle: none

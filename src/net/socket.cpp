@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -299,13 +300,30 @@ Status socket_library_init() {
     return Status::ok();
 }
 
+Deadline deadline_after(int timeout_ms) noexcept {
+    return std::chrono::steady_clock::now() + std::chrono::milliseconds(clamp_timeout(timeout_ms));
+}
+
+int remaining_ms(Deadline d) noexcept {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(d - std::chrono::steady_clock::now()).count();
+    if (left <= 0) return 0;
+    if (left > INT_MAX) return INT_MAX;
+    return static_cast<int>(left);
+}
+
 Status read_exact(Transport& t, std::uint8_t* buf, std::size_t n, int timeout_ms) {
+    return read_exact_until(t, buf, n, deadline_after(timeout_ms));
+}
+
+Status read_exact_until(Transport& t, std::uint8_t* buf, std::size_t n, Deadline deadline) {
     std::size_t got = 0;
     while (got < n) {
-        Result<std::size_t> r = t.read_some(buf + got, n - got, timeout_ms);
+        Result<std::size_t> r = t.read_some(buf + got, n - got, remaining_ms(deadline));
         if (!r) return r.take_error();
         if (*r == 0) return Status(Errc::NetworkError, "connection closed");
         got += *r;
+        if (got < n && std::chrono::steady_clock::now() >= deadline)
+            return Status(Errc::Timeout, "read deadline expired");
     }
     return Status::ok();
 }

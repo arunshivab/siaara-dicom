@@ -267,6 +267,25 @@ internal static class C
     public const int SIAARA_BACKEND_AUTO = 0;
     public const int SIAARA_BACKEND_CPU = 1;
     public const int SIAARA_BACKEND_GPU = 2;
+    public const int SIAARA_FRAME_WARN_PRECISION_BELOW_BITS_STORED = 1;
+    public const int SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_STORED = 2;
+    public const int SIAARA_FRAME_WARN_SIGNEDNESS_MISMATCH = 3;
+    public const int SIAARA_FRAME_WARN_EXTRA_COMPONENTS = 4;
+    public const int SIAARA_FRAME_WARN_CODESTREAM_CROPPED = 5;
+    public const int SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_ALLOCATED = 6;
+    public const int SIAARA_FRAME_WARN_CONTAINER_WIDENED = 7;
+    public const int SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM = 8;
+    public const int SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9;
+    public const int SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10;
+    public const int SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11;
+    public const int SIAARA_SEQ_LENGTHS_KEEP = 0;
+    public const int SIAARA_SEQ_LENGTHS_EXPLICIT = 1;
+    public const int SIAARA_SEQ_LENGTHS_UNDEFINED = 2;
+    public const int SIAARA_GROUP_LENGTHS_KEEP = 0;
+    public const int SIAARA_GROUP_LENGTHS_DROP = 1;
+    public const int SIAARA_GROUP_LENGTHS_RECOMPUTE = 2;
+    public const int SIAARA_ODD_LENGTHS_KEEP = 0;
+    public const int SIAARA_ODD_LENGTHS_PAD = 1;
     public const int SIAARA_FRAMEF_MONOCHROME = 1 << 0;
     public const int SIAARA_FRAMEF_INVERTED = 1 << 1;
     public const int SIAARA_FRAMEF_PALETTE = 1 << 2;
@@ -302,6 +321,16 @@ internal static class C
     public const int SIAARA_PSTATE_CREATION_TIME = 4;
     public const int SIAARA_PSTATE_SOP_INSTANCE_UID = 5;
     public const int SIAARA_PSTATE_SOP_CLASS_UID = 6;
+    public const int SIAARA_LOG_DEBUG = 0;
+    public const int SIAARA_LOG_INFO = 1;
+    public const int SIAARA_LOG_WARNING = 2;
+    public const int SIAARA_LOG_ERROR = 3;
+    public const int SIAARA_QR_PATIENT_ROOT = 0;
+    public const int SIAARA_QR_STUDY_ROOT = 1;
+    public const int SIAARA_QR_WORKLIST = 2;
+    public const int SIAARA_SCP_STORED = 0;
+    public const int SIAARA_SCP_STORE_FAILED = 1;
+    public const int SIAARA_SCP_ECHO = 2;
 }
 
 [InlineArray(3)]
@@ -900,6 +929,16 @@ internal struct siaara_gpu_device_info
     public FixedArray128OfByte driver;
 }
 
+/// <summary>siaara_save_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_save_options
+{
+    public uint struct_size;
+    public int sequence_lengths;
+    public int group_lengths;
+    public int odd_lengths;
+}
+
 /// <summary>siaara_frame_properties (blittable, C layout).</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct siaara_frame_properties
@@ -1024,6 +1063,102 @@ internal struct siaara_pstate_properties
     public int has_modality;
     public uint warning_count;
     public uint reserved0;
+}
+
+/// <summary>siaara_dimse_peer (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_dimse_peer
+{
+    public uint struct_size;
+    public uint port;
+    public nint host;
+    public nint calling_ae;
+    public nint called_ae;
+    public nint tls;
+    public int connect_timeout_ms;
+    public int acse_timeout_ms;
+    public int dimse_timeout_ms;
+    public uint max_pdu;
+    public int allow_lossy_transcode;
+    public uint reserved0;
+}
+
+/// <summary>siaara_dimse_result (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_dimse_result
+{
+    public uint struct_size;
+    public uint status;
+    public uint completed;
+    public uint failed;
+    public uint warning;
+    public uint remaining;
+    public uint matches;
+    public uint current;
+}
+
+/// <summary>siaara_get_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_get_options
+{
+    public uint struct_size;
+    public int duplicate_policy;
+    public nint store;
+    public nint folder;
+    public nint sop_classes;
+    public uint sop_class_count;
+    public int native_only;
+}
+
+/// <summary>siaara_scp_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_scp_options
+{
+    public uint struct_size;
+    public uint port;
+    public nint ae_title;
+    public nint bind_address;
+    public nint allowed_calling_aes;
+    public uint allowed_count;
+    public uint max_associations;
+    public int accept_any_called_ae;
+    public int accept_any_sop_class;
+    public int accept_compressed;
+    public int duplicate_policy;
+    public int idle_timeout_ms;
+    public int dimse_timeout_ms;
+    public uint max_pdu;
+    public int allow_any_calling_ae;
+    public nint tls;
+}
+
+/// <summary>siaara_scp_event (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_scp_event
+{
+    public uint struct_size;
+    public int kind;
+    public uint dimse_status;
+    public int outcome;
+    public nint calling_ae;
+    public nint sop_class_uid;
+    public nint sop_instance_uid;
+    public nint peer_address;
+}
+
+/// <summary>siaara_scp_stats (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_scp_stats
+{
+    public uint struct_size;
+    public uint reserved0;
+    public ulong active_associations;
+    public ulong associations_handled;
+    public ulong associations_rejected;
+    public ulong instances_stored;
+    public ulong store_failures;
+    public ulong echoes;
+    public ulong bytes_received;
 }
 
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
@@ -1517,6 +1652,22 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_view_last_backend(nint view, int* out_backend);
 
+    [LibraryImport(Library, EntryPoint = "siaara_frame_warning_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_warning_count(nint file, uint frame, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_warning")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_warning(nint file, uint frame, uint index, int* code, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_save_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_save_ex(nint file, byte* utf8_path, nuint path_len, byte* transfer_syntax_uid, siaara_save_options* options);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_get_raw_stored")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_get_raw_stored(nint file, nint ds, uint tag, byte* buf, nuint cap, nuint* needed);
+
     [LibraryImport(Library, EntryPoint = "siaara_frame_open")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_frame_open(nint file, uint frame, nint* @out);
@@ -1604,6 +1755,138 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_pstate_applies")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_pstate_applies(nint ps, byte* sop_instance_uid, nuint len, uint frame_1based, int* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_cancel_create")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_cancel_create(nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_cancel_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_cancel_free(nint token);
+
+    [LibraryImport(Library, EntryPoint = "siaara_cancel_set")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_cancel_set(nint token);
+
+    [LibraryImport(Library, EntryPoint = "siaara_cancel_reset")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_cancel_reset(nint token);
+
+    [LibraryImport(Library, EntryPoint = "siaara_cancel_is_set")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_cancel_is_set(nint token, int* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_set_log_callback")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_set_log_callback(delegate* unmanaged[Cdecl]<void*, int, int, byte*, void> cb, void* user, int min_level);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_echo")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_echo(siaara_dimse_peer* peer, nint cancel, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_find")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_find(siaara_dimse_peer* peer, int model, nint identifier, nint cancel, delegate* unmanaged[Cdecl]<void*, nint, int> cb, void* user, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_move")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_move(siaara_dimse_peer* peer, int model, nint identifier, byte* destination_ae, nint cancel, delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int> cb, void* user, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_get(siaara_dimse_peer* peer, int model, nint identifier, siaara_get_options* options, nint cancel, delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int> cb, void* user, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_store_files")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_store_files(siaara_dimse_peer* peer, byte** paths, nuint* lens, uint count, nint cancel, delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int> cb, void* user, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_store")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_store(siaara_dimse_peer* peer, nint file, nint cancel, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_commit")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_commit(siaara_dimse_peer* peer, byte** sop_classes, byte** sop_instances, uint count, int wait_ms, nint cancel, ushort* failure_reasons, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_worklist_query")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_worklist_query(byte* station_ae, byte* modality, byte* date, byte* patient_name, byte* patient_id, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_scp_start")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_scp_start(siaara_scp_options* options, nint store, delegate* unmanaged[Cdecl]<void*, siaara_scp_event*, void> cb, void* user, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_scp_port")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_scp_port(nint scp, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_scp_stats_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_scp_stats_get(nint scp, siaara_scp_stats* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_scp_stop")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_scp_stop(nint scp);
+
+    [LibraryImport(Library, EntryPoint = "siaara_scp_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_scp_free(nint scp);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_client_set_cancel")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_client_set_cancel(nint client, nint token);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_wado_metadata")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_wado_metadata(nint client, byte* study_uid, byte* series_uid, byte* instance_uid, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_wado_frames")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_wado_frames(nint client, byte* study_uid, byte* series_uid, byte* instance_uid, uint* frames, uint count, byte** transfer_syntaxes, uint ts_count, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_wado_retrieve")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_wado_retrieve(nint client, byte* study_uid, byte* series_uid, byte* instance_uid, byte** transfer_syntaxes, uint ts_count, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_wado_uri")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_wado_uri(nint client, byte* study_uid, byte* series_uid, byte* object_uid, byte* content_type, byte* transfer_syntax, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_parts_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_web_parts_free(nint parts);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_parts_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_parts_count(nint parts, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_parts_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_parts_get(nint parts, uint index, byte** out_data, ulong* out_size, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_parts_open_file")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_parts_open_file(nint parts, uint index, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_parts_add_to_store")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_parts_add_to_store(nint parts, nint store, int policy, uint* added, uint* failed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_volume_build_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_volume_build_ex(byte** utf8_paths, nuint* path_lens, uint count, siaara_volume_options* options, nint cancel, delegate* unmanaged[Cdecl]<void*, ulong, ulong, int> cb, void* user, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_verify_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_verify_ex(nint store, int deep, int repair, nint cancel, delegate* unmanaged[Cdecl]<void*, ulong, ulong, int> cb, void* user, siaara_store_verify_report* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_rebuild_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_rebuild_ex(nint store, nint cancel, delegate* unmanaged[Cdecl]<void*, ulong, ulong, int> cb, void* user);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dicomdir_write_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dicomdir_write_ex(byte* utf8_root, nuint root_len, byte** files, nuint* lens, nuint count, siaara_dicomdir_write_options* options, nint cancel, delegate* unmanaged[Cdecl]<void*, ulong, ulong, int> cb, void* user, uint* warnings);
 
     [LibraryImport(Library, EntryPoint = "siaara_dataset_append_item")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -2524,6 +2807,40 @@ internal static unsafe class Native
             return Raw.siaara_view_last_backend(view, p_out_backend);
     }
 
+    internal static int siaara_frame_warning_count(nint file, uint frame, out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_frame_warning_count(file, frame, p_out);
+    }
+
+    internal static int siaara_frame_warning(nint file, uint frame, uint index, out int code, Span<byte> buf, out nuint needed)
+    {
+        code = default;
+        needed = default;
+        fixed (int* p_code = &code)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_frame_warning(file, frame, index, p_code, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_file_save_ex(nint file, ReadOnlySpan<byte> utf8_path, ReadOnlySpan<byte> transfer_syntax_uid, in siaara_save_options options)
+    {
+        if (!transfer_syntax_uid.IsEmpty && transfer_syntax_uid.IndexOf((byte)0) < 0) throw new ArgumentException("transfer_syntax_uid must be NUL-terminated", nameof(transfer_syntax_uid));
+        fixed (byte* p_utf8_path = utf8_path)
+        fixed (byte* p_transfer_syntax_uid = transfer_syntax_uid)
+        fixed (siaara_save_options* p_options = &options)
+            return Raw.siaara_file_save_ex(file, (byte*)p_utf8_path, (nuint)utf8_path.Length, (byte*)p_transfer_syntax_uid, p_options);
+    }
+
+    internal static int siaara_file_get_raw_stored(nint file, nint ds, uint tag, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_file_get_raw_stored(file, ds, tag, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
     internal static int siaara_frame_open(nint file, uint frame, out nint @out)
     {
         @out = 0;
@@ -2692,6 +3009,294 @@ internal static unsafe class Native
         fixed (byte* p_sop_instance_uid = sop_instance_uid)
         fixed (int* p_out = &@out)
             return Raw.siaara_pstate_applies(ps, (byte*)p_sop_instance_uid, (nuint)sop_instance_uid.Length, frame_1based, p_out);
+    }
+
+    internal static int siaara_cancel_create(out nint @out)
+    {
+        @out = 0;
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_cancel_create(p_out);
+    }
+
+    internal static void siaara_cancel_free(nint token)
+    {
+        Raw.siaara_cancel_free(token);
+    }
+
+    internal static int siaara_cancel_set(nint token)
+    {
+        return Raw.siaara_cancel_set(token);
+    }
+
+    internal static int siaara_cancel_reset(nint token)
+    {
+        return Raw.siaara_cancel_reset(token);
+    }
+
+    internal static int siaara_cancel_is_set(nint token, out int @out)
+    {
+        @out = default;
+        fixed (int* p_out = &@out)
+            return Raw.siaara_cancel_is_set(token, p_out);
+    }
+
+    internal static int siaara_set_log_callback(nint cb, nint user, int min_level)
+    {
+        return Raw.siaara_set_log_callback((delegate* unmanaged[Cdecl]<void*, int, int, byte*, void>)cb, (void*)user, min_level);
+    }
+
+    internal static int siaara_dimse_echo(in siaara_dimse_peer peer, nint cancel, ref siaara_dimse_result result)
+    {
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_echo(p_peer, cancel, p_result);
+    }
+
+    internal static int siaara_dimse_find(in siaara_dimse_peer peer, int model, nint identifier, nint cancel, nint cb, nint user, ref siaara_dimse_result result)
+    {
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_find(p_peer, model, identifier, cancel, (delegate* unmanaged[Cdecl]<void*, nint, int>)cb, (void*)user, p_result);
+    }
+
+    internal static int siaara_dimse_move(in siaara_dimse_peer peer, int model, nint identifier, ReadOnlySpan<byte> destination_ae, nint cancel, nint cb, nint user, ref siaara_dimse_result result)
+    {
+        if (!destination_ae.IsEmpty && destination_ae.IndexOf((byte)0) < 0) throw new ArgumentException("destination_ae must be NUL-terminated", nameof(destination_ae));
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (byte* p_destination_ae = destination_ae)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_move(p_peer, model, identifier, (byte*)p_destination_ae, cancel, (delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int>)cb, (void*)user, p_result);
+    }
+
+    internal static int siaara_dimse_get(in siaara_dimse_peer peer, int model, nint identifier, in siaara_get_options options, nint cancel, nint cb, nint user, ref siaara_dimse_result result)
+    {
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (siaara_get_options* p_options = &options)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_get(p_peer, model, identifier, p_options, cancel, (delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int>)cb, (void*)user, p_result);
+    }
+
+    internal static int siaara_dimse_store_files(in siaara_dimse_peer peer, ReadOnlySpan<nint> paths, ReadOnlySpan<nuint> lens, uint count, nint cancel, nint cb, nint user, ref siaara_dimse_result result)
+    {
+        if (paths.Length < (long)count) throw new ArgumentException("paths has fewer elements than count requires", nameof(paths));
+        if (!lens.IsEmpty && lens.Length < (long)count) throw new ArgumentException("lens has fewer elements than count requires", nameof(lens));
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (nint* p_paths = paths)
+        fixed (nuint* p_lens = lens)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_store_files(p_peer, (byte**)p_paths, (nuint*)p_lens, count, cancel, (delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int>)cb, (void*)user, p_result);
+    }
+
+    internal static int siaara_dimse_store(in siaara_dimse_peer peer, nint file, nint cancel, ref siaara_dimse_result result)
+    {
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_store(p_peer, file, cancel, p_result);
+    }
+
+    internal static int siaara_dimse_commit(in siaara_dimse_peer peer, ReadOnlySpan<nint> sop_classes, ReadOnlySpan<nint> sop_instances, uint count, int wait_ms, nint cancel, Span<ushort> failure_reasons, ref siaara_dimse_result result)
+    {
+        if (sop_classes.Length < (long)count) throw new ArgumentException("sop_classes has fewer elements than count requires", nameof(sop_classes));
+        if (sop_instances.Length < (long)count) throw new ArgumentException("sop_instances has fewer elements than count requires", nameof(sop_instances));
+        if (!failure_reasons.IsEmpty && failure_reasons.Length < (long)count) throw new ArgumentException("failure_reasons has fewer elements than count requires", nameof(failure_reasons));
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (nint* p_sop_classes = sop_classes)
+        fixed (nint* p_sop_instances = sop_instances)
+        fixed (ushort* p_failure_reasons = failure_reasons)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_commit(p_peer, (byte**)p_sop_classes, (byte**)p_sop_instances, count, wait_ms, cancel, (ushort*)p_failure_reasons, p_result);
+    }
+
+    internal static int siaara_worklist_query(ReadOnlySpan<byte> station_ae, ReadOnlySpan<byte> modality, ReadOnlySpan<byte> date, ReadOnlySpan<byte> patient_name, ReadOnlySpan<byte> patient_id, out nint @out)
+    {
+        if (!station_ae.IsEmpty && station_ae.IndexOf((byte)0) < 0) throw new ArgumentException("station_ae must be NUL-terminated", nameof(station_ae));
+        if (!modality.IsEmpty && modality.IndexOf((byte)0) < 0) throw new ArgumentException("modality must be NUL-terminated", nameof(modality));
+        if (!date.IsEmpty && date.IndexOf((byte)0) < 0) throw new ArgumentException("date must be NUL-terminated", nameof(date));
+        if (!patient_name.IsEmpty && patient_name.IndexOf((byte)0) < 0) throw new ArgumentException("patient_name must be NUL-terminated", nameof(patient_name));
+        if (!patient_id.IsEmpty && patient_id.IndexOf((byte)0) < 0) throw new ArgumentException("patient_id must be NUL-terminated", nameof(patient_id));
+        @out = 0;
+        fixed (byte* p_station_ae = station_ae)
+        fixed (byte* p_modality = modality)
+        fixed (byte* p_date = date)
+        fixed (byte* p_patient_name = patient_name)
+        fixed (byte* p_patient_id = patient_id)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_worklist_query((byte*)p_station_ae, (byte*)p_modality, (byte*)p_date, (byte*)p_patient_name, (byte*)p_patient_id, p_out);
+    }
+
+    internal static int siaara_scp_start(in siaara_scp_options options, nint store, nint cb, nint user, out nint @out)
+    {
+        @out = 0;
+        fixed (siaara_scp_options* p_options = &options)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_scp_start(p_options, store, (delegate* unmanaged[Cdecl]<void*, siaara_scp_event*, void>)cb, (void*)user, p_out);
+    }
+
+    internal static int siaara_scp_port(nint scp, out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_scp_port(scp, p_out);
+    }
+
+    internal static int siaara_scp_stats_get(nint scp, ref siaara_scp_stats @out)
+    {
+        fixed (siaara_scp_stats* p_out = &@out)
+            return Raw.siaara_scp_stats_get(scp, p_out);
+    }
+
+    internal static int siaara_scp_stop(nint scp)
+    {
+        return Raw.siaara_scp_stop(scp);
+    }
+
+    internal static void siaara_scp_free(nint scp)
+    {
+        Raw.siaara_scp_free(scp);
+    }
+
+    internal static int siaara_web_client_set_cancel(nint client, nint token)
+    {
+        return Raw.siaara_web_client_set_cancel(client, token);
+    }
+
+    internal static int siaara_web_wado_metadata(nint client, ReadOnlySpan<byte> study_uid, ReadOnlySpan<byte> series_uid, ReadOnlySpan<byte> instance_uid, Span<byte> buf, out nuint needed)
+    {
+        if (!study_uid.IsEmpty && study_uid.IndexOf((byte)0) < 0) throw new ArgumentException("study_uid must be NUL-terminated", nameof(study_uid));
+        if (!series_uid.IsEmpty && series_uid.IndexOf((byte)0) < 0) throw new ArgumentException("series_uid must be NUL-terminated", nameof(series_uid));
+        if (!instance_uid.IsEmpty && instance_uid.IndexOf((byte)0) < 0) throw new ArgumentException("instance_uid must be NUL-terminated", nameof(instance_uid));
+        needed = default;
+        fixed (byte* p_study_uid = study_uid)
+        fixed (byte* p_series_uid = series_uid)
+        fixed (byte* p_instance_uid = instance_uid)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_web_wado_metadata(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_instance_uid, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_web_wado_frames(nint client, ReadOnlySpan<byte> study_uid, ReadOnlySpan<byte> series_uid, ReadOnlySpan<byte> instance_uid, ReadOnlySpan<uint> frames, uint count, ReadOnlySpan<nint> transfer_syntaxes, uint ts_count, out nint @out)
+    {
+        if (!study_uid.IsEmpty && study_uid.IndexOf((byte)0) < 0) throw new ArgumentException("study_uid must be NUL-terminated", nameof(study_uid));
+        if (!series_uid.IsEmpty && series_uid.IndexOf((byte)0) < 0) throw new ArgumentException("series_uid must be NUL-terminated", nameof(series_uid));
+        if (!instance_uid.IsEmpty && instance_uid.IndexOf((byte)0) < 0) throw new ArgumentException("instance_uid must be NUL-terminated", nameof(instance_uid));
+        if (frames.Length < (long)count) throw new ArgumentException("frames has fewer elements than count requires", nameof(frames));
+        if (transfer_syntaxes.Length < (long)ts_count) throw new ArgumentException("transfer_syntaxes has fewer elements than ts_count requires", nameof(transfer_syntaxes));
+        @out = 0;
+        fixed (byte* p_study_uid = study_uid)
+        fixed (byte* p_series_uid = series_uid)
+        fixed (byte* p_instance_uid = instance_uid)
+        fixed (uint* p_frames = frames)
+        fixed (nint* p_transfer_syntaxes = transfer_syntaxes)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_web_wado_frames(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_instance_uid, (uint*)p_frames, count, (byte**)p_transfer_syntaxes, ts_count, p_out);
+    }
+
+    internal static int siaara_web_wado_retrieve(nint client, ReadOnlySpan<byte> study_uid, ReadOnlySpan<byte> series_uid, ReadOnlySpan<byte> instance_uid, ReadOnlySpan<nint> transfer_syntaxes, uint ts_count, out nint @out)
+    {
+        if (!study_uid.IsEmpty && study_uid.IndexOf((byte)0) < 0) throw new ArgumentException("study_uid must be NUL-terminated", nameof(study_uid));
+        if (!series_uid.IsEmpty && series_uid.IndexOf((byte)0) < 0) throw new ArgumentException("series_uid must be NUL-terminated", nameof(series_uid));
+        if (!instance_uid.IsEmpty && instance_uid.IndexOf((byte)0) < 0) throw new ArgumentException("instance_uid must be NUL-terminated", nameof(instance_uid));
+        if (transfer_syntaxes.Length < (long)ts_count) throw new ArgumentException("transfer_syntaxes has fewer elements than ts_count requires", nameof(transfer_syntaxes));
+        @out = 0;
+        fixed (byte* p_study_uid = study_uid)
+        fixed (byte* p_series_uid = series_uid)
+        fixed (byte* p_instance_uid = instance_uid)
+        fixed (nint* p_transfer_syntaxes = transfer_syntaxes)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_web_wado_retrieve(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_instance_uid, (byte**)p_transfer_syntaxes, ts_count, p_out);
+    }
+
+    internal static int siaara_web_wado_uri(nint client, ReadOnlySpan<byte> study_uid, ReadOnlySpan<byte> series_uid, ReadOnlySpan<byte> object_uid, ReadOnlySpan<byte> content_type, ReadOnlySpan<byte> transfer_syntax, out nint @out)
+    {
+        if (!study_uid.IsEmpty && study_uid.IndexOf((byte)0) < 0) throw new ArgumentException("study_uid must be NUL-terminated", nameof(study_uid));
+        if (!series_uid.IsEmpty && series_uid.IndexOf((byte)0) < 0) throw new ArgumentException("series_uid must be NUL-terminated", nameof(series_uid));
+        if (!object_uid.IsEmpty && object_uid.IndexOf((byte)0) < 0) throw new ArgumentException("object_uid must be NUL-terminated", nameof(object_uid));
+        if (!content_type.IsEmpty && content_type.IndexOf((byte)0) < 0) throw new ArgumentException("content_type must be NUL-terminated", nameof(content_type));
+        if (!transfer_syntax.IsEmpty && transfer_syntax.IndexOf((byte)0) < 0) throw new ArgumentException("transfer_syntax must be NUL-terminated", nameof(transfer_syntax));
+        @out = 0;
+        fixed (byte* p_study_uid = study_uid)
+        fixed (byte* p_series_uid = series_uid)
+        fixed (byte* p_object_uid = object_uid)
+        fixed (byte* p_content_type = content_type)
+        fixed (byte* p_transfer_syntax = transfer_syntax)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_web_wado_uri(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_object_uid, (byte*)p_content_type, (byte*)p_transfer_syntax, p_out);
+    }
+
+    internal static void siaara_web_parts_free(nint parts)
+    {
+        Raw.siaara_web_parts_free(parts);
+    }
+
+    internal static int siaara_web_parts_count(nint parts, out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_web_parts_count(parts, p_out);
+    }
+
+    internal static int siaara_web_parts_get(nint parts, uint index, out nint out_data, out ulong out_size, Span<byte> buf, out nuint needed)
+    {
+        out_data = 0;
+        out_size = default;
+        needed = default;
+        fixed (nint* p_out_data = &out_data)
+        fixed (ulong* p_out_size = &out_size)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_web_parts_get(parts, index, (byte**)p_out_data, p_out_size, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_web_parts_open_file(nint parts, uint index, out nint @out)
+    {
+        @out = 0;
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_web_parts_open_file(parts, index, p_out);
+    }
+
+    internal static int siaara_web_parts_add_to_store(nint parts, nint store, int policy, out uint added, out uint failed)
+    {
+        added = default;
+        failed = default;
+        fixed (uint* p_added = &added)
+        fixed (uint* p_failed = &failed)
+            return Raw.siaara_web_parts_add_to_store(parts, store, policy, p_added, p_failed);
+    }
+
+    internal static int siaara_volume_build_ex(ReadOnlySpan<nint> utf8_paths, ReadOnlySpan<nuint> path_lens, uint count, in siaara_volume_options options, nint cancel, nint cb, nint user, out nint @out)
+    {
+        if (utf8_paths.Length < (long)count) throw new ArgumentException("utf8_paths has fewer elements than count requires", nameof(utf8_paths));
+        if (!path_lens.IsEmpty && path_lens.Length < (long)count) throw new ArgumentException("path_lens has fewer elements than count requires", nameof(path_lens));
+        @out = 0;
+        fixed (nint* p_utf8_paths = utf8_paths)
+        fixed (nuint* p_path_lens = path_lens)
+        fixed (siaara_volume_options* p_options = &options)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_volume_build_ex((byte**)p_utf8_paths, (nuint*)p_path_lens, count, p_options, cancel, (delegate* unmanaged[Cdecl]<void*, ulong, ulong, int>)cb, (void*)user, p_out);
+    }
+
+    internal static int siaara_store_verify_ex(nint store, int deep, int repair, nint cancel, nint cb, nint user, ref siaara_store_verify_report @out)
+    {
+        fixed (siaara_store_verify_report* p_out = &@out)
+            return Raw.siaara_store_verify_ex(store, deep, repair, cancel, (delegate* unmanaged[Cdecl]<void*, ulong, ulong, int>)cb, (void*)user, p_out);
+    }
+
+    internal static int siaara_store_rebuild_ex(nint store, nint cancel, nint cb, nint user)
+    {
+        return Raw.siaara_store_rebuild_ex(store, cancel, (delegate* unmanaged[Cdecl]<void*, ulong, ulong, int>)cb, (void*)user);
+    }
+
+    internal static int siaara_dicomdir_write_ex(ReadOnlySpan<byte> utf8_root, ReadOnlySpan<nint> files, ReadOnlySpan<nuint> lens, nuint count, in siaara_dicomdir_write_options options, nint cancel, nint cb, nint user, out uint warnings)
+    {
+        if (files.Length < (long)count) throw new ArgumentException("files has fewer elements than count requires", nameof(files));
+        if (lens.Length < (long)count) throw new ArgumentException("lens has fewer elements than count requires", nameof(lens));
+        warnings = default;
+        fixed (byte* p_utf8_root = utf8_root)
+        fixed (nint* p_files = files)
+        fixed (nuint* p_lens = lens)
+        fixed (siaara_dicomdir_write_options* p_options = &options)
+        fixed (uint* p_warnings = &warnings)
+            return Raw.siaara_dicomdir_write_ex((byte*)p_utf8_root, (nuint)utf8_root.Length, (byte**)p_files, (nuint*)p_lens, count, p_options, cancel, (delegate* unmanaged[Cdecl]<void*, ulong, ulong, int>)cb, (void*)user, p_warnings);
     }
 
     internal static int siaara_dataset_append_item(nint ds, uint tag, out nint @out, out uint index)

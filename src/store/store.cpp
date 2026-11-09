@@ -436,7 +436,11 @@ struct State {
             p = np.get();
             patients.emplace(p->key, std::move(np));
             index_patient(p);
-        } else if (update_parents) {
+        } else if (update_parents && Store::patient_key(r) == p->key) {
+            // Only a record of the same patient updates the patient's attributes. A record whose
+            // Study UID belongs to another patient must not rewrite that patient's identifying
+            // fields: they would no longer match its key, two patients could end up with the same
+            // identity, and the next snapshot would not load.
             unindex_patient(p);
             set_patient_fields(*p, r, true);
             index_patient(p);

@@ -25,9 +25,22 @@ namespace siaara::net {
 
 struct SpoolConfig {
     std::uint64_t threshold = 64ull << 20;   // data sets larger than this go to disk (bytes)
-    std::string directory;                    // empty: the system temporary directory
+    // Where spool files (patient data) are written. Empty: a private per-user directory under the
+    // system temporary directory ("siaara-spool-<uid>", mode 0700 and owned by the user on POSIX;
+    // an owner-only DACL on Windows), which is refused if it exists with other owners or access.
+    // Files are always created exclusively (no symlinks followed), readable by the owner only.
+    std::string directory;
     std::uint64_t max_size = 64ull << 30;     // largest data set accepted on disk (bytes)
+    // Leftover "siaara-spool-*.part" files (e.g. from a crash) not modified for this long are
+    // removed from the directory the first time it is used in a process. 0: never.
+    int stale_after_minutes = 60;
 };
+
+// The directory spool files go to for `cfg` (creating and checking the private default).
+Result<std::string> spool_directory(const SpoolConfig& cfg);
+// Removes stale "siaara-spool-*.part" files from the spool directory (see stale_after_minutes).
+// Returns the number removed. Called automatically on first use of each directory.
+Result<std::size_t> remove_stale_spool_files(const SpoolConfig& cfg);
 
 // A received data set on disk (a complete Part 10 file), memory-mapped read-only.
 // The file owns its mapping: every Bytes view of the data set keeps the SpoolFile alive, so the

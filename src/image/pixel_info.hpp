@@ -42,6 +42,10 @@ enum class SampleKind { Integer, Float32, Float64 };
 
 struct PixelInfoOptions {
     bool lenient = true;  // accept common non-conformances (recorded in PixelInfo::warnings)
+    // The pixel data is encapsulated: in lenient mode a Bits Allocated that is not a valid container
+    // (12, 65535 ...) is accepted provisionally and bits_from_codestream is set, so that the frame
+    // layer takes the bit depth from the codestream.
+    bool encapsulated = false;
 };
 
 // The validated Image Pixel description of one data set (top level, or an Icon Image item).
@@ -61,6 +65,8 @@ struct PixelInfo {
     SampleKind kind = SampleKind::Integer;
     Tag pixel_tag = siaara::tags::PixelData;  // PixelData, FloatPixelData or DoubleFloatPixelData
     std::vector<std::string> warnings;
+    std::uint16_t declared_bits_allocated = 0;  // Bits Allocated as found in the data set
+    bool bits_from_codestream = false;          // see PixelInfoOptions::encapsulated
 
     // Lowest bit of a stored sample within its container: high_bit + 1 - bits_stored (0 normally).
     unsigned low_bit() const noexcept { return static_cast<unsigned>(high_bit + 1u - bits_stored); }

@@ -1,6 +1,7 @@
 // SIAARA DICOM Toolkit - TLS internals shared by the per-OS backends (not a public header).
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -38,8 +39,23 @@ const CipherSuite* find_allowed_cipher_suite(std::uint16_t id) noexcept;
 Status check_session(const TlsSettings& s, TlsContext::Role role, const TlsSessionInfo& info, const std::string& peer);
 void tls_log(const TlsSettings& s, const std::string& msg);
 
+// PS3.15 certificate rules (TlsSettings::profile) for one certificate of the peer's chain.
+enum class CertKey : std::uint8_t { Rsa, RsaPss, Ec, Ed25519, Ed448, Other };
+enum class CertSig : std::uint8_t {
+    Sha256Plus,  // RSA PKCS#1 v1.5, RSA-PSS or ECDSA with SHA-256, SHA-384 or SHA-512
+    Weak,        // MD5, SHA-1, SHA-224
+    EdDsa,       // Ed25519 / Ed448
+    Other,       // anything else (unknown, DSA, GOST, ...)
+};
+// `index` 0 is the leaf. `anchor`: the trust anchor that ends the chain (its self-signature
+// is not checked; its key is). NetworkError naming the problem when the certificate fails.
+Status check_chain_cert(const TlsSettings& s, std::size_t index, bool anchor, CertKey key, int bits, CertSig sig);
+
 // The name the client checks in the server certificate.
 std::string expected_name(const TlsSettings& s, const std::string& host);
+// Client side, before any handshake: InvalidArgument when `name` (the result of expected_name)
+// is empty and certificate validation is on. Every backend calls it.
+Status check_client_identity(const TlsSettings& s, const std::string& name);
 // True for IPv4 dotted quads and IPv6 literals (no brackets).
 bool is_ip_literal(const std::string& s) noexcept;
 
@@ -105,6 +121,13 @@ private:
 };
 
 // A TlsTransport over any connected Transport, driven by a TlsEngine.
+//
+// Threading contract (the one DIMSE and DICOMweb use): handshake() completes before the
+// transport is shared; afterwards one thread reads (read_some, wait_readable), at most one other
+// thread writes (write_all), and shutdown()/close() may be called from any thread, also while
+// the other two are blocked. Engine calls and the records they produce are serialised by `mu_`;
+// the state flags are atomics because each of these threads reads flags the others write.
+// The plaintext buffer (plain_, plain_pos_) belongs to the reading thread.
 class EngineTransport final : public TlsTransport {
 public:
     EngineTransport(std::shared_ptr<EngineContext> ctx, std::unique_ptr<Transport> inner,
@@ -131,11 +154,11 @@ private:
     std::mutex mu_;  // serialises engine calls and the ciphertext they produce
     std::vector<std::uint8_t> plain_;
     std::size_t plain_pos_ = 0;
-    bool done_ = false;
-    bool broken_ = false;       // handshake or record failure: no further I/O
-    bool peer_closed_ = false;  // close_notify received
-    bool eof_ = false;          // TCP closed without close_notify
-    bool sent_close_ = false;
+    std::atomic<bool> done_{false};
+    std::atomic<bool> broken_{false};       // handshake or record failure: no further I/O
+    std::atomic<bool> peer_closed_{false};  // close_notify received
+    std::atomic<bool> eof_{false};          // TCP closed without close_notify
+    std::atomic<bool> sent_close_{false};
     Status hs_error_;
 
     Status pump_decrypt(int deadline_left_ms);

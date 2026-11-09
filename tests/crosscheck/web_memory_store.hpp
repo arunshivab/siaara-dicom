@@ -87,6 +87,8 @@ public:
             groups[key].push_back(&in);
         }
         for (const auto& [key, members] : groups) {
+            // The server lets the store stop once it has offset + limit matches.
+            if (q.limit && out.size() >= static_cast<std::uint64_t>(q.offset) + *q.limit) break;
             const Dataset& rep = members.front()->file.dataset;
             // Study-level aggregates.
             std::set<std::string> modalities, series_set;

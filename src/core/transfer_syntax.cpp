@@ -55,6 +55,9 @@ constexpr std::array kTransferSyntaxes = {
     TransferSyntaxInfo{"1.2.840.10008.1.2.4.204", "JPIP HTJ2K Referenced", true, false, false, false, Codec::Jpip, false},
     TransferSyntaxInfo{"1.2.840.10008.1.2.4.205", "JPIP HTJ2K Referenced Deflate", true, false, false, false, Codec::Jpip, false},
     TransferSyntaxInfo{"1.2.840.10008.1.2.5", "RLE Lossless", true, false, true, false, Codec::Rle, false},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.8.1", "Deflated Image Frame Compression", true, false, true, false, Codec::DeflateFrame, false},
+    // GE private syntax (not in PS3.6): implicit VR little endian, Pixel Data samples big endian.
+    TransferSyntaxInfo{"1.2.840.113619.5.2", "GE Private Implicit VR Little Endian with Big Endian Pixel Data", false, false, false, false, Codec::None, true, true},
     TransferSyntaxInfo{"1.2.840.10008.1.2.7.1", "SMPTE ST 2110-20 Uncompressed Progressive Active Video", true, false, false, false, Codec::Smpte2110, false},
     TransferSyntaxInfo{"1.2.840.10008.1.2.7.2", "SMPTE ST 2110-20 Uncompressed Interlaced Active Video", true, false, false, false, Codec::Smpte2110, false},
     TransferSyntaxInfo{"1.2.840.10008.1.2.7.3", "SMPTE ST 2110-30 PCM Digital Audio", true, false, false, false, Codec::Smpte2110, false},

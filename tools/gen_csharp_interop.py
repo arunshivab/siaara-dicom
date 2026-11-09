@@ -52,6 +52,14 @@ ARRAY_RULES = {
     "siaara_view_set_curve": {"points": ("count", "count", 3, False)},
     "siaara_series_sort": {"out_instance": ("cap_primary",), "out_frame": ("cap_secondary",),
                            "out_group": ("cap_secondary",)},
+    "siaara_volume_build_ex": {"utf8_paths": ("count", "count", 1, False), "path_lens": ("count", "count", 1, True)},
+    "siaara_dicomdir_write_ex": {"files": ("count", "count", 1, False), "lens": ("count", "count", 1, False)},
+    "siaara_dimse_store_files": {"paths": ("count", "count", 1, False), "lens": ("count", "count", 1, True)},
+    "siaara_dimse_commit": {"sop_classes": ("count", "count", 1, False), "sop_instances": ("count", "count", 1, False),
+                            "failure_reasons": ("count", "count", 1, True)},
+    "siaara_web_wado_frames": {"frames": ("count", "count", 1, False),
+                               "transfer_syntaxes": ("count", "ts_count", 1, False)},
+    "siaara_web_wado_retrieve": {"transfer_syntaxes": ("count", "ts_count", 1, False)},
 }
 LEN_NAME = re.compile(r"(^|_)(len|size|count)$")
 CS_KEYWORDS = {"out", "params", "ref", "in", "base", "object", "string", "event", "fixed", "checked", "lock"}
@@ -113,7 +121,7 @@ class Model:
         self.callbacks = {}    # name -> (ret CType, [(CType, name)])
         self.structs = []      # (name, [(CType, field)])
         self.functions = []    # (name, ret CType, [(CType, name)])
-        skip_defines = {"SIAARA_SIAARA_H", "SIAARA_CALL", "SIAARA_API"}
+        skip_defines = {"SIAARA_SIAARA_H", "SIAARA_CALL", "SIAARA_API", "SIAARA_NOEXCEPT"}
         for m in re.finditer(r"^\s*#\s*define\s+(SIAARA_[A-Z0-9_]+)[ \t]+([^\n]+)$", src, flags=re.M):
             if m.group(1) not in skip_defines and "__" not in m.group(2):
                 self.defines.append((m.group(1), m.group(2).strip()))
@@ -143,7 +151,7 @@ class Model:
                     fields.append((ct2, n2))
             self.structs.append((m.group(3), fields))
         body = src[src.index('extern "C"'):]
-        for m in re.finditer(r"SIAARA_API\s+([\w\s\*]+?)\s*SIAARA_CALL\s+(\w+)\s*\((.*?)\)\s*;", body, flags=re.S):
+        for m in re.finditer(r"SIAARA_API\s+([\w\s\*]+?)\s*SIAARA_CALL\s+(\w+)\s*\((.*?)\)\s*(?:SIAARA_NOEXCEPT\s*)?;", body, flags=re.S):
             ret, _ = parse_decl(m.group(1) + " _r")
             self.functions.append((m.group(2), ret, self.parse_params(m.group(3))))
         self.struct_names = {s for s, _ in self.structs}
@@ -400,6 +408,13 @@ def gen_safe(model, w, fname, ret, params):
             pre.append(f"if ({nm}.Length < {ln}) throw new ArgumentException(\"{n} needs {ln} elements\", nameof({nm}));")
             fixed.append(f"fixed ({elem}* p_{n} = {nm})")
             call.append(f"p_{n}")
+            continue
+        if rule and rule[0] == "count":
+            # output array whose length another parameter gives
+            sig.append(f"Span<{elem}> {nm}")
+            add_rule(pre, nm, n, rule)
+            fixed.append(f"fixed ({elem}* p_{n} = {nm})")
+            call.append(f"({raw_type(model, ct)})p_{n}")
             continue
         if has_cap and (n == "buf" or rule):
             sig.append(f"Span<{elem}> {nm}")

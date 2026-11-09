@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <new>
+#include <variant>
 
 #include "core/writer.hpp"
 
@@ -222,40 +224,55 @@ std::mutex& close_mutex_for(const void*) {
     return m;
 }
 
-// Concatenates fragments; zero-copy when there is exactly one.
+// Concatenates fragments into one growable buffer as they arrive, so each received PDU buffer is
+// released once copied and take() hands the buffer over without a second copy (NET-04, R-015).
+// Zero-copy when there is exactly one fragment.
 class Accumulator {
 public:
     void clear() {
-        parts_.clear();
+        first_ = Bytes();
+        buf_.reset();
         total_ = 0;
     }
     bool add(const Bytes& b, std::uint64_t cap) {
         std::uint64_t t = 0;
         if (!checked_add(total_, b.size(), t) || t > cap || t > SIZE_MAX) return false;
+        if (b.empty()) return true;
+        if (!buf_ && total_ == 0) {
+            first_ = b;
+            total_ = t;
+            return true;
+        }
+        try {
+            if (!buf_) {
+                buf_ = std::make_shared<std::vector<std::uint8_t>>();
+                buf_->reserve(static_cast<std::size_t>(t));
+                buf_->insert(buf_->end(), first_.data(), first_.data() + first_.size());
+                first_ = Bytes();
+            }
+            buf_->insert(buf_->end(), b.data(), b.data() + b.size());
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
         total_ = t;
-        if (!b.empty()) parts_.push_back(b);
         return true;
     }
     std::uint64_t total() const noexcept { return total_; }
-    const std::vector<Bytes>& parts() const noexcept { return parts_; }
+    const std::uint8_t* data() const noexcept { return buf_ ? buf_->data() : first_.data(); }
     Bytes take() {
-        Bytes r;
-        if (parts_.size() == 1) {
-            r = parts_[0];
-        } else if (!parts_.empty()) {
-            auto v = std::make_shared<std::vector<std::uint8_t>>();
-            v->reserve(static_cast<std::size_t>(total_));
-            for (const Bytes& p : parts_) v->insert(v->end(), p.data(), p.data() + p.size());
-            const std::uint8_t* d = v->data();
-            const std::size_t n = v->size();
-            r = Bytes(std::shared_ptr<const void>(v, v.get()), d, n);
+        Bytes r = first_;
+        if (buf_) {
+            const std::uint8_t* d = buf_->data();
+            const std::size_t n = buf_->size();
+            r = Bytes(std::shared_ptr<const void>(buf_, buf_.get()), d, n);
         }
         clear();
         return r;
     }
 
 private:
-    std::vector<Bytes> parts_;
+    Bytes first_;
+    std::shared_ptr<std::vector<std::uint8_t>> buf_;
     std::uint64_t total_ = 0;
 };
 
@@ -266,6 +283,8 @@ Association::Association(std::unique_ptr<Transport> t, bool requestor, const Tim
     : transport_(std::move(t)), requestor_(requestor), to_(to), lim_(lim) {
     if (lim_.max_receive_pdu == 0 || lim_.max_receive_pdu > lim_.pdu.max_pdu_length)
         lim_.max_receive_pdu = static_cast<std::uint32_t>(std::min<std::uint64_t>(lim_.pdu.max_pdu_length, 0xFFFFFFFFu));
+    // Strict: P-DATA-TF PDUs are held to the maximum length we advertise (PS3.8 D.1, R-034).
+    if (lim_.enforce_max_receive_pdu) lim_.pdu.max_pdata_length = lim_.max_receive_pdu;
 }
 
 Association::~Association() {
@@ -326,6 +345,11 @@ Result<Pdu> Association::next_pdu(int timeout_ms, UlEvent& evt) {
         return Status(Errc::NetworkError, "transport closed");
     }
     Result<Pdu> r = read_pdu(*transport_, timeout_ms, lim_.pdu);
+    if (r && std::holds_alternative<PDataTf>(*r)) {
+        std::uint64_t len = 0;
+        for (const Pdv& v : std::get<PDataTf>(*r).pdvs) len += 6u + v.data.size();
+        if (len > lim_.max_receive_pdu) ++oversized_pdus_;  // lenient: accepted, flagged
+    }
     if (!r) {
         const Errc c = r.error().code;
         if (c == Errc::Timeout) evt = E::Evt18;  // caller decides what a timeout means
@@ -605,7 +629,10 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                 started = true;
                 msg.context_id = v.context_id;
             }
-            const std::uint64_t cap = phase == Phase::Command ? lim_.max_command_size : lim_.max_dataset_size;
+            // With a spool, the in-memory part never needs to exceed the spool threshold.
+            const std::uint64_t cap = phase == Phase::Command ? lim_.max_command_size
+                                      : spool ? std::max(lim_.max_dataset_size, spool->threshold)
+                                              : lim_.max_dataset_size;
             if (phase == Phase::Data && spool && !sink && acc.total() + v.data.size() > spool->threshold) {
                 Result<std::vector<std::uint8_t>> pre = prefix ? prefix(msg.command, *pc) : std::vector<std::uint8_t>{};
                 Result<std::unique_ptr<SpoolWriter>> w =
@@ -615,11 +642,10 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                     return Status(w.error().code, "cannot spool data set: " + w.error().message);
                 }
                 sink = std::move(w.value());
-                for (const Bytes& b : acc.parts())
-                    if (Status ws = sink->write(b.data(), b.size()); !ws) {
-                        abort(abort_src::Provider, abort_reason::NotSpecified);
-                        return ws;
-                    }
+                if (Status ws = sink->write(acc.data(), static_cast<std::size_t>(acc.total())); !ws) {
+                    abort(abort_src::Provider, abort_reason::NotSpecified);
+                    return ws;
+                }
                 acc.clear();
             }
             if (sink) {

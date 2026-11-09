@@ -279,7 +279,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_open(const siaara_file* file, 
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_frame_free(siaara_frame* frame) { delete frame; }
+SIAARA_API void SIAARA_CALL siaara_frame_free(siaara_frame* frame) SIAARA_NOEXCEPT { delete frame; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_frame_info(const siaara_frame* frame, siaara_frame_properties* out) {
     return guarded([&]() -> siaara_status {
@@ -650,7 +650,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_pstate_open(const siaara_file* file,
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_pstate_free(siaara_pstate* ps) { delete ps; }
+SIAARA_API void SIAARA_CALL siaara_pstate_free(siaara_pstate* ps) SIAARA_NOEXCEPT { delete ps; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_pstate_info(const siaara_pstate* ps, siaara_pstate_properties* out) {
     return guarded([&]() -> siaara_status {

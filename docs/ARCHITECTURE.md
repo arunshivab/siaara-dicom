@@ -17,3 +17,37 @@ value, and every limit configurable with a safe default.
 ## Memory model
 Files are memory-mapped. Element values are `Bytes` views into the mapping, so parsing a file
 copies no value data. Big-endian and deflated input are the exceptions; they are converted once.
+
+## Write fidelity (data integrity)
+A file read and saved again in the same transfer syntax, with no edits, is reproduced byte for
+byte. The reader records how each element was encoded (`Element::read`, `Dataset::item_length_mode`,
+`DicomFile::preamble`) and the writer's defaults (`WriteOptions`, C API `siaara_save_options`)
+keep it:
+- **Sequence and item lengths** (`SequenceLengths`): `KeepAsRead` (default) keeps each SQ's and
+  item's explicit/undefined mode; `Explicit` and `Undefined` force one mode. Explicit lengths are
+  always recomputed from what is written. Sequences built in memory get explicit length, except in
+  implicit VR syntaxes for private tags or tags the dictionary does not know as SQ, which get
+  undefined length so that readers without the (private) dictionary still see a sequence; the
+  same applies when transcoding an explicit-length SQ of that kind to implicit VR. New items
+  follow their sequence. A sequence read as UN with undefined length (PS3.5 6.2.2) is written back
+  as UN with implicit VR little endian items.
+- **Group lengths** (`GroupLengths`): `Keep` (default) writes (gggg,0000) where present. The value
+  is kept verbatim when the group's encoded size is unchanged (so even a value that was wrong in
+  the source is not silently "fixed"); otherwise (an edit, a transfer syntax change) it is
+  recomputed, so a kept group length is never stale. `Drop` removes them; `Recompute` writes a
+  correct one for every group, adding missing ones. Group 0002's length is always recomputed.
+- **Odd lengths** (`OddLengths`): `Keep` (default) writes values and encapsulated fragments that
+  were read with an odd length unchanged; values built or edited in memory (any setter, or a value
+  whose size changed) and fragment lists that were changed are padded to even length, as
+  PS3.5 7.1.1 asks. `Pad` pads everything.
+- **File meta and preamble**: the preamble as read is written back (de-identification clears it);
+  the Transfer Syntax UID element is rewritten only when the syntax changes. Missing required meta
+  elements are added, so files without a preamble/meta (raw data sets) cannot round-trip byte for
+  byte, nor can deflated files (the stream is re-compressed) or files the reader repaired in
+  lenient mode (out-of-order or duplicate tags, stray delimiters, truncation).
+- **Byte order**: data sets hold values little endian in memory; big-endian files are swapped on
+  read and swapped back on write. `siaara_dataset_get_raw` returns the in-memory (little-endian)
+  bytes; `siaara_file_get_raw_stored` / `stored_value_bytes` return the bytes as stored.
+
+`tests/crosscheck/roundtrip_crosscheck.py <folder> <libsiaara>` reports how many files of a corpus
+round-trip byte for byte.

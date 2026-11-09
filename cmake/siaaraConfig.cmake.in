@@ -1,0 +1,13 @@
+# Package configuration for the SIAARA DICOM Toolkit (find_package(siaara)).
+# Imported targets:
+#   siaara::siaara         shared library (C API, include/siaara/siaara.h)
+#   siaara::siaara_static  static library (C API; defines SIAARA_STATIC for its users)
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+if(NOT WIN32)
+  find_dependency(Threads)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/siaaraTargets.cmake")
+check_required_components(siaara)

@@ -106,9 +106,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_strings(const siaara_dat
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_debug_live_handles(int64_t* out) {
-    if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
-    *out = capi::live_handle_counter().load(std::memory_order_relaxed);
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
+        *out = capi::live_handle_counter().load(std::memory_order_relaxed);
+        return ok();
+    });
 }
 
 }  // extern "C"

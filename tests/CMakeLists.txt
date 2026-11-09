@@ -10,6 +10,12 @@ if(MSVC)
 endif()
 
 file(GLOB SIAARA_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(SIAARA_TSAN)
+  # The TSan runtime defines operator new/delete itself, so the allocation guard (which replaces
+  # them) and the codec amplification tests that rely on it are left out of TSan builds.
+  list(REMOVE_ITEM SIAARA_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test_alloc_guard.cpp
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/test_codec_limits.cpp)
+endif()
 add_executable(siaara_tests ${SIAARA_TEST_SOURCES})
 target_link_libraries(siaara_tests PRIVATE siaara_static)
 target_compile_options(siaara_tests PRIVATE ${SIAARA_TEST_WARN})
@@ -72,6 +78,11 @@ target_compile_options(deid_tool PRIVATE ${SIAARA_WARN})
 set(SIAARA_NEMA_PART15 "" CACHE FILEPATH "PS3.15 DocBook XML (part15.xml) for the de-identification table check")
 set(SIAARA_NEMA_PART16 "" CACHE FILEPATH "PS3.16 DocBook XML (part16.xml) for the de-identification table check")
 find_package(Python3 COMPONENTS Interpreter QUIET)
+# CAPI-03 (review R-013): every exported C function is guarded against exceptions.
+if(Python3_FOUND)
+  add_test(NAME capi_guarded
+           COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_capi_guarded.py ${PROJECT_SOURCE_DIR})
+endif()
 if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART15}" AND EXISTS "${SIAARA_NEMA_PART16}")
   add_test(NAME deid_table_matches_generator
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/deid_table_check.py

@@ -107,6 +107,7 @@ net::ScpConfig qr_config() {
     c.bind_address = "127.0.0.1";
     c.port = 0;
     c.max_associations = 4;
+    c.allow_any_calling_ae = true;
     c.timeouts = fast();
     return c;
 }
@@ -148,6 +149,7 @@ siaara_scp* start_scp(siaara_store* store, ScpEvents* ev, const char* const* all
     o.bind_address = "127.0.0.1";
     o.allowed_calling_aes = allowed;
     o.allowed_count = n;
+    o.allow_any_calling_ae = n == 0 ? 1 : 0;
     o.idle_timeout_ms = 10000;
     siaara_scp* scp = nullptr;
     if (siaara_scp_start(&o, store, on_scp, ev, &scp) != SIAARA_OK) return nullptr;
@@ -290,6 +292,10 @@ TEST_CASE("capi/net: Storage SCP, C-ECHO, allowed peers, C-STORE with transcodin
     r.struct_size = 4;
     CHECK(siaara_dimse_echo(&p, nullptr, &r) == SIAARA_ERR_INVALID_ARGUMENT);
     CHECK(siaara_scp_start(nullptr, st.store, nullptr, nullptr, &scp) == SIAARA_ERR_INVALID_ARGUMENT);
+    siaara_scp_options open_to_all;
+    std::memset(&open_to_all, 0, sizeof open_to_all);
+    open_to_all.struct_size = sizeof open_to_all;
+    CHECK(siaara_scp_start(&open_to_all, st.store, nullptr, nullptr, &scp) == SIAARA_ERR_INVALID_ARGUMENT);  // NET-05
 }
 
 TEST_CASE("capi/net: C-FIND with matches, callback stop and cancellation; worklist query") {

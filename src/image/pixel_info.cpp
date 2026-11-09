@@ -130,6 +130,7 @@ Result<PixelInfo> read_pixel_info(const Dataset& ds, const PixelInfoOptions& opt
     pi.columns = static_cast<std::uint32_t>(*cols);
 
     // ---- photometric interpretation
+    bool photometric_missing = false;
     if (auto s = ds.get_string(PhotometricInterpretation)) {
         pi.photometric_text = *s;
         pi.photometric = parse_photometric(*s);
@@ -138,9 +139,12 @@ Result<PixelInfo> read_pixel_info(const Dataset& ds, const PixelInfoOptions& opt
         }
     } else if (!opt.lenient) {
         return bad("Photometric Interpretation missing", PhotometricInterpretation);
+    } else {
+        photometric_missing = true;
     }
 
     // ---- samples per pixel
+    const bool spp_missing = !get_us(ds, SamplesPerPixel);
     if (auto spp = get_us(ds, SamplesPerPixel)) {
         if (*spp < 1 || *spp > 4 || *spp == 2) return bad("Samples per Pixel must be 1, 3 or 4", SamplesPerPixel);
         pi.samples_per_pixel = static_cast<std::uint16_t>(*spp);
@@ -169,14 +173,32 @@ Result<PixelInfo> read_pixel_info(const Dataset& ds, const PixelInfoOptions& opt
     // ---- bits
     const auto ba = get_us(ds, BitsAllocated);
     if (!ba) return bad("Bits Allocated missing", BitsAllocated);
+    pi.declared_bits_allocated = static_cast<std::uint16_t>(*ba);
+    bool rgb24 = false;
     if (pi.kind == SampleKind::Integer) {
-        if (*ba != 1 && *ba != 8 && *ba != 16 && *ba != 32 && *ba != 64)
-            return bad("Bits Allocated must be 1, 8, 16, 32 or 64", BitsAllocated);
+        if (*ba != 1 && *ba != 8 && *ba != 16 && *ba != 32 && *ba != 64) {
+            if (opt.lenient && opt.encapsulated) {
+                // The codestream knows its own precision; the frame layer settles the container.
+                pi.bits_from_codestream = true;
+                warn("Bits Allocated " + std::to_string(*ba) + " is not a valid container; taken from the codestream");
+            } else if (opt.lenient && *ba == 24 && spp_missing && photometric_missing) {
+                // ACR-NEMA 24-bit colour: three 8-bit samples per pixel, colour-by-pixel.
+                rgb24 = true;
+                pi.samples_per_pixel = 3;
+                pi.photometric = Photometric::Rgb;
+                pi.photometric_text = "RGB";
+                warn("Bits Allocated 24 without Samples per Pixel / Photometric Interpretation; read as 8-bit RGB");
+            } else {
+                return bad("Bits Allocated must be 1, 8, 16, 32 or 64", BitsAllocated);
+            }
+        }
     } else if (*ba != (pi.kind == SampleKind::Float32 ? 32 : 64)) {
         return bad("Bits Allocated must be 32 for Float Pixel Data and 64 for Double Float Pixel Data",
                    BitsAllocated);
     }
     pi.bits_allocated = static_cast<std::uint16_t>(*ba);
+    if (rgb24) pi.bits_allocated = 8;
+    if (pi.bits_from_codestream) pi.bits_allocated = *ba <= 8 ? 8 : 16;  // provisional
 
     if (pi.kind != SampleKind::Integer) {
         // Float data has no Bits Stored / High Bit / Pixel Representation (C.7.6.24 Floating Point Image Pixel).
@@ -184,6 +206,12 @@ Result<PixelInfo> read_pixel_info(const Dataset& ds, const PixelInfoOptions& opt
         pi.high_bit = static_cast<std::uint16_t>(pi.bits_allocated - 1);
         pi.is_signed = true;
         if (pi.samples_per_pixel != 1) return bad("floating point pixel data must have one sample per pixel", SamplesPerPixel);
+    } else if (rgb24 || pi.bits_from_codestream) {
+        // Bits Stored / High Bit follow the container chosen above (provisional for the codestream
+        // case: the frame layer replaces them with the codestream precision).
+        pi.bits_stored = pi.bits_allocated;
+        pi.high_bit = static_cast<std::uint16_t>(pi.bits_allocated - 1);
+        if (auto pr = get_us(ds, PixelRepresentation); pr && *pr == 1) pi.is_signed = true;
     } else {
         const auto bs = get_us(ds, BitsStored);
         if (!bs) {

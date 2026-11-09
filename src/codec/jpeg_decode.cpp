@@ -163,8 +163,11 @@ Status malformed(const char* what, std::size_t off) { return Status(Errc::Malfor
 
 class Decoder {
 public:
-    Decoder(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out)
-        : d_(in.data()), n_(in.size()), info_(info), out_(out) {}
+    Decoder(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+            const JpegDecodeOptions& opt = {})
+        : d_(in.data()), n_(in.size()), info_(info), out_(out), opt_(opt) {
+        std::memset(coef_al_, -1, sizeof coef_al_);
+    }
     Status run();
 
 private:
@@ -183,6 +186,7 @@ private:
     Status mcu_status() const;
     Status finish_progressive();
     Status write_output();
+    void fancy_row(const Comp& c, std::uint32_t y, int rh, int rv, std::uint16_t* row) const;
 
     template <class F> Status for_each_block(const Scan& s, F&& f);
 
@@ -204,9 +208,20 @@ private:
                 return t.values[idx];
             }
         }
+        if (tolerant_) {
+            // No code of 1..16 bits matches. Like the IJG-derived decoders, take the 16 bits plus
+            // one more as consumed and use symbol 0 (difference / DC difference 0, AC end of block).
+            ++bad_codes_;
+            br_.skip(17);
+            return 0;
+        }
         err_ = true;
         return 0;
     }
+public:
+    bool tolerant_ = false;        // JpegDecodeOptions::tolerate_bad_codes
+    std::uint64_t bad_codes_ = 0;  // codes replaced by symbol 0
+private:
     std::int32_t receive_extend(int s) { return extend(br_.get(s), s); }
     std::int32_t decode_diff(const HuffTable& t, int max_size) {
         const std::int32_t pk = t.fast_val[br_.peek(kFastBits)];
@@ -230,6 +245,7 @@ private:
     std::size_t n_;
     FrameInfo info_;
     std::span<std::uint8_t> out_;
+    JpegDecodeOptions opt_;
     std::size_t pos_ = 0;
     BitReader br_;
     bool err_ = false;
@@ -247,6 +263,9 @@ private:
     std::uint32_t sof_rows_ = 0;
     bool dnl_seen_ = false;
     int scans_done_ = 0;
+    // Progressive: the Al of the last scan that coded coefficient k (zig-zag) of each component,
+    // -1 while it is still uncoded (T.81 G.1.1.1).
+    std::int8_t coef_al_[4][64];
     int hmax_ = 1, vmax_ = 1;
     std::uint32_t mcux_ = 0, mcuy_ = 0;
     int ncomp_ = 0;
@@ -364,6 +383,7 @@ Status Decoder::parse_sof(int marker, std::size_t b, std::size_t e) {
     }
     const std::uint32_t unit = mode_ == Mode::Lossless ? 1u : 8u;
     const std::uint32_t X = info_.columns, Y = info_.rows;
+    std::uint64_t work = 0;  // component planes and coefficients, charged to the memory budget
     mcux_ = (X + unit * static_cast<std::uint32_t>(hmax_) - 1) / (unit * static_cast<std::uint32_t>(hmax_));
     mcuy_ = (Y + unit * static_cast<std::uint32_t>(vmax_) - 1) / (unit * static_cast<std::uint32_t>(vmax_));
     for (int i = 0; i < ncomp_; ++i) {
@@ -380,6 +400,10 @@ Status Decoder::parse_sof(int marker, std::size_t b, std::size_t e) {
             samples > (std::uint64_t{1} << 36))
             return Status(Errc::LimitExceeded, "JPEG: component too large", b);
         c.stride = static_cast<std::size_t>(c.bw) * unit;
+        // The plane (16-bit samples) and, for progressive frames, 64 16-bit coefficients a block.
+        work += samples * 2u * (mode_ == Mode::Progressive ? 2u : 1u);
+        if (work > info_.effective_memory_budget())
+            return Status(Errc::LimitExceeded, "JPEG: component planes exceed the memory budget", b);
         c.plane.assign(static_cast<std::size_t>(samples), 0);
         if (mode_ == Mode::Progressive)
             c.coef.assign(static_cast<std::size_t>(c.bw) * c.bh * 64, 0);
@@ -419,6 +443,20 @@ Status Decoder::parse_sos(std::size_t b, std::size_t e, Scan& s) {
         if (s.ss > s.se || s.se > 63 || (s.ss == 0 && s.se != 0) || (s.ss > 0 && s.n != 1) ||
             s.ah > 13 || s.al > 13 || (s.ah != 0 && s.al != s.ah - 1))
             return malformed("JPEG: bad progressive scan parameters", p);
+        // T.81 G.1.1.1: a first scan (Ah = 0) codes coefficients no earlier scan coded; a
+        // refinement continues exactly where the previous scan of those coefficients stopped
+        // (its Ah is that scan's Al). Without this, every repeated all-EOB scan costs a pass
+        // over every block for a few bytes of input.
+        for (int i = 0; i < s.n; ++i) {
+            std::int8_t* al = coef_al_[s.ci[i]];
+            for (int k = s.ss; k <= s.se; ++k) {
+                if (s.ah == 0 && al[k] != -1)
+                    return malformed("JPEG: progressive scan codes coefficients an earlier scan coded", p);
+                if (s.ah != 0 && al[k] != s.ah)
+                    return malformed("JPEG: successive approximation scan does not refine the previous one", p);
+            }
+            for (int k = s.ss; k <= s.se; ++k) al[k] = static_cast<std::int8_t>(s.al);
+        }
     } else if (mode_ == Mode::Lossless) {
         if (s.ss < 1 || s.ss > 7) return malformed("JPEG: bad lossless predictor", p);
         if (s.al >= precision_) return malformed("JPEG: bad point transform", p);
@@ -811,8 +849,16 @@ Status Decoder::write_output() {
     if (lossless && info_.is_signed) sbits = std::min<int>(precision_, info_.bits_stored ? info_.bits_stored : precision_);
     const std::uint32_t sbit = sbits ? (1u << (sbits - 1)) : 0;
     std::vector<std::uint32_t> xmap(cols);
+    std::vector<std::uint16_t> up;
     for (int i = 0; i < ncomp_; ++i) {
         const Comp& c = comps_[i];
+        // F5: triangular ("fancy") upsampling for 2:1 horizontal and/or vertical ratios of DCT
+        // data (4:2:2, 4:2:0, 4:4:0); replication otherwise, for lossless data, or on request.
+        const int rh = hmax_ % c.h == 0 ? hmax_ / c.h : 0;
+        const int rv = vmax_ % c.v == 0 ? vmax_ / c.v : 0;
+        const bool fancy = !lossless && !opt_.replicate_chroma && rh >= 1 && rh <= 2 && rv >= 1 && rv <= 2 &&
+                           (rh == 2 || rv == 2);
+        if (fancy) up.resize(static_cast<std::size_t>(c.cw) * static_cast<std::size_t>(rh));
         const int pt = lossless ? c.pt : 0;
         const std::uint32_t vmask = lossless ? ((1u << (precision_ - pt)) - 1u) : 0xFFFFu;
         const bool plain = !lossless || (pt == 0 && precision_ == 16 && sbits == 0);
@@ -824,6 +870,7 @@ Status Decoder::write_output() {
             const std::uint32_t sy = static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * static_cast<std::uint32_t>(c.v) /
                                                                 static_cast<std::uint32_t>(vmax_));
             const std::uint16_t* src = c.plane.data() + static_cast<std::size_t>(sy) * c.stride;
+            if (fancy) fancy_row(c, y, rh, rv, up.data());
             std::uint8_t* dst;
             std::size_t step;
             if (info_.planar || spp == 1) {
@@ -834,7 +881,7 @@ Status Decoder::write_output() {
                 step = bps * spp;
             }
             for (std::uint32_t x = 0; x < cols; ++x, dst += step) {
-                std::uint32_t v = src[full_x ? x : xmap[x]];
+                std::uint32_t v = fancy ? up[x] : src[full_x ? x : xmap[x]];
                 if (!plain) {
                     v = (v & vmask) << pt;
                     if (sbit) v = ((v ^ sbit) - sbit) & 0xFFFFu;
@@ -847,12 +894,51 @@ Status Decoder::write_output() {
     return Status::ok();
 }
 
+// Triangular upsampling by 2 (each output sample weights its nearer stored sample 3/4 and the
+// farther one 1/4; separable for 2x2), with edge samples repeated at the component's true width
+// and height (cw x ch). The rounding biases alternate between output phases so that the averages
+// are not systematically biased, which is also how the IJG/libjpeg-turbo decoders round.
+// Writes the upsampled row for output row y: cw * rh samples (>= the frame's columns).
+void Decoder::fancy_row(const Comp& c, std::uint32_t y, int rh, int rv, std::uint16_t* row) const {
+    const std::uint32_t cw = c.cw;
+    const std::uint32_t j = rv == 2 ? y / 2 : y * static_cast<std::uint32_t>(c.v) / static_cast<std::uint32_t>(vmax_);
+    const std::uint16_t* s0 = c.plane.data() + static_cast<std::size_t>(j) * c.stride;
+    if (rv == 2) {
+        // Vertical neighbour: the row above for the upper output row, below for the lower one.
+        const std::uint32_t jn = (y & 1u) == 0 ? (j == 0 ? 0 : j - 1) : (j + 1 < c.ch ? j + 1 : j);
+        const std::uint16_t* s1 = c.plane.data() + static_cast<std::size_t>(jn) * c.stride;
+        auto colsum = [&](std::uint32_t i) { return 3u * s0[i] + s1[i]; };  // weights 3/4, 1/4 (x4)
+        if (rh == 1) {
+            const std::uint32_t bias = (y & 1u) == 0 ? 1u : 2u;
+            for (std::uint32_t i = 0; i < cw; ++i) row[i] = static_cast<std::uint16_t>((colsum(i) + bias) >> 2);
+            return;
+        }
+        for (std::uint32_t i = 0; i < cw; ++i) {
+            const std::uint32_t here = colsum(i);
+            const std::uint32_t left = colsum(i == 0 ? 0 : i - 1);
+            const std::uint32_t right = colsum(i + 1 < cw ? i + 1 : i);
+            row[2 * i] = static_cast<std::uint16_t>((3u * here + left + 8u) >> 4);
+            row[2 * i + 1] = static_cast<std::uint16_t>((3u * here + right + 7u) >> 4);
+        }
+        return;
+    }
+    for (std::uint32_t i = 0; i < cw; ++i) {
+        const std::uint32_t here = 3u * s0[i];
+        const std::uint32_t left = s0[i == 0 ? 0 : i - 1];
+        const std::uint32_t right = s0[i + 1 < cw ? i + 1 : i];
+        row[2 * i] = static_cast<std::uint16_t>((here + left + 1u) >> 2);
+        row[2 * i + 1] = static_cast<std::uint16_t>((here + right + 2u) >> 2);
+    }
+}
+
 // ------------------------------------------------------------------ driver
 Status Decoder::run() {
     const std::uint64_t need = info_.frame_bytes();
     if (need == 0 || (info_.bits_allocated != 8 && info_.bits_allocated != 16))
         return Status(Errc::InvalidArgument, "JPEG: unsupported frame description");
-    if (out_.size() != need) return Status(Errc::BufferTooSmall, "JPEG: output size differs from frame size");
+    if (out_.size() != need)
+        return Status(out_.size() < need ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                      "JPEG: output size differs from frame size");
     if (n_ < 4 || d_[0] != 0xFF || d_[1] != 0xD8) return malformed("JPEG: missing SOI", 0);
     pos_ = 2;
     for (;;) {
@@ -884,6 +970,8 @@ Status Decoder::run() {
             case 0xDE: case 0xDF: return Status(Errc::Unsupported, "JPEG: hierarchical mode not supported", b);
             case 0xF7: return Status(Errc::Unsupported, "JPEG: JPEG-LS codestream given to the JPEG decoder", b);
             case 0xDA: {
+                if (static_cast<std::uint32_t>(scans_done_) >= info_.effective_max_scans())
+                    return Status(Errc::LimitExceeded, "JPEG: more scans than FrameInfo::max_scans", b);
                 Scan s;
                 if (st = parse_sos(b, e, s); !st) return st;
                 if (mode_ == Mode::Lossless)
@@ -911,10 +999,29 @@ Status Decoder::run() {
 }  // namespace
 
 Status decode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
+    // Allocation failure is reported, never thrown (decision 13.1).
+    std::uint64_t bad = 0;
+    return decode_jpeg_ex(in, info, out, JpegDecodeOptions{}, bad);
+}
+
+Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, const JpegDecodeOptions& opt,
+                      std::span<std::uint8_t> out) {
+    std::uint64_t bad = 0;
+    return decode_jpeg_ex(in, info, out, opt, bad);
+}
+
+Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out,
+                      const JpegDecodeOptions& opt, std::uint64_t& bad_codes) try {
+    bad_codes = 0;
     // The decoder carries ~55 KB of Huffman lookup tables: keep it off the stack.
-    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
+    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out, opt));
     if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
-    return dec->run();
+    dec->tolerant_ = opt.tolerate_bad_codes;
+    Status st = dec->run();
+    bad_codes = dec->bad_codes_;
+    return st;
+} catch (const std::bad_alloc&) {
+    return Status(Errc::OutOfMemory, "JPEG: out of memory");
 }
 
 Status jpeg_read_header(std::span<const std::uint8_t> in, JpegHeaderInfo& hdr) {

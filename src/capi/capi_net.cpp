@@ -303,6 +303,11 @@ struct siaara_scp {
     std::atomic<std::uint64_t> stored{0}, failures{0}, echoes{0}, bytes{0};
     siaara::capi::LiveHandle live_{};
 
+    // Stops the server (joins its threads) before the members its handlers use go away.
+    ~siaara_scp() {
+        if (server) server->stop();
+    }
+
     void event(int32_t kind, std::uint16_t status, int32_t outcome, const std::string& calling, const std::string& cls,
                const std::string& inst, const std::string& addr) {
         if (!cb) return;
@@ -334,7 +339,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_cancel_create(siaara_cancel** out) {
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_cancel_free(siaara_cancel* token) { delete token; }
+SIAARA_API void SIAARA_CALL siaara_cancel_free(siaara_cancel* token) SIAARA_NOEXCEPT { delete token; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_cancel_set(siaara_cancel* token) {
     return guarded([&]() -> siaara_status {
@@ -345,15 +350,19 @@ SIAARA_API siaara_status SIAARA_CALL siaara_cancel_set(siaara_cancel* token) {
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_cancel_reset(siaara_cancel* token) {
-    if (!token) return fail(Errc::InvalidArgument, "token must not be NULL");
-    token->flag.store(false, std::memory_order_release);
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!token) return fail(Errc::InvalidArgument, "token must not be NULL");
+        token->flag.store(false, std::memory_order_release);
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_cancel_is_set(const siaara_cancel* token, int32_t* out) {
-    if (!token || !out) return fail(Errc::InvalidArgument, "token and out must not be NULL");
-    *out = token->is_set() ? 1 : 0;
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!token || !out) return fail(Errc::InvalidArgument, "token and out must not be NULL");
+        *out = token->is_set() ? 1 : 0;
+        return ok();
+    });
 }
 
 // ---------------------------------------------------------------- logging
@@ -830,6 +839,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
             if (!o->allowed_calling_aes[i]) return fail(Errc::InvalidArgument, "allowed_calling_aes entry is NULL");
             cfg.allowed_calling_aes.emplace_back(o->allowed_calling_aes[i]);
         }
+        cfg.allow_any_calling_ae = o->allow_any_calling_ae != 0;
+        if (cfg.allowed_calling_aes.empty() && !cfg.allow_any_calling_ae)
+            return fail(Errc::InvalidArgument, "no allowed_calling_aes: list the peers, or set allow_any_calling_ae");
         if (o->max_associations) cfg.max_associations = o->max_associations;
         if (cfg.max_associations > 256) return fail(Errc::InvalidArgument, "max_associations must be at most 256");
         cfg.require_called_ae = o->accept_any_called_ae == 0;
@@ -886,9 +898,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_port(const siaara_scp* scp, uint32_t* out) {
-    if (!scp || !out) return fail(Errc::InvalidArgument, "scp and out must not be NULL");
-    *out = scp->server->port();
-    return ok();
+    return guarded([&]() -> siaara_status {
+        if (!scp || !out) return fail(Errc::InvalidArgument, "scp and out must not be NULL");
+        *out = scp->server->port();
+        return ok();
+    });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp, siaara_scp_stats* out) {
@@ -915,13 +929,6 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp) {
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) {
-    if (!scp) return;
-    try {
-        scp->server->stop();
-    } catch (...) {
-    }
-    delete scp;
-}
+SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT { delete scp; }
 
 }  // extern "C"

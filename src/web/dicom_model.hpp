@@ -45,8 +45,19 @@ struct ModelWriteOptions {
 };
 
 struct ModelReadOptions {
-    json::ParseLimits json_limits;
-    xml::ParseLimits xml_limits;
+    // A text nesting limit (max_depth) of 0 here, the default, is derived from max_depth below:
+    // DICOM JSON uses 3 levels per sequence nesting (attribute, Value array, item object), DICOM
+    // XML 2 (DicomAttribute, Item), plus a few for the root (PARSE-20).
+    json::ParseLimits json_limits = [] {
+        json::ParseLimits l;
+        l.max_depth = 0;
+        return l;
+    }();
+    xml::ParseLimits xml_limits = [] {
+        xml::ParseLimits l;
+        l.max_depth = 0;
+        return l;
+    }();
     std::uint32_t max_depth = 64;                     // sequence nesting
     std::uint64_t max_value_bytes = 1ull << 31;       // one element's value
     std::uint64_t max_elements = 10'000'000;          // whole document

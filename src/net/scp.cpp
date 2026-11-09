@@ -7,6 +7,7 @@
 #include <string>
 #include <cstdint>
 #include <algorithm>
+#include <chrono>
 
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
@@ -96,6 +97,10 @@ Status ScpServer::start() {
     std::lock_guard<std::mutex> lock(stop_mu_);
     if (running_.load()) return Status(Errc::InvalidArgument, "server already running");
     if (!is_valid_ae_title(cfg_.ae_title)) return Status(Errc::InvalidArgument, "invalid AE title");
+    if (cfg_.allowed_calling_aes.empty() && !cfg_.allow_any_calling_ae)
+        return Status(Errc::InvalidArgument,
+                      "no allowed calling AE titles: set allowed_calling_aes, or allow_any_calling_ae to accept anyone");
+    if (cfg_.allowed_calling_aes.empty()) log("warning: accepting associations from any calling AE title");
     if (cfg_.tls.enabled) {
         TlsSettings ts = cfg_.tls;
         if (!ts.log && h_.log) ts.log = h_.log;
@@ -113,6 +118,7 @@ Status ScpServer::start() {
     running_.store(true);
     workers_.reserve(cfg_.max_associations);
     for (std::size_t i = 0; i < cfg_.max_associations; ++i) workers_.emplace_back([this] { worker_loop(); });
+    reject_thread_ = std::thread([this] { reject_loop(); });
     accept_thread_ = std::thread([this] { accept_loop(); });
     return Status::ok();
 }
@@ -127,7 +133,9 @@ void ScpServer::stop() {
         for (Transport* t : handshaking_) t->shutdown();
     }
     cv_.notify_all();
+    reject_cv_.notify_all();
     if (accept_thread_.joinable()) accept_thread_.join();
+    if (reject_thread_.joinable()) reject_thread_.join();
     for (std::thread& t : workers_)
         if (t.joinable()) t.join();
     workers_.clear();
@@ -135,6 +143,9 @@ void ScpServer::stop() {
         std::lock_guard<std::mutex> l(mu_);
         for (auto& t : queue_) t->close();
         queue_.clear();
+        for (auto& t : reject_queue_) t->close();
+        reject_queue_.clear();
+        per_ip_.clear();
     }
     listener_.close();
     tls_listener_.close();
@@ -173,30 +184,81 @@ void ScpServer::accept_loop() {
             log("accept failed: " + t.error().message);
             continue;
         }
+        const std::string peer = t.value()->peer_address();
         bool full = false;
         {
             std::lock_guard<std::mutex> l(mu_);
-            full = busy_ + queue_.size() >= cfg_.max_associations;
-            if (!full) queue_.push_back(std::move(t.value()));
+            full = busy_ + queue_.size() >= cfg_.max_associations ||
+                   (cfg_.max_associations_per_ip != 0 && per_ip_[peer] >= cfg_.max_associations_per_ip);
+            if (!full) {
+                ++per_ip_[peer];
+                queue_.push_back(std::move(t.value()));
+            } else if (per_ip_[peer] == 0) {
+                per_ip_.erase(peer);
+            }
         }
         if (full) quick_reject(std::move(t.value()));
         else cv_.notify_one();
     }
 }
 
+void ScpServer::release_peer(const std::string& peer) {
+    std::lock_guard<std::mutex> l(mu_);
+    auto it = per_ip_.find(peer);
+    if (it == per_ip_.end()) return;
+    if (it->second <= 1) per_ip_.erase(it);
+    else --it->second;
+}
+
+// Runs on the accept thread: never reads from or waits on the peer (NET-03).
 void ScpServer::quick_reject(std::unique_ptr<Transport> t) {
     rejected_.fetch_add(1);
     if (cfg_.tls.enabled) {
-        // An A-ASSOCIATE-RJ would need a TLS handshake on the accept thread; just close.
+        // An A-ASSOCIATE-RJ would need a TLS handshake; just close.
         log("connection from " + t->peer_address() + " closed: local limit exceeded");
         return;
     }
-    Timeouts to = cfg_.timeouts;
-    to.artim_ms = std::min(to.artim_ms, 2000);
-    Result<std::unique_ptr<Association>> a = Association::receive_request(std::move(t), to, cfg_.limits);
-    if (!a) return;
-    log("association rejected: local limit exceeded");
-    a.value()->reject({rj::Transient, rj::SourcePresentationProvider, rj::PresentationLocalLimitExceeded});
+    constexpr std::size_t kMaxPendingRejects = 16;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (!stopping_.load() && reject_queue_.size() < kMaxPendingRejects) {
+            reject_queue_.push_back(std::move(t));
+            reject_cv_.notify_one();
+            return;
+        }
+    }
+    log("connection from " + t->peer_address() + " closed: local limit exceeded");
+}
+
+// Answers refused connections with A-ASSOCIATE-RJ (transient, local limit exceeded) without
+// parsing anything they send: the RJ goes out at once, then whatever the peer sent is drained
+// for a short, absolute time (so closing does not reset the connection before the RJ is read).
+void ScpServer::reject_loop() {
+    std::vector<std::uint8_t> rj_pdu;
+    (void)encode_pdu(AssociateRj{rj::Transient, rj::SourcePresentationProvider, rj::PresentationLocalLimitExceeded},
+                     rj_pdu);
+    while (true) {
+        std::unique_ptr<Transport> t;
+        {
+            std::unique_lock<std::mutex> l(mu_);
+            reject_cv_.wait(l, [this] { return stopping_.load() || !reject_queue_.empty(); });
+            if (stopping_.load()) return;
+            t = std::move(reject_queue_.front());
+            reject_queue_.pop_front();
+        }
+        log("association from " + t->peer_address() + " rejected: local limit exceeded");
+        if (t->write_all(rj_pdu.data(), rj_pdu.size(), 200)) {
+            const Deadline until = deadline_after(std::min(cfg_.timeouts.artim_ms, 500));
+            std::uint8_t sink[4096];
+            while (!stopping_.load()) {
+                Result<std::size_t> r = t->read_some(sink, sizeof sink, std::min(remaining_ms(until), 50));
+                if (r && *r == 0) break;                                 // peer closed
+                if (!r && r.error().code != Errc::Timeout) break;        // reset or error
+                if (std::chrono::steady_clock::now() >= until) break;
+            }
+        }
+        t->close();
+    }
 }
 
 void ScpServer::worker_loop() {
@@ -218,6 +280,11 @@ void ScpServer::worker_loop() {
 
 void ScpServer::serve(std::unique_ptr<Transport> t) {
     const std::string peer = t->peer_address();
+    struct PeerSlot {
+        ScpServer* s;
+        const std::string& p;
+        ~PeerSlot() { s->release_peer(p); }
+    } slot{this, peer};
     if (cfg_.tls.enabled) {
         // The handshake runs here, on the pool thread; stop() shuts the socket down to end it early.
         {
@@ -293,8 +360,23 @@ void ScpServer::serve(std::unique_ptr<Transport> t) {
     log("association accepted from " + rq.calling_ae + " at " + peer);
 
     Ctx c{a};
+    const bool limited_life = cfg_.max_association_lifetime_ms > 0;
+    const Deadline end_of_life = deadline_after(limited_life ? cfg_.max_association_lifetime_ms : 0);
+    std::uint64_t operations = 0;
     while (!c.dead) {
-        Result<DimseReceived> r = receive_dimse(a, cfg_.timeouts.idle_ms, cfg_.spool ? &*cfg_.spool : nullptr);
+        int wait_ms = cfg_.timeouts.idle_ms;
+        if (limited_life) {
+            const int left = remaining_ms(end_of_life);
+            if (left == 0) {
+                log("association lifetime limit reached; aborting association");
+                a.abort(abort_src::Provider, abort_reason::NotSpecified);
+                break;
+            }
+            wait_ms = std::min(wait_ms, left);
+        }
+        Result<DimseReceived> r = receive_dimse(a, wait_ms, cfg_.spool ? &*cfg_.spool : nullptr);
+        if (!r && r.error().code == Errc::Timeout && a.established() && limited_life && remaining_ms(end_of_life) == 0)
+            continue;  // reported (and aborted) at the top of the loop
         if (!r) {
             if (r.error().code == Errc::Timeout && a.established()) {
                 log("idle timeout; aborting association");
@@ -309,6 +391,12 @@ void ScpServer::serve(std::unique_ptr<Transport> t) {
             break;
         }
         if (!dispatch(c, r->message)) break;
+        if (cfg_.max_operations_per_association != 0 && ++operations >= cfg_.max_operations_per_association &&
+            !c.release_pending) {
+            log("association operation limit reached; aborting association");
+            a.abort(abort_src::Provider, abort_reason::NotSpecified);
+            break;
+        }
         if (c.release_pending) {
             (void)a.respond_release();
             break;

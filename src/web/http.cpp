@@ -317,11 +317,15 @@ Result<std::string> percent_decode(std::string_view s, bool plus_is_space) {
             if (i + 2 >= s.size()) return Status(Errc::Malformed, "bad percent-encoding");
             const int a = hex(s[i + 1]), b = hex(s[i + 2]);
             if (a < 0 || b < 0) return Status(Errc::Malformed, "bad percent-encoding");
-            out.push_back(static_cast<char>(a * 16 + b));
+            const int v = a * 16 + b;
+            if (v < 0x20 || v == 0x7F) return Status(Errc::Malformed, "control character in percent-encoding");
+            out.push_back(static_cast<char>(v));
             i += 2;
         } else if (plus_is_space && s[i] == '+') {
             out.push_back(' ');
         } else {
+            const auto c = static_cast<unsigned char>(s[i]);
+            if (c < 0x20 || c == 0x7F) return Status(Errc::Malformed, "control character in URL");
             out.push_back(s[i]);
         }
     }
@@ -411,6 +415,32 @@ Result<Url> parse_url(std::string_view url) {
 // ---------------------------------------------------------------- connection
 Connection::Connection(std::unique_ptr<net::Transport> t, const Limits& limits) : t_(std::move(t)), lim_(limits) {}
 
+Connection::~Connection() { release_body_budget(); }
+
+void Connection::release_body_budget() noexcept {
+    if (budget_ && reserved_) budget_->give(reserved_);
+    reserved_ = 0;
+}
+
+bool BodyBudget::take(std::uint64_t n) noexcept {
+    if (limit_ == 0) return true;
+    std::uint64_t cur = used_.load();
+    for (;;) {
+        if (n > limit_ || cur > limit_ - n) return false;
+        if (used_.compare_exchange_weak(cur, cur + n)) return true;
+    }
+}
+
+void BodyBudget::give(std::uint64_t n) noexcept {
+    if (limit_ == 0) return;
+    used_.fetch_sub(n);
+}
+
+bool is_loopback_address(std::string_view h) noexcept {
+    if (h == "localhost" || h == "::1" || h == "[::1]") return true;
+    return h.size() >= 4 && h.compare(0, 4, "127.") == 0;
+}
+
 void Connection::close() noexcept {
     if (t_) {
         t_->shutdown();
@@ -425,7 +455,41 @@ int Connection::timeout_now(int base) const {
     return static_cast<int>(std::min<std::int64_t>(left, base));
 }
 
+void Connection::begin_body() {
+    in_body_ = true;
+    const std::int64_t now = now_ms();
+    body_deadline_ms_ = lim_.body_timeout_ms > 0 ? now + lim_.body_timeout_ms : 0;
+    window_end_ms_ = lim_.min_body_rate > 0 && lim_.body_rate_window_ms > 0 ? now + lim_.body_rate_window_ms : 0;
+    window_bytes_ = 0;
+}
+
+// While a body is read, every wait also honours the whole-body deadline and the minimum rate,
+// so a peer dripping bytes just inside read_timeout_ms is cut off (WEB-01, NET-03).
 Status Connection::fill(int timeout_ms) {
+    if (!in_body_) return fill_once(timeout_ms);
+    const std::int64_t start = now_ms();
+    for (;;) {
+        const std::int64_t now = now_ms();
+        if (body_deadline_ms_ && now >= body_deadline_ms_) return Status(Errc::Timeout, "message body timed out");
+        std::int64_t wait = std::max<std::int64_t>(0, start + timeout_ms - now);
+        if (body_deadline_ms_) wait = std::min(wait, body_deadline_ms_ - now);
+        if (window_end_ms_) wait = std::min(wait, std::max<std::int64_t>(1, window_end_ms_ - now));
+        last_read_ = 0;
+        Status st = fill_once(static_cast<int>(wait));
+        const std::int64_t after = now_ms();
+        window_bytes_ += last_read_;
+        if (window_end_ms_ && after >= window_end_ms_) {
+            const auto need = static_cast<std::uint64_t>(lim_.min_body_rate) * static_cast<std::uint64_t>(lim_.body_rate_window_ms) / 1000u;
+            if (window_bytes_ < need) return Status(Errc::Timeout, "message body arriving too slowly");
+            window_end_ms_ = after + lim_.body_rate_window_ms;
+            window_bytes_ = 0;
+        }
+        if (st || st.code != Errc::Timeout) return st;
+        if (after - start >= timeout_ms) return st;  // the caller's own timeout
+    }
+}
+
+Status Connection::fill_once(int timeout_ms) {
     if (!t_) return Status(Errc::NetworkError, "connection closed");
     if (pos_ > 0 && pos_ == buf_.size()) {
         buf_.clear();
@@ -439,6 +503,7 @@ Status Connection::fill(int timeout_ms) {
     if (!r) return r.take_error();
     if (*r == 0) return Status(Errc::NetworkError, "connection closed");
     buf_.append(reinterpret_cast<const char*>(tmp), *r);
+    last_read_ = *r;
     return Status::ok();
 }
 
@@ -446,8 +511,17 @@ Status Connection::fill(int timeout_ms) {
 Status Connection::read_line(std::size_t cap, std::string& line, int first_timeout_ms, bool& got_any) {
     line.clear();
     bool first = true;
+    // Bytes after pos_ already searched: each new fill is scanned once (R-020: no rescans of the
+    // partial line, which made 1-byte packets quadratic). Compaction in fill() keeps pos_-relative
+    // offsets valid.
+    std::size_t scanned = 0;
     for (;;) {
-        const auto nl = buf_.find('\n', pos_);
+        if (arm_header_deadline_ && buf_.size() > pos_) {
+            // The header deadline runs from the first byte of the message, request line included.
+            arm_header_deadline_ = false;
+            if (deadline_ms_ == 0 && lim_.header_timeout_ms > 0) deadline_ms_ = now_ms() + lim_.header_timeout_ms;
+        }
+        const auto nl = buf_.find('\n', pos_ + scanned);
         if (nl != std::string::npos) {
             if (nl - pos_ > cap + 1) return Status(Errc::LimitExceeded, "line too long");
             std::string_view l(buf_.data() + pos_, nl - pos_);
@@ -462,10 +536,11 @@ Status Connection::read_line(std::size_t cap, std::string& line, int first_timeo
         if (buf_.size() - pos_ > cap + 1) return Status(Errc::LimitExceeded, "line too long");
         // No line of the protocol carries C0 controls other than HTAB: fail fast on binary
         // input (e.g. a TLS handshake sent to a plain HTTP port) instead of waiting for a LF.
-        for (std::size_t i = pos_; i < buf_.size(); ++i) {
+        for (std::size_t i = pos_ + scanned; i < buf_.size(); ++i) {
             const auto b = static_cast<unsigned char>(buf_[i]);
             if ((b < 0x20 && b != '\t' && b != '\r') || b == 0x7F) return Status(Errc::Malformed, "control character in message");
         }
+        scanned = buf_.size() - pos_;
         if (buf_.size() > pos_) got_any = true;
         if (Status st = fill(timeout_now(first && !got_any ? first_timeout_ms : lim_.read_timeout_ms)); !st) {
             if (deadline_ms_ && now_ms() >= deadline_ms_ && st.code == Errc::Timeout)
@@ -507,6 +582,10 @@ Status Connection::read_headers(Headers& h) {
 Status Connection::read_exact(std::uint64_t n, std::string& out) {
     if (n > lim_.max_body) return Status(Errc::LimitExceeded, "body too large");
     if (n > SIZE_MAX / 2) return Status(Errc::LimitExceeded, "body too large");
+    if (budget_ && n > 0) {
+        if (!budget_->take(n)) return Status(Errc::Rejected, "server body budget exhausted");
+        reserved_ += n;
+    }
     const auto want = static_cast<std::size_t>(n);
     if (want - std::min(want, out.size()) > 0 && out.capacity() < out.size() + want) {
         // Reserve gradually so a lying Content-Length cannot make us allocate up front.
@@ -628,10 +707,12 @@ Status framing_of(const Headers& h, bool is_request, Framing& f, std::uint64_t& 
 
 Result<Request> Connection::read_request(int first_byte_timeout_ms) {
     suggested_ = 0;
+    release_body_budget();
     Request rq;
     std::string line;
     bool got_any = false;
     deadline_ms_ = 0;
+    arm_header_deadline_ = lim_.header_timeout_ms > 0;
     // Ignore empty lines before the request-line (RFC 9112 2.2); at most a few.
     for (int empties = 0;; ++empties) {
         Status st = read_line(lim_.max_request_line, line, first_byte_timeout_ms, got_any);
@@ -682,6 +763,7 @@ Result<Request> Connection::read_request(int first_byte_timeout_ms) {
     rq.version_minor = version[7] - '0';
     Status hs = read_headers(rq.headers);
     deadline_ms_ = 0;
+    arm_header_deadline_ = false;
     if (!hs) {
         suggested_ = hs.code == Errc::LimitExceeded ? 431 : hs.code == Errc::Timeout ? 408 : hs.code == Errc::Malformed ? 400 : 0;
         return hs;
@@ -718,10 +800,13 @@ Result<Request> Connection::read_request(int first_byte_timeout_ms) {
         }
     }
     Status bs = Status::ok();
+    if (f == Framing::Length || f == Framing::Chunked) begin_body();
     if (f == Framing::Length) bs = read_exact(len, rq.body);
     else if (f == Framing::Chunked) bs = read_chunked(rq.body);
+    in_body_ = false;
     if (!bs) {
-        suggested_ = bs.code == Errc::LimitExceeded ? 413 : bs.code == Errc::Malformed ? 400 : bs.code == Errc::Timeout ? 408 : 0;
+        suggested_ = bs.code == Errc::LimitExceeded ? 413 : bs.code == Errc::Malformed ? 400 : bs.code == Errc::Timeout ? 408
+                     : bs.code == Errc::Rejected ? 503 : 0;
         return bs;
     }
     return rq;
@@ -904,9 +989,17 @@ Server::~Server() { stop(); }
 Status Server::start(const ServerConfig& cfg, Handler handler) {
     if (accept_thread_.joinable()) return Status(Errc::InvalidArgument, "server already started");
     if (!handler) return Status(Errc::InvalidArgument, "handler must be set");
+    if (!cfg.tls.enabled && !is_loopback_address(cfg.bind_address) && !cfg.allow_insecure_remote)
+        return Status(Errc::InvalidArgument,
+                      "refusing plain HTTP on a non-loopback address: enable TLS or set allow_insecure_remote");
     cfg_ = cfg;
     handler_ = std::move(handler);
     stopping_ = false;
+    budget_ = cfg_.max_inflight_body_bytes ? std::make_shared<BodyBudget>(cfg_.max_inflight_body_bytes) : nullptr;
+    if (!is_loopback_address(cfg_.bind_address) && cfg_.allow_insecure_remote && cfg_.log)
+        cfg_.log("http: warning: allow_insecure_remote is set; serving " +
+                 std::string(cfg_.tls.enabled ? "HTTPS" : "plain HTTP") + " on " +
+                 (cfg_.bind_address.empty() ? std::string("all interfaces") : cfg_.bind_address));
     if (cfg_.tls.enabled) {
         net::TlsSettings ts = cfg_.tls;
         if (!ts.log && cfg_.log) ts.log = cfg_.log;
@@ -976,11 +1069,17 @@ void Server::accept_loop() {
             continue;
         }
         reap(false);
-        std::size_t active = 0;
+        std::size_t active = 0, from_peer = 0;
+        const std::string peer_addr = t.value()->peer_address();
         {
             std::lock_guard<std::mutex> lk(mu_);
             active = workers_.size();
+            for (const Worker& w : workers_)
+                if (!w.done.load() && w.peer == peer_addr) ++from_peer;
         }
+        // Too many connections from one address count as busy as well (NET-04).
+        if (cfg_.max_connections_per_peer != 0 && from_peer >= cfg_.max_connections_per_peer)
+            active = std::max(active, cfg_.max_connections);
         if (active >= cfg_.max_connections && cfg_.tls.enabled) {
             // A 503 would need a TLS handshake on the accept thread; just close.
             t.value()->close();
@@ -1004,6 +1103,7 @@ void Server::accept_loop() {
         Worker* w = &workers_.back();
         net::Transport* raw = t->get();
         w->transport = raw;
+        w->peer = peer_addr;
         auto owned = std::make_shared<std::unique_ptr<net::Transport>>(std::move(t).value());
         w->thread = std::thread([this, w, owned]() mutable {
             if (cfg_.tls.enabled) {
@@ -1022,6 +1122,7 @@ void Server::accept_loop() {
             }
             const std::string peer = (*owned)->peer_address();
             Connection c(std::move(*owned), cfg_.limits);
+            c.set_body_budget(budget_);
             serve(c, peer);
             {
                 std::lock_guard<std::mutex> lk2(mu_);
@@ -1066,8 +1167,11 @@ void Server::serve(Connection& c, const std::string& peer) {
         }
         const bool close_after = wants_close(rq->headers, rq->version_minor) || wants_close(rs.headers, 1) ||
                                  n + 1 >= cfg_.max_requests_per_connection || stopping_.load();
-        if (Status st = c.write_response(rs, iequals(rq->method, "HEAD"), close_after); !st) break;
-        if (cfg_.log) cfg_.log("http: " + peer + " " + rq->method + " -> " + std::to_string(rs.status));
+        const std::string method = rq->method;
+        rq = Status(Errc::Cancelled, "");  // the request body is no longer held...
+        c.release_body_budget();           // ...nor charged to the server's budget
+        if (Status st = c.write_response(rs, iequals(method, "HEAD"), close_after); !st) break;
+        if (cfg_.log) cfg_.log("http: " + peer + " " + method + " -> " + std::to_string(rs.status));
         if (close_after) break;
     }
 }

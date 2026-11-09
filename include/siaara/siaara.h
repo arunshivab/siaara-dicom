@@ -8,7 +8,8 @@
  *  - Strings in and out are UTF-8. Output strings use a caller buffer: pass buf/cap; the function
  *    always writes a NUL terminator when cap > 0 and reports the full length (without NUL) in
  *    *needed. If cap is too small it returns SIAARA_ERR_BUFFER_TOO_SMALL.
- *  - Ownership is stated per function: "borrowed" pointers stay valid until the owning handle is freed.
+ *  - Ownership is stated per function: "borrowed" pointers stay valid until the owning handle is
+ *    freed, unless the function says otherwise (e.g. raw values and items, below).
  *  - Thread safety: a siaara_file and the data sets borrowed from it may be read from many threads
  *    at once; writes need exclusive access.
  */
@@ -30,6 +31,13 @@
 #else
 #  define SIAARA_CALL
 #  define SIAARA_API __attribute__((visibility("default")))
+#endif
+
+/* Functions that cannot fail and never throw are declared noexcept for C++ callers. */
+#ifdef __cplusplus
+#  define SIAARA_NOEXCEPT noexcept
+#else
+#  define SIAARA_NOEXCEPT
 #endif
 
 #ifdef __cplusplus
@@ -60,11 +68,11 @@ enum {
 
 /* ---------------------------------------------------------------- version */
 #define SIAARA_ABI_VERSION 1u
-SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void);
+SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void) SIAARA_NOEXCEPT;
 /* Static string, never freed. */
-SIAARA_API const char* SIAARA_CALL siaara_version_string(void);
+SIAARA_API const char* SIAARA_CALL siaara_version_string(void) SIAARA_NOEXCEPT;
 /* Message for the last failed call on this thread; valid until the next call on this thread. */
-SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void);
+SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void) SIAARA_NOEXCEPT;
 
 /* ---------------------------------------------------------------- handles */
 typedef struct siaara_file siaara_file;        /* a parsed Part 10 file (owns its data sets) */
@@ -87,7 +95,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* utf8_path, siz
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open_memory(const uint8_t* data, size_t size,
                                                              const siaara_read_options* options,
                                                              siaara_file** out);
-SIAARA_API void SIAARA_CALL siaara_file_free(siaara_file* file);
+SIAARA_API void SIAARA_CALL siaara_file_free(siaara_file* file) SIAARA_NOEXCEPT;
 
 /* Creates an empty file (explicit VR little endian). Caller owns *out. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_create(siaara_file** out);
@@ -99,13 +107,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transfer_syntax(const siaara_fi
                                                                  size_t cap, size_t* needed);
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file* file, uint32_t* out);
 
-/* Writes the file. transfer_syntax_uid may be NULL to keep the current one. */
+/* Writes the file. transfer_syntax_uid may be NULL to keep the current one. Uses the default
+ * siaara_save_options: an unedited file saved in its own transfer syntax is reproduced byte for
+ * byte (see siaara_file_save_ex). */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, const char* utf8_path,
                                                       size_t path_len, const char* transfer_syntax_uid);
 
 /* ---------------------------------------------------------------- data set access */
 /* Tags are (group << 16) | element. vm_index is 0-based. */
-SIAARA_API int32_t SIAARA_CALL siaara_dataset_contains(const siaara_dataset* ds, uint32_t tag);
+SIAARA_API int32_t SIAARA_CALL siaara_dataset_contains(const siaara_dataset* ds, uint32_t tag) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_vr(const siaara_dataset* ds, uint32_t tag, char out_vr[3]);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_vm(const siaara_dataset* ds, uint32_t tag, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_string(const siaara_dataset* ds, uint32_t tag,
@@ -115,12 +125,19 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_int64(const siaara_datas
                                                               uint32_t vm_index, int64_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_double(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t vm_index, double* out);
-/* Raw value bytes, borrowed (valid until the owning file is freed or the element is changed). */
+/* Raw value bytes, borrowed (valid until the owning file is freed or this element is changed or
+ * removed; changes to other elements do not invalidate it).
+ * Byte order: always little endian, whatever the transfer syntax. Data sets hold values little
+ * endian in memory, so for Explicit VR Big Endian files multi-byte binary values (US, UL, FL, OW,
+ * AT ...) come back byte-swapped relative to the file. Strings and OB/UN are never swapped. For
+ * the bytes exactly as stored in the file use siaara_file_get_raw_stored. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_raw(const siaara_dataset* ds, uint32_t tag,
                                                             const uint8_t** out_data, size_t* out_size);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item_count(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t* out);
-/* Borrowed item data set of a sequence. */
+/* Borrowed item data set of a sequence. Valid until the file is freed, this item is removed, or
+ * the sequence element is changed or removed. Adding, changing or removing other elements of the
+ * parent, or other items of the sequence, does not invalidate it (items have stable storage). */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item(siaara_dataset* ds, uint32_t tag,
                                                          uint32_t index, siaara_dataset** out);
 /* Number of top-level elements and the tag at a position (for iteration). */
@@ -272,7 +289,7 @@ typedef struct siaara_web_client siaara_web_client;
  * connect and to every network wait; 0 = default (30 s). Caller owns *out. */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create(const char* base_url, size_t len, int32_t timeout_ms,
                                                               siaara_web_client** out);
-SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client);
+SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client) SIAARA_NOEXCEPT;
 /* Authorization header value sent with every request, e.g. "Bearer abc" or "Basic dXNlcjpwdw==".
  * value NULL (or len 0) removes it. The value is copied. */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_authorization(siaara_web_client* client, const char* value,
@@ -426,7 +443,7 @@ enum { SIAARA_ADD_ADDED = 0, SIAARA_ADD_REPLACED = 1, SIAARA_ADD_KEPT_EXISTING =
 SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* utf8_root, size_t root_len,
                                                        const siaara_store_options* options,
                                                        siaara_store** out);
-SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store);
+SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) SIAARA_NOEXCEPT;
 /* policy SIAARA_DUP_*, mode SIAARA_ADD_*; *outcome (may be NULL) receives SIAARA_ADD_ADDED etc. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_add_file(siaara_store* store, const char* utf8_path,
                                                            size_t path_len, int32_t policy, int32_t mode,
@@ -483,7 +500,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_stor
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_result* result, uint32_t index,
                                                              siaara_index_record* out, char* buf, size_t cap,
                                                              size_t* needed);
-SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* result);
+SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* result) SIAARA_NOEXCEPT;
 
 /* key: for SIAARA_LEVEL_PATIENT the key from siaara_store_patient_key, otherwise the Study,
  * Series or SOP Instance UID. Copied files are deleted;
@@ -924,7 +941,7 @@ enum {
 
 /* Reads the SR content tree of the file. Caller owns *out: free with siaara_sr_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_open(const siaara_file* file, siaara_sr** out);
-SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr);
+SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_count(const siaara_sr* sr, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_node(const siaara_sr* sr, uint32_t index, siaara_sr_node_info* out);
 /* Child node indices (count elements). Buffer rules as for siaara_series_sort. */
@@ -957,7 +974,7 @@ typedef struct siaara_segment_info {
 
 /* Reads the segmentation description of the file. Caller owns *out: free with siaara_seg_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_seg_open(const siaara_file* file, siaara_seg** out);
-SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg);
+SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg) SIAARA_NOEXCEPT;
 /* *type receives SIAARA_SEG_*, *frames the Number of Frames (both may be NULL). */
 SIAARA_API siaara_status SIAARA_CALL siaara_seg_info(const siaara_seg* seg, int32_t* type, uint32_t* frames,
                                                      uint32_t* max_fractional);
@@ -990,7 +1007,7 @@ typedef struct siaara_rt_roi_info {
 } siaara_rt_roi_info;
 
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* file, siaara_rtstruct** out);
-SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt);
+SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_count(const siaara_rtstruct* rt, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi(const siaara_rtstruct* rt, uint32_t index, siaara_rt_roi_info* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_name(const siaara_rtstruct* rt, uint32_t index, char* buf,
@@ -1096,7 +1113,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_volume_warning(const siaara_volume* 
 /* Borrowed voxel buffer (int16_t or float, as voxel_type says); valid until the volume is freed. */
 SIAARA_API siaara_status SIAARA_CALL siaara_volume_data(const siaara_volume* volume, const void** out_data,
                                                         uint64_t* out_bytes);
-SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume);
+SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume) SIAARA_NOEXCEPT;
 
 enum {
     SIAARA_VIEW_MPR = 0,
@@ -1128,7 +1145,7 @@ enum {
  * must not be changed while it renders; one view may render from one thread at a time. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_create(const siaara_volume* volume, uint32_t width, uint32_t height,
                                                         siaara_view** out);
-SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view);
+SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view) SIAARA_NOEXCEPT;
 /* Plane: centre point, viewing direction (into the screen) and up vector (patient mm, LPS);
  * screen right = normal x up. pixel_spacing in mm per pixel, 0 = fit the volume. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_set_plane(siaara_view* view, const double point[3],
@@ -1232,6 +1249,77 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_set_backend(siaara_view* view, 
 /* SIAARA_BACKEND_CPU or SIAARA_BACKEND_GPU: the renderer of the last siaara_view_render_rgba8. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view* view, int32_t* out_backend);
 
+/* ---------------------------------------------------------------- lenient frame decoding */
+/* Adjustments siaara_frame_decode / siaara_render_rgba8 make (lenient reading, the default) when a
+ * compressed frame's codestream header (JPEG SOF, JPEG-LS SOF55, JPEG 2000 SIZ) disagrees with the
+ * Image Pixel module. The values are stable. Messages hold codestream / attribute values only. */
+enum {
+    SIAARA_FRAME_WARN_PRECISION_BELOW_BITS_STORED = 1,    /* values used as decoded */
+    SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_STORED = 2,    /* values kept; pixel info bits_stored = precision */
+    SIAARA_FRAME_WARN_SIGNEDNESS_MISMATCH = 3,            /* JPEG 2000: low precision bits reinterpreted per
+                                                             Pixel Representation */
+    SIAARA_FRAME_WARN_EXTRA_COMPONENTS = 4,               /* first Samples per Pixel components used */
+    SIAARA_FRAME_WARN_CODESTREAM_CROPPED = 5,             /* larger than Rows x Columns: top-left part used */
+    SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_ALLOCATED = 6, /* decodes only if the values fit Bits Allocated */
+    SIAARA_FRAME_WARN_CONTAINER_WIDENED = 7,              /* decoded samples widened into Bits Allocated */
+    SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM = 8,           /* invalid Bits Allocated: depth from the codestream */
+    SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9,           /* single frame: Rows/Columns from the codestream */
+    SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10,               /* RLE run cut at its segment end; missing bytes 0 */
+    SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11           /* JPEG: invalid Huffman codes read as symbol 0 */
+};
+/* Number of adjustments made for frame `frame` (0-based). Decodes the frame to find them. The pixel
+ * info (siaara_file_pixel_info) already reports adjusted Bits Allocated / Bits Stored / size. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning_count(const siaara_file* file, uint32_t frame, uint32_t* out);
+/* Adjustment `index` (< count) of frame `frame`: *code (may be NULL) receives SIAARA_FRAME_WARN_*;
+ * the message follows the string buffer rules. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning(const siaara_file* file, uint32_t frame, uint32_t index,
+                                                          int32_t* code, char* buf, size_t cap, size_t* needed);
+
+/* ---------------------------------------------------------------- save options and stored bytes */
+/* Sequence and item lengths. */
+enum {
+    SIAARA_SEQ_LENGTHS_KEEP = 0,      /* default: as read; new sequences get a sensible choice */
+    SIAARA_SEQ_LENGTHS_EXPLICIT = 1,  /* every sequence and item gets an explicit length */
+    SIAARA_SEQ_LENGTHS_UNDEFINED = 2  /* every sequence and item gets undefined length + delimiter */
+};
+/* Group length elements (gggg,0000) outside group 0002. */
+enum {
+    SIAARA_GROUP_LENGTHS_KEEP = 0,     /* default: kept where present; recomputed when the group
+                                          changed, so a kept value is never stale */
+    SIAARA_GROUP_LENGTHS_DROP = 1,     /* removed */
+    SIAARA_GROUP_LENGTHS_RECOMPUTE = 2 /* a correct group length for every group, added if missing */
+};
+/* Odd value lengths. */
+enum {
+    SIAARA_ODD_LENGTHS_KEEP = 0,  /* default: values and fragments read odd stay odd; edited or new
+                                     values are padded to even length */
+    SIAARA_ODD_LENGTHS_PAD = 1    /* every odd value and fragment is padded to even length */
+};
+typedef struct siaara_save_options {
+    uint32_t struct_size;      /* set to sizeof(siaara_save_options) */
+    int32_t sequence_lengths;  /* SIAARA_SEQ_LENGTHS_* */
+    int32_t group_lengths;     /* SIAARA_GROUP_LENGTHS_* */
+    int32_t odd_lengths;       /* SIAARA_ODD_LENGTHS_* */
+} siaara_save_options;
+/* siaara_file_save with options (NULL = defaults, the same as siaara_file_save). The defaults keep
+ * every unedited element as it was read: sequence/item length modes, group lengths, odd lengths,
+ * the preamble. An element counts as edited when it was set through a setter or its value size
+ * changed. When transfer_syntax_uid changes the syntax, "keep" still applies where it is valid;
+ * group lengths are recomputed for the new encoding, and sequences that a reader could only
+ * recognise through a (private) dictionary get undefined length when the target is implicit VR.
+ * A struct_size smaller than this version's struct is accepted (missing fields use defaults). */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_save_ex(const siaara_file* file, const char* utf8_path,
+                                                         size_t path_len, const char* transfer_syntax_uid,
+                                                         const siaara_save_options* options);
+/* The value bytes of element `tag` of `ds` (the file's data set, its meta, or an item borrowed
+ * from it) exactly as stored in the file's transfer syntax: for Explicit VR Big Endian, big
+ * endian (and the main data set's OW Pixel Data of the GE private syntax 1.2.840.113619.5.2, whose
+ * pixels are big endian); otherwise the same bytes siaara_dataset_get_raw returns. Copied into buf (cap bytes);
+ * *needed receives the value length. SIAARA_ERR_BUFFER_TOO_SMALL when cap < length (buf may be
+ * NULL with cap 0 to query the length). The meta group is always little endian. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_file* file, const siaara_dataset* ds,
+                                                                uint32_t tag, uint8_t* buf, size_t cap,
+                                                                size_t* needed);
 /* ================================================================ viewer / PACS additions (wip-capi)
  * Everything below was added for the PACS application. The general rules at the top apply: every
  * new options / result struct starts with struct_size (set it to sizeof the struct), buffers
@@ -1248,7 +1336,7 @@ typedef struct siaara_pstate siaara_pstate;
 /* Opens frame `frame` (0-based) of the file and decodes it. Caller owns *out: free with
  * siaara_frame_free. Thread safety: the file may be read by other threads meanwhile. */
 SIAARA_API siaara_status SIAARA_CALL siaara_frame_open(const siaara_file* file, uint32_t frame, siaara_frame** out);
-SIAARA_API void SIAARA_CALL siaara_frame_free(siaara_frame* frame);
+SIAARA_API void SIAARA_CALL siaara_frame_free(siaara_frame* frame) SIAARA_NOEXCEPT;
 
 enum {
     SIAARA_FRAMEF_MONOCHROME = 1 << 0,       /* MONOCHROME1 or MONOCHROME2 */
@@ -1465,7 +1553,7 @@ enum {
 /* Reads a presentation state. SIAARA_ERR_UNSUPPORTED for other SOP classes. Caller owns *out:
  * free with siaara_pstate_free. Thread safety: the file may be read by other threads meanwhile. */
 SIAARA_API siaara_status SIAARA_CALL siaara_pstate_open(const siaara_file* file, siaara_pstate** out);
-SIAARA_API void SIAARA_CALL siaara_pstate_free(siaara_pstate* ps);
+SIAARA_API void SIAARA_CALL siaara_pstate_free(siaara_pstate* ps) SIAARA_NOEXCEPT;
 /* Thread safety for the calls below: any thread. */
 SIAARA_API siaara_status SIAARA_CALL siaara_pstate_info(const siaara_pstate* ps, siaara_pstate_properties* out);
 /* SIAARA_PSTATE_LABEL etc. (string buffer rules). */
@@ -1489,7 +1577,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_pstate_applies(const siaara_pstate* 
 typedef struct siaara_cancel siaara_cancel;
 
 SIAARA_API siaara_status SIAARA_CALL siaara_cancel_create(siaara_cancel** out);
-SIAARA_API void SIAARA_CALL siaara_cancel_free(siaara_cancel* token);
+SIAARA_API void SIAARA_CALL siaara_cancel_free(siaara_cancel* token) SIAARA_NOEXCEPT;
 /* Thread safety: any thread, at any time. */
 SIAARA_API siaara_status SIAARA_CALL siaara_cancel_set(siaara_cancel* token);
 /* Clears the token for reuse; do not call while a call uses it. */
@@ -1623,7 +1711,7 @@ typedef struct siaara_scp_options {
     uint32_t port;                   /* 0 = an ephemeral port (siaara_scp_port) */
     const char* ae_title;            /* NULL: "SIAARA_SCP" */
     const char* bind_address;        /* NULL: all interfaces */
-    const char* const* allowed_calling_aes; /* NULL / 0: any peer */
+    const char* const* allowed_calling_aes; /* peers accepted; empty needs allow_any_calling_ae */
     uint32_t allowed_count;
     uint32_t max_associations;       /* 0 = 8 */
     int32_t accept_any_called_ae;    /* 0/1: also accept associations addressed to another AE title */
@@ -1633,7 +1721,7 @@ typedef struct siaara_scp_options {
     int32_t idle_timeout_ms;         /* 0 = 300000 */
     int32_t dimse_timeout_ms;        /* 0 = 60000 */
     uint32_t max_pdu;                /* 0 = 65536 */
-    uint32_t reserved0;
+    int32_t allow_any_calling_ae;    /* 0/1: with no allowed_calling_aes, accept any peer (else start fails) */
     const siaara_tls_options* tls;   /* NULL: plain TCP; else every connection must use TLS (needs an identity) */
 } siaara_scp_options;
 
@@ -1675,7 +1763,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp,
 /* Stops accepting, aborts running associations and waits for the threads (no callback runs
  * afterwards). Idempotent. Do not call from the SCP callback. */
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp);
-SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp);
+SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT;
 
 /* ---------------------------------------------------------------- DICOMweb additions (PS3.18) */
 /* Parts of a DICOMweb response (multipart bodies, or one body). Immutable: any thread. */
@@ -1712,7 +1800,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_uri(siaara_web_client* clie
                                                          const char* series_uid, const char* object_uid,
                                                          const char* content_type, const char* transfer_syntax,
                                                          siaara_web_parts** out);
-SIAARA_API void SIAARA_CALL siaara_web_parts_free(siaara_web_parts* parts);
+SIAARA_API void SIAARA_CALL siaara_web_parts_free(siaara_web_parts* parts) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_count(const siaara_web_parts* parts, uint32_t* out);
 /* Borrowed bytes of part `index` (valid until the parts are freed) and its Content-Type in buf
  * (string buffer rules; buf may be NULL with cap 0). */
