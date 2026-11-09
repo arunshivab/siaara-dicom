@@ -392,3 +392,26 @@ TEST_CASE("sr: C API tree walk") {
     siaara_sr_free(nullptr);
     siaara_file_free(file);
 }
+
+TEST_CASE("sr: mutated files never crash the reader") {
+    DicomFile f;
+    f.dataset = comprehensive();
+    f.transfer_syntax = "1.2.840.10008.1.2.1";
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(write_part10(f, bytes).is_ok());
+    std::uint32_t seed = 99;
+    auto next = [&]() { return seed = seed * 1664525u + 1013904223u; };
+    int parsed = 0;
+    for (int iter = 0; iter < 300; ++iter) {
+        std::vector<std::uint8_t> m = bytes;
+        const int edits = 1 + static_cast<int>(next() % 8);
+        for (int e = 0; e < edits; ++e) m[132 + next() % (m.size() - 132)] = static_cast<std::uint8_t>(next() >> 24);
+        auto r = read_part10(Bytes::copy_of(m.data(), m.size()));
+        if (!r) continue;
+        auto doc = read_sr(r->dataset);
+        if (!doc) continue;
+        ++parsed;
+        (void)sr_to_text(*doc);
+    }
+    CHECK(parsed > 0);
+}

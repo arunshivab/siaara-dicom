@@ -8,6 +8,7 @@
 #include "clinical/common.hpp"
 #include "clinical/rtstruct.hpp"
 #include "clinical/seg.hpp"
+#include "core/reader.hpp"
 #include "core/writer.hpp"
 #include "image/overlay.hpp"
 #include "siaara/siaara.h"
@@ -367,4 +368,44 @@ TEST_CASE("seg/rtstruct: C API") {
     CHECK_EQ(siaara_rtstruct_contour_points(rt, 0, 5, xyz, 9, &need, &closed), SIAARA_ERR_INVALID_ARGUMENT);
     siaara_rtstruct_free(rt);
     siaara_file_free(r);
+}
+
+TEST_CASE("seg/rtstruct: mutated files never crash the readers") {
+    std::uint32_t seed = 7;
+    auto next = [&]() { return seed = seed * 1664525u + 1013904223u; };
+    for (int which = 0; which < 2; ++which) {
+        DicomFile f;
+        f.dataset = which ? rtstruct() : binary_seg();
+        f.transfer_syntax = std::string(kTs);
+        std::vector<std::uint8_t> bytes;
+        REQUIRE(write_part10(f, bytes).is_ok());
+        int parsed = 0;
+        for (int iter = 0; iter < 300; ++iter) {
+            std::vector<std::uint8_t> m = bytes;
+            const int edits = 1 + static_cast<int>(next() % 8);
+            for (int e = 0; e < edits; ++e) m[132 + next() % (m.size() - 132)] = static_cast<std::uint8_t>(next() >> 24);
+            auto r = read_part10(Bytes::copy_of(m.data(), m.size()));
+            if (!r) continue;
+            if (which) {
+                auto ss = read_rtstruct(r->dataset);
+                if (!ss) continue;
+                ++parsed;
+                PlaneGeometry g;
+                g.rows = g.columns = 8;
+                g.has_position = g.has_orientation = true;
+                g.row_cosine = {1, 0, 0};
+                g.column_cosine = {0, 1, 0};
+                g.normal = {0, 0, 1};
+                g.spacing.row = g.spacing.column = 1;
+                g.spacing.source = SpacingSource::PixelSpacing;
+                (void)contours_on_image(*ss, g, "1.2.3.100");
+            } else {
+                auto seg = read_segmentation(r->dataset);
+                if (!seg) continue;
+                ++parsed;
+                for (std::uint32_t k = 0; k < seg->number_of_frames && k < 8; ++k) (void)segment_mask(r->dataset, kTs, *seg, k);
+            }
+        }
+        CHECK(parsed > 0);
+    }
 }
