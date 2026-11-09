@@ -54,6 +54,11 @@ struct WriteOptions {
     GroupLengths group_lengths = GroupLengths::Keep;
     OddLengths odd_lengths = OddLengths::Keep;
     int deflate_level = 6;  // for the Deflated transfer syntax
+    // write_part10 refuses (Errc::Rejected) a DicomFile whose read was not complete
+    // (DicomFile::read_loss: skipped bytes, truncated input, header-only read), because the
+    // result would hold less than the input or hide that the input was damaged (P0-1). Set this
+    // to write it anyway, e.g. after the caller has reported the loss.
+    bool allow_incomplete = false;
 };
 
 // Encodes a data set body in the given transfer syntax (native syntaxes only, plus deflate).

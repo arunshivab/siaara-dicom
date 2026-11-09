@@ -106,6 +106,30 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_meta(siaara_file* file, siaara_
 SIAARA_API siaara_status SIAARA_CALL siaara_file_transfer_syntax(const siaara_file* file, char* buf,
                                                                  size_t cap, size_t* needed);
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file* file, uint32_t* out);
+/* Warning `index` (< warning count) as text (string buffer rules: buf / cap / needed). When the
+ * read was not complete the first warning starts with "PARSE_INCOMPLETE" (input bytes skipped) or
+ * "INPUT_TRUNCATED" (the input ended inside an element). Thread safety: as the file. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file, uint32_t index, char* buf,
+                                                         size_t cap, size_t* needed);
+
+/* Whether the data set holds everything the input held (bit mask). */
+enum {
+    SIAARA_READ_BYTES_SKIPPED = 1u << 0,   /* lenient parse skipped input bytes that are in no element */
+    SIAARA_READ_INPUT_TRUNCATED = 1u << 1, /* the input ended inside an element, item or sequence */
+    SIAARA_READ_HEADER_ONLY = 1u << 2      /* stop_before_pixel_data: Pixel Data and the rest not read */
+};
+typedef struct siaara_read_report {
+    uint32_t struct_size;            /* set to sizeof(siaara_read_report) */
+    uint32_t loss;                   /* SIAARA_READ_* bits; 0 = complete */
+    uint64_t first_loss_offset;      /* offset of the first loss (inflated stream for deflate) */
+    uint64_t bytes_not_read;         /* input bytes in no element */
+    uint64_t stopped_at_offset;      /* header-only read: offset of the Pixel Data element, else 0 */
+    uint32_t warning_count;
+    uint32_t reserved0;
+} siaara_read_report;
+/* Fills *out (struct_size must be set; a smaller struct_size gets the fields that fit). A save of a
+ * file with loss != 0 is refused unless siaara_save_options.allow_incomplete is 1. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_read_report(const siaara_file* file, siaara_read_report* out);
 
 /* Writes the file. transfer_syntax_uid may be NULL to keep the current one. Uses the default
  * siaara_save_options: an unedited file saved in its own transfer syntax is reproduced byte for
@@ -1300,6 +1324,10 @@ typedef struct siaara_save_options {
     int32_t sequence_lengths;  /* SIAARA_SEQ_LENGTHS_* */
     int32_t group_lengths;     /* SIAARA_GROUP_LENGTHS_* */
     int32_t odd_lengths;       /* SIAARA_ODD_LENGTHS_* */
+    int32_t allow_incomplete;  /* 0 (default): a file whose read was not complete (see
+                                  siaara_file_read_report: skipped bytes, truncated input,
+                                  header-only read) is refused with SIAARA_ERR_REJECTED, so a save
+                                  never silently writes less than was read. 1: write it anyway. */
 } siaara_save_options;
 /* siaara_file_save with options (NULL = defaults, the same as siaara_file_save). The defaults keep
  * every unedited element as it was read: sequence/item length modes, group lengths, odd lengths,

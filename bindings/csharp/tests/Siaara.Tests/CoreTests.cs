@@ -19,6 +19,40 @@ internal static class CoreTests
             Check(Path.IsPathRooted(p));
         });
 
+        Case("core: an incomplete read is reported and its save refused unless allowed (testing2 P0-1)", () =>
+        {
+            string dir = NewTempDir("incomplete");
+            string path = Path.Combine(dir, "a.dcm");
+            using (DicomFile f = DicomFile.Create())
+            {
+                f.Dataset.SetRawString(DicomTags.SOPClassUID, "UI", Builders.SecondaryCapture);
+                f.Dataset.SetRawString(DicomTags.SOPInstanceUID, "UI", "2.25.43");
+                f.Dataset.SetString(DicomTags.PatientName, "Doe^Jane^Middle");
+                f.Save(path, DicomTransferSyntaxes.ExplicitVRLittleEndian);
+            }
+            byte[] whole = File.ReadAllBytes(path);
+            using (DicomFile f = DicomFile.Open(whole))
+            {
+                Check(f.ReadReport.IsComplete);
+                CheckEq(f.ReadReport.Loss, DicomReadLoss.None);
+            }
+            byte[] cut = whole.AsSpan(0, whole.Length - 5).ToArray();
+            using (DicomFile f = DicomFile.Open(cut))
+            {
+                DicomReadReport r = f.ReadReport;
+                Check(!r.IsComplete);
+                Check(r.Loss.HasFlag(DicomReadLoss.InputTruncated));
+                Check(r.WarningCount >= 1);
+                Check(f.Warnings[0].StartsWith("INPUT_TRUNCATED", StringComparison.Ordinal));
+                string outPath = Path.Combine(dir, "b.dcm");
+                var ex = Throws<SiaaraException>(() => f.Save(outPath));
+                CheckEq(ex?.ErrorCode, SiaaraErrorCode.Rejected);
+                Check(!File.Exists(outPath));
+                f.Save(outPath, null, allowIncomplete: true);
+                Check(File.Exists(outPath));
+            }
+        });
+
         Case("core: tags and dictionary", () =>
         {
             CheckEq(DicomTags.PatientName.Value, 0x00100010u);

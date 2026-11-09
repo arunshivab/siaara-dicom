@@ -12,6 +12,14 @@ int main(void) {
     printf("F siaara_read_options allow_raw_dataset %u\n", (unsigned)offsetof(siaara_read_options, allow_raw_dataset));
     printf("F siaara_read_options strict %u\n", (unsigned)offsetof(siaara_read_options, strict));
     printf("F siaara_read_options max_depth %u\n", (unsigned)offsetof(siaara_read_options, max_depth));
+    printf("S siaara_read_report %u\n", (unsigned)sizeof(siaara_read_report));
+    printf("F siaara_read_report struct_size %u\n", (unsigned)offsetof(siaara_read_report, struct_size));
+    printf("F siaara_read_report loss %u\n", (unsigned)offsetof(siaara_read_report, loss));
+    printf("F siaara_read_report first_loss_offset %u\n", (unsigned)offsetof(siaara_read_report, first_loss_offset));
+    printf("F siaara_read_report bytes_not_read %u\n", (unsigned)offsetof(siaara_read_report, bytes_not_read));
+    printf("F siaara_read_report stopped_at_offset %u\n", (unsigned)offsetof(siaara_read_report, stopped_at_offset));
+    printf("F siaara_read_report warning_count %u\n", (unsigned)offsetof(siaara_read_report, warning_count));
+    printf("F siaara_read_report reserved0 %u\n", (unsigned)offsetof(siaara_read_report, reserved0));
     printf("S siaara_dict_entry %u\n", (unsigned)sizeof(siaara_dict_entry));
     printf("F siaara_dict_entry struct_size %u\n", (unsigned)offsetof(siaara_dict_entry, struct_size));
     printf("F siaara_dict_entry tag %u\n", (unsigned)offsetof(siaara_dict_entry, tag));
@@ -369,6 +377,7 @@ int main(void) {
     printf("F siaara_save_options sequence_lengths %u\n", (unsigned)offsetof(siaara_save_options, sequence_lengths));
     printf("F siaara_save_options group_lengths %u\n", (unsigned)offsetof(siaara_save_options, group_lengths));
     printf("F siaara_save_options odd_lengths %u\n", (unsigned)offsetof(siaara_save_options, odd_lengths));
+    printf("F siaara_save_options allow_incomplete %u\n", (unsigned)offsetof(siaara_save_options, allow_incomplete));
     printf("S siaara_frame_properties %u\n", (unsigned)sizeof(siaara_frame_properties));
     printf("F siaara_frame_properties struct_size %u\n", (unsigned)offsetof(siaara_frame_properties, struct_size));
     printf("F siaara_frame_properties frame %u\n", (unsigned)offsetof(siaara_frame_properties, frame));

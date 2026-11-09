@@ -36,6 +36,9 @@ internal static class C
     public const int SIAARA_ERR_CANCELLED = 14;
     public const int SIAARA_ERR_BUFFER_TOO_SMALL = 15;
     public const int SIAARA_ERR_INTERNAL = 99;
+    public const uint SIAARA_READ_BYTES_SKIPPED = 1u << 0;
+    public const uint SIAARA_READ_INPUT_TRUNCATED = 1u << 1;
+    public const uint SIAARA_READ_HEADER_ONLY = 1u << 2;
     public const int SIAARA_SAMPLES_INTEGER = 0;
     public const int SIAARA_SAMPLES_FLOAT32 = 1;
     public const int SIAARA_SAMPLES_FLOAT64 = 2;
@@ -429,6 +432,19 @@ internal struct siaara_read_options
     public int allow_raw_dataset;
     public int strict;
     public uint max_depth;
+}
+
+/// <summary>siaara_read_report (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_read_report
+{
+    public uint struct_size;
+    public uint loss;
+    public ulong first_loss_offset;
+    public ulong bytes_not_read;
+    public ulong stopped_at_offset;
+    public uint warning_count;
+    public uint reserved0;
 }
 
 /// <summary>siaara_dict_entry (blittable, C layout).</summary>
@@ -946,6 +962,7 @@ internal struct siaara_save_options
     public int sequence_lengths;
     public int group_lengths;
     public int odd_lengths;
+    public int allow_incomplete;
 }
 
 /// <summary>siaara_frame_properties (blittable, C layout).</summary>
@@ -1237,6 +1254,14 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_file_warning_count")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_file_warning_count(nint file, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_warning")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_warning(nint file, uint index, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_read_report")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_read_report(nint file, siaara_read_report* @out);
 
     [LibraryImport(Library, EntryPoint = "siaara_file_save")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -2042,6 +2067,20 @@ internal static unsafe class Native
         @out = default;
         fixed (uint* p_out = &@out)
             return Raw.siaara_file_warning_count(file, p_out);
+    }
+
+    internal static int siaara_file_warning(nint file, uint index, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_file_warning(file, index, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_file_read_report(nint file, ref siaara_read_report @out)
+    {
+        fixed (siaara_read_report* p_out = &@out)
+            return Raw.siaara_file_read_report(file, p_out);
     }
 
     internal static int siaara_file_save(nint file, ReadOnlySpan<byte> utf8_path, ReadOnlySpan<byte> transfer_syntax_uid)

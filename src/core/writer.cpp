@@ -314,6 +314,16 @@ Status write_dataset(const Dataset& ds, std::string_view transfer_syntax_uid,
 }
 
 Status write_part10(const DicomFile& file, std::vector<std::uint8_t>& out, const WriteOptions& opt) {
+    if (!file.complete() && !opt.allow_incomplete) {
+        const char* why = (file.read_loss & DicomFile::kReadBytesSkipped)     ? "input bytes were skipped"
+                          : (file.read_loss & DicomFile::kReadInputTruncated) ? "the input was truncated"
+                                                                              : "it was read header-only";
+        return Status(Errc::Rejected,
+                      std::string("refusing to save a data set that was not read completely (") + why +
+                          "; first at offset " + std::to_string(file.read_loss_offset) +
+                          "): the file would hold less than was read; allow incomplete saves to write it anyway",
+                      file.read_loss_offset);
+    }
     std::string ts_uid = file.transfer_syntax;
     if (ts_uid.empty()) ts_uid = std::string(ts::ExplicitVRLittleEndian);
 

@@ -247,9 +247,26 @@ struct DicomFile {
     std::vector<std::string> warnings;  // lenient-mode findings (never contain PHI)
     // Where a header-only parse stopped (offset of the Pixel Data element), or 0.
     std::uint64_t stopped_at_offset = 0;
+    // Whether the data set holds everything the input held (testing-chat P0-1). Any bit set
+    // means a save would write less than the input, or would turn damaged input into a file
+    // that looks whole: the writer refuses such a file unless WriteOptions::allow_incomplete is
+    // set. The first warning then starts with kWarnParseIncomplete or kWarnInputTruncated.
+    enum ReadLoss : std::uint32_t {
+        kReadBytesSkipped = 1u << 0,    // input bytes that are in no element (lenient skip)
+        kReadInputTruncated = 1u << 1,  // the input ended inside an element, item or sequence
+        kReadHeaderOnly = 1u << 2,      // ReadOptions::stop_before_pixel_data: the rest not read
+    };
+    std::uint32_t read_loss = 0;          // ReadLoss bits
+    std::uint64_t read_loss_offset = 0;   // offset of the first loss (parsed-stream offset)
+    std::uint64_t bytes_not_read = 0;     // input bytes in no element (skipped or after a header-only stop)
+    bool complete() const noexcept { return read_loss == 0; }
     // False for the deflated transfer syntax, where Element::offset counts in the inflated stream.
     bool offsets_are_file_offsets = true;
 };
+
+// Fixed codes that start the first warning of an incomplete read (DicomFile::read_loss).
+inline constexpr std::string_view kWarnParseIncomplete = "PARSE_INCOMPLETE";
+inline constexpr std::string_view kWarnInputTruncated = "INPUT_TRUNCATED";
 
 // Strips trailing spaces/NULs (and leading spaces for VRs where they are insignificant).
 std::string_view trim_value(std::string_view s, VR vr) noexcept;

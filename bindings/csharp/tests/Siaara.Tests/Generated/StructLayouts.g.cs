@@ -27,6 +27,17 @@ internal static class StructLayouts
             r.Add("F siaara_read_options max_depth " + Offset(ref s, ref s.max_depth).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
+            var s = default(siaara_read_report);
+            r.Add("S siaara_read_report " + Unsafe.SizeOf<siaara_read_report>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report loss " + Offset(ref s, ref s.loss).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report first_loss_offset " + Offset(ref s, ref s.first_loss_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report bytes_not_read " + Offset(ref s, ref s.bytes_not_read).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report stopped_at_offset " + Offset(ref s, ref s.stopped_at_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report warning_count " + Offset(ref s, ref s.warning_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_report reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
             var s = default(siaara_dict_entry);
             r.Add("S siaara_dict_entry " + Unsafe.SizeOf<siaara_dict_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dict_entry struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -478,6 +489,7 @@ internal static class StructLayouts
             r.Add("F siaara_save_options sequence_lengths " + Offset(ref s, ref s.sequence_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_save_options group_lengths " + Offset(ref s, ref s.group_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_save_options odd_lengths " + Offset(ref s, ref s.odd_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_save_options allow_incomplete " + Offset(ref s, ref s.allow_incomplete).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_frame_properties);
@@ -700,6 +712,7 @@ internal static class StructLayouts
     {
         var r = new List<string>();
         r.Add("siaara_read_options " + Marshal.SizeOf<siaara_read_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_read_report " + Marshal.SizeOf<siaara_read_report>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_dict_entry " + Marshal.SizeOf<siaara_dict_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_pixel_info " + Marshal.SizeOf<siaara_pixel_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_render_options " + Marshal.SizeOf<siaara_render_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));

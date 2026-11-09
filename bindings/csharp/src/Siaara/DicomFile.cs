@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -30,6 +31,37 @@ public sealed record DicomReadOptions
         strict = Strict ? 1 : 0,
         max_depth = (uint)Math.Max(0, MaxDepth),
     };
+}
+
+/// <summary>What a read left out (siaara_read_report.loss bits).</summary>
+[Flags]
+public enum DicomReadLoss
+{
+    /// <summary>The data set holds everything the input held.</summary>
+    None = 0,
+    /// <summary>Lenient parsing skipped input bytes that are in no element (warning code PARSE_INCOMPLETE).</summary>
+    BytesSkipped = 1,
+    /// <summary>The input ended inside an element, item or sequence (warning code INPUT_TRUNCATED).</summary>
+    InputTruncated = 2,
+    /// <summary>Header-only read (StopBeforePixelData): Pixel Data and what follows were not read.</summary>
+    HeaderOnly = 4,
+}
+
+/// <summary>Whether a read was complete (siaara_read_report).</summary>
+public sealed record DicomReadReport
+{
+    /// <summary>What was left out; None when the read was complete.</summary>
+    public DicomReadLoss Loss { get; init; }
+    /// <summary>True when nothing was left out: only then does <see cref="DicomFile.Save(string, string?)"/> succeed by default.</summary>
+    public bool IsComplete => Loss == DicomReadLoss.None;
+    /// <summary>Offset of the first loss.</summary>
+    public long FirstLossOffset { get; init; }
+    /// <summary>Input bytes that are in no element.</summary>
+    public long BytesNotRead { get; init; }
+    /// <summary>Header-only read: offset of the Pixel Data element, else 0.</summary>
+    public long StoppedAtOffset { get; init; }
+    /// <summary>Number of parse warnings.</summary>
+    public int WarningCount { get; init; }
 }
 
 /// <summary>
@@ -176,15 +208,70 @@ public sealed class DicomFile : IDisposable
         }
     }
 
-    /// <summary>Writes the file. Changing the transfer syntax here never applies lossy compression.</summary>
+    /// <summary>Parse warnings as text. When the read was not complete the first one starts with
+    /// PARSE_INCOMPLETE or INPUT_TRUNCATED.</summary>
+    public IReadOnlyList<string> Warnings
+    {
+        get
+        {
+            using var l = new HandleLease(_handle);
+            Status.Check(Native.siaara_file_warning_count(l.Pointer, out uint n));
+            var list = new string[n];
+            for (int i = 0; i < list.Length; i++)
+            {
+                list[i] = Status.ReadString((F: l.Pointer, I: (uint)i), static (s, b, out nn) => Native.siaara_file_warning(s.F, s.I, b, out nn));
+            }
+            return list;
+        }
+    }
+
+    /// <summary>Whether the read was complete (siaara_file_read_report).</summary>
+    public DicomReadReport ReadReport
+    {
+        get
+        {
+            using var l = new HandleLease(_handle);
+            var r = new siaara_read_report { struct_size = StructSize.Of<siaara_read_report>() };
+            Status.Check(Native.siaara_file_read_report(l.Pointer, ref r));
+            return new DicomReadReport
+            {
+                Loss = (DicomReadLoss)r.loss,
+                FirstLossOffset = (long)r.first_loss_offset,
+                BytesNotRead = (long)r.bytes_not_read,
+                StoppedAtOffset = (long)r.stopped_at_offset,
+                WarningCount = (int)r.warning_count,
+            };
+        }
+    }
+
+    /// <summary>Writes the file. Changing the transfer syntax here never applies lossy compression.
+    /// A file whose read was not complete (<see cref="ReadReport"/>) is refused, so a save never
+    /// silently writes less than was read; use <see cref="Save(string, string?, bool)"/> to write it anyway.</summary>
     /// <param name="path">Destination path.</param>
     /// <param name="transferSyntaxUid">Transfer syntax to write, or null to keep the current one.</param>
-    /// <exception cref="SiaaraException">The file cannot be written.</exception>
+    /// <exception cref="SiaaraException">The file cannot be written, or the read was not complete (Rejected).</exception>
     public void Save(string path, string? transferSyntaxUid = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         using var l = new HandleLease(_handle);
         Status.Check(Native.siaara_file_save(l.Pointer, Status.Utf8(path), Status.Utf8Z(transferSyntaxUid)));
+    }
+
+    /// <summary>Writes the file; <paramref name="allowIncomplete"/> also writes a file whose read was not complete.</summary>
+    /// <param name="path">Destination path.</param>
+    /// <param name="transferSyntaxUid">Transfer syntax to write, or null to keep the current one.</param>
+    /// <param name="allowIncomplete">Write even when <see cref="ReadReport"/> is not complete (the result then holds less than the input).</param>
+    /// <exception cref="SiaaraException">The file cannot be written.</exception>
+    public void Save(string path, string? transferSyntaxUid, bool allowIncomplete)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        using var l = new HandleLease(_handle);
+        var o = new siaara_save_options
+        {
+            struct_size = StructSize.Of<siaara_save_options>(),
+            allow_incomplete = allowIncomplete ? 1 : 0,
+        };
+        Status.Check(Native.siaara_file_save_ex(l.Pointer, Status.Utf8(path), Status.Utf8Z(transferSyntaxUid), in o));
     }
 
     // ------------------------------------------------------------------ pixel data

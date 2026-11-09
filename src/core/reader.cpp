@@ -151,6 +151,7 @@ public:
                         return in_parent ? Status(Errc::Malformed, "value runs past end of parent item or sequence", start, tag)
                                          : Status(Errc::Truncated, "value runs past end of data", start, tag);
                     warn(in_parent ? "value runs past end of parent; clamped" : "value truncated at end of data");
+                    if (!in_parent) note_truncated(start);
                     len = static_cast<std::uint32_t>(limit_ - pos_);
                     vend = limit_;
                 }
@@ -349,6 +350,7 @@ private:
                         return in_parent ? Status(Errc::Malformed, "item runs past end of parent sequence", start, e.tag)
                                          : Status(Errc::Truncated, "item runs past end of data", start, e.tag);
                     warn(in_parent ? "item runs past end of parent; clamped" : "item truncated at end of data");
+                    if (!in_parent) note_truncated(start);
                     iend = limit_;
                 }
                 if (Status s = parse(item, syn, iend, false, depth + 1); !s) return s;
@@ -385,6 +387,7 @@ private:
                          " bytes read as one fragment" +
                          (found ? std::string() : in_parent ? "; no delimiter before the end of the parent, clamped"
                                                             : "; no delimiter before the end of the data"));
+                    if (!found && !in_parent) note_truncated(start);
                     e.fragments.push_back(Bytes());
                     e.fragments.push_back(buf_.sub(start, stop - start));
                     pos_ = found ? stop + 8 : limit_;
@@ -392,6 +395,7 @@ private:
                 }
                 warn("pixel data fragments end without a sequence delimiter; " + std::to_string(limit_ - start) +
                      " trailing bytes ignored" + (in_parent ? " up to the end of the parent" : ""));
+                note_skipped(start, limit_);
                 pos_ = limit_;
                 return Status::ok();
             }
@@ -410,6 +414,7 @@ private:
                 } else {
                     warn(in_parent ? "pixel data fragment of undefined length; clamped at end of parent"
                                    : "last pixel data fragment truncated at end of data");
+                    if (!in_parent) note_truncated(start);
                     if (pos_ < limit_) e.fragments.push_back(buf_.sub(pos_, limit_ - pos_));
                     pos_ = limit_;
                     return Status::ok();
@@ -444,12 +449,35 @@ private:
     Status lenient_or(Errc code, const char* msg) {
         if (opt_.lenient) {
             warn(msg);
+            // Whatever is left of the container is skipped; at the end of the data the input
+            // itself ended early (P0-1: both are recorded, never only warned about).
+            note_skipped(pos_, limit_);
+            if (limit_ == size_) note_truncated(pos_);
             pos_ = limit_;  // the end of the innermost container: forward, never past the parent
             return Status::ok();
         }
         return Status(code, msg, pos_);
     }
 
+    // Records input bytes [from, to) that end up in no element (DicomFile::kReadBytesSkipped).
+    void note_skipped(std::size_t from, std::size_t to) noexcept {
+        if (to <= from) return;
+        note_loss(DicomFile::kReadBytesSkipped, from);
+        bytes_skipped_ += to - from;
+    }
+    // The input ended inside an element, item or sequence starting at `at`.
+    void note_truncated(std::size_t at) noexcept { note_loss(DicomFile::kReadInputTruncated, at); }
+    void note_loss(std::uint32_t bit, std::size_t at) noexcept {
+        if (loss_ == 0 || at < loss_offset_) loss_offset_ = at;
+        loss_ |= bit;
+    }
+
+public:
+    std::uint32_t loss() const noexcept { return loss_; }
+    std::uint64_t loss_offset() const noexcept { return loss_offset_; }
+    std::uint64_t bytes_skipped() const noexcept { return bytes_skipped_; }
+
+private:
     void warn(std::string msg) {
         if (warnings_ && warnings_->size() < 1000)
             warnings_->push_back(std::move(msg) + " at offset " + std::to_string(pos_));
@@ -466,6 +494,9 @@ private:
     bool stopped_at_pixels_ = false;
     std::uint64_t stop_offset_ = 0;
     std::uint16_t bits_allocated_ = 0;
+    std::uint32_t loss_ = 0;
+    std::uint64_t loss_offset_ = 0;
+    std::uint64_t bytes_skipped_ = 0;
 };
 
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {
@@ -487,6 +518,39 @@ Syntax guess_syntax(const std::uint8_t* p, std::size_t n) {
     const std::uint16_t g_be = load_be16(p);
     const bool big = explicit_vr && g_le > 0x00FF && g_be <= 0x00FF;
     return {explicit_vr, big};
+}
+
+// Copies what the parser lost into `out` (P0-1). `total` is the size of the parsed stream.
+void record_loss(const Parser& p, std::size_t total, DicomFile& out) {
+    if (p.loss()) {
+        if (out.read_loss == 0 || p.loss_offset() < out.read_loss_offset) out.read_loss_offset = p.loss_offset();
+        out.read_loss |= p.loss();
+        out.bytes_not_read += p.bytes_skipped();
+    }
+    if (p.stopped_at_pixels()) {
+        if (out.read_loss == 0 || p.stop_offset() < out.read_loss_offset) out.read_loss_offset = p.stop_offset();
+        out.read_loss |= DicomFile::kReadHeaderOnly;
+        if (total > p.stop_offset()) out.bytes_not_read += total - p.stop_offset();
+    }
+}
+
+// Puts one summary warning with a fixed code first in the list, so an incomplete read is the
+// first thing a caller sees (P0-1).
+void flag_incomplete(DicomFile& out) {
+    std::string w;
+    const std::uint32_t lost = out.read_loss & ~static_cast<std::uint32_t>(DicomFile::kReadHeaderOnly);
+    if (lost == 0) return;  // a header-only read is the caller's own choice: no warning
+    const std::string at = " (first at offset " + std::to_string(out.read_loss_offset) + ")";
+    if (out.read_loss & DicomFile::kReadBytesSkipped) {
+        w = std::string(kWarnParseIncomplete) + ": parsing skipped " + std::to_string(out.bytes_not_read) +
+            " input bytes that are in no element" + at;
+    } else {
+        w = std::string(kWarnInputTruncated) + ": the data ends inside an element, item or sequence" + at;
+    }
+    if ((out.read_loss & DicomFile::kReadBytesSkipped) && (out.read_loss & DicomFile::kReadInputTruncated))
+        w += "; the data also ends early (" + std::string(kWarnInputTruncated) + ")";
+    w += "; a save of this data set is refused unless incomplete saves are allowed";
+    out.warnings.insert(out.warnings.begin(), std::move(w));
 }
 
 Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
@@ -511,12 +575,14 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
         Parser p(inflated, opt, &out.warnings);
         Status s = p.parse(out.dataset, *syn, inflated.size(), false, 0);
         out.stopped_at_offset = p.stop_offset();
+        record_loss(p, inflated.size(), out);
         return s;
     }
     Parser p(data, opt, &out.warnings);
     p.seek(start);
     Status s = p.parse(out.dataset, *syn, data.size(), false, 0);
     out.stopped_at_offset = p.stop_offset();
+    record_loss(p, data.size(), out);
     return s;
 }
 
@@ -549,6 +615,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
         if (n >= 8 && load_le16(p) == 0x0002) {
             Parser mp(data, opt, &out.warnings);
             if (Status s = mp.parse(out.meta, Syntax{true, false}, n, false, 0, 0x0002); !s) return s;
+            record_loss(mp, n, out);
             pos = mp.pos();
             out.meta_as_read = !out.meta.empty();
             if (auto t = out.meta.get_string(tags::TransferSyntaxUID)) {
@@ -560,6 +627,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
         }
         if (Status s = parse_body(data, pos, uid, opt, out); !s) return s;
         if (out.transfer_syntax.empty()) out.transfer_syntax = std::string(uid);
+        flag_incomplete(out);
         return out;
     }
 
@@ -568,6 +636,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
         Parser mp(data, opt, &out.warnings);
         mp.seek(pos);
         if (Status s = mp.parse(out.meta, Syntax{true, false}, n, false, 0, 0x0002); !s) return s;
+        record_loss(mp, n, out);
         pos = mp.pos();
         out.meta_as_read = !out.meta.empty();
     }
@@ -582,6 +651,7 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
     }
     out.transfer_syntax = *ts_uid;
     if (Status s = parse_body(data, pos, out.transfer_syntax, opt, out); !s) return s;
+    flag_incomplete(out);
     return out;
 }
 

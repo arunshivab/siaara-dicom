@@ -148,6 +148,11 @@ Status to_write_options(const siaara_save_options* o, siaara::WriteOptions& w) {
             default: return Status(Errc::InvalidArgument, "unknown odd_lengths");
         }
     }
+    if (has(offsetof(siaara_save_options, allow_incomplete) + sizeof(int32_t))) {
+        if (o->allow_incomplete != 0 && o->allow_incomplete != 1)
+            return Status(Errc::InvalidArgument, "allow_incomplete must be 0 or 1");
+        w.allow_incomplete = o->allow_incomplete == 1;
+    }
     return Status::ok();
 }
 
@@ -246,6 +251,35 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file
     return guarded([&]() -> siaara_status {
         if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
         *out = static_cast<uint32_t>(file->file.warnings.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file, uint32_t index, char* buf,
+                                                         size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        if (index >= file->file.warnings.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        return copy_out(file->file.warnings[index], buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_read_report(const siaara_file* file, siaara_read_report* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        if (out->struct_size < sizeof(uint32_t) * 2)
+            return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        siaara_read_report r{};
+        r.struct_size = out->struct_size < sizeof r ? out->struct_size : static_cast<uint32_t>(sizeof r);
+        const siaara::DicomFile& f = file->file;
+        r.loss = (f.read_loss & siaara::DicomFile::kReadBytesSkipped ? static_cast<uint32_t>(SIAARA_READ_BYTES_SKIPPED) : 0u) |
+                 (f.read_loss & siaara::DicomFile::kReadInputTruncated ? static_cast<uint32_t>(SIAARA_READ_INPUT_TRUNCATED) : 0u) |
+                 (f.read_loss & siaara::DicomFile::kReadHeaderOnly ? static_cast<uint32_t>(SIAARA_READ_HEADER_ONLY) : 0u);
+        r.first_loss_offset = f.read_loss_offset;
+        r.bytes_not_read = f.bytes_not_read;
+        r.stopped_at_offset = f.stopped_at_offset;
+        r.warning_count = static_cast<uint32_t>(f.warnings.size());
+        std::memcpy(out, &r, r.struct_size);
         return ok();
     });
 }
