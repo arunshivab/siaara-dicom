@@ -270,6 +270,40 @@ public enum SuvWarnings
     PerImageScanTime = C.SIAARA_SUV_PER_IMAGE_SCAN_TIME,
 }
 
+/// <summary>Source of an SUV input time (SIAARA_SUV_SRC_*).</summary>
+public enum SuvTimeSource
+{
+    /// <summary>Missing (see the Missing* warnings).</summary>
+    None = 0,
+    /// <summary>Series Date/Time.</summary>
+    Series = 1,
+    /// <summary>This image's Acquisition Date/Time.</summary>
+    Acquisition = 2,
+    /// <summary>Earliest acquisition of the series.</summary>
+    EarliestAcquisition = 3,
+    /// <summary>Given by the caller.</summary>
+    Caller = 4,
+    /// <summary>Decay Correction ADMIN: no decay.</summary>
+    Administration = 5,
+    /// <summary>Radiopharmaceutical Start DateTime.</summary>
+    StartDateTime = 6,
+    /// <summary>Radiopharmaceutical Start Time with the scan date.</summary>
+    StartTimeWithScanDate = 7,
+}
+
+/// <summary>Decay Correction (0054,1102) as found.</summary>
+public enum SuvDecayCorrection
+{
+    /// <summary>Absent or not one of the values below.</summary>
+    Unknown = 0,
+    /// <summary>START.</summary>
+    Start = 1,
+    /// <summary>ADMIN.</summary>
+    Admin = 2,
+    /// <summary>NONE.</summary>
+    None = 3,
+}
+
 /// <summary>
 /// SUV factors of a PET frame (siaara_suv): SUV = modality value (Bq/ml) x factor. A factor is null
 /// when it cannot be computed.
@@ -292,6 +326,18 @@ public sealed record SuvFactors
     public double DecaySeconds { get; init; }
     /// <summary>Decayed dose in Bq; 0 when unknown.</summary>
     public double DecayedDoseBq { get; init; }
+    /// <summary>Where the decay reference (scan) time came from (F11).</summary>
+    public SuvTimeSource ScanTimeSource { get; init; }
+    /// <summary>Where the injection time came from.</summary>
+    public SuvTimeSource InjectionTimeSource { get; init; }
+    /// <summary>Decay Correction (0054,1102) as found.</summary>
+    public SuvDecayCorrection DecayCorrection { get; init; }
+    /// <summary>Patient weight used (kg); null when missing.</summary>
+    public double? WeightKg { get; init; }
+    /// <summary>Injected dose used (Bq); null when missing.</summary>
+    public double? InjectedDoseBq { get; init; }
+    /// <summary>Half-life used (s); null when missing.</summary>
+    public double? HalfLifeSeconds { get; init; }
 
     /// <summary>Computes the factors (succeeds even when none can be computed: check BodyWeight and Warnings).</summary>
     /// <param name="file">The PET file.</param>
@@ -315,6 +361,12 @@ public sealed record SuvFactors
             BodySurfaceArea = s.has_bsa != 0 ? s.bsa : null,
             IdealBodyWeight = s.has_ibw != 0 ? s.ibw : null,
             DecaySeconds = s.decay_seconds,
+            ScanTimeSource = (SuvTimeSource)s.scan_time_source,
+            InjectionTimeSource = (SuvTimeSource)s.injection_time_source,
+            DecayCorrection = (SuvDecayCorrection)s.decay_correction,
+            WeightKg = s.weight_kg > 0 ? s.weight_kg : null,
+            InjectedDoseBq = s.injected_dose_bq > 0 ? s.injected_dose_bq : null,
+            HalfLifeSeconds = s.half_life_s > 0 ? s.half_life_s : null,
             DecayedDoseBq = s.decayed_dose_bq,
         };
     }

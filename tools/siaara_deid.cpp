@@ -22,13 +22,14 @@
 #include "core/writer.hpp"
 #include "deid/deid.hpp"
 #include "deid/sha256.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 
 namespace {
 
 void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-deid [options] <input file|folder> <output folder>\n"
                  "  --key-file F            secret key (raw bytes, >= 16) for UIDs, IDs and date offsets;\n"
                  "                          without it a random key is used (results not repeatable)\n"
@@ -67,6 +68,10 @@ bool parse_region(const char* s, deid::PixelRegion& r) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     deid::Options opt;
     std::vector<std::uint8_t> key;
     std::vector<std::string> positional;

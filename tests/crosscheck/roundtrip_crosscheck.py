@@ -10,6 +10,9 @@ Files that cannot round-trip by design are counted separately:
   raw      no preamble / "DICM" (the writer always writes Part 10 with file meta)
   deflate  deflated transfer syntax (the data set is re-compressed)
   repaired the reader reported lenient-mode repairs (warnings)
+  incomplete the read was not complete (siaara_file_read_report: skipped bytes or truncated
+           input); the default save must refuse it (SIAARA_ERR_REJECTED, never a shorter file),
+           which is checked, and a save with allow_incomplete = 1 must succeed
 """
 import ctypes
 import os
@@ -37,6 +40,24 @@ lib.siaara_file_warning_count.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes
 lib.siaara_file_transfer_syntax.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 lib.siaara_last_error_message.restype = ctypes.c_char_p
 
+
+class ReadReport(ctypes.Structure):
+    _fields_ = [("struct_size", ctypes.c_uint32), ("loss", ctypes.c_uint32), ("first_loss_offset", ctypes.c_uint64),
+                ("bytes_not_read", ctypes.c_uint64), ("stopped_at_offset", ctypes.c_uint64),
+                ("warning_count", ctypes.c_uint32), ("reserved0", ctypes.c_uint32)]
+
+
+class SaveOptions(ctypes.Structure):
+    _fields_ = [("struct_size", ctypes.c_uint32), ("sequence_lengths", ctypes.c_int32), ("group_lengths", ctypes.c_int32),
+                ("odd_lengths", ctypes.c_int32), ("allow_incomplete", ctypes.c_int32)]
+
+
+has_report = hasattr(lib, "siaara_file_read_report")
+if has_report:
+    lib.siaara_file_read_report.argtypes = [ctypes.c_void_p, ctypes.POINTER(ReadReport)]
+    lib.siaara_file_read_report.restype = ctypes.c_int32
+SIAARA_ERR_REJECTED = 13
+
 paths = []
 for root, _, names in os.walk(folder):
     for n in sorted(names):
@@ -46,7 +67,8 @@ for root, _, names in os.walk(folder):
 paths.sort()
 
 out_path = os.path.join(tempfile.mkdtemp(prefix="siaara_rt_"), "out.dcm").encode()
-counts = {"identical": 0, "differ": 0, "raw": 0, "deflate": 0, "repaired": 0, "unopened": 0, "save_failed": 0}
+counts = {"identical": 0, "differ": 0, "raw": 0, "deflate": 0, "repaired": 0, "incomplete": 0, "unopened": 0,
+          "save_failed": 0}
 differ = []
 for p in paths:
     with open(p, "rb") as fh:
@@ -62,6 +84,25 @@ for p in paths:
     need = ctypes.c_size_t()
     lib.siaara_file_transfer_syntax(f, tsbuf, 128, ctypes.byref(need))
     ts = tsbuf.value.decode()
+    rep = ReadReport(struct_size=ctypes.sizeof(ReadReport))
+    if has_report and lib.siaara_file_read_report(f, ctypes.byref(rep)) == 0 and (rep.loss & 3):
+        # Not read completely: the default save must refuse, the explicit option must write.
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        rc = save(f, out_path)
+        refused = rc == SIAARA_ERR_REJECTED and not os.path.exists(out_path)
+        opt = SaveOptions(struct_size=ctypes.sizeof(SaveOptions), allow_incomplete=1)
+        rc2 = lib.siaara_file_save_ex(f, out_path, len(out_path), None, ctypes.byref(opt))
+        lib.siaara_file_free(f)
+        if refused and rc2 == 0:
+            counts["incomplete"] += 1
+            differ.append((p, f"incomplete (loss {rep.loss}, first at {rep.first_loss_offset}): save refused by default"))
+        else:
+            counts["save_failed"] += 1
+            differ.append((p, f"save failed: incomplete read but default save rc {rc}, allow_incomplete rc {rc2}"))
+        continue
     rc = save(f, out_path)
     msg = lib.siaara_last_error_message().decode(errors="replace") if rc else ""
     lib.siaara_file_free(f)

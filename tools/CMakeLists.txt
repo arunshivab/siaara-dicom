@@ -28,3 +28,11 @@ endforeach()
 install(TARGETS siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
         siaara-findscu siaara-movescu siaara-getscu siaara-storescu siaara-repair
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# F16: every tool prints its usage to stdout and exits 0 for --help.
+if(SIAARA_BUILD_TESTS)
+  foreach(t siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
+            siaara-findscu siaara-movescu siaara-getscu siaara-storescu siaara-repair)
+    add_test(NAME help_${t} COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:${t}> -DNAME=${t}
+                                     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_help.cmake)
+  endforeach()
+endif()

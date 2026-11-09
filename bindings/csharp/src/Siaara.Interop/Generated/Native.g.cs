@@ -36,6 +36,12 @@ internal static class C
     public const int SIAARA_ERR_CANCELLED = 14;
     public const int SIAARA_ERR_BUFFER_TOO_SMALL = 15;
     public const int SIAARA_ERR_INTERNAL = 99;
+    public const int SIAARA_FILE_WARNING_GENERAL = 0;
+    public const int SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1;
+    public const int SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2;
+    public const uint SIAARA_READ_BYTES_SKIPPED = 1u << 0;
+    public const uint SIAARA_READ_INPUT_TRUNCATED = 1u << 1;
+    public const uint SIAARA_READ_HEADER_ONLY = 1u << 2;
     public const int SIAARA_SAMPLES_INTEGER = 0;
     public const int SIAARA_SAMPLES_FLOAT32 = 1;
     public const int SIAARA_SAMPLES_FLOAT64 = 2;
@@ -168,6 +174,18 @@ internal static class C
     public const int SIAARA_SUV_TIMEZONE_MISMATCH = 1 << 20;
     public const int SIAARA_SUV_VENDOR_FACTOR_USED = 1 << 21;
     public const int SIAARA_SUV_PER_IMAGE_SCAN_TIME = 1 << 22;
+    public const int SIAARA_SUV_SRC_NONE = 0;
+    public const int SIAARA_SUV_SRC_SERIES = 1;
+    public const int SIAARA_SUV_SRC_ACQUISITION = 2;
+    public const int SIAARA_SUV_SRC_EARLIEST_ACQUISITION = 3;
+    public const int SIAARA_SUV_SRC_CALLER = 4;
+    public const int SIAARA_SUV_SRC_ADMINISTRATION = 5;
+    public const int SIAARA_SUV_SRC_START_DATETIME = 6;
+    public const int SIAARA_SUV_SRC_START_TIME_SCAN_DATE = 7;
+    public const int SIAARA_SUV_DECAY_UNKNOWN = 0;
+    public const int SIAARA_SUV_DECAY_START = 1;
+    public const int SIAARA_SUV_DECAY_ADMIN = 2;
+    public const int SIAARA_SUV_DECAY_NONE = 3;
     public const int SIAARA_ROI_RECTANGLE = 0;
     public const int SIAARA_ROI_ELLIPSE = 1;
     public const int SIAARA_ROI_CIRCLE = 2;
@@ -222,6 +240,9 @@ internal static class C
     public const int SIAARA_SEG_BINARY = 0;
     public const int SIAARA_SEG_FRACTIONAL = 1;
     public const int SIAARA_SEG_LABELMAP = 2;
+    public const int SIAARA_GFOV_NONE = 0;
+    public const int SIAARA_GFOV_RELATIVE = 1;
+    public const int SIAARA_GFOV_ABSOLUTE = 2;
     public const int SIAARA_VOXEL_AUTO = 0;
     public const int SIAARA_VOXEL_INT16 = 1;
     public const int SIAARA_VOXEL_FLOAT32 = 2;
@@ -298,6 +319,7 @@ internal static class C
     public const int SIAARA_FRAMEF_SHUTTER_BITMAP = 1 << 9;
     public const int SIAARA_FRAMEF_FLOAT = 1 << 10;
     public const int SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11;
+    public const int SIAARA_FRAMEF_DOSE_GRID_SCALING = 1 << 12;
     public const int SIAARA_VOI_IDENTITY = 3;
     public const int SIAARA_VOI_LINEAR = 0;
     public const int SIAARA_VOI_LINEAR_EXACT = 1;
@@ -429,6 +451,19 @@ internal struct siaara_read_options
     public int allow_raw_dataset;
     public int strict;
     public uint max_depth;
+}
+
+/// <summary>siaara_read_report (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_read_report
+{
+    public uint struct_size;
+    public uint loss;
+    public ulong first_loss_offset;
+    public ulong bytes_not_read;
+    public ulong stopped_at_offset;
+    public uint warning_count;
+    public uint reserved0;
 }
 
 /// <summary>siaara_dict_entry (blittable, C layout).</summary>
@@ -756,6 +791,13 @@ internal struct siaara_suv
     public double ibw;
     public double decay_seconds;
     public double decayed_dose_bq;
+    public int scan_time_source;
+    public int injection_time_source;
+    public int decay_correction;
+    public int reserved1;
+    public double weight_kg;
+    public double injected_dose_bq;
+    public double half_life_s;
 }
 
 /// <summary>siaara_roi_stats (blittable, C layout).</summary>
@@ -821,6 +863,23 @@ internal struct siaara_rt_roi_info
     public byte reserved0;
 }
 
+/// <summary>siaara_rt_dose_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_rt_dose_info
+{
+    public uint struct_size;
+    public int is_rt_dose;
+    public int has_dose_grid_scaling;
+    public int grid_frame_offset_form;
+    public double dose_grid_scaling;
+    public uint grid_frame_offset_count;
+    public uint reserved0;
+    public FixedArray20OfByte dose_units;
+    public FixedArray20OfByte dose_type;
+    public FixedArray20OfByte dose_summation_type;
+    public FixedArray4OfByte reserved1;
+}
+
 /// <summary>siaara_transcode_params (blittable, C layout).</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct siaara_transcode_params
@@ -833,6 +892,7 @@ internal struct siaara_transcode_params
     public int predictor;
     public int chroma_subsampling;
     public int offset_table;
+    public int keep_uid_on_lossy;
 }
 
 /// <summary>siaara_volume_options (blittable, C layout).</summary>
@@ -946,6 +1006,7 @@ internal struct siaara_save_options
     public int sequence_lengths;
     public int group_lengths;
     public int odd_lengths;
+    public int allow_incomplete;
 }
 
 /// <summary>siaara_frame_properties (blittable, C layout).</summary>
@@ -1237,6 +1298,18 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_file_warning_count")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_file_warning_count(nint file, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_warning")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_warning(nint file, uint index, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_warning_code")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_warning_code(nint file, uint index, int* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_read_report")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_read_report(nint file, siaara_read_report* @out);
 
     [LibraryImport(Library, EntryPoint = "siaara_file_save")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -1597,6 +1670,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_rtstruct_contour_points")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_rtstruct_contour_points(nint rt, uint roi, uint contour, double* buf, nuint cap, nuint* needed, int* closed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_rt_dose_info_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_rt_dose_info_get(nint ds, siaara_rt_dose_info* @out);
 
     [LibraryImport(Library, EntryPoint = "siaara_file_transcode")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -2042,6 +2119,27 @@ internal static unsafe class Native
         @out = default;
         fixed (uint* p_out = &@out)
             return Raw.siaara_file_warning_count(file, p_out);
+    }
+
+    internal static int siaara_file_warning(nint file, uint index, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_file_warning(file, index, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_file_warning_code(nint file, uint index, out int @out)
+    {
+        @out = default;
+        fixed (int* p_out = &@out)
+            return Raw.siaara_file_warning_code(file, index, p_out);
+    }
+
+    internal static int siaara_file_read_report(nint file, ref siaara_read_report @out)
+    {
+        fixed (siaara_read_report* p_out = &@out)
+            return Raw.siaara_file_read_report(file, p_out);
     }
 
     internal static int siaara_file_save(nint file, ReadOnlySpan<byte> utf8_path, ReadOnlySpan<byte> transfer_syntax_uid)
@@ -2724,6 +2822,12 @@ internal static unsafe class Native
         fixed (nuint* p_needed = &needed)
         fixed (int* p_closed = &closed)
             return Raw.siaara_rtstruct_contour_points(rt, roi, contour, (double*)p_buf, (nuint)buf.Length, p_needed, p_closed);
+    }
+
+    internal static int siaara_rt_dose_info_get(nint ds, ref siaara_rt_dose_info @out)
+    {
+        fixed (siaara_rt_dose_info* p_out = &@out)
+            return Raw.siaara_rt_dose_info_get(ds, p_out);
     }
 
     internal static int siaara_file_transcode(nint file, ReadOnlySpan<byte> ts_uid, in siaara_transcode_params @params)

@@ -581,6 +581,10 @@ Dataset make_worklist_query(std::string_view station_ae, std::string_view modali
     (void)sps.set_string(kSpsDescription, VR::LO, "");
     (void)sps.set_string(kSpsId, VR::SH, "");
     Dataset q;
+    // Asked for, so an SCP that answers in e.g. ISO_IR 100 says so and Latin-1 names decode
+    // correctly; when it returns none the responses are read with the default repertoire
+    // (flagged as before). Testing-chat worklist finding.
+    (void)q.set_string(0x00080005, VR::CS, "");
     (void)q.set_string(kAccessionNumber, VR::SH, "");
     (void)q.set_string(tags::PatientName, VR::PN, patient_name);
     (void)q.set_string(tags::PatientID, VR::LO, patient_id);

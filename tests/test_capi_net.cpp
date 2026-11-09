@@ -433,6 +433,26 @@ TEST_CASE("capi/net: C-GET into a store and a folder, C-MOVE to the Storage SCP"
     CHECK(dest.instances() == 3);
     CHECK(siaara_dimse_move(&p, SIAARA_QR_STUDY_ROOT, id, "NOWHERE", nullptr, nullptr, nullptr, &r) == SIAARA_ERR_REJECTED);
     CHECK(r.status == 0xA801);  // move destination unknown
+
+    // Cancelled through the token after two instances (testing2: the result said completed 0,
+    // status 0x0000 although instances had arrived): the counts so far and status Cancel.
+    struct CancelAfter {
+        siaara_cancel* token;
+        static int32_t SIAARA_CALL cb(void* user, const siaara_dimse_result* pr) {
+            if (pr->completed >= 2) (void)siaara_cancel_set(static_cast<CancelAfter*>(user)->token);
+            return 0;
+        }
+    } ca{nullptr};
+    REQUIRE(siaara_cancel_create(&ca.token) == SIAARA_OK);
+    StoreOpen got2(dir / "got2");
+    REQUIRE(got2.store);
+    go.store = got2.store;
+    r = result();
+    CHECK(siaara_dimse_get(&p, SIAARA_QR_STUDY_ROOT, id, &go, ca.token, CancelAfter::cb, &ca, &r) == SIAARA_ERR_CANCELLED);
+    CHECK(r.status == 0xFE00);
+    CHECK(r.completed >= 2);
+    CHECK(r.completed == static_cast<uint32_t>(got2.instances()));
+    siaara_cancel_free(ca.token);
     srv.stop();
     siaara_scp_free(scp);
     siaara_file_free(idf);

@@ -112,5 +112,18 @@ internal static class DeidTranscodeTests
             System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(g.DecodeFrame(0)).CopyTo(back);
             Check(Math.Abs(back[1] - 1074) <= 2);
         });
+
+        Case("transcode: lossy makes a new SOP Instance UID unless KeepUidOnLossy (owner decision 2026-11-10)", () =>
+        {
+            using DicomFile f = Builders.Rgb(16, 16);
+            f.Dataset.SetRawString(DicomTags.SOPInstanceUID, "UI", "2.25.4242");
+            f.Transcode(DicomTransferSyntaxes.JPEGBaseline8Bit, new TranscodeParameters { AllowLossy = true });
+            Check(f.Dataset.GetString(DicomTags.SOPInstanceUID) != "2.25.4242");
+            CheckEq(f.FileMetaInformation.GetString(new DicomTag(0x00020003)), f.Dataset.GetString(DicomTags.SOPInstanceUID));
+            using DicomFile g = Builders.Rgb(16, 16);
+            g.Dataset.SetRawString(DicomTags.SOPInstanceUID, "UI", "2.25.4243");
+            g.Transcode(DicomTransferSyntaxes.JPEGBaseline8Bit, new TranscodeParameters { AllowLossy = true, KeepUidOnLossy = true });
+            CheckEq(g.Dataset.GetString(DicomTags.SOPInstanceUID), "2.25.4243");
+        });
     }
 }

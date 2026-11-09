@@ -18,6 +18,7 @@
 #include "core/transfer_syntax.hpp"
 #include "net/scp.hpp"
 #include "net/tls.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 using namespace siaara::net;
@@ -102,7 +103,7 @@ volatile std::sig_atomic_t g_stop = 0;
 void on_signal(int) { g_stop = 1; }
 
 void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-storescp [options] port\n"
                  "  -aet AE            AE title (default SIAARA_SCP)\n"
                  "  -od DIR            write received instances to DIR (default: do not write)\n"
@@ -116,10 +117,10 @@ void usage() {
                  "  --port-file PATH   write the listening port to PATH (useful with port 0)\n"
                  "  --qr-dir DIR       serve C-FIND/C-GET/C-MOVE from the DICOM files in DIR\n"
                  "  --move-dest AE=HOST:PORT  C-MOVE destination (repeatable)\n"
-                 "  -v                 log association and TLS events to stderr\n"
+                 "  -v                 log association and TLS events to siaara_tools::usage_stream()\n"
                  "  --tls-require-client-cert  mutual TLS: refuse clients without a valid certificate\n");
-    std::fputs(kTlsUsage, stderr);
-    std::fputs("  (the server needs --tls-cert/--tls-key, --tls-p12 or --tls-os-identity)\n", stderr);
+    std::fputs(kTlsUsage, siaara_tools::usage_stream());
+    std::fputs("  (the server needs --tls-cert/--tls-key, --tls-p12 or --tls-os-identity)\n", siaara_tools::usage_stream());
 }
 
 bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
@@ -227,6 +228,10 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     ScpConfig cfg;
     std::string out_dir, port_file, qr_dir;
     bool all_ts = false, verbose = false;

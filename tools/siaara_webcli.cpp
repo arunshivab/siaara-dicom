@@ -11,6 +11,7 @@
 #include "net/tls.hpp"
 #include "web/client.hpp"
 #include "web/dicom_json.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 using namespace siaara::web;
@@ -103,8 +104,8 @@ int usage() {
         "  stow <url> [--study UID] FILE...\n"
         "options: --token TOKEN (bearer) | --basic USER:PASSWORD, --timeout MS\n"
         "https:// URLs use TLS; --tls-name NAME sets the name the server certificate must carry.\n",
-        stderr);
-    std::fputs(kTlsUsage, stderr);
+        siaara_tools::usage_stream());
+    std::fputs(kTlsUsage, siaara_tools::usage_stream());
     return 2;
 }
 
@@ -132,6 +133,10 @@ Status write_out(const std::string& path, const std::string& data) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     std::vector<std::string> pos;
     std::string token, basic, out, study_opt, series_opt;
     std::vector<std::string> tss, includes;

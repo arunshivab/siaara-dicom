@@ -75,6 +75,26 @@ void result_init(siaara_dimse_result* r) {
 
 bool result_ok(const siaara_dimse_result* r) { return !r || r->struct_size >= sizeof(siaara_dimse_result); }
 
+// A retrieve that ended without the peer's final response (cancel token: the association was
+// interrupted). The result keeps the counts known so far (the last pending response, and for
+// C-GET the instances this side stored), with status Cancel (FE00) when it was cancelled,
+// instead of all zeros (testing-chat: "completed=0, status 0x0000 although 3 instances arrived").
+void result_partial(siaara_dimse_result* r, const siaara_dimse_result& last, bool have_last, bool cancelled,
+                    uint32_t stored_ok, uint32_t stored_failed, uint32_t stored_warning) {
+    if (!r) return;
+    if (have_last) {
+        r->status = last.status;
+        r->completed = last.completed;
+        r->failed = last.failed;
+        r->warning = last.warning;
+        r->remaining = last.remaining;
+    }
+    r->completed = std::max(r->completed, stored_ok);
+    r->failed = std::max(r->failed, stored_failed);
+    r->warning = std::max(r->warning, stored_warning);
+    if (cancelled) r->status = 0xFE00;
+}
+
 const std::vector<std::string>& compressed_syntaxes() {
     static const std::vector<std::string> v = {
         "1.2.840.10008.1.2.1.99", "1.2.840.10008.1.2.5",    "1.2.840.10008.1.2.4.50", "1.2.840.10008.1.2.4.51",
@@ -476,9 +496,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* 
             capi::CancelScope scope(cancel, interrupter(scu));
             siaara_dimse_result prog{};
             prog.struct_size = sizeof prog;
+            bool have_prog = false;
             auto r = scu.move(cls, dest, *ds_cast(identifier), [&](const net::RetrieveProgress& p) {
-                if (scope.cancelled()) return false;
                 fill_progress(prog, p);
+                have_prog = true;
+                if (scope.cancelled()) return false;
                 if (cb && cb(user, &prog) != 0) {
                     stopped = true;
                     return false;
@@ -488,6 +510,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* 
             if (!r) {
                 out = op_error(r.error(), scope);
                 aborted = true;
+                result_partial(result, prog, have_prog, stopped || scope.cancelled(), 0, 0, 0);
             } else {
                 if (result) {
                     fill_progress(*result, *r);
@@ -544,6 +567,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
             capi::CancelScope scope(cancel, interrupter(scu));
             siaara_dimse_result prog{};
             prog.struct_size = sizeof prog;
+            bool have_prog = false;
+            uint32_t stored_ok = 0, stored_failed = 0, stored_warning = 0;
             auto r = scu.get(
                 cls, *ds_cast(identifier),
                 [&](const net::StoreRequest& rq) -> std::uint16_t {
@@ -552,11 +577,17 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
                     const std::uint16_t s = keep_instance(rq, options->store, policy, folder, nullptr, err);
                     if (s != net::dimse_status::Success)
                         capi::log(SIAARA_LOG_WARNING, true, "C-GET: instance " + rq.sop_instance_uid + " not kept: " + err);
+                    switch (net::classify_status(s)) {
+                        case net::StatusClass::Success: ++stored_ok; break;
+                        case net::StatusClass::Warning: ++stored_warning; break;
+                        default: ++stored_failed; break;
+                    }
                     return s;
                 },
                 [&](const net::RetrieveProgress& p) {
-                    if (scope.cancelled()) return false;
                     fill_progress(prog, p);
+                    have_prog = true;
+                    if (scope.cancelled()) return false;
                     if (cb && cb(user, &prog) != 0) {
                         stopped = true;
                         return false;
@@ -566,8 +597,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
             if (!r) {
                 out = op_error(r.error(), scope);
                 aborted = true;
+                result_partial(result, prog, have_prog, stopped || scope.cancelled(), stored_ok, stored_failed,
+                               stored_warning);
             } else {
-                if (result) fill_progress(*result, *r);
+                if (result) {
+                    fill_progress(*result, *r);
+                    // Instances this side stored count even when the peer's final response omits them.
+                    result->completed = std::max(result->completed, stored_ok);
+                }
                 out = stopped || scope.cancelled() ? fail(Errc::Cancelled, "C-GET cancelled")
                                                    : dimse_outcome(r->status, "C-GET");
                 if (out == SIAARA_OK && r->failed) out = fail(Errc::Rejected, "C-GET: some sub-operations failed");

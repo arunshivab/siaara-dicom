@@ -148,6 +148,11 @@ Status to_write_options(const siaara_save_options* o, siaara::WriteOptions& w) {
             default: return Status(Errc::InvalidArgument, "unknown odd_lengths");
         }
     }
+    if (has(offsetof(siaara_save_options, allow_incomplete) + sizeof(int32_t))) {
+        if (o->allow_incomplete != 0 && o->allow_incomplete != 1)
+            return Status(Errc::InvalidArgument, "allow_incomplete must be 0 or 1");
+        w.allow_incomplete = o->allow_incomplete == 1;
+    }
     return Status::ok();
 }
 
@@ -246,6 +251,48 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file
     return guarded([&]() -> siaara_status {
         if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
         *out = static_cast<uint32_t>(file->file.warnings.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file, uint32_t index, char* buf,
+                                                         size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        if (index >= file->file.warnings.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        return copy_out(file->file.warnings[index], buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file* file, uint32_t index, int32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        if (index >= file->file.warnings.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        const std::string& w = file->file.warnings[index];
+        const auto starts = [&](std::string_view p) { return w.compare(0, p.size(), p) == 0; };
+        *out = starts(siaara::kWarnParseIncomplete)  ? SIAARA_FILE_WARNING_PARSE_INCOMPLETE
+               : starts(siaara::kWarnInputTruncated) ? SIAARA_FILE_WARNING_INPUT_TRUNCATED
+                                                     : SIAARA_FILE_WARNING_GENERAL;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_read_report(const siaara_file* file, siaara_read_report* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        if (out->struct_size < sizeof(uint32_t) * 2)
+            return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        siaara_read_report r{};
+        r.struct_size = out->struct_size < sizeof r ? out->struct_size : static_cast<uint32_t>(sizeof r);
+        const siaara::DicomFile& f = file->file;
+        r.loss = (f.read_loss & siaara::DicomFile::kReadBytesSkipped ? static_cast<uint32_t>(SIAARA_READ_BYTES_SKIPPED) : 0u) |
+                 (f.read_loss & siaara::DicomFile::kReadInputTruncated ? static_cast<uint32_t>(SIAARA_READ_INPUT_TRUNCATED) : 0u) |
+                 (f.read_loss & siaara::DicomFile::kReadHeaderOnly ? static_cast<uint32_t>(SIAARA_READ_HEADER_ONLY) : 0u);
+        r.first_loss_offset = f.read_loss_offset;
+        r.bytes_not_read = f.bytes_not_read;
+        r.stopped_at_offset = f.stopped_at_offset;
+        r.warning_count = static_cast<uint32_t>(f.warnings.size());
+        std::memcpy(out, &r, r.struct_size);
         return ok();
     });
 }
@@ -1617,24 +1664,47 @@ SIAARA_API siaara_status SIAARA_CALL siaara_series_sort(const siaara_file* const
 
 SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, uint32_t frame, siaara_suv* out) {
     return guarded([&]() -> siaara_status {
-        if (!file || !out || out->struct_size < sizeof(siaara_suv))
+        constexpr uint32_t kV1 = offsetof(siaara_suv, scan_time_source);  // struct before F11
+        if (!file || !out || out->struct_size < kV1)
             return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
         const cl::SuvResult r = cl::compute_suv(file->file.dataset, frame);
-        const uint32_t size = out->struct_size;
-        std::memset(out, 0, sizeof(siaara_suv));
-        out->struct_size = size;
-        out->warnings = r.warnings;
+        const uint32_t size = out->struct_size < sizeof(siaara_suv) ? out->struct_size : static_cast<uint32_t>(sizeof(siaara_suv));
+        siaara_suv full{};
+        siaara_suv* const dst = out;
+        siaara_suv* const o = &full;
+        o->struct_size = dst->struct_size;
+        o->warnings = r.warnings;
+        const auto src = [](const std::string& s) -> int32_t {
+            if (s == "Series Date/Time") return SIAARA_SUV_SRC_SERIES;
+            if (s == "Acquisition Date/Time") return SIAARA_SUV_SRC_ACQUISITION;
+            if (s == "earliest acquisition") return SIAARA_SUV_SRC_EARLIEST_ACQUISITION;
+            if (s == "caller") return SIAARA_SUV_SRC_CALLER;
+            if (s == "administration (ADMIN)") return SIAARA_SUV_SRC_ADMINISTRATION;
+            if (s == "Radiopharmaceutical Start DateTime") return SIAARA_SUV_SRC_START_DATETIME;
+            if (s == "Radiopharmaceutical Start Time + scan date") return SIAARA_SUV_SRC_START_TIME_SCAN_DATE;
+            return SIAARA_SUV_SRC_NONE;
+        };
+        o->scan_time_source = src(r.scan_time_source);
+        o->injection_time_source = src(r.injection_time_source);
+        o->decay_correction = r.decay_correction == "START"   ? SIAARA_SUV_DECAY_START
+                                : r.decay_correction == "ADMIN" ? SIAARA_SUV_DECAY_ADMIN
+                                : r.decay_correction == "NONE"  ? SIAARA_SUV_DECAY_NONE
+                                                                : SIAARA_SUV_DECAY_UNKNOWN;
+        o->weight_kg = r.weight_kg.value_or(0.0);
+        o->injected_dose_bq = r.injected_dose_bq.value_or(0.0);
+        o->half_life_s = r.half_life_s.value_or(0.0);
         auto put = [](const std::optional<double>& v, int32_t& has, double& d) {
             has = v ? 1 : 0;
             d = v.value_or(0.0);
         };
-        put(r.bw, out->has_bw, out->bw);
-        put(r.lbm_james, out->has_lbm_james, out->lbm_james);
-        put(r.lbm_janmahasatian, out->has_lbm_janmahasatian, out->lbm_janmahasatian);
-        put(r.bsa, out->has_bsa, out->bsa);
-        put(r.ibw, out->has_ibw, out->ibw);
-        out->decay_seconds = r.decay_seconds.value_or(0.0);
-        out->decayed_dose_bq = r.decayed_dose_bq.value_or(0.0);
+        put(r.bw, o->has_bw, o->bw);
+        put(r.lbm_james, o->has_lbm_james, o->lbm_james);
+        put(r.lbm_janmahasatian, o->has_lbm_janmahasatian, o->lbm_janmahasatian);
+        put(r.bsa, o->has_bsa, o->bsa);
+        put(r.ibw, o->has_ibw, o->ibw);
+        o->decay_seconds = r.decay_seconds.value_or(0.0);
+        o->decayed_dose_bq = r.decayed_dose_bq.value_or(0.0);
+        std::memcpy(dst, &full, size);
         return ok();
     });
 }
@@ -1902,6 +1972,34 @@ SIAARA_API siaara_status SIAARA_CALL siaara_seg_mask(const siaara_file* file, co
     });
 }
 
+// ---- RT Dose
+SIAARA_API siaara_status SIAARA_CALL siaara_rt_dose_info_get(const siaara_dataset* ds, siaara_rt_dose_info* out) {
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out) return fail(Errc::InvalidArgument, "ds and out must not be NULL");
+        if (out->struct_size < sizeof(uint32_t) * 2) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        const siaara::image::RtDoseInfo d = siaara::image::read_rt_dose_info(*ds_cast(ds));
+        siaara_rt_dose_info r{};
+        r.struct_size = out->struct_size < sizeof r ? out->struct_size : static_cast<uint32_t>(sizeof r);
+        r.is_rt_dose = d.is_rt_dose ? 1 : 0;
+        r.has_dose_grid_scaling = d.dose_grid_scaling ? 1 : 0;
+        r.dose_grid_scaling = d.dose_grid_scaling.value_or(1.0);
+        using F = siaara::image::RtDoseInfo::OffsetForm;
+        r.grid_frame_offset_form = d.offset_form == F::Relative ? SIAARA_GFOV_RELATIVE
+                                   : d.offset_form == F::Absolute ? SIAARA_GFOV_ABSOLUTE : SIAARA_GFOV_NONE;
+        r.grid_frame_offset_count = static_cast<uint32_t>(std::min<std::size_t>(d.offset_count, UINT32_MAX));
+        const auto put = [](char* dst, std::size_t cap, const std::string& v) {
+            const std::size_t n = std::min(v.size(), cap - 1);
+            std::memcpy(dst, v.data(), n);
+            dst[n] = 0;
+        };
+        put(r.dose_units, sizeof r.dose_units, d.dose_units);
+        put(r.dose_type, sizeof r.dose_type, d.dose_type);
+        put(r.dose_summation_type, sizeof r.dose_summation_type, d.dose_summation_type);
+        std::memcpy(out, &r, r.struct_size);
+        return ok();
+    });
+}
+
 // ---- RT Structure Set
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* file, siaara_rtstruct** out) {
     return guarded([&]() -> siaara_status {
@@ -1997,6 +2095,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, co
                 case SIAARA_OFFSET_TABLE_EXTENDED: p.offset_table = siaara::codec::OffsetTableMode::Extended; break;
                 case SIAARA_OFFSET_TABLE_EMPTY: p.offset_table = siaara::codec::OffsetTableMode::Empty; break;
                 default: return fail(Errc::InvalidArgument, "unknown offset_table");
+            }
+            if (params->struct_size >= offsetof(siaara_transcode_params, keep_uid_on_lossy) + sizeof(int32_t)) {
+                if (params->keep_uid_on_lossy != 0 && params->keep_uid_on_lossy != 1)
+                    return fail(Errc::InvalidArgument, "keep_uid_on_lossy must be 0 or 1");
+                p.keep_uid_on_lossy = params->keep_uid_on_lossy == 1;
             }
         }
         if (Status s = siaara::codec::transcode_file(file->file, ts_uid, p); !s) return fail(s);

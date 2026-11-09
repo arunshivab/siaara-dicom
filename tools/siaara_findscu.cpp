@@ -11,6 +11,7 @@
 #include "dict/dictionary.hpp"
 #include "net/scu.hpp"
 #include "net/services.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 using namespace siaara::net;
@@ -18,7 +19,7 @@ using namespace siaara::net;
 namespace {
 
 void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-findscu [options] host port\n"
                  "  -aet AE          calling AE title (default SIAARA_FIND)\n"
                  "  -aec AE          called AE title (default ANY-SCP)\n"
@@ -83,6 +84,10 @@ void print(const Dataset& ds, int indent) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     ScuConfig cfg;
     cfg.calling_ae = "SIAARA_FIND";
     unsigned long timeout = 15000, cancel_after = 0;

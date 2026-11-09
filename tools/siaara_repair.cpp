@@ -20,13 +20,14 @@
 
 #include "core/io.hpp"
 #include "repair/repair.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 
 namespace {
 
 void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-repair validate|report|fix <input file|folder>... [options]\n"
                  "  --out DIR              output folder (fix); outputs keep the input file names\n"
                  "  --fix LIST             categories: structural,values,uids,charset,attributes,pixels,\n"
@@ -68,6 +69,10 @@ void expand(const std::string& in, std::vector<std::string>& out) {
 int run(int argc, char** argv);
 
 int main(int argc, char** argv) {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     try {
         return run(argc, argv);
     } catch (const std::exception&) {

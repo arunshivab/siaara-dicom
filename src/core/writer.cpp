@@ -208,8 +208,11 @@ private:
 
     Status sequence(const Element& e) {
         // A sequence read as UN with undefined length goes back out the same way: VR UN in
-        // explicit VR syntaxes, items always implicit VR little endian (PS3.5 6.2.2).
-        const bool as_un = e.read.parsed && e.read.un_sequence &&
+        // explicit VR syntaxes, items always implicit VR little endian (PS3.5 6.2.2). Not in
+        // Explicit VR Big Endian: pydicom and GDCM read such a value with big-endian item tags
+        // and cannot find its end (gdcmData CT-SIEMENS-MissingPixelDataInIconSQ.dcm), so there
+        // it is written as a normal SQ in the file's own encoding (testing-chat BE finding).
+        const bool as_un = e.read.parsed && e.read.un_sequence && !enc_.big_endian &&
                            opt_.sequence_lengths == SequenceLengths::KeepAsRead;
         const bool undef = as_un || sequence_undefined(e);
         std::size_t len_at = 0;
@@ -314,6 +317,16 @@ Status write_dataset(const Dataset& ds, std::string_view transfer_syntax_uid,
 }
 
 Status write_part10(const DicomFile& file, std::vector<std::uint8_t>& out, const WriteOptions& opt) {
+    if (!file.complete() && !opt.allow_incomplete) {
+        const char* why = (file.read_loss & DicomFile::kReadBytesSkipped)     ? "input bytes were skipped"
+                          : (file.read_loss & DicomFile::kReadInputTruncated) ? "the input was truncated"
+                                                                              : "it was read header-only";
+        return Status(Errc::Rejected,
+                      std::string("refusing to save a data set that was not read completely (") + why +
+                          "; first at offset " + std::to_string(file.read_loss_offset) +
+                          "): the file would hold less than was read; allow incomplete saves to write it anyway",
+                      file.read_loss_offset);
+    }
     std::string ts_uid = file.transfer_syntax;
     if (ts_uid.empty()) ts_uid = std::string(ts::ExplicitVRLittleEndian);
 

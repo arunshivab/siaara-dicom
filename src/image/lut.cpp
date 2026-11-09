@@ -55,6 +55,31 @@ Status read_rescale(const Dataset& src, ModalityTransform& m, bool lenient) {
     return Status::ok();
 }
 
+constexpr Tag kDoseUnits = 0x30040002, kDoseGridScaling = 0x3004000E;
+
+// RT Dose: Dose Grid Scaling as the modality slope (P0-2a). Returns false when the data set is
+// not an RT Dose object, so the caller goes on with Rescale Slope / Intercept.
+Result<bool> read_dose_scaling(const Dataset& ds, ModalityTransform& m, bool lenient) {
+    if (!is_rt_dose(ds)) return false;
+    if (!ds.contains(kDoseGridScaling)) {
+        if (!lenient) return Status(Errc::Malformed, "modality: RT Dose without Dose Grid Scaling", 0, kDoseGridScaling);
+        return false;
+    }
+    auto g = ds.get_double(kDoseGridScaling);
+    if (!g || !std::isfinite(*g) || *g <= 0.0) {
+        if (!lenient) return Status(Errc::Malformed, "modality: Dose Grid Scaling unreadable or not positive", 0, kDoseGridScaling);
+        return false;
+    }
+    ModalityTransform r;
+    if (Status s = read_rescale(ds, r, true); !s) return s;
+    m.rescale_ignored = r.slope != 1.0 || r.intercept != 0.0;
+    m.slope = *g;
+    m.intercept = 0.0;
+    m.dose_grid_scaling = true;
+    m.rescale_type = ds.get_string(kDoseUnits).value_or(std::string());
+    return true;
+}
+
 std::optional<VoiFunction> parse_function(std::string_view s) noexcept {
     if (s.empty() || s == "LINEAR") return VoiFunction::Linear;
     if (s == "LINEAR_EXACT") return VoiFunction::LinearExact;
@@ -121,7 +146,9 @@ Result<LutTable> read_lut(const Dataset& item, bool first_signed, bool lenient) 
     const std::uint16_t n = load_le16(p);
     t.entries = n == 0 ? 65536u : n;
     const std::uint16_t f = load_le16(p + 2);
-    const bool sgn = d->vr == VR::SS ? true : d->vr == VR::US ? false : first_signed;
+    // An inferred VR (implicit VR stream) says nothing reliable about this LUT: use the caller's
+    // rule (Pixel Representation for a Modality LUT, the modality output range for a VOI LUT).
+    const bool sgn = d->read.vr_inferred ? first_signed : d->vr == VR::SS ? true : d->vr == VR::US ? false : first_signed;
     t.first_mapped = sgn ? static_cast<std::int16_t>(f) : static_cast<std::int64_t>(f);
     t.bits = load_le16(p + 4);
     if (t.bits < 8 || t.bits > 16) {
@@ -186,8 +213,31 @@ Result<ModalityTransform> modality_for_frame(const Dataset& ds, const PixelInfo&
         }
         if (!lenient) return l.take_error();
     }
+    auto dose = read_dose_scaling(ds, m, lenient);
+    if (!dose) return dose.take_error();
+    if (*dose) return m;
     if (Status s = read_rescale(ds, m, lenient); !s) return s;
     return m;
+}
+
+RtDoseInfo read_rt_dose_info(const Dataset& ds) {
+    RtDoseInfo r;
+    r.is_rt_dose = is_rt_dose(ds);
+    if (auto g = ds.get_double(kDoseGridScaling); g && std::isfinite(*g) && *g > 0.0) r.dose_grid_scaling = g;
+    r.dose_units = ds.get_string(kDoseUnits).value_or(std::string());
+    r.dose_type = ds.get_string(0x30040004).value_or(std::string());
+    r.dose_summation_type = ds.get_string(0x3004000A).value_or(std::string());
+    constexpr Tag kGfov = 0x3004000C;
+    r.offset_count = ds.contains(kGfov) ? ds.value_multiplicity(kGfov) : 0;
+    if (r.offset_count > 0)
+        if (auto v0 = ds.get_double(kGfov, 0))
+            r.offset_form = *v0 == 0.0 ? RtDoseInfo::OffsetForm::Relative : RtDoseInfo::OffsetForm::Absolute;
+    return r;
+}
+
+bool is_rt_dose(const Dataset& ds) {
+    if (ds.get_string(siaara::tags::SOPClassUID).value_or(std::string()) == "1.2.840.10008.5.1.4.1.1.481.2") return true;
+    return ds.get_string(siaara::tags::Modality).value_or(std::string()) == "RTDOSE";
 }
 
 Result<VoiSet> voi_for_frame(const Dataset& ds, const PixelInfo& pi, const ModalityTransform& m, std::uint32_t frame,

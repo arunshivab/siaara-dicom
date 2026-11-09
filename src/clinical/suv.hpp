@@ -68,6 +68,9 @@ struct SuvResult {
     std::optional<double> decay_seconds, decayed_dose_bq;
     std::optional<double> lbm_james_kg, lbm_janmahasatian_kg, bsa_m2, ibw_kg;
     std::string units, decay_correction, scan_time_source;
+    // Where the injection time came from: "caller", "Radiopharmaceutical Start DateTime",
+    // "Radiopharmaceutical Start Time + scan date"; empty when none was usable (F11).
+    std::string injection_time_source;
     std::uint32_t warnings = 0;              // SuvWarning bits
     std::vector<std::string> messages;       // one per warning, never containing patient values
     bool ok() const noexcept { return bw.has_value(); }

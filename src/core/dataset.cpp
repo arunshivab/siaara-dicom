@@ -1,6 +1,7 @@
 #include "core/dataset.hpp"
 
 #include "core/number.hpp"
+#include "dict/dictionary.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -114,6 +115,21 @@ bool Dataset::remove(Tag tag) {
     return true;
 }
 
+namespace {
+
+// The VR the typed getters read a value with. A known public element stored as UN (explicit VR
+// files written by tools that lost the VR, e.g. pydicom's rtdose_rle.dcm) is read with its
+// dictionary VR when that is a text VR: text values do not depend on byte order, so this is safe
+// in every transfer syntax. Binary dictionary VRs stay UN (their byte order is unknown here).
+// The element itself is unchanged (testing-chat RT Dose P2).
+VR value_vr(const Element& e) noexcept {
+    if (e.vr != VR::UN || tag_is_private(e.tag) || !e.items.empty()) return e.vr;
+    const VR d = dict::implicit_vr(e.tag);
+    return vr_is_string(d) ? d : e.vr;
+}
+
+}  // namespace
+
 std::optional<std::string_view> Dataset::get_raw_string(Tag tag) const {
     const Element* e = find(tag);
     if (!e || e->is_sequence() || e->is_encapsulated()) return std::nullopt;
@@ -125,8 +141,9 @@ std::size_t Dataset::value_multiplicity(Tag tag) const {
     if (!e) return 0;
     if (e->is_sequence()) return e->items.size();
     if (e->value.empty()) return 0;
-    if (vr_is_string(e->vr)) {
-        if (e->vr == VR::LT || e->vr == VR::ST || e->vr == VR::UT || e->vr == VR::UR) return 1;
+    const VR vr = value_vr(*e);
+    if (vr_is_string(vr)) {
+        if (vr == VR::LT || vr == VR::ST || vr == VR::UT || vr == VR::UR) return 1;
         const auto s = e->value.as_chars();
         return static_cast<std::size_t>(std::count(s.begin(), s.end(), '\\')) + 1;
     }
@@ -137,16 +154,17 @@ std::size_t Dataset::value_multiplicity(Tag tag) const {
 std::optional<std::string> Dataset::get_string(Tag tag, std::size_t vm) const {
     const Element* e = find(tag);
     if (!e || e->is_sequence() || e->is_encapsulated()) return std::nullopt;
-    if (vr_is_string(e->vr) || e->vr == VR::UN || e->vr == VR::None) {
+    const VR vr = value_vr(*e);
+    if (vr_is_string(vr) || vr == VR::UN || vr == VR::None) {
         std::string_view s = e->value.as_chars();
-        if (e->vr != VR::LT && e->vr != VR::ST && e->vr != VR::UT && e->vr != VR::UR) {
+        if (vr != VR::LT && vr != VR::ST && vr != VR::UT && vr != VR::UR) {
             auto part = split_value(s, vm);
             if (!part) return std::nullopt;
             s = *part;
         } else if (vm != 0) {
             return std::nullopt;
         }
-        return std::string(trim_value(s, e->vr));
+        return std::string(trim_value(s, vr));
     }
     // Binary VRs: format the number.
     if (auto d = get_double(tag, vm)) {
@@ -170,9 +188,15 @@ std::optional<std::int64_t> Dataset::get_int(Tag tag, std::size_t vm) const {
         if (!checked_mul(vm, w, off) || off + w > n) return nullptr;
         return p + off;
     };
-    switch (e->vr) {
+    switch (value_vr(*e)) {
         case VR::US: case VR::OW: { auto q = at(2); if (!q) return std::nullopt; return load_le16(q); }
-        case VR::SS: { auto q = at(2); if (!q) return std::nullopt; return static_cast<std::int16_t>(load_le16(q)); }
+        case VR::SS: {
+            auto q = at(2); if (!q) return std::nullopt;
+            // LUT descriptors: the number of entries and the bits per entry are unsigned whatever
+            // the VR; only the first stored value mapped follows it (PS3.3 C.11.1.1.1, F8).
+            if (vm != 1 && dict::is_lut_descriptor(tag)) return load_le16(q);
+            return static_cast<std::int16_t>(load_le16(q));
+        }
         case VR::UL: case VR::OL: { auto q = at(4); if (!q) return std::nullopt; return load_le32(q); }
         case VR::AT: {  // (group, element) pair: returned as the tag value (group << 16) | element
             auto q = at(4); if (!q) return std::nullopt;
@@ -207,7 +231,7 @@ std::optional<double> Dataset::get_double(Tag tag, std::size_t vm) const {
     if (!e || e->is_sequence() || e->is_encapsulated()) return std::nullopt;
     const std::uint8_t* p = e->value.data();
     const std::size_t n = e->value.size();
-    switch (e->vr) {
+    switch (value_vr(*e)) {
         case VR::FL: case VR::OF: {
             std::uint64_t off = 0;
             if (!checked_mul(vm, 4, off) || off + 4 > n) return std::nullopt;

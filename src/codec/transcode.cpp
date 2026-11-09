@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "clinical/common.hpp"
 #include "codec/codec.hpp"
 #include "codec/j2k.hpp"
 #include "codec/jpeg.hpp"
@@ -110,6 +111,67 @@ Status append_value(Dataset& ds, Tag tag, VR vr, std::string_view value) {
     }
     v += value;
     return ds.set_string(tag, vr, v);
+}
+
+// Code Sequence item (Code Value, Coding Scheme Designator, Code Meaning).
+Dataset code_item(std::string_view value, std::string_view meaning) {
+    Dataset c;
+    (void)c.set_string(0x00080100, VR::SH, value);
+    (void)c.set_string(0x00080102, VR::SH, "DCM");
+    (void)c.set_string(0x00080104, VR::LO, meaning);
+    return c;
+}
+
+// Appends `item` to sequence `tag` of `ds` (creating it), keeping the items already there.
+void append_item(Dataset& ds, Tag tag, Dataset item) {
+    Element seq;
+    if (const Element* old = ds.find(tag); old && old->is_sequence()) seq = *old;
+    seq.tag = tag;
+    seq.vr = VR::SQ;
+    seq.read = {};
+    seq.items.push_back(std::move(item));
+    ds.put(std::move(seq));
+}
+
+// The image after lossy compression is a new, derived image (PS3.3 C.7.6.1.1.5, owner decision
+// 2026-11-10): new SOP Instance UID, Image Type value 1 DERIVED, the predecessor in Source Image
+// Sequence (CID 7202), Derivation Code Sequence (CID 7203 113040) and Derivation Description.
+Status mark_derived(Dataset& out, TranscodeReport& rep, std::string_view method, const std::string& ratio) {
+    const std::string old_uid = out.get_string(tags::SOPInstanceUID).value_or(std::string());
+    const std::string cls = out.get_string(tags::SOPClassUID).value_or(std::string());
+    const std::string uid = clinical::new_uid();
+    if (Status s = out.set_string(tags::SOPInstanceUID, VR::UI, uid); !s) return s;
+    rep.new_sop_instance_uid = uid;
+    if (!old_uid.empty()) {
+        Dataset ref;
+        if (!cls.empty()) (void)ref.set_string(0x00081150, VR::UI, cls);
+        (void)ref.set_string(0x00081155, VR::UI, old_uid);
+        Element purpose;
+        purpose.tag = 0x0040A170;  // Purpose of Reference Code Sequence
+        purpose.vr = VR::SQ;
+        purpose.items.push_back(rep.source_lossy ? code_item("121330", "Lossy compressed predecessor")
+                                                 : code_item("121320", "Uncompressed predecessor"));
+        ref.put(std::move(purpose));
+        append_item(out, 0x00082112, std::move(ref));  // Source Image Sequence
+    }
+    append_item(out, 0x00089215, code_item("113040", "Lossy Compression"));  // Derivation Code Sequence
+    // Derivation Description (ST, 1024 chars): the step appended to what was there.
+    std::string desc;
+    if (auto d = out.get_string(0x00082111)) desc = *d;
+    std::string step = "Lossy compression " + std::string(method) + ", ratio " + ratio + ":1";
+    if (!desc.empty()) desc += "; ";
+    desc += step;
+    if (desc.size() > 1024) desc.resize(1024);
+    if (Status s = out.set_string(0x00082111, VR::ST, desc); !s) return s;
+    // Image Type value 1 DERIVED (the other values are kept).
+    if (auto it = out.get_raw_string(0x00080008); it) {
+        std::string v(it->begin(), it->end());
+        while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.pop_back();
+        const std::size_t bs = v.find('\\');
+        const std::string rest = bs == std::string::npos ? std::string() : v.substr(bs);
+        if (Status s = out.set_string(0x00080008, VR::CS, "DERIVED" + rest); !s) return s;
+    }
+    return Status::ok();
 }
 
 bool is_lossy_attribute(const Dataset& ds) {
@@ -531,6 +593,11 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
         if (Status s = append_value(out, kLossyRatio, VR::DS, format_ratio(rep.native_bytes, rep.encoded_bytes)); !s)
             return s;
         if (Status s = append_value(out, kLossyMethod, VR::CS, lossy_method(target)); !s) return s;
+        if (!p.keep_uid_on_lossy) {
+            if (Status s = mark_derived(out, rep, lossy_method(target), format_ratio(rep.native_bytes, rep.encoded_bytes));
+                !s)
+                return s;
+        }
     } else if (rep.source_lossy) {
         (void)out.set_string(image::tags::LossyImageCompression, VR::CS, "01");  // never reset once lossy
     }
@@ -538,11 +605,16 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
 }
 
 Status transcode_file(DicomFile& file, std::string_view target_ts, const TranscodeParams& p, TranscodeReport* report) {
+    TranscodeReport local;
+    if (!report) report = &local;
     Result<Dataset> r = transcode_dataset(file.dataset, file.transfer_syntax, target_ts, p, report);
     if (!r) return r.take_error();
     file.dataset = std::move(r.value());
     file.transfer_syntax = std::string(target_ts);
     if (Status s = file.meta.set_string(tags::TransferSyntaxUID, VR::UI, target_ts); !s) return s;
+    if (!report->new_sop_instance_uid.empty())
+        if (Status s = file.meta.set_string(tags::MediaStorageSOPInstanceUID, VR::UI, report->new_sop_instance_uid); !s)
+            return s;
     return Status::ok();
 }
 

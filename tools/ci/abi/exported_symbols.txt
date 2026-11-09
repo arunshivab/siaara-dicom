@@ -62,10 +62,13 @@ siaara_file_meta
 siaara_file_open
 siaara_file_open_memory
 siaara_file_pixel_info
+siaara_file_read_report
 siaara_file_save
 siaara_file_save_ex
 siaara_file_transcode
 siaara_file_transfer_syntax
+siaara_file_warning
+siaara_file_warning_code
 siaara_file_warning_count
 siaara_folder_scan
 siaara_frame_count
@@ -96,6 +99,7 @@ siaara_pstate_string
 siaara_render_rgba8
 siaara_repair_file
 siaara_roi_stats_compute
+siaara_rt_dose_info_get
 siaara_rtstruct_contour_points
 siaara_rtstruct_free
 siaara_rtstruct_open

@@ -106,6 +106,38 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_meta(siaara_file* file, siaara_
 SIAARA_API siaara_status SIAARA_CALL siaara_file_transfer_syntax(const siaara_file* file, char* buf,
                                                                  size_t cap, size_t* needed);
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file* file, uint32_t* out);
+/* Warning `index` (< warning count) as text (string buffer rules: buf / cap / needed). When the
+ * read was not complete the first warning starts with "PARSE_INCOMPLETE" (input bytes skipped) or
+ * "INPUT_TRUNCATED" (the input ended inside an element). Thread safety: as the file. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file, uint32_t index, char* buf,
+                                                         size_t cap, size_t* needed);
+
+/* Code of file warning `index`: SIAARA_FILE_WARNING_* (the text says more). */
+enum {
+    SIAARA_FILE_WARNING_GENERAL = 0,          /* a lenient-mode finding (repair, stray item, ...) */
+    SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1, /* input bytes were skipped (SIAARA_READ_BYTES_SKIPPED) */
+    SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2   /* the input ended early (SIAARA_READ_INPUT_TRUNCATED) */
+};
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file* file, uint32_t index, int32_t* out);
+
+/* Whether the data set holds everything the input held (bit mask). */
+enum {
+    SIAARA_READ_BYTES_SKIPPED = 1u << 0,   /* lenient parse skipped input bytes that are in no element */
+    SIAARA_READ_INPUT_TRUNCATED = 1u << 1, /* the input ended inside an element, item or sequence */
+    SIAARA_READ_HEADER_ONLY = 1u << 2      /* stop_before_pixel_data: Pixel Data and the rest not read */
+};
+typedef struct siaara_read_report {
+    uint32_t struct_size;            /* set to sizeof(siaara_read_report) */
+    uint32_t loss;                   /* SIAARA_READ_* bits; 0 = complete */
+    uint64_t first_loss_offset;      /* offset of the first loss (inflated stream for deflate) */
+    uint64_t bytes_not_read;         /* input bytes in no element */
+    uint64_t stopped_at_offset;      /* header-only read: offset of the Pixel Data element, else 0 */
+    uint32_t warning_count;
+    uint32_t reserved0;
+} siaara_read_report;
+/* Fills *out (struct_size must be set; a smaller struct_size gets the fields that fit). A save of a
+ * file with loss != 0 is refused unless siaara_save_options.allow_incomplete is 1. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_read_report(const siaara_file* file, siaara_read_report* out);
 
 /* Writes the file. transfer_syntax_uid may be NULL to keep the current one. Uses the default
  * siaara_save_options: an unedited file saved in its own transfer syntax is reproduced byte for
@@ -869,7 +901,27 @@ typedef struct siaara_suv {
     double ibw;
     double decay_seconds;            /* 0 when unknown */
     double decayed_dose_bq;          /* 0 when unknown */
+    /* Appended (F11): which inputs were used and where they came from. A caller built against
+     * the shorter struct (struct_size up to decayed_dose_bq) gets the fields above only. */
+    int32_t scan_time_source;        /* SIAARA_SUV_SRC_*: decay reference time */
+    int32_t injection_time_source;   /* SIAARA_SUV_SRC_* */
+    int32_t decay_correction;        /* SIAARA_SUV_DECAY_*: (0054,1102) as found */
+    int32_t reserved1;
+    double weight_kg;                /* as used; 0 when missing (see warnings) */
+    double injected_dose_bq;
+    double half_life_s;
 } siaara_suv;
+enum {
+    SIAARA_SUV_SRC_NONE = 0,                 /* missing: see SIAARA_SUV_MISSING_* */
+    SIAARA_SUV_SRC_SERIES = 1,               /* Series Date/Time */
+    SIAARA_SUV_SRC_ACQUISITION = 2,          /* this image's Acquisition Date/Time (SIAARA_SUV_PER_IMAGE_SCAN_TIME) */
+    SIAARA_SUV_SRC_EARLIEST_ACQUISITION = 3, /* earliest acquisition of the series (caller option) */
+    SIAARA_SUV_SRC_CALLER = 4,               /* given by the caller */
+    SIAARA_SUV_SRC_ADMINISTRATION = 5,       /* Decay Correction ADMIN: no decay */
+    SIAARA_SUV_SRC_START_DATETIME = 6,       /* Radiopharmaceutical Start DateTime */
+    SIAARA_SUV_SRC_START_TIME_SCAN_DATE = 7  /* Radiopharmaceutical Start Time + the scan date (SIAARA_SUV_INJECTION_DATE_ASSUMED) */
+};
+enum { SIAARA_SUV_DECAY_UNKNOWN = 0, SIAARA_SUV_DECAY_START = 1, SIAARA_SUV_DECAY_ADMIN = 2, SIAARA_SUV_DECAY_NONE = 3 };
 
 /* SUV factors for a PET frame. Returns SIAARA_OK even when no factor can be computed: check
  * has_bw and warnings. */
@@ -1018,6 +1070,30 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara
                                                                     uint32_t contour, double* buf, size_t cap,
                                                                     size_t* needed, int32_t* closed);
 
+/* ---- RT Dose (PS3.3 C.8.8.3)
+ * For an RT Dose object every modality value the library produces (SIAARA_FRAME_FLOAT32_MODALITY,
+ * ROI statistics, volumes, fusion, siaara_frame_properties.rescale_slope) is the stored value
+ * times Dose Grid Scaling (3004,000E), i.e. a dose in Dose Units (normally GY). Multi-frame RT
+ * Dose volumes place the frames with the Grid Frame Offset Vector (3004,000C), relative (first
+ * value 0) or absolute (first value = Image Position (Patient) z, transverse planes only). */
+enum { SIAARA_GFOV_NONE = 0, SIAARA_GFOV_RELATIVE = 1, SIAARA_GFOV_ABSOLUTE = 2 };
+typedef struct siaara_rt_dose_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_rt_dose_info) */
+    int32_t is_rt_dose;              /* SOP Class RT Dose or Modality RTDOSE */
+    int32_t has_dose_grid_scaling;   /* 0/1: (3004,000E) present and a positive number */
+    int32_t grid_frame_offset_form;  /* SIAARA_GFOV_* */
+    double dose_grid_scaling;        /* 1 when absent */
+    uint32_t grid_frame_offset_count; /* values in (3004,000C) */
+    uint32_t reserved0;
+    char dose_units[20];             /* (3004,0002) GY / RELATIVE, NUL-terminated */
+    char dose_type[20];              /* (3004,0004) PHYSICAL / EFFECTIVE / ERROR */
+    char dose_summation_type[20];    /* (3004,000A) PLAN / MULTI_PLAN / FRACTION / BEAM / ... */
+    char reserved1[4];
+} siaara_rt_dose_info;
+/* Fills *out from a data set (struct_size must be set; a smaller struct_size gets the fields that
+ * fit). Works for any data set (is_rt_dose = 0 when it is not RT Dose). Thread safety: as reading. */
+SIAARA_API siaara_status SIAARA_CALL siaara_rt_dose_info_get(const siaara_dataset* ds, siaara_rt_dose_info* out);
+
 /* ---------------------------------------------------------------- transcoding */
 #define SIAARA_OFFSET_TABLE_AUTO 0     /* Basic Offset Table, Extended when offsets exceed 32 bits */
 #define SIAARA_OFFSET_TABLE_BASIC 1
@@ -1033,6 +1109,13 @@ typedef struct siaara_transcode_params {
     int32_t predictor;           /* JPEG lossless .57 selection value 1..7; 0 = default (1) */
     int32_t chroma_subsampling;  /* JPEG lossy colour: 0 = 4:4:4 (YBR_FULL), 1 = 4:2:2 (YBR_FULL_422) */
     int32_t offset_table;        /* SIAARA_OFFSET_TABLE_* */
+    int32_t keep_uid_on_lossy;   /* 0 (default): a transcode that applies lossy compression makes a
+                                    new image (PS3.3 C.7.6.1.1.5): new SOP Instance UID (data set and
+                                    meta), Image Type value 1 DERIVED, the predecessor in Source Image
+                                    Sequence (CID 7202 121320 / 121330), Derivation Code Sequence
+                                    (113040) and Derivation Description. 1: keep the UID and those
+                                    attributes. Lossy Image Compression, Ratio and Method are always
+                                    recorded (history appended). Needs struct_size to include it. */
 } siaara_transcode_params;
 
 /* Converts the file's pixel data to the transfer syntax ts_uid (NUL-terminated) and updates the
@@ -1300,6 +1383,10 @@ typedef struct siaara_save_options {
     int32_t sequence_lengths;  /* SIAARA_SEQ_LENGTHS_* */
     int32_t group_lengths;     /* SIAARA_GROUP_LENGTHS_* */
     int32_t odd_lengths;       /* SIAARA_ODD_LENGTHS_* */
+    int32_t allow_incomplete;  /* 0 (default): a file whose read was not complete (see
+                                  siaara_file_read_report: skipped bytes, truncated input,
+                                  header-only read) is refused with SIAARA_ERR_REJECTED, so a save
+                                  never silently writes less than was read. 1: write it anyway. */
 } siaara_save_options;
 /* siaara_file_save with options (NULL = defaults, the same as siaara_file_save). The defaults keep
  * every unedited element as it was read: sequence/item length modes, group lengths, odd lengths,
@@ -1350,7 +1437,8 @@ enum {
     SIAARA_FRAMEF_SHUTTER_POLYGONAL = 1 << 8,
     SIAARA_FRAMEF_SHUTTER_BITMAP = 1 << 9,
     SIAARA_FRAMEF_FLOAT = 1 << 10,           /* Float / Double Float Pixel Data */
-    SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11
+    SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11,
+    SIAARA_FRAMEF_DOSE_GRID_SCALING = 1 << 12 /* RT Dose: rescale_slope is Dose Grid Scaling (values in Dose Units) */
 };
 
 typedef struct siaara_frame_properties {
