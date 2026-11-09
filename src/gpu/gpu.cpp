@@ -11,6 +11,7 @@ namespace {
 
 std::atomic<std::int64_t> g_objects{0};
 std::atomic<bool> g_force_manual{false};
+std::atomic<std::uint64_t> g_upload_chunk{0};
 
 struct Source {
     Api api = Api::None;
@@ -92,6 +93,10 @@ void ensure_probed(Registry& r) {
 
 namespace detail {
 void count_object(int delta) noexcept { g_objects.fetch_add(delta, std::memory_order_relaxed); }
+std::uint64_t upload_chunk_bytes() noexcept {
+    const std::uint64_t v = g_upload_chunk.load();
+    return v ? v : (64ull << 20);
+}
 }  // namespace detail
 
 std::vector<DeviceInfo> devices() {
@@ -163,6 +168,7 @@ void reset() {
 void force_manual_filtering(bool on) { g_force_manual.store(on); }
 bool manual_filtering_forced() { return g_force_manual.load(); }
 std::int64_t live_objects() { return g_objects.load(); }
+void set_upload_chunk_bytes(std::uint64_t bytes) { g_upload_chunk.store(bytes); }
 
 }  // namespace testing
 

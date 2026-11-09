@@ -126,6 +126,8 @@ void force_manual_filtering(bool on);
 bool manual_filtering_forced();
 // Vulkan / Metal objects currently alive (resource-leak checks).
 std::int64_t live_objects();
+// Staging bytes per volume-upload step (0: the default, 64 MiB); small values exercise chunking.
+void set_upload_chunk_bytes(std::uint64_t bytes);
 }  // namespace testing
 
 namespace detail {
@@ -135,6 +137,7 @@ struct Probe {
     std::string reason;  // when no device was found
 };
 void count_object(int delta) noexcept;
+std::uint64_t upload_chunk_bytes() noexcept;
 }  // namespace detail
 
 }  // namespace siaara::gpu

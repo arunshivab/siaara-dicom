@@ -58,7 +58,6 @@ namespace {
 namespace V = siaara::gpu::vk;
 
 constexpr std::uint64_t kFenceTimeoutNs = 30ull * 1000 * 1000 * 1000;  // 30 s
-constexpr std::uint64_t kUploadChunk = 64ull << 20;                    // staging bytes per upload step
 
 std::string result_text(V::Result r) {
     switch (r) {
@@ -939,7 +938,7 @@ Result<std::shared_ptr<VkTexture>> Context::upload(const volume::Volume& vol) {
     if (Status s = make_image(V::kImageUsageTransferDst | V::kImageUsageSampled, format, V::kImageType3D, nx, ny, nz, tex->img); !s)
         return s;
     // Slices per chunk.
-    const std::uint64_t per = std::max<std::uint64_t>(1, kUploadChunk / slice);
+    const std::uint64_t per = std::max<std::uint64_t>(1, detail::upload_chunk_bytes() / slice);
     const std::uint64_t chunk_slices = std::min<std::uint64_t>(per, nz);
     std::uint64_t staging_bytes = 0;
     if (!checked_mul(chunk_slices, slice, staging_bytes) || static_cast<std::size_t>(staging_bytes) != staging_bytes)

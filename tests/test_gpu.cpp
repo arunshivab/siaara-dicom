@@ -532,6 +532,60 @@ TEST_CASE("gpu/vr: composite with transfer function, shading, gradient opacity, 
     CHECK(d.over <= on.size() / 500);
 }
 
+
+TEST_CASE("gpu/state: uploads in chunks, window / colour-map / plane / layer changes, volume swaps") {
+    if (!gpu_present("state changes")) return;
+    gpu::testing::reset();
+    gpu::testing::set_upload_chunk_bytes(3 * 48 * 44 * 2 + 10);  // 3 int16 slices per step (12 steps)
+    auto vol = ct_volume(VoxelType::Int16, true);
+    auto vol2 = ct_volume(VoxelType::Float32, false);
+    REQUIRE(vol);
+    REQUIRE(vol2);
+    auto v = View::create(vol, 72, 64);
+    REQUIRE(v);
+    CHECK(v->set_mode(ViewMode::Mpr, Interpolation::Nearest));
+    auto p = render_both(*v);
+    expect_close("chunked upload, nearest", p, 0, 0.0, 0.0, 0);
+    gpu::testing::set_upload_chunk_bytes(0);
+    // Every change must reach the GPU image (no stale tables or textures).
+    CHECK(v->set_window(0, -300.0, 900.0));
+    p = render_both(*v);
+    expect_close("after a window change", p, 0, 0.0, 0.0, 0);
+    CHECK(v->set_colormap(0, ColorMap::InverseGray));
+    p = render_both(*v);
+    expect_close("after a colour-map change", p, 0, 0.0, 0.0, 0);
+    Plane pl = standard_plane(vol->grid(), StandardOrientation::Sagittal);
+    pl.pixel_spacing = 0.6;
+    CHECK(v->set_plane(pl));
+    p = render_both(*v);
+    expect_close("after a plane change", p, 0, 0.0, 0.0, 0);
+    RenderSettings rs;
+    rs.background = {200, 10, 90};
+    CHECK(v->set_render_settings(rs));
+    p = render_both(*v);
+    expect_close("background colour", p, 0, 0.0, 0.0, 0);
+    LayerStyle st;
+    st.colormap = ColorMap::HotMetalBlue;
+    st.opacity = 0.7;
+    st.transparent_below_window = false;
+    CHECK(v->set_fusion_layer(vol2, st));
+    p = render_both(*v);
+    expect_close("fusion, opaque below window", p, 1, 0.05, 0.002, 3);
+    CHECK(v->set_fusion_layer(nullptr, st));
+    p = render_both(*v);
+    expect_close("fusion removed", p, 0, 0.0, 0.0, 0);
+    // Another volume in a new view, then MIP at interactive quality.
+    auto v2 = View::create(vol2, 50, 70);
+    REQUIRE(v2);
+    CHECK(v2->set_mode(ViewMode::VolumeMip));
+    v2->set_quality(Quality::Interactive);
+    p = render_both(*v2);
+    expect_close("float32 volume, VR MIP interactive", p, 3, 0.4, 0.01, 30);
+    CHECK(v2->set_size(33, 17));
+    p = render_both(*v2);
+    expect_close("after a resize (odd sizes)", p, 3, 0.4, 0.01, 30);
+}
+
 // ---------------------------------------------------------------- lifetime, sharing, threads
 TEST_CASE("gpu/resources: views share uploads; everything is released") {
     if (!gpu_present("resources")) return;
