@@ -2,6 +2,7 @@
 // repaired, that the change is logged, and that the input file is byte-identical afterwards.
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <filesystem>
 #include <random>
 #include <set>
@@ -454,4 +455,52 @@ TEST_CASE("repair: in-memory repair") {
             CHECK(rep.files[0].written);
             CHECK(out.size() > 132 && out[128] == 'D' && out[131] == 'M');
         }
+}
+
+#include "siaara/siaara.h"
+
+TEST_CASE("repair: C API validate and repair") {
+    TempDir dir;
+    const auto samples = repair_samples::all_samples();
+    const std::string in = dir.file("in.dcm");
+    REQUIRE(write(in, samples[1].bytes));  // pixel_bits_allocated
+    const std::string before = hash_file(in);
+    size_t needed = 0;
+    CHECK(siaara_validate_json(in.data(), in.size(), nullptr, 0, &needed) == SIAARA_OK);
+    REQUIRE(needed > 0);
+    std::string json(needed + 1, '\0');
+    CHECK(siaara_validate_json(in.data(), in.size(), json.data(), json.size(), &needed) == SIAARA_OK);
+    CHECK(json.find("pixel-length") != std::string::npos);
+    char small[8];
+    CHECK(siaara_validate_json(in.data(), in.size(), small, sizeof small, &needed) == SIAARA_ERR_BUFFER_TOO_SMALL);
+    CHECK(siaara_validate_memory_json(samples[0].bytes.data(), samples[0].bytes.size(), nullptr, 0, &needed) == SIAARA_OK);
+
+    siaara_repair_options o{};
+    o.struct_size = sizeof o;
+    o.fix = SIAARA_REPAIR_PIXELS;
+    o.write = 1;
+    o.uid_seed = "capi";
+    o.uid_seed_len = 4;
+    const std::string out = dir.file("out.dcm");
+    CHECK(siaara_repair_file(in.data(), in.size(), in.data(), in.size(), &o, nullptr, 0, nullptr) == SIAARA_ERR_INVALID_ARGUMENT);
+    std::string report(1 << 16, '\0');
+    CHECK(siaara_repair_file(in.data(), in.size(), out.data(), out.size(), &o, report.data(), report.size(), &needed) ==
+          SIAARA_OK);
+    CHECK(report.find("\"written\":true") != std::string::npos);
+    CHECK(report.find("\"input_unchanged\":true") != std::string::npos);
+    CHECK(fs::exists(out));
+    CHECK(hash_file(in) == before);
+    // The output exists now: refused without overwrite (the report is still filled in).
+    CHECK(siaara_repair_file(in.data(), in.size(), out.data(), out.size(), &o, report.data(), report.size(), &needed) ==
+          SIAARA_ERR_REJECTED);
+    o.fix = 1u << 20;
+    CHECK(siaara_repair_file(in.data(), in.size(), out.data(), out.size(), &o, nullptr, 0, nullptr) == SIAARA_ERR_INVALID_ARGUMENT);
+    // Dry run with an old, shorter struct (only struct_size and fix): nothing written.
+    siaara_repair_options old{};
+    old.struct_size = static_cast<uint32_t>(offsetof(siaara_repair_options, write));
+    old.fix = SIAARA_REPAIR_PIXELS;
+    const std::string out2 = dir.file("out2.dcm");
+    CHECK(siaara_repair_file(in.data(), in.size(), out2.data(), out2.size(), &old, nullptr, 0, nullptr) == SIAARA_OK);
+    CHECK(!fs::exists(out2));
+    CHECK(hash_file(in) == before);
 }

@@ -286,6 +286,15 @@ internal static class C
     public const int SIAARA_GROUP_LENGTHS_RECOMPUTE = 2;
     public const int SIAARA_ODD_LENGTHS_KEEP = 0;
     public const int SIAARA_ODD_LENGTHS_PAD = 1;
+    public const uint SIAARA_REPAIR_STRUCTURAL = 1u << 0;
+    public const uint SIAARA_REPAIR_VALUES = 1u << 1;
+    public const uint SIAARA_REPAIR_UIDS = 1u << 2;
+    public const uint SIAARA_REPAIR_CHARSET = 1u << 3;
+    public const uint SIAARA_REPAIR_ATTRIBUTES = 1u << 4;
+    public const uint SIAARA_REPAIR_PIXELS = 1u << 5;
+    public const uint SIAARA_REPAIR_RESCUE = 1u << 6;
+    public const uint SIAARA_REPAIR_DECOMPRESS = 1u << 7;
+    public const uint SIAARA_REPAIR_STUDY = 1u << 8;
 }
 
 [InlineArray(3)]
@@ -894,6 +903,23 @@ internal struct siaara_save_options
     public int odd_lengths;
 }
 
+/// <summary>siaara_repair_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_repair_options
+{
+    public uint struct_size;
+    public uint fix;
+    public int write;
+    public int detailed_report;
+    public nint charset;
+    public nuint charset_len;
+    public int recompute_group_lengths;
+    public int keep_last_duplicate;
+    public int overwrite;
+    public nint uid_seed;
+    public nuint uid_seed_len;
+}
+
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
 internal static unsafe partial class Raw
 {
@@ -1400,6 +1426,18 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_file_get_raw_stored")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_file_get_raw_stored(nint file, nint ds, uint tag, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_validate_json")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_validate_json(byte* utf8_path, nuint path_len, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_validate_memory_json")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_validate_memory_json(byte* data, nuint size, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_repair_file")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_repair_file(byte* input_path, nuint input_len, byte* output_path, nuint output_len, siaara_repair_options* options, byte* buf, nuint cap, nuint* needed);
 
 }
 
@@ -2336,6 +2374,35 @@ internal static unsafe class Native
         fixed (byte* p_buf = buf)
         fixed (nuint* p_needed = &needed)
             return Raw.siaara_file_get_raw_stored(file, ds, tag, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_validate_json(ReadOnlySpan<byte> utf8_path, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_utf8_path = utf8_path)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_validate_json((byte*)p_utf8_path, (nuint)utf8_path.Length, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_validate_memory_json(ReadOnlySpan<byte> data, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_data = data)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_validate_memory_json((byte*)p_data, (nuint)data.Length, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_repair_file(ReadOnlySpan<byte> input_path, ReadOnlySpan<byte> output_path, in siaara_repair_options options, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_input_path = input_path)
+        fixed (byte* p_output_path = output_path)
+        fixed (siaara_repair_options* p_options = &options)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_repair_file((byte*)p_input_path, (nuint)input_path.Length, (byte*)p_output_path, (nuint)output_path.Length, p_options, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
 }

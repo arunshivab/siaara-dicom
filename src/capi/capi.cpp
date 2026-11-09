@@ -2440,3 +2440,89 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_warning(const siaara_file* fil
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- validation and repair (appended)
+#include "repair/repair.hpp"
+
+namespace {
+
+Status to_repair_options(const siaara_repair_options* o, siaara::repair::RepairOptions& r) {
+    if (!o) return Status::ok();
+    if (o->struct_size < sizeof(uint32_t)) return Status(Errc::InvalidArgument, "options must be set up with struct_size");
+    const auto has = [&](std::size_t end) { return o->struct_size >= end; };
+    if (has(offsetof(siaara_repair_options, fix) + sizeof(uint32_t))) {
+        if (o->fix & ~static_cast<uint32_t>(siaara::repair::kAllCategories))
+            return Status(Errc::InvalidArgument, "unknown bits in fix");
+        r.fix = o->fix;
+    }
+    if (has(offsetof(siaara_repair_options, write) + sizeof(int32_t))) r.write = o->write != 0;
+    if (has(offsetof(siaara_repair_options, detailed_report) + sizeof(int32_t))) r.detailed_report = o->detailed_report != 0;
+    if (has(offsetof(siaara_repair_options, charset_len) + sizeof(size_t)) && o->charset_len) {
+        if (!o->charset) return Status(Errc::InvalidArgument, "charset is NULL");
+        r.charset.assign(o->charset, o->charset_len);
+    }
+    if (has(offsetof(siaara_repair_options, recompute_group_lengths) + sizeof(int32_t)))
+        r.recompute_group_lengths = o->recompute_group_lengths != 0;
+    if (has(offsetof(siaara_repair_options, keep_last_duplicate) + sizeof(int32_t)) && o->keep_last_duplicate)
+        r.duplicates = siaara::repair::DuplicatePolicy::KeepLast;
+    if (has(offsetof(siaara_repair_options, overwrite) + sizeof(int32_t))) r.overwrite = o->overwrite != 0;
+    if (has(offsetof(siaara_repair_options, uid_seed_len) + sizeof(size_t)) && o->uid_seed_len) {
+        if (!o->uid_seed) return Status(Errc::InvalidArgument, "uid_seed is NULL");
+        r.uid_seed.assign(o->uid_seed, o->uid_seed_len);
+    }
+    return Status::ok();
+}
+
+siaara_status findings_out(const siaara::Result<std::vector<siaara::repair::Finding>>& r, char* buf, size_t cap,
+                           size_t* needed) {
+    if (!r) return fail(r.error());
+    siaara::repair::Report rep;
+    siaara::repair::FileReport f;
+    f.findings = r.value();
+    rep.files.push_back(std::move(f));
+    return copy_out(siaara::repair::to_json(rep), buf, cap, needed);
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_validate_json(const char* path, size_t path_len, char* buf, size_t cap,
+                                                          size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!path) return fail(Errc::InvalidArgument, "path must not be NULL");
+        return findings_out(siaara::repair::validate_file(std::string(path, path_len)), buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_validate_memory_json(const uint8_t* data, size_t size, char* buf,
+                                                                 size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!data && size) return fail(Errc::InvalidArgument, "data must not be NULL");
+        return findings_out(siaara::repair::validate_bytes(siaara::Bytes::copy_of(data, size)), buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_repair_file(const char* input_path, size_t input_len,
+                                                        const char* output_path, size_t output_len,
+                                                        const siaara_repair_options* options, char* buf,
+                                                        size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (needed) *needed = 0;
+        if (!input_path) return fail(Errc::InvalidArgument, "input_path must not be NULL");
+        if (!output_path && output_len) return fail(Errc::InvalidArgument, "output_path is NULL");
+        siaara::repair::RepairOptions o;
+        if (Status s = to_repair_options(options, o); !s) return fail(s);
+        const std::string out = output_path ? std::string(output_path, output_len) : std::string();
+        auto r = siaara::repair::repair_file(std::string(input_path, input_len), out, o);
+        if (!r) return fail(r.error());
+        const siaara_status st = (buf || cap || needed) ? copy_out(siaara::repair::to_json(*r), buf, cap, needed)
+                                                               : ok();
+        const siaara::repair::FileReport& f = r->files.front();
+        if (!f.input_unchanged) return fail(Errc::Internal, "the input file changed during the repair");
+        if (!f.error.empty()) return fail(Errc::Rejected, f.error);
+        return st;
+    });
+}
+
+}  // extern "C"

@@ -1320,6 +1320,56 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_fil
                                                                 uint32_t tag, uint8_t* buf, size_t cap,
                                                                 size_t* needed);
 
+/* ---------------------------------------------------------------- validation and repair */
+/* Validation checks a file against the data dictionary (VR, VM, value length and format), the
+ * structure rules of PS3.5 / PS3.10, the Specific Character Set, header-to-pixel consistency and
+ * its IOD's module / attribute requirements and Enumerated Values (tables generated from PS3.3).
+ * Repair never changes the input file: it writes a NEW file, only for the categories asked for, and
+ * logs every change. Reports never contain values from the data sets unless detailed_report is
+ * set; such a report has "contains_phi": true. */
+enum {
+    SIAARA_REPAIR_STRUCTURAL = 1u << 0, /* file meta, group lengths, odd lengths, offset tables ... */
+    SIAARA_REPAIR_VALUES = 1u << 1,     /* lossless VR re-encoding, unambiguous value normalisation */
+    SIAARA_REPAIR_UIDS = 1u << 2,       /* invalid UIDs replaced by 2.25 UIDs, references kept */
+    SIAARA_REPAIR_CHARSET = 1u << 3,    /* Specific Character Set detected or set to options->charset */
+    SIAARA_REPAIR_ATTRIBUTES = 1u << 4, /* missing Type 2 added empty, required UIDs generated */
+    SIAARA_REPAIR_PIXELS = 1u << 5,     /* image attributes made consistent with the pixel data */
+    SIAARA_REPAIR_RESCUE = 1u << 6,     /* complete (decodable) frames of damaged pixel data kept */
+    SIAARA_REPAIR_DECOMPRESS = 1u << 7, /* pixel data written native (Explicit VR Little Endian) */
+    SIAARA_REPAIR_STUDY = 1u << 8       /* cross-file consistency (siaara_repair_file: no effect) */
+};
+typedef struct siaara_repair_options {
+    uint32_t struct_size;            /* set to sizeof(siaara_repair_options) */
+    uint32_t fix;                    /* SIAARA_REPAIR_* bits; 0 = report only */
+    int32_t write;                   /* 0 (default) = dry run: changes are planned and reported only */
+    int32_t detailed_report;         /* 1 = old/new values and paths in the report: it CONTAINS PHI */
+    const char* charset;             /* SIAARA_REPAIR_CHARSET: value to set when detection is ambiguous; may be NULL */
+    size_t charset_len;
+    int32_t recompute_group_lengths; /* SIAARA_REPAIR_STRUCTURAL: recompute instead of dropping them */
+    int32_t keep_last_duplicate;     /* duplicated elements: keep the last copy (default: the first) */
+    int32_t overwrite;               /* replace an existing output file (never the input) */
+    const char* uid_seed;            /* seed for generated UIDs (repeatable runs); NULL = random */
+    size_t uid_seed_len;
+} siaara_repair_options;
+
+/* Validates a file; the findings are written as JSON (string buffer rules). The file is only read. */
+SIAARA_API siaara_status SIAARA_CALL siaara_validate_json(const char* utf8_path, size_t path_len, char* buf,
+                                                          size_t cap, size_t* needed);
+/* Validates a Part 10 stream in memory (the bytes are only read). */
+SIAARA_API siaara_status SIAARA_CALL siaara_validate_memory_json(const uint8_t* data, size_t size, char* buf,
+                                                                 size_t cap, size_t* needed);
+/* Validates and repairs input_path into the NEW file output_path (written only when options->write
+ * is 1; output_path may be NULL for a dry run). output_path must not be the input. The JSON report
+ * (findings, every change, rescued frames, validation of the output, input SHA-256 before/after) is
+ * copied to buf under the string buffer rules; buf may be NULL with cap 0. The repair
+ * is complete before the report is copied, so SIAARA_ERR_BUFFER_TOO_SMALL only means the report was
+ * cut; *needed has its full length. A per-file failure (unreadable input, output exists ...) returns
+ * an error after the report is copied. A struct_size smaller than this version's struct is accepted. */
+SIAARA_API siaara_status SIAARA_CALL siaara_repair_file(const char* input_path, size_t input_len,
+                                                        const char* output_path, size_t output_len,
+                                                        const siaara_repair_options* options, char* buf,
+                                                        size_t cap, size_t* needed);
+
 #ifdef __cplusplus
 }
 #endif

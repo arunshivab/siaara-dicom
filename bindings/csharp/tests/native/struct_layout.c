@@ -369,5 +369,17 @@ int main(void) {
     printf("F siaara_save_options sequence_lengths %u\n", (unsigned)offsetof(siaara_save_options, sequence_lengths));
     printf("F siaara_save_options group_lengths %u\n", (unsigned)offsetof(siaara_save_options, group_lengths));
     printf("F siaara_save_options odd_lengths %u\n", (unsigned)offsetof(siaara_save_options, odd_lengths));
+    printf("S siaara_repair_options %u\n", (unsigned)sizeof(siaara_repair_options));
+    printf("F siaara_repair_options struct_size %u\n", (unsigned)offsetof(siaara_repair_options, struct_size));
+    printf("F siaara_repair_options fix %u\n", (unsigned)offsetof(siaara_repair_options, fix));
+    printf("F siaara_repair_options write %u\n", (unsigned)offsetof(siaara_repair_options, write));
+    printf("F siaara_repair_options detailed_report %u\n", (unsigned)offsetof(siaara_repair_options, detailed_report));
+    printf("F siaara_repair_options charset %u\n", (unsigned)offsetof(siaara_repair_options, charset));
+    printf("F siaara_repair_options charset_len %u\n", (unsigned)offsetof(siaara_repair_options, charset_len));
+    printf("F siaara_repair_options recompute_group_lengths %u\n", (unsigned)offsetof(siaara_repair_options, recompute_group_lengths));
+    printf("F siaara_repair_options keep_last_duplicate %u\n", (unsigned)offsetof(siaara_repair_options, keep_last_duplicate));
+    printf("F siaara_repair_options overwrite %u\n", (unsigned)offsetof(siaara_repair_options, overwrite));
+    printf("F siaara_repair_options uid_seed %u\n", (unsigned)offsetof(siaara_repair_options, uid_seed));
+    printf("F siaara_repair_options uid_seed_len %u\n", (unsigned)offsetof(siaara_repair_options, uid_seed_len));
     return 0;
 }

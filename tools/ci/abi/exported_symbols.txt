@@ -54,6 +54,7 @@ siaara_gpu_devices
 siaara_last_error_message
 siaara_orientation_labels
 siaara_render_rgba8
+siaara_repair_file
 siaara_roi_stats_compute
 siaara_rtstruct_contour_points
 siaara_rtstruct_free
@@ -98,6 +99,8 @@ siaara_store_stats_get
 siaara_store_verify
 siaara_suv_factor
 siaara_tls_available
+siaara_validate_json
+siaara_validate_memory_json
 siaara_version_string
 siaara_view_create
 siaara_view_free
