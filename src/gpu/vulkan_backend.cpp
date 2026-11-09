@@ -668,7 +668,9 @@ Status Context::create_pipelines() {
 Context::~Context() {
     // After a device loss or timeout objects may still be in use: everything is left to the driver.
     if (!dev || lost_.load()) return;
-    if (f.DeviceWaitIdle) (void)f.DeviceWaitIdle(dev);
+    // Nothing should be in flight (every submission is waited for); if the device cannot even
+    // report idle, it is treated as lost and its objects are left to the driver.
+    if (!f.DeviceWaitIdle || f.DeviceWaitIdle(dev) != V::res::Success) return;
     for (auto& p : pipelines)
         if (p) {
             f.DestroyPipeline(dev, p, nullptr);
@@ -1125,10 +1127,12 @@ Status VkSession::run(param::Kernel k, std::uint32_t width, std::uint32_t height
     if (pbytes == 0 || pbytes > c.max_buffer_bytes() || dbytes > c.max_buffer_bytes())
         return Status(Errc::Unsupported, "vulkan: tables exceed the storage-buffer limit");
     const std::uint64_t data_off = (pbytes + 255u) & ~std::uint64_t{255};
-    if (Status s = ensure(data_off + dbytes, pbytes, dbytes, width, height); !s) return s;
+    const std::uint64_t staging_need = data_off + dbytes;
+    if (static_cast<std::size_t>(staging_need) != staging_need) return Status(Errc::LimitExceeded, "vulkan: tables too large");
+    if (Status s = ensure(staging_need, pbytes, dbytes, width, height); !s) return s;
     auto* stage = static_cast<std::uint8_t*>(staging_.mapped);
-    std::memcpy(stage, params.data(), pbytes);
-    if (!data.empty()) std::memcpy(stage + data_off, data.data(), data.size() * 4u);
+    std::memcpy(stage, params.data(), params.size() * sizeof(std::uint32_t));
+    if (!data.empty()) std::memcpy(stage + static_cast<std::size_t>(data_off), data.data(), data.size() * sizeof(std::uint32_t));
 
     V::DescriptorBufferInfo pinfo{params_.buffer, 0, pbytes};
     V::DescriptorBufferInfo dinfo{data_.buffer, 0, dbytes};

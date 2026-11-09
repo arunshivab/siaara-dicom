@@ -403,6 +403,7 @@ TEST_CASE("gpu/mpr: thick slab MIP, MinIP and average") {
     auto v = View::create(vol, 96, 96);
     REQUIRE(v);
     Plane pl = standard_plane(vol->grid(), StandardOrientation::Sagittal);
+    pl.point = pl.point + pl.normal * 0.31;  // off the nearest-neighbour ties of the volume centre
     pl.pixel_spacing = 0.5;
     CHECK(v->set_plane(pl));
     const SlabMode modes[3] = {SlabMode::Mip, SlabMode::MinIp, SlabMode::Average};
@@ -434,6 +435,7 @@ TEST_CASE("gpu/mpr: two-layer fusion (on the fly and pre-resampled)") {
         auto v = View::create(ct, 100, 90);
         REQUIRE(v);
         Plane pl = standard_plane(ct->grid(), StandardOrientation::Axial);
+        pl.point = pl.point + pl.normal * 0.31;  // off the nearest-neighbour ties of the volume centre
         pl.pixel_spacing = 0.5;
         CHECK(v->set_plane(pl));
         CHECK(v->set_mode(ViewMode::Mpr, Interpolation::Linear));
@@ -537,12 +539,16 @@ TEST_CASE("gpu/state: uploads in chunks, window / colour-map / plane / layer cha
     if (!gpu_present("state changes")) return;
     gpu::testing::reset();
     gpu::testing::set_upload_chunk_bytes(3 * 48 * 44 * 2 + 10);  // 3 int16 slices per step (12 steps)
-    auto vol = ct_volume(VoxelType::Int16, true);
+    // Equal spacings: the default grid plane has no nearest-neighbour rounding ties (see above).
+    auto vol = ct_volume(VoxelType::Int16, true, {0.9, 0.9, 0.9});
     auto vol2 = ct_volume(VoxelType::Float32, false);
     REQUIRE(vol);
     REQUIRE(vol2);
-    auto v = View::create(vol, 72, 64);
+    // Planes off rounding ties: the default plane through the centre of an even slice count lies
+    // exactly halfway between two slices, where nearest sampling is decided by rounding noise.
+    auto v = View::create(vol, 48, 44);
     REQUIRE(v);
+    CHECK(v->set_plane(grid_plane(vol->grid(), 2, 17.0)));
     CHECK(v->set_mode(ViewMode::Mpr, Interpolation::Nearest));
     auto p = render_both(*v);
     expect_close("chunked upload, nearest", p, 0, 0.0, 0.0, 0);
@@ -555,6 +561,7 @@ TEST_CASE("gpu/state: uploads in chunks, window / colour-map / plane / layer cha
     p = render_both(*v);
     expect_close("after a colour-map change", p, 0, 0.0, 0.0, 0);
     Plane pl = standard_plane(vol->grid(), StandardOrientation::Sagittal);
+    pl.point = pl.point + pl.normal * 0.31;
     pl.pixel_spacing = 0.6;
     CHECK(v->set_plane(pl));
     p = render_both(*v);
