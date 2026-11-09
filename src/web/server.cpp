@@ -290,6 +290,11 @@ private:
         // Accept: JSON (default) or multipart XML.
         const MetaFormat fmt = metadata_format(rq_);
         if (fmt == MetaFormat::None) return fail(rs_, 406, "acceptable media types: application/dicom+json, multipart/related; type=\"application/dicom+xml\"");
+        // Let the store stop early (WEB-05): at most max_qido_results + 1 after the offset.
+        {
+            const std::uint64_t cap = std::min<std::uint64_t>(cfg_.max_qido_results, 0xFFFFFFFEu) + 1u;
+            q.limit = static_cast<std::uint32_t>(std::min<std::uint64_t>(q.limit.value_or(0xFFFFFFFFu), cap));
+        }
         std::vector<Dataset> results;
         Status st = store_.search(q, results);
         if (!st) return fail(rs_, st.code == Errc::Unsupported ? 400 : 500, st.code == Errc::Unsupported ? "query not supported" : "search failed");
@@ -463,6 +468,13 @@ private:
             if (numbers.size() >= 100000) return fail(rs_, 400, "too many frames requested");
             numbers.push_back(static_cast<std::uint32_t>(*v));
         }
+        {
+            // Each frame at most once (PARSE-31: /frames/1,1,1,... multiplied one frame's size).
+            std::vector<std::uint32_t> sorted = numbers;
+            std::sort(sorted.begin(), sorted.end());
+            if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+                return fail(rs_, 400, "duplicate frame number");
+        }
         std::vector<BulkWant> wants;
         if (!bulk_candidates(wants)) return fail(rs_, 406, "not acceptable");
         std::vector<Bytes> raw;
@@ -472,6 +484,7 @@ private:
         if (!f) return fail(rs_, 500, "stored instance cannot be read");
         auto fr = image::FrameReader::open(f->dataset, f->transfer_syntax);
         if (!fr) return fail(rs_, 404, "instance has no frames");
+        if (numbers.size() > fr->frame_count()) return fail(rs_, 400, "more frames requested than the instance has");
         for (std::uint32_t n : numbers)
             if (n > fr->frame_count()) return fail(rs_, 404, "frame number out of range");
         const std::string stored_media(media_type_for_transfer_syntax(f->transfer_syntax));
@@ -487,15 +500,22 @@ private:
             if (!stored_ok && !native_ok) continue;
             const bool as_stored = stored_ok && (!native_ok || want.ts == "*" || want.media != media::OctetStream);
             multipart::Writer w;
+            std::uint64_t total = 0;
+            auto over_budget = [&](std::size_t part) {
+                total += part;
+                return total > cfg_.max_frames_response_bytes;
+            };
             for (std::uint32_t n : numbers) {
                 if (as_stored) {
                     std::vector<std::uint8_t> enc;
                     if (Status st = fr->encoded_frame(n - 1, enc); !st) return fail(rs_, 500, "frame cannot be read");
+                    if (over_budget(enc.size())) return fail(rs_, 413, "response too large");
                     w.add(stored_media + "; transfer-syntax=" + f->transfer_syntax,
                           std::string_view(reinterpret_cast<const char*>(enc.data()), enc.size()));
                 } else {
                     auto d = fr->decode(n - 1);
                     if (!d) return fail(rs_, 406, "frame cannot be decompressed");
+                    if (over_budget(d->size())) return fail(rs_, 413, "response too large");
                     w.add(std::string(media::OctetStream) + "; transfer-syntax=" + std::string(ts::ExplicitVRLittleEndian),
                           std::string_view(reinterpret_cast<const char*>(d->data()), d->size()));
                 }
@@ -696,6 +716,16 @@ Status DicomwebServer::start(const DicomwebServerConfig& cfg, Store store) {
     while (!cfg_.base_path.empty() && cfg_.base_path.back() == '/') cfg_.base_path.pop_back();
     while (!cfg_.public_base_url.empty() && cfg_.public_base_url.back() == '/') cfg_.public_base_url.pop_back();
     if (!cfg_.base_path.empty() && cfg_.base_path[0] != '/') return Status(Errc::InvalidArgument, "base_path must start with '/'");
+    if (cfg_.cors_allow_origin == "*" && cfg_.authorize)
+        return Status(Errc::InvalidArgument, "cors_allow_origin \"*\" cannot be combined with authorize; name the origin");
+    const bool remote = !http::is_loopback_address(cfg_.http.bind_address);
+    const bool protected_remote = cfg_.http.tls.enabled && (cfg_.authorize || cfg_.http.tls.require_client_certificate);
+    if (remote && !protected_remote && !cfg_.http.allow_insecure_remote)
+        return Status(Errc::InvalidArgument,
+                      "refusing to serve DICOMweb off loopback without TLS and authorize (or client certificates); "
+                      "set http.allow_insecure_remote to override");
+    if (remote && !protected_remote && cfg_.http.log)
+        cfg_.http.log("dicomweb: warning: serving off loopback without TLS plus authentication (allow_insecure_remote)");
     return http_.start(cfg_.http, [this](const http::Request& rq, http::Response& rs) { handle(rq, rs); });
 }
 

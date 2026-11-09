@@ -230,6 +230,12 @@ private:
     }
 };
 
+xml::ParseLimits derived_limits(const ModelReadOptions& opt) {
+    xml::ParseLimits l = opt.xml_limits;
+    if (l.max_depth == 0) l.max_depth = static_cast<std::uint32_t>(std::min<std::uint64_t>(2ull * opt.max_depth + 4u, 0xFFFFFFFFu));
+    return l;
+}
+
 // ---------------------------------------------------------------- decoder
 class Decoder {
 public:
@@ -488,7 +494,7 @@ Status dataset_to_xml(const Dataset& ds, std::string& out, const ModelWriteOptio
 }
 
 Result<Dataset> dataset_from_xml(std::string_view text, const ModelReadOptions& opt) {
-    auto root = xml::parse(text, opt.xml_limits);
+    auto root = xml::parse(text, derived_limits(opt));
     if (!root) return root.take_error();
     if (local_name(root->name) != "NativeDicomModel")
         return Status(Errc::Malformed, "DICOM XML: root element is not NativeDicomModel");

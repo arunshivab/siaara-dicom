@@ -1,6 +1,7 @@
 // SIAARA DICOM Toolkit - DICOM JSON Model (PS3.18 Annex F), written from the standard.
 #include "web/dicom_json.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -195,6 +196,12 @@ private:
         return Status::ok();
     }
 };
+
+json::ParseLimits derived_limits(const ModelReadOptions& opt) {
+    json::ParseLimits l = opt.json_limits;
+    if (l.max_depth == 0) l.max_depth = static_cast<std::uint32_t>(std::min<std::uint64_t>(3ull * opt.max_depth + 4u, 0xFFFFFFFFu));
+    return l;
+}
 
 // ---------------------------------------------------------------- decoder
 class Decoder {
@@ -416,13 +423,13 @@ Result<Dataset> dataset_from_json_value(const json::Value& v, const ModelReadOpt
 }
 
 Result<Dataset> dataset_from_json(std::string_view text, const ModelReadOptions& opt) {
-    auto v = json::parse(text, opt.json_limits);
+    auto v = json::parse(text, derived_limits(opt));
     if (!v) return v.take_error();
     return dataset_from_json_value(*v, opt);
 }
 
 Result<std::vector<Dataset>> datasets_from_json(std::string_view text, const ModelReadOptions& opt) {
-    auto v = json::parse(text, opt.json_limits);
+    auto v = json::parse(text, derived_limits(opt));
     if (!v) return v.take_error();
     std::vector<Dataset> out;
     if (v->is_object()) {
