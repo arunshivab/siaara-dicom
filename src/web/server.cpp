@@ -56,7 +56,7 @@ std::string origin_of(const http::Request& rq) {
 Result<Bytes> convert_instance(const Bytes& raw, const std::string& want, std::string& out_ts) {
     auto f = read_part10(raw);
     if (!f) return f.take_error();
-    const std::string& stored = f->transfer_syntax;
+    const std::string stored = f->transfer_syntax;
     if (want == "*" || want == stored || (want.empty() && stored == ts::ExplicitVRLittleEndian)) {
         out_ts = stored;
         return raw;
@@ -168,7 +168,7 @@ public:
             return;
         }
         // WADO-URI
-        if (!cfg_.wado_uri_path.empty() && target_.path == cfg_.wado_uri_path) {
+        if (!cfg_.wado_uri_path.empty() && target_.path == cfg_.base_path + cfg_.wado_uri_path) {
             if (!get) return method_not_allowed("GET, HEAD");
             return wado_uri();
         }
@@ -472,7 +472,7 @@ private:
         for (const auto& want : wants) {
             // Option A: as stored (encapsulated) frames.
             const bool stored_ok = fr->encapsulated() &&
-                                   (want.media == "*" || want.media == stored_media) &&
+                                   (want.media == "*" || want.media == stored_media || want.ts == "*") &&
                                    (want.ts == "*" || want.ts == f->transfer_syntax || (want.ts.empty() && want.media != std::string(media::OctetStream)));
             // Option B: uncompressed frames.
             const bool native_ok = (want.media == "*" || want.media == media::OctetStream) &&

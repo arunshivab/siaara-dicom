@@ -446,6 +446,12 @@ Status Connection::read_line(std::size_t cap, std::string& line, int first_timeo
             return Status::ok();
         }
         if (buf_.size() - pos_ > cap + 1) return Status(Errc::LimitExceeded, "line too long");
+        // No line of the protocol carries C0 controls other than HTAB: fail fast on binary
+        // input (e.g. a TLS handshake sent to a plain HTTP port) instead of waiting for a LF.
+        for (std::size_t i = pos_; i < buf_.size(); ++i) {
+            const auto b = static_cast<unsigned char>(buf_[i]);
+            if ((b < 0x20 && b != '\t' && b != '\r') || b == 0x7F) return Status(Errc::Malformed, "control character in message");
+        }
         if (buf_.size() > pos_) got_any = true;
         if (Status st = fill(timeout_now(first && !got_any ? first_timeout_ms : lim_.read_timeout_ms)); !st) {
             if (deadline_ms_ && now_ms() >= deadline_ms_ && st.code == Errc::Timeout)

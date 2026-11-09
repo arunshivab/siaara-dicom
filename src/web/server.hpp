@@ -10,7 +10,7 @@
 //   GET  /studies/{s}/series/{se}/instances/{i}/bulkdata/{tag[/item/tag...]}  WADO-RS bulk data
 //   GET  .../rendered                                                         406 (no renderer)
 //   POST /studies[/{s}]                                                       STOW-RS
-//   GET  ServerConfig::wado_uri_path?requestType=WADO&...                     WADO-URI
+//   GET  /wado?requestType=WADO&... (DicomwebServerConfig::wado_uri_path)    WADO-URI
 // Error bodies are fixed text: request content is never echoed back.
 #pragma once
 
@@ -63,7 +63,7 @@ struct Store {
 struct DicomwebServerConfig {
     http::ServerConfig http;
     std::string base_path = "/dicomweb";   // prefix of every DICOMweb route ("" for the root)
-    std::string wado_uri_path = "/wado";   // WADO-URI endpoint ("" disables it)
+    std::string wado_uri_path = "/wado";   // WADO-URI endpoint below base_path ("" disables it)
     // Binary values longer than this are returned as BulkDataURI in metadata responses.
     std::uint64_t bulk_data_threshold = 1024;
     std::size_t max_qido_results = 10000;  // hard cap; more matches are cut with a Warning header
