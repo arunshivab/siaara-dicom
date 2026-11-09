@@ -10,6 +10,7 @@
 #include <locale>
 #include <memory>
 #include <sstream>
+#include <type_traits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -276,7 +277,13 @@ std::string format_float_t(F v, int max_precision) {
     for (int p = 1; p <= max_precision; ++p) {
         out.str(std::string());
         out << std::setprecision(p) << v;
-        auto back = parse_float_t<F>(out.str());
+        std::optional<F> back;
+        if constexpr (std::is_same_v<F, float>) {
+            auto d = parse_float_t<double>(out.str());
+            if (d) back = static_cast<float>(*d);
+        } else {
+            back = parse_float_t<F>(out.str());
+        }
         if (back && (*back == v) && (std::signbit(*back) == std::signbit(v))) return out.str();
     }
     out.str(std::string());
@@ -287,7 +294,15 @@ std::string format_float_t(F v, int max_precision) {
 }  // namespace
 
 std::optional<double> parse_double(std::string_view s) { return parse_float_t<double>(s); }
-std::optional<float> parse_float(std::string_view s) { return parse_float_t<float>(s); }
+// Floats are parsed through double: libc++'s `istream >> float` rejects some valid tokens near the
+// float range limits (seen on macOS), and every float value is exactly representable as a double.
+std::optional<float> parse_float(std::string_view s) {
+    auto d = parse_float_t<double>(s);
+    if (!d) return std::nullopt;
+    const auto f = static_cast<float>(*d);
+    if (!std::isfinite(f)) return std::nullopt;
+    return f;
+}
 std::string format_double(double v) { return format_float_t<double>(v, 17); }
 std::string format_float(float v) { return format_float_t<float>(v, 9); }
 
@@ -313,7 +328,7 @@ Status encapsulated_stream(const Element& e, std::vector<std::uint8_t>& out) {
         out.insert(out.end(), b, b + 4);
     };
     for (const auto& f : e.fragments) {
-        const std::uint64_t len = f.size() + (f.size() & 1u);
+        const std::uint64_t len = static_cast<std::uint64_t>(f.size()) + (f.size() & 1u);
         if (len >= kUndefinedLength) return Status(Errc::LimitExceeded, "fragment too large", 0, e.tag);
         put_tag(tags::Item);
         put32(static_cast<std::uint32_t>(len));
