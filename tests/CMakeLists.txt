@@ -81,3 +81,11 @@ endif()
 add_executable(tls_tool crosscheck/tls_tool.cpp)
 target_link_libraries(tls_tool PRIVATE siaara_static)
 target_compile_options(tls_tool PRIVATE ${SIAARA_TEST_WARN})
+# Test-only helper for tests/crosscheck/volume_crosscheck.py and the volume benchmark (not installed,
+# not run by ctest).
+add_executable(volume_tool crosscheck/volume_tool.cpp)
+target_link_libraries(volume_tool PRIVATE siaara_static)
+target_compile_options(volume_tool PRIVATE ${SIAARA_TEST_WARN})
+add_executable(volume_bench crosscheck/volume_bench.cpp)
+target_link_libraries(volume_bench PRIVATE siaara_static)
+target_compile_options(volume_bench PRIVATE ${SIAARA_TEST_WARN})

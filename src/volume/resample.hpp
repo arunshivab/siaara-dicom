@@ -22,7 +22,7 @@ namespace siaara::volume {
 struct ResampleOptions {
     Interpolation interpolation = Interpolation::Linear;
     unsigned threads = 0;                 // 0 = hardware concurrency
-    std::optional<double> outside_value;  // value for points outside the source; default: source minimum
+    std::optional<double> outside_value;  // value outside the source; default: source minimum; NaN kept for float32 output
     VoxelTypeRequest type = VoxelTypeRequest::Auto;  // Auto: same type as the source
     std::uint64_t memory_budget = 4ull << 30;
     bool statistics = true;               // compute value range and histogram of the result

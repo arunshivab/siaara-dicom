@@ -467,6 +467,13 @@ TEST_CASE("render3d: resampling identity is exact; SIMD kernel matches the scala
     CHECK(r->at(0, 0, 0) == vol->at(2, 1, 3));
     CHECK(r->at(14, 11, 7) == vol->at(16, 12, 10));
     CHECK(r->at(16, 12, 10) == -7.0f);
+    // NaN as the outside value is kept for float32 output (pre-resampled fusion layers rely on it).
+    o.outside_value = std::numeric_limits<double>::quiet_NaN();
+    auto rn = resample(*vol, sh, o);
+    REQUIRE(rn.is_ok());
+    CHECK(std::isnan(rn->at(16, 12, 10)));
+    CHECK(rn->at(0, 0, 0) == vol->at(2, 1, 3));
+    CHECK(std::isfinite(rn->value_min) && std::isfinite(rn->value_max));
     // int16 source onto a rotated finer grid: SIMD vs scalar.
     auto vi = make_volume({33, 29, 21}, {1, 1, 1}, kOrigin, identity_axes(), VoxelType::Int16,
                           [&](std::uint32_t, std::uint32_t, std::uint32_t) { return std::nearbyint(u(rng)); });

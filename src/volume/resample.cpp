@@ -139,7 +139,9 @@ Result<Volume> resample(const Volume& src, const Grid& target, const ResampleOpt
     if (!r) return r;
     Volume& out = *r;
     const double outside_d = opt.outside_value.value_or(src.value_min);
-    const float outside = std::isfinite(outside_d) ? static_cast<float>(outside_d) : 0.0f;
+    // NaN is kept for float32 output (callers use it to mark "outside"); int16 output gets 0.
+    float outside = static_cast<float>(outside_d);
+    if (!std::isfinite(outside_d) && !(std::isnan(outside_d) && type == VoxelType::Float32)) outside = 0.0f;
     const std::uint32_t nx = target.dims[0], ny = target.dims[1], nz = target.dims[2];
     const unsigned workers = detail::resolve_threads(opt.threads);
     std::vector<std::vector<float>> rowbuf;
