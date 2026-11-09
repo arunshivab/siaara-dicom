@@ -330,6 +330,35 @@ public sealed class DicomFile : IDisposable
         return values;
     }
 
+    /// <summary>Decodes a frame once for repeated rendering (see <see cref="DicomFrame"/>).</summary>
+    /// <param name="frame">0-based frame.</param>
+    /// <returns>The decoded frame; dispose it.</returns>
+    public DicomFrame OpenFrame(int frame = 0) => DicomFrame.Open(this, frame);
+
+    /// <summary>
+    /// Zero-copy view of a frame of native (uncompressed, little-endian, not 1-bit) pixel data,
+    /// straight from the file's Pixel Data value (siaara_file_frame_view). The file stays alive
+    /// until the returned owner is disposed; do not change the Pixel Data meanwhile.
+    /// </summary>
+    /// <param name="frame">0-based frame.</param>
+    /// <returns>The frame bytes.</returns>
+    /// <exception cref="SiaaraException">Unsupported when the frame must be decoded.</exception>
+    public System.Buffers.IMemoryOwner<byte> LeaseNativeFrame(int frame = 0)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(frame);
+        nint data;
+        ulong bytes;
+        using (var l = new HandleLease(_handle))
+        {
+            Status.Check(Native.siaara_file_frame_view(l.Pointer, (uint)frame, out data, out bytes));
+        }
+        if (bytes > int.MaxValue)
+        {
+            throw new SiaaraException(SiaaraErrorCode.LimitExceeded, "frame larger than a span can address");
+        }
+        return new BorrowedMemoryManager<byte>(_handle, data, (int)bytes);
+    }
+
     /// <summary>Bytes of an RGBA8 rendering (rows x columns x 4).</summary>
     /// <param name="options">Render options, or null (frame 0, the file's VOI).</param>
     /// <returns>The size in bytes.</returns>

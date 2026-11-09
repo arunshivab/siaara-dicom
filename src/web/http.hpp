@@ -200,6 +200,9 @@ public:
     // request is retried once on a new connection.
     Result<Response> send(const Request& rq);
     void close() noexcept;
+    // Wakes a send() blocked in another thread: the open connection is shut down and that call
+    // fails. Later calls open a new connection.
+    void interrupt() noexcept;
     // Optional transport factory (e.g. TLS); default: plain TCP.
     std::function<Result<std::unique_ptr<net::Transport>>(const std::string& host, std::uint16_t port, int timeout_ms)>
         connector;
@@ -212,6 +215,8 @@ private:
     Limits lim_;
     int connect_timeout_ms_;
     std::unique_ptr<Connection> conn_;
+    std::mutex conn_mu_;  // conn_ changes and interrupt() (the connection itself is used by one thread)
+    std::atomic<bool> interrupted_{false};
     Result<Response> attempt(const Request& rq, bool& sent_on_reused, bool& got_bytes);
 };
 

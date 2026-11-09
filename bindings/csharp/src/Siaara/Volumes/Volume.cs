@@ -124,7 +124,11 @@ public sealed class Volume : IDisposable
     /// <param name="paths">File paths.</param>
     /// <param name="options">Options, or null.</param>
     /// <returns>The volume.</returns>
-    public static Volume Build(IReadOnlyList<string> paths, VolumeOptions? options = null)
+    public static Volume Build(IReadOnlyList<string> paths, VolumeOptions? options = null) =>
+        BuildCore(paths, options, null, CancellationToken.None);
+
+    private static Volume BuildCore(IReadOnlyList<string> paths, VolumeOptions? options, IProgress<OperationProgress>? progress,
+        CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(paths);
         if (paths.Count == 0)
@@ -140,28 +144,19 @@ public sealed class Volume : IDisposable
             ptrs[i] = mem.Utf8(paths[i]);
             lens[i] = (nuint)System.Text.Encoding.UTF8.GetByteCount(paths[i]);
         }
-        int st;
-        nint v;
-        if (options is null)
+        var o = new siaara_volume_options { struct_size = StructSize.Of<siaara_volume_options>() };
+        if (options is not null)
         {
-            st = Native.siaara_volume_build(ptrs, lens, (uint)paths.Count, in Unsafe.NullRef<siaara_volume_options>(), out v);
+            o.voxel_type = (int)options.VoxelType;
+            o.phase = (uint)Math.Max(0, options.Phase);
+            o.threads = (uint)Math.Max(0, options.Threads);
+            o.deshear_tilt = options.DeshearTilt ? 1 : 0;
+            o.strict = options.Strict ? 1 : 0;
+            o.memory_budget = (ulong)Math.Max(0, options.MemoryBudget);
+            o.spacing_tolerance = options.SpacingTolerance;
         }
-        else
-        {
-            var o = new siaara_volume_options
-            {
-                struct_size = StructSize.Of<siaara_volume_options>(),
-                voxel_type = (int)options.VoxelType,
-                phase = (uint)Math.Max(0, options.Phase),
-                threads = (uint)Math.Max(0, options.Threads),
-                deshear_tilt = options.DeshearTilt ? 1 : 0,
-                strict = options.Strict ? 1 : 0,
-                memory_budget = (ulong)Math.Max(0, options.MemoryBudget),
-                spacing_tolerance = options.SpacingTolerance,
-            };
-            st = Native.siaara_volume_build(ptrs, lens, (uint)paths.Count, in o, out v);
-        }
-        Status.Check(st);
+        nint v = 0;
+        LongCall.Run(progress, (c, cb, u) => Native.siaara_volume_build_ex(ptrs, lens, (uint)paths.Count, in o, c, cb, u, out v), token);
         var h = new VolumeHandle();
         h.Attach(v);
         return new Volume(h);
@@ -170,10 +165,12 @@ public sealed class Volume : IDisposable
     /// <summary>Build on a thread-pool thread (reads and decodes the whole series).</summary>
     /// <param name="paths">File paths.</param>
     /// <param name="options">Options, or null.</param>
-    /// <param name="cancellationToken">Cancels before the build starts.</param>
+    /// <param name="cancellationToken">Cancels, also while the files are read.</param>
+    /// <param name="progress">Files read / files (optional).</param>
     /// <returns>The volume.</returns>
-    public static Task<Volume> BuildAsync(IReadOnlyList<string> paths, VolumeOptions? options = null, CancellationToken cancellationToken = default) =>
-        Task.Run(() => Build(paths, options), cancellationToken);
+    public static Task<Volume> BuildAsync(IReadOnlyList<string> paths, VolumeOptions? options = null, IProgress<OperationProgress>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => BuildCore(paths, options, progress, cancellationToken), cancellationToken);
 
     /// <summary>Properties (read once; the volume is immutable).</summary>
     public VolumeProperties Properties => _properties ??= ReadProperties();

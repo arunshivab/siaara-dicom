@@ -52,6 +52,14 @@ ARRAY_RULES = {
     "siaara_view_set_curve": {"points": ("count", "count", 3, False)},
     "siaara_series_sort": {"out_instance": ("cap_primary",), "out_frame": ("cap_secondary",),
                            "out_group": ("cap_secondary",)},
+    "siaara_volume_build_ex": {"utf8_paths": ("count", "count", 1, False), "path_lens": ("count", "count", 1, True)},
+    "siaara_dicomdir_write_ex": {"files": ("count", "count", 1, False), "lens": ("count", "count", 1, False)},
+    "siaara_dimse_store_files": {"paths": ("count", "count", 1, False), "lens": ("count", "count", 1, True)},
+    "siaara_dimse_commit": {"sop_classes": ("count", "count", 1, False), "sop_instances": ("count", "count", 1, False),
+                            "failure_reasons": ("count", "count", 1, True)},
+    "siaara_web_wado_frames": {"frames": ("count", "count", 1, False),
+                               "transfer_syntaxes": ("count", "ts_count", 1, False)},
+    "siaara_web_wado_retrieve": {"transfer_syntaxes": ("count", "ts_count", 1, False)},
 }
 LEN_NAME = re.compile(r"(^|_)(len|size|count)$")
 CS_KEYWORDS = {"out", "params", "ref", "in", "base", "object", "string", "event", "fixed", "checked", "lock"}
@@ -400,6 +408,13 @@ def gen_safe(model, w, fname, ret, params):
             pre.append(f"if ({nm}.Length < {ln}) throw new ArgumentException(\"{n} needs {ln} elements\", nameof({nm}));")
             fixed.append(f"fixed ({elem}* p_{n} = {nm})")
             call.append(f"p_{n}")
+            continue
+        if rule and rule[0] == "count":
+            # output array whose length another parameter gives
+            sig.append(f"Span<{elem}> {nm}")
+            add_rule(pre, nm, n, rule)
+            fixed.append(f"fixed ({elem}* p_{n} = {nm})")
+            call.append(f"({raw_type(model, ct)})p_{n}")
             continue
         if has_cap and (n == "buf" or rule):
             sig.append(f"Span<{elem}> {nm}")

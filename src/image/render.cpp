@@ -264,6 +264,19 @@ Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t
         if (Status s = fr.decode(p.frame, scratch); !s) return s;
         frame = scratch;
     }
+    return render_2d_decoded(img, p, frame, rgba);
+}
+
+Status render_2d_decoded(const Image& img, const RenderParams& p, std::span<const std::uint8_t> frame,
+                         std::span<std::uint8_t> rgba) {
+    const PixelInfo& pi = img.info();
+    const FrameReader& fr = img.frames();
+    if (p.frame >= fr.frame_count()) return Status(Errc::InvalidArgument, "render: frame index out of range");
+    const std::uint64_t n = pi.pixels();
+    if (rgba.size() < n * 4) return Status(Errc::BufferTooSmall, "render: output buffer too small");
+    if (frame.size() < fr.frame_bytes()) return Status(Errc::Truncated, "render: decoded frame too short");
+    if (pi.kind == SampleKind::Integer && pi.bits_stored > 32 && pi.samples_per_pixel == 1)
+        return Status(Errc::Unsupported, "render: more than 32 bits stored");
     std::uint8_t* dst = rgba.data();
     const bool lut_path = pi.kind == SampleKind::Integer && pi.bits_stored <= 16 && pi.samples_per_pixel == 1;
     const SampleReader rd(pi);

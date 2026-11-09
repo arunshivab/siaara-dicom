@@ -29,6 +29,36 @@ internal interface IDicomdirSink : ICallbackSink
     int OnRecord(in siaara_dicomdir_entry entry, in siaara_index_record keys, ReadOnlySpan<byte> strings);
 }
 
+/// <summary>Target of siaara_find_callback. Returns 0 to continue.</summary>
+internal interface IFindSink : ICallbackSink
+{
+    int OnMatch(nint dataset);
+}
+
+/// <summary>Target of siaara_dimse_progress_callback. Returns 0 to continue.</summary>
+internal interface IDimseProgressSink : ICallbackSink
+{
+    int OnProgress(in siaara_dimse_result progress);
+}
+
+/// <summary>Target of siaara_progress_callback. Returns 0 to continue.</summary>
+internal interface IProgressSink : ICallbackSink
+{
+    int OnProgress(ulong done, ulong total);
+}
+
+/// <summary>Target of siaara_scp_callback.</summary>
+internal interface IScpSink : ICallbackSink
+{
+    void OnEvent(int kind, int dimseStatus, int outcome, string callingAe, string sopClassUid, string sopInstanceUid);
+}
+
+/// <summary>Target of siaara_log_callback.</summary>
+internal interface ILogSink : ICallbackSink
+{
+    void OnLog(int level, bool containsPhi, string message);
+}
+
 /// <summary>
 /// [UnmanagedCallersOnly] trampolines for the C callbacks. user_data is a GCHandle to the sink.
 /// Every exception is caught here and handed to the sink: nothing ever unwinds into native code.
@@ -44,6 +74,17 @@ internal static unsafe class Callbacks
 
     internal static nint DicomdirPointer =>
         (nint)(delegate* unmanaged[Cdecl]<void*, siaara_dicomdir_entry*, siaara_index_record*, byte*, int>)&DicomdirRecord;
+
+    internal static nint FindPointer => (nint)(delegate* unmanaged[Cdecl]<void*, nint, int>)&FindMatch;
+
+    internal static nint DimseProgressPointer =>
+        (nint)(delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int>)&DimseProgress;
+
+    internal static nint ProgressPointer => (nint)(delegate* unmanaged[Cdecl]<void*, ulong, ulong, int>)&Progress;
+
+    internal static nint ScpEventPointer => (nint)(delegate* unmanaged[Cdecl]<void*, siaara_scp_event*, void>)&ScpEvent;
+
+    internal static nint LogPointer => (nint)(delegate* unmanaged[Cdecl]<void*, int, int, byte*, void>)&Log;
 
     /// <summary>Length of the string table a record refers to (largest offset + length + NUL).</summary>
     internal static int StringTableLength(in siaara_index_record record)
@@ -141,6 +182,92 @@ internal static unsafe class Callbacks
         {
             Report(user, e);
             return 1;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int FindMatch(void* user, nint dataset)
+    {
+        try
+        {
+            IFindSink? sink = Sink<IFindSink>(user);
+            return sink is null ? 1 : sink.OnMatch(dataset);
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+            return 1;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int DimseProgress(void* user, siaara_dimse_result* progress)
+    {
+        try
+        {
+            IDimseProgressSink? sink = Sink<IDimseProgressSink>(user);
+            return sink is null || progress == null ? 1 : sink.OnProgress(in *progress);
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+            return 1;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int Progress(void* user, ulong done, ulong total)
+    {
+        try
+        {
+            IProgressSink? sink = Sink<IProgressSink>(user);
+            return sink is null ? 1 : sink.OnProgress(done, total);
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+            return 1;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void ScpEvent(void* user, siaara_scp_event* e)
+    {
+        try
+        {
+            if (e != null)
+            {
+                Sink<IScpSink>(user)?.OnEvent(e->kind, (int)e->dimse_status, e->outcome,
+                    Marshal.PtrToStringUTF8(e->calling_ae) ?? string.Empty,
+                    Marshal.PtrToStringUTF8(e->sop_class_uid) ?? string.Empty,
+                    Marshal.PtrToStringUTF8(e->sop_instance_uid) ?? string.Empty);
+            }
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Report(user, ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void Log(void* user, int level, int phi, byte* message)
+    {
+        try
+        {
+            Sink<ILogSink>(user)?.OnLog(level, phi != 0, Marshal.PtrToStringUTF8((nint)message) ?? string.Empty);
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception)
+#pragma warning restore CA1031
+        {
         }
     }
 }

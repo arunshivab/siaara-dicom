@@ -485,7 +485,8 @@ TEST_CASE("transcode: planar RGB and native YBR_FULL_422 sources") {
 TEST_CASE("transcode: signed 16-bit data through the lossless codecs") {
     const Image im = make_image(Kind::Gray16, 2, true);
     for (std::string_view t : {"1.2.840.10008.1.2.5", "1.2.840.10008.1.2.4.57", "1.2.840.10008.1.2.4.70",
-                               "1.2.840.10008.1.2.4.90", "1.2.840.10008.1.2.4.201", "1.2.840.10008.1.2.1.98"}) {
+                               "1.2.840.10008.1.2.4.80", "1.2.840.10008.1.2.4.90", "1.2.840.10008.1.2.4.201",
+                               "1.2.840.10008.1.2.1.98"}) {
         Result<Dataset> a = codec::transcode_dataset(im.ds, "1.2.840.10008.1.2.1", t);
         if (!a) std::fprintf(stderr, "  signed -> %s: %s\n", std::string(t).c_str(), a.error().message.c_str());
         REQUIRE(a.is_ok());
@@ -496,8 +497,13 @@ TEST_CASE("transcode: signed 16-bit data through the lossless codecs") {
         auto bc = canonical(*back, "1.2.840.10008.1.2.2");
         CHECK(bc && *bc == im.px);
     }
-    // JPEG-LS and lossy JPEG refuse signed data rather than corrupting it.
-    CHECK(!codec::transcode_dataset(im.ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.80").is_ok());
+    // Near-lossless JPEG-LS and lossy JPEG refuse signed data rather than corrupting it (lossless
+    // JPEG-LS codes the two's complement bit patterns exactly, checked above).
+    codec::TranscodeParams near;
+    near.lossy = true;
+    near.allow_lossy = true;
+    CHECK(!codec::transcode_dataset(im.ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.81", near).is_ok());
+    CHECK(!codec::transcode_dataset(im.ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.50", near).is_ok());
 }
 
 TEST_CASE("transcode: files, unknown syntaxes, data sets without pixel data") {

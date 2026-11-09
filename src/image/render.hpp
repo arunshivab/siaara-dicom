@@ -83,6 +83,10 @@ private:
 // Renders one frame to rows * columns * 4 bytes of RGBA8.
 Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t> rgba);
 Result<std::vector<std::uint8_t>> render_2d(const Image& img, const RenderParams& p);
+// As render_2d, for frame p.frame already decoded by img.frames().decode() (frame_bytes() bytes):
+// lets a caller decode once and render many times (window changes, colour maps).
+Status render_2d_decoded(const Image& img, const RenderParams& p, std::span<const std::uint8_t> frame,
+                         std::span<std::uint8_t> rgba);
 
 // Decodes a frame and applies the modality transformation, giving rows * columns * samples
 // floats, colour-by-pixel (4:2:2 native data expanded by replication, planar data interleaved).

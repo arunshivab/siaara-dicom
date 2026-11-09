@@ -241,6 +241,11 @@ public sealed class DicomDataset
     /// <returns>The values (empty for an empty element).</returns>
     public string[] GetStrings(DicomTag tag)
     {
+        if (_kind != RootKind.Item || _parent!.EffectiveCharacterSet() is null)
+        {
+            // One native call for every value (siaara_dataset_get_strings).
+            return GetStringsCore(tag, utf8: true);
+        }
         int vm = GetValueMultiplicity(tag);
         var values = new string[vm];
         for (int i = 0; i < vm; i++)
@@ -248,6 +253,30 @@ public sealed class DicomDataset
             values[i] = GetString(tag, i);
         }
         return values;
+    }
+
+    /// <summary>Every value as stored (no character set conversion), in one native call.</summary>
+    /// <param name="tag">The tag.</param>
+    /// <returns>The values (empty for an empty element).</returns>
+    public string[] GetRawStrings(DicomTag tag) => GetStringsCore(tag, utf8: false);
+
+    private string[] GetStringsCore(DicomTag tag, bool utf8)
+    {
+        using var l = new HandleLease(_file.Handle);
+        var state = (Ds: Resolve(l.Pointer), Tag: tag.Value, Utf8: utf8 ? 1 : 0);
+        byte[] all = Status.ReadArray<byte, (nint Ds, uint Tag, int Utf8)>(state, static (s, b, out n) =>
+            Native.siaara_dataset_get_strings(s.Ds, s.Tag, s.Utf8, b, out n, out _));
+        var values = new List<string>();
+        int start = 0;
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i] == 0)
+            {
+                values.Add(Encoding.UTF8.GetString(all, start, i - start));
+                start = i + 1;
+            }
+        }
+        return values.ToArray();
     }
 
     /// <summary>A value as stored (no character set conversion); use for UIDs and code strings.</summary>
@@ -404,6 +433,32 @@ public sealed class DicomDataset
             Status.Check(Native.siaara_dataset_item(Resolve(l.Pointer), tag.Value, (uint)index, out _));
         }
         return new DicomDataset(this, tag, index);
+    }
+
+    /// <summary>
+    /// Appends an empty item to a sequence (created with VR SQ when absent) and returns it for
+    /// writing. Like every item, it is located again by index on each call.
+    /// </summary>
+    /// <param name="tag">The sequence tag.</param>
+    /// <returns>The new item.</returns>
+    public DicomDataset AppendItem(DicomTag tag)
+    {
+        uint index;
+        using (var l = new HandleLease(_file.Handle))
+        {
+            Status.Check(Native.siaara_dataset_append_item(Resolve(l.Pointer), tag.Value, out _, out index));
+        }
+        return new DicomDataset(this, tag, (int)index);
+    }
+
+    /// <summary>Removes item index of a sequence (later items move down by one).</summary>
+    /// <param name="tag">The sequence tag.</param>
+    /// <param name="index">0-based item index.</param>
+    public void RemoveItem(DicomTag tag, int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        using var l = new HandleLease(_file.Handle);
+        Status.Check(Native.siaara_dataset_remove_item(Resolve(l.Pointer), tag.Value, (uint)index));
     }
 
     /// <summary>All items of a sequence; an empty list when the element is absent.</summary>

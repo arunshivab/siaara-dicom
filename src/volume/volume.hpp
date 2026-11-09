@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -128,6 +129,9 @@ struct VolumeOptions {
     bool strict = false;                  // fail (instead of warn) on non-uniform spacing, gaps, duplicates
     bool lenient = true;                  // passed to the parser / pixel layer
     std::uint32_t histogram_bins = 256;
+    // build_volume_from_paths: called after each file is read with (files read, files), never
+    // concurrently (possibly from worker threads); returning false stops with Errc::Cancelled.
+    std::function<bool(std::uint64_t done, std::uint64_t total)> progress;
 };
 
 // One frame source: a parsed file plus its transfer syntax (DicomFile carries both).

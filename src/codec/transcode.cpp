@@ -390,7 +390,11 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
             break;
         case Target::JpegLsLossless: case Target::JpegLsNear:
             if (pi.bits_stored < 2) return Status(Errc::Unsupported, "transcode: JPEG-LS needs 2..16 bits");
-            if (pi.is_signed) return Status(Errc::Unsupported, "transcode: JPEG-LS of signed data");
+            // Signed samples are coded as their Bits Stored two's complement bit patterns (the
+            // decoder sign-extends them): exact for lossless coding. NEAR > 0 would bound the error
+            // of the bit pattern, not of the value, so near-lossless coding stays refused.
+            if (pi.is_signed && plan.lossy)
+                return Status(Errc::Unsupported, "transcode: near-lossless JPEG-LS of signed data");
             break;
         case Target::J2kLossless: case Target::J2k: case Target::HtLossless: case Target::HtRpcl: case Target::Ht:
             if (plan.lossy && target == Target::Ht)
