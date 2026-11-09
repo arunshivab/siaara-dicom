@@ -127,9 +127,26 @@ def make_pki(d):
            {k + "_key": p(k + ".key") for k in ("server", "client")}
 
 
+def find_dcmtk(explicit):
+    """Folder whose echoscu/storescp/storescu/dump2dcm are DCMTK's, built with TLS (other tools
+    named echoscu, e.g. pynetdicom's, may come first on PATH)."""
+    dirs = [explicit] if explicit else os.environ.get("PATH", "").split(os.pathsep) + ["/usr/bin"]
+    for d in dirs:
+        if not d or not all(os.path.isfile(os.path.join(d, t)) for t in ("echoscu", "storescp", "storescu", "dump2dcm")):
+            continue
+        try:
+            rc, o = run([os.path.join(d, "echoscu"), "--help"], timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if "+tls" in o and "dcmtk" in o.lower():
+            return d
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
+    ap.add_argument("--dcmtk-dir", default=None, help="folder of the DCMTK tools (default: searched on PATH)")
     args = ap.parse_args()
     exe = ".exe" if os.name == "nt" else ""
     tools = os.path.join(args.build, "tools")
@@ -149,11 +166,12 @@ def main():
         print("SKIP: TLS is not available in this build: " + info.strip())
         return 0
     print("TLS backend: " + info.strip())
-    dcmtk = all(shutil.which(t) for t in ("echoscu", "storescp", "storescu", "dump2dcm"))
+    dcmtk_dir = find_dcmtk(args.dcmtk_dir)
+    dcmtk = dcmtk_dir is not None
+    dc = {t: os.path.join(dcmtk_dir, t) if dcmtk else t for t in ("echoscu", "storescp", "storescu", "dump2dcm")}
     if dcmtk:
-        rc, o = run(["echoscu", "--help"])
-        dcmtk = "+tls" in o
-    if not dcmtk:
+        print("DCMTK: " + dcmtk_dir)
+    else:
         print("note: DCMTK with TLS not found; DCMTK checks skipped (apt-get install dcmtk)")
 
     work = tempfile.mkdtemp(prefix="siaara_tls_xc_")
@@ -169,7 +187,7 @@ def main():
             with open(txt, "w") as f:
                 f.write(DUMP.format(uid="2.25.61002", pixels=pixels))
             dicom = os.path.join(work, "ct.dcm")
-            rc, o = run(["dump2dcm", "+te", txt, dicom])
+            rc, o = run([dc["dump2dcm"], "+te", txt, dicom])
             if rc != 0 or not os.path.exists(dicom):
                 raise RuntimeError("dump2dcm failed: " + o)
 
@@ -181,18 +199,18 @@ def main():
                      "--tls-ca", ca, "--tls-require-client-cert", str(port)], port)
         try:
             if dcmtk:
-                rc, o = run(["echoscu", "-aec", "SIAARA_TLS", "+tls", cli_key, cli, "+cf", ca, "localhost", str(port)])
+                rc, o = run([dc["echoscu"], "-aec", "SIAARA_TLS", "+tls", cli_key, cli, "+cf", ca, "localhost", str(port)])
                 check("DCMTK echoscu +tls (client cert) -> siaara-storescp --tls", rc == 0, o)
-                rc, o = run(["storescu", "-aec", "SIAARA_TLS", "+tls", cli_key, cli, "+cf", ca, "127.0.0.1", str(port),
+                rc, o = run([dc["storescu"], "-aec", "SIAARA_TLS", "+tls", cli_key, cli, "+cf", ca, "127.0.0.1", str(port),
                              dicom])
                 got = os.path.join(rx, "2.25.61002.dcm")
                 check("DCMTK storescu +tls -> siaara-storescp --tls, file received",
                       rc == 0 and os.path.exists(got) and os.path.getsize(got) > 500, o)
-                rc, o = run(["echoscu", "-aec", "SIAARA_TLS", "+tla", "+cf", ca, "localhost", str(port)])
+                rc, o = run([dc["echoscu"], "-aec", "SIAARA_TLS", "+tla", "+cf", ca, "localhost", str(port)])
                 check("DCMTK echoscu +tla (no client cert) refused by siaara-storescp", rc != 0, o)
-                rc, o = run(["echoscu", "-aec", "SIAARA_TLS", "+tls", cli_key, cli, "+cf", other, "localhost", str(port)])
+                rc, o = run([dc["echoscu"], "-aec", "SIAARA_TLS", "+tls", cli_key, cli, "+cf", other, "localhost", str(port)])
                 check("DCMTK echoscu with another CA refuses siaara-storescp", rc != 0, o)
-                rc, o = run(["echoscu", "-aec", "SIAARA_TLS", "-to", "5", "localhost", str(port)])
+                rc, o = run([dc["echoscu"], "-aec", "SIAARA_TLS", "-to", "5", "localhost", str(port)])
                 check("DCMTK echoscu without TLS fails on the TLS port", rc != 0, o)
             rc, o = run([echoscu, "-aec", "SIAARA_TLS", "-v"] + our_client + ["127.0.0.1", str(port)])
             check("siaara-echoscu --tls -> siaara-storescp --tls (mutual)", rc == 0 and "TLSv1.3" in o, o)
@@ -227,7 +245,7 @@ def main():
         # ---- 2. siaara-echoscu -> DCMTK storescp +tls
         if dcmtk:
             port = free_port()
-            dc = start(["storescp", "-aet", "DCMTK_TLS", "+tls", srv_key, srv, "+cf", ca, str(port)], port)
+            dcp = start([dc["storescp"], "-aet", "DCMTK_TLS", "+tls", srv_key, srv, "+cf", ca, str(port)], port)
             try:
                 rc, o = run([echoscu, "-aec", "DCMTK_TLS", "-v"] + our_client + ["127.0.0.1", str(port)])
                 check("siaara-echoscu --tls -> DCMTK storescp +tls", rc == 0 and "C-ECHO-RSP status 0x0000" in o, o)
@@ -237,14 +255,14 @@ def main():
                             ["127.0.0.1", str(port)])
                 check("siaara-echoscu --tls-name localhost x3 -> DCMTK storescp", rc == 0, o)
             finally:
-                stop(dc)
+                stop(dcp)
             port = free_port()
-            dc = start(["storescp", "-aet", "DCMTK_PLAIN", str(port)], port)
+            dcp = start([dc["storescp"], "-aet", "DCMTK_PLAIN", str(port)], port)
             try:
                 rc, o = run([echoscu, "-aec", "DCMTK_PLAIN", "-t", "5000"] + our_client + ["127.0.0.1", str(port)])
                 check("siaara-echoscu --tls to a plain DCMTK port fails (no fallback)", rc != 0, o)
             finally:
-                stop(dc)
+                stop(dcp)
 
         # ---- 5. openssl s_server as the server
         def s_server(extra, client_args, name, expect_ok, needle=None):
