@@ -90,12 +90,24 @@ std::string chain_text(DWORD err) {
     return std::string("certificate verification failed: ") + (name ? name : "error " + hex32(err));
 }
 
+// UTF-8 to UTF-16. False when `s` is not valid UTF-8 (or too long); `w` is then empty.
+bool widen(const std::string& s, std::wstring& w) {
+    w.clear();
+    if (s.empty()) return true;
+    if (s.size() > 0x7FFFFFFFu) return false;
+    const int n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return false;
+    w.assign(static_cast<std::size_t>(n), L'\0');
+    if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), w.data(), n) != n) {
+        w.clear();
+        return false;
+    }
+    return true;
+}
+
 std::wstring widen(const std::string& s) {
-    if (s.empty()) return std::wstring();
-    const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    if (n <= 0) return std::wstring();
-    std::wstring w(static_cast<std::size_t>(n), L'\0');
-    (void)::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    std::wstring w;
+    (void)widen(s, w);
     return w;
 }
 
@@ -251,7 +263,11 @@ Status SchContext::load_identity() {
         CRYPT_DATA_BLOB blob{};
         blob.cbData = static_cast<DWORD>(bytes.size());
         blob.pbData = bytes.data();
-        std::wstring pw = widen(id.password);
+        std::wstring pw;
+        if (!widen(id.password, pw)) {
+            secure_wipe(bytes);
+            return Status(Errc::InvalidArgument, "the PKCS#12 password is not valid UTF-8");
+        }
         id_store_ = ::PFXImportCertStore(&blob, pw.c_str(), CRYPT_USER_KEYSET);
         if (!id_store_ && pw.empty()) id_store_ = ::PFXImportCertStore(&blob, nullptr, CRYPT_USER_KEYSET);
         const DWORD err = ::GetLastError();

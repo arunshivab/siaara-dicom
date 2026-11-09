@@ -42,8 +42,8 @@ struct TlsIdentity {
     std::string private_key_file;
     // PKCS#12 (.p12 / .pfx) file holding the key, the certificate and optionally its chain.
     std::string pkcs12_file;
-    // Password of the PKCS#12 file or of an encrypted PEM key. Never logged; the toolkit's own
-    // copies are wiped when they are released.
+    // Password of the PKCS#12 file or of an encrypted PEM key. Never logged. The toolkit's own
+    // copies are wiped as soon as the identity is loaded: TlsContext::settings() returns it empty.
     std::string password;
     // Windows: SHA-1 thumbprint (hex, spaces allowed) of a certificate with a private key in the
     // "MY" store of the current user (or of the local machine when windows_local_machine is set).
@@ -114,7 +114,7 @@ public:
     enum class Role : std::uint8_t { Client, Server };
     static Result<std::shared_ptr<TlsContext>> create(const TlsSettings& settings, Role role);
 
-    virtual ~TlsContext();  // wipes the stored password
+    virtual ~TlsContext();
     TlsContext(const TlsContext&) = delete;
     TlsContext& operator=(const TlsContext&) = delete;
 

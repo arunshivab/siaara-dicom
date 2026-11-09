@@ -528,7 +528,11 @@ Result<std::shared_ptr<TlsContext>> TlsContext::create(const TlsSettings& settin
     if (sources > 1) return Status(Errc::InvalidArgument, "set exactly one TLS identity source");
     std::string why;
     if (!detail::backend_available(why)) return Status(Errc::Unsupported, "TLS is not available: " + why);
-    return detail::backend_create_context(settings, role);
+    Result<std::shared_ptr<TlsContext>> ctx = detail::backend_create_context(settings, role);
+    // Every backend has loaded the identity by now: the context keeps no copy of the password
+    // (settings() would expose it). The caller's own TlsSettings is the caller's to wipe.
+    if (ctx) detail::secure_wipe(ctx.value()->settings_.identity.password);
+    return ctx;
 }
 
 TlsListener::TlsListener() = default;
