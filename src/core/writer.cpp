@@ -19,6 +19,11 @@ public:
         : out_(out), enc_(enc), opt_(opt) {}
 
     Status dataset(const Dataset& ds, bool is_meta = false) {
+        // Pixel samples wider than 16 bits stored as OW must be byte-reversed per sample, not per
+        // 16-bit word, in big-endian syntaxes (PS3.5 A.3 / 8.1.1), so remember Bits Allocated.
+        const std::uint16_t saved_bits = pixel_bits_;
+        if (auto b = ds.get_int(tags::BitsAllocated)) pixel_bits_ = static_cast<std::uint16_t>(*b);
+        struct Restore { std::uint16_t& ref; std::uint16_t v; ~Restore() { ref = v; } } restore{pixel_bits_, saved_bits};
         for (const Element& e : ds.elements()) {
             if (tag_element(e.tag) == 0 && !is_meta && !opt_.keep_group_lengths) continue;
             if (Status s = element(e); !s) return s;
@@ -79,12 +84,18 @@ private:
         const std::size_t at = out_.size();
         out_.insert(out_.end(), e.value.data(), e.value.data() + len);
         if (pad) out_.push_back(static_cast<std::uint8_t>(vr_pad_char(vr)));
-        if (enc_.big_endian) swap_values(vr, at, len);
+        if (enc_.big_endian) {
+            if (e.tag == tags::PixelData && vr == VR::OW && (pixel_bits_ == 32 || pixel_bits_ == 64))
+                swap_width(static_cast<std::size_t>(pixel_bits_ / 8), at, len);
+            else
+                swap_values(vr, at, len);
+        }
         return Status::ok();
     }
 
-    void swap_values(VR vr, std::size_t at, std::size_t len) {
-        const std::size_t w = vr_value_size(vr);
+    void swap_values(VR vr, std::size_t at, std::size_t len) { swap_width(vr_value_size(vr), at, len); }
+
+    void swap_width(std::size_t w, std::size_t at, std::size_t len) {
         if (w <= 1) return;
         std::uint8_t* q = out_.data() + at;
         for (std::size_t i = 0; i + w <= len; i += w)
@@ -148,6 +159,7 @@ private:
     }
 
     std::vector<std::uint8_t>& out_;
+    std::uint16_t pixel_bits_ = 0;
     Enc enc_;
     const WriteOptions& opt_;
 };

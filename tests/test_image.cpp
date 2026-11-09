@@ -346,6 +346,23 @@ TEST_CASE("image: big-endian 32-bit samples in OW are put in little-endian order
     CHECK(r->decode_range(0, 2).value() == le);
 }
 
+TEST_CASE("image: big-endian 32-bit pixel data round trip through the writer") {
+    DicomFile f;
+    f.transfer_syntax = std::string(ts::ExplicitVRBigEndian);
+    f.dataset = image_ds(2, 3, 1, 32, 32, false, "MONOCHROME2", 2);
+    (void)f.dataset.set_string(siaara::tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    (void)f.dataset.set_string(siaara::tags::SOPInstanceUID, VR::UI, "2.25.8");
+    Buf px = random_frame(12, 32, 4, 123);
+    set_native(f.dataset, px);
+    Buf bytes;
+    REQUIRE(write_part10(f, bytes).is_ok());
+    auto g = read_part10(Bytes::copy_of(bytes.data(), bytes.size()));
+    REQUIRE(g.is_ok());
+    auto r = FrameReader::open(g->dataset, g->transfer_syntax);
+    REQUIRE(r.is_ok());
+    CHECK(r->decode_range(0, 2).value() == px);
+}
+
 // ================================================================ encapsulated frames
 
 TEST_CASE("image: RLE frames with and without offset tables") {
