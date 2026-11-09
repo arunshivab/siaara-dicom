@@ -62,3 +62,7 @@ target_compile_options(store_perf PRIVATE ${SIAARA_WARN})
 add_executable(dicomdir_tool crosscheck/dicomdir_tool.cpp)
 target_link_libraries(dicomdir_tool PRIVATE siaara_static)
 target_compile_options(dicomdir_tool PRIVATE ${SIAARA_WARN})
+# Test-only helper for tests/crosscheck/clinical_crosscheck.py (not installed).
+add_executable(clinical_tool crosscheck/clinical_tool.cpp)
+target_link_libraries(clinical_tool PRIVATE siaara_static)
+target_compile_options(clinical_tool PRIVATE ${SIAARA_TEST_WARN})
