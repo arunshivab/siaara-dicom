@@ -41,6 +41,11 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: TLS tests with the 32-bit system OpenSSL (loaded at run time)
+        if: matrix.multilib
+        run: |
+          sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install -y libssl3t64:i386
+          build/tests/siaara_tests tls/
 
   pydicom-crosscheck:
     runs-on: ubuntu-24.04
@@ -74,3 +79,19 @@ jobs:
         run: |
           if git log -50 --format=%B | grep -Ei '^(Co-Authored-By|Claude-Session):|Generated with'; then
             echo "Commit messages must not contain attribution lines"; exit 1; fi
+
+  tls-interop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install oracles (DCMTK built with OpenSSL; openssl and curl command line tools)
+        run: sudo apt-get update && sudo apt-get install -y dcmtk openssl curl
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
+      - name: OpenSSL is not linked at build time (loaded with dlopen when TLS is first used)
+        run: |
+          if readelf -d build/libsiaara.so | grep -E 'NEEDED.*(libssl|libcrypto)'; then exit 1; fi
+          if readelf -d build/tools/siaara-echoscu | grep -E 'NEEDED.*(libssl|libcrypto)'; then exit 1; fi
+      - name: TLS unit tests (throwaway certificates made with openssl at test time)
+        run: build/tests/siaara_tests tls/
+      - name: TLS interop with DCMTK (+tls), openssl s_client/s_server and curl
+        run: python3 tests/crosscheck/tls_crosscheck.py --build build
