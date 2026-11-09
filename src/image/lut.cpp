@@ -146,7 +146,9 @@ Result<LutTable> read_lut(const Dataset& item, bool first_signed, bool lenient) 
     const std::uint16_t n = load_le16(p);
     t.entries = n == 0 ? 65536u : n;
     const std::uint16_t f = load_le16(p + 2);
-    const bool sgn = d->vr == VR::SS ? true : d->vr == VR::US ? false : first_signed;
+    // An inferred VR (implicit VR stream) says nothing reliable about this LUT: use the caller's
+    // rule (Pixel Representation for a Modality LUT, the modality output range for a VOI LUT).
+    const bool sgn = d->read.vr_inferred ? first_signed : d->vr == VR::SS ? true : d->vr == VR::US ? false : first_signed;
     t.first_mapped = sgn ? static_cast<std::int16_t>(f) : static_cast<std::int64_t>(f);
     t.bits = load_le16(p + 4);
     if (t.bits < 8 || t.bits > 16) {

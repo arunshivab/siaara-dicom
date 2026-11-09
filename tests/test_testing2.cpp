@@ -15,6 +15,7 @@
 #include "core/reader.hpp"
 #include "core/writer.hpp"
 #include "volume/volume.hpp"
+#include "web/dicom_json.hpp"
 #include "clinical/roi.hpp"
 #include "dict/dictionary.hpp"
 #include "image/lut.hpp"
@@ -490,4 +491,185 @@ TEST_CASE("testing2 P0-2: RT Dose through the C API (frame values, info, ROI sta
     CHECK(near(fp.max_value, 85.13049589, 1e-4));
     siaara_frame_free(fr);
     siaara_file_free(f);
+}
+
+// ================================================================ F8: "US or SS" by Pixel Representation
+
+namespace {
+
+constexpr std::string_view kImplicitTs = "1.2.840.10008.1.2";
+
+// Implicit VR little endian element.
+void iel(Buf& b, Tag t, const Buf& value) {
+    u16(b, tag_group(t));
+    u16(b, t & 0xFFFFu);
+    u32(b, static_cast<std::uint32_t>(value.size()));
+    b.insert(b.end(), value.begin(), value.end());
+}
+Buf ss(int v) { return us(static_cast<unsigned>(static_cast<std::uint16_t>(static_cast<std::int16_t>(v)))); }
+Buf words(std::initializer_list<int> v) {
+    Buf b;
+    for (int x : v) u16(b, static_cast<std::uint32_t>(static_cast<std::uint16_t>(x)));
+    return b;
+}
+
+// Implicit VR CT-like data set: Pixel Representation `pr`, Smallest Image Pixel Value -2000,
+// Largest 3000, Pixel Padding -2000 (stored as their 16-bit patterns), a Modality LUT whose
+// descriptor is {40000 entries, first mapped -1024, 16 bits}, and an Icon Image Sequence item
+// with its own Pixel Representation 0 and Smallest Image Pixel Value 63536 (unsigned).
+Buf us_ss_sample(int pr) {
+    Buf icon;
+    iel(icon, 0x00280103, us(0));
+    iel(icon, 0x00280106, us(63536));
+    Buf icon_sq;
+    item(icon_sq, 0xE000, static_cast<std::uint32_t>(icon.size()));
+    icon_sq.insert(icon_sq.end(), icon.begin(), icon.end());
+    Buf lut;
+    iel(lut, 0x00283002, words({40000, -1024, 16}));
+    iel(lut, 0x00283006, words({0, 1, 2, 3}));
+    Buf lut_sq;
+    item(lut_sq, 0xE000, static_cast<std::uint32_t>(lut.size()));
+    lut_sq.insert(lut_sq.end(), lut.begin(), lut.end());
+    Buf b;
+    iel(b, 0x00080016, str("1.2.840.10008.5.1.4.1.1.2"));
+    iel(b, 0x00280103, us(static_cast<unsigned>(pr)));
+    iel(b, 0x00280106, ss(-2000));
+    iel(b, 0x00280107, us(3000));
+    iel(b, 0x00280120, ss(-2000));
+    iel(b, 0x00283000, lut_sq);
+    iel(b, 0x00880200, icon_sq);
+    return b;
+}
+
+}  // namespace
+
+TEST_CASE("testing2 F8: implicit VR US or SS values follow Pixel Representation (getters, items, scope)") {
+    const Buf b = us_ss_sample(1);
+    auto ds = read_dataset(Bytes::copy_of(b.data(), b.size()), kImplicitTs);
+    REQUIRE(ds.is_ok());
+    CHECK_EQ(ds->get_int(0x00280106).value_or(0), -2000);
+    CHECK_EQ(ds->get_int(0x00280107).value_or(0), 3000);
+    CHECK_EQ(ds->get_int(0x00280120).value_or(0), -2000);
+    CHECK_EQ(ds->get_double(0x00280106).value_or(0), -2000.0);
+    CHECK_EQ(ds->get_string(0x00280120).value_or(""), "-2000");
+    const Element* e = ds->find(0x00280106);
+    REQUIRE(e != nullptr);
+    CHECK(e->vr == VR::SS);
+    CHECK(e->read.vr_inferred);
+    CHECK(e->value.size() == 2 && e->value.data()[0] == 0x30 && e->value.data()[1] == 0xF8);  // bytes unchanged
+    // LUT Descriptor in an item inherits Pixel Representation; entries and bits stay unsigned.
+    const Element* ml = ds->find(0x00283000);
+    REQUIRE(ml != nullptr && ml->items.size() == 1u);
+    CHECK_EQ(ml->items[0].get_int(0x00283002, 0).value_or(0), 40000);
+    CHECK_EQ(ml->items[0].get_int(0x00283002, 1).value_or(0), -1024);
+    CHECK_EQ(ml->items[0].get_int(0x00283002, 2).value_or(0), 16);
+    // The icon item has its own Pixel Representation 0.
+    const Element* icon = ds->find(0x00880200);
+    REQUIRE(icon != nullptr && icon->items.size() == 1u);
+    CHECK_EQ(icon->items[0].get_int(0x00280106).value_or(0), 63536);
+    // Pixel Representation 0: the same bytes are unsigned.
+    const Buf b0 = us_ss_sample(0);
+    auto d0 = read_dataset(Bytes::copy_of(b0.data(), b0.size()), kImplicitTs);
+    REQUIRE(d0.is_ok());
+    CHECK_EQ(d0->get_int(0x00280106).value_or(0), 63536);
+    CHECK_EQ(d0->get_int(0x00280120).value_or(0), 63536);
+    CHECK(d0->find(0x00280106)->vr == VR::US);
+    CHECK_EQ(d0->find(0x00283000)->items[0].get_int(0x00283002, 1).value_or(0), 64512);
+}
+
+TEST_CASE("testing2 F8: explicit VR keeps the stored VR; SS LUT descriptors keep unsigned counts") {
+    // Explicit VR as stored, as pydicom: US stays US even with Pixel Representation 1.
+    Buf b;
+    el(b, 0x00280103, "US", us(1));
+    el(b, 0x00280106, "US", ss(-2000));
+    el(b, 0x00280107, "SS", ss(-5));
+    auto ds = read_dataset(Bytes::copy_of(b.data(), b.size()), "1.2.840.10008.1.2.1");
+    REQUIRE(ds.is_ok());
+    CHECK_EQ(ds->get_int(0x00280106).value_or(0), 63536);
+    CHECK(!ds->find(0x00280106)->read.vr_inferred);
+    CHECK_EQ(ds->get_int(0x00280107).value_or(0), -5);
+    // An SS LUT Descriptor with 40000 entries: entries unsigned, first mapped signed.
+    Dataset d;
+    (void)d.set_bytes(0x00283002, VR::SS, Bytes::copy_of(words({40000, -1024, 16}).data(), 6));
+    CHECK_EQ(d.get_int(0x00283002, 0).value_or(0), 40000);
+    CHECK_EQ(d.get_int(0x00283002, 1).value_or(0), -1024);
+    CHECK_EQ(d.get_int(0x00283002, 2).value_or(0), 16);
+}
+
+TEST_CASE("testing2 F8: DICOM JSON, C API and writing keep the signed reading and the bytes") {
+    const Buf body = us_ss_sample(1);
+    const Buf file = [&] {
+        Buf meta;
+        el(meta, 0x00020001, "OB", Buf{0, 1});
+        el(meta, 0x00020010, "UI", str("1.2.840.10008.1.2"));
+        Buf b(128, 0);
+        b.insert(b.end(), {'D', 'I', 'C', 'M'});
+        Buf gl;
+        u32(gl, static_cast<std::uint32_t>(meta.size()));
+        el(b, 0x00020000, "UL", gl);
+        b.insert(b.end(), meta.begin(), meta.end());
+        b.insert(b.end(), body.begin(), body.end());
+        return b;
+    }();
+    auto f = read_part10(Bytes::copy_of(file.data(), file.size()));
+    REQUIRE(f.is_ok());
+    std::string json;
+    REQUIRE(web::dataset_to_json(f->dataset, json).is_ok());
+    CHECK(json.find("\"00280106\":{\"vr\":\"SS\",\"Value\":[-2000]}") != std::string::npos);
+    CHECK(json.find("\"00280120\":{\"vr\":\"SS\",\"Value\":[-2000]}") != std::string::npos);
+    // Unedited implicit VR save: byte for byte.
+    std::vector<std::uint8_t> out;
+    REQUIRE(write_part10(*f, out).is_ok());
+    CHECK(out == file);
+    // Explicit VR save: the resolved VR is written (SS), the value bytes are the same.
+    DicomFile ex = *f;
+    ex.transfer_syntax = "1.2.840.10008.1.2.1";
+    REQUIRE(write_part10(ex, out).is_ok());
+    auto back = read_part10(Bytes::copy_of(out.data(), out.size()));
+    REQUIRE(back.is_ok());
+    CHECK(back->dataset.find(0x00280106)->vr == VR::SS);
+    CHECK_EQ(back->dataset.get_int(0x00280106).value_or(0), -2000);
+    // C API.
+    siaara_file* cf = nullptr;
+    REQUIRE(siaara_file_open_memory(file.data(), file.size(), nullptr, &cf) == SIAARA_OK);
+    siaara_dataset* cds = nullptr;
+    REQUIRE(siaara_file_dataset(cf, &cds) == SIAARA_OK);
+    int64_t v = 0;
+    REQUIRE(siaara_dataset_get_int64(cds, 0x00280106, 0, &v) == SIAARA_OK);
+    CHECK_EQ(v, -2000);
+    REQUIRE(siaara_dataset_get_int64(cds, 0x00280120, 0, &v) == SIAARA_OK);
+    CHECK_EQ(v, -2000);
+    siaara_dataset* lut = nullptr;
+    REQUIRE(siaara_dataset_item(cds, 0x00283000, 0, &lut) == SIAARA_OK);
+    REQUIRE(siaara_dataset_get_int64(lut, 0x00283002, 1, &v) == SIAARA_OK);
+    CHECK_EQ(v, -1024);
+    REQUIRE(siaara_dataset_get_int64(lut, 0x00283002, 0, &v) == SIAARA_OK);
+    CHECK_EQ(v, 40000);
+    char vr[3] = {};
+    REQUIRE(siaara_dataset_vr(cds, 0x00280106, vr) == SIAARA_OK);
+    CHECK_EQ(std::string(vr), "SS");
+    siaara_file_free(cf);
+}
+
+TEST_CASE("testing2 F8: an implicit VR LUT descriptor takes its sign from the caller's rule") {
+    // VOI LUT in an implicit VR file with Pixel Representation 0: the descriptor's VR was
+    // inferred, so its first mapped value is signed when the modality output can be negative
+    // (C.11.2.1.1), e.g. CT with Rescale Intercept -1024.
+    Buf lut;
+    iel(lut, 0x00283002, words({4, -1024, 16}));
+    iel(lut, 0x00283006, words({0, 1, 2, 3}));
+    Buf sq;
+    item(sq, 0xE000, static_cast<std::uint32_t>(lut.size()));
+    sq.insert(sq.end(), lut.begin(), lut.end());
+    Buf b;
+    iel(b, 0x00280103, us(0));
+    iel(b, 0x00283010, sq);
+    auto ds = read_dataset(Bytes::copy_of(b.data(), b.size()), kImplicitTs);
+    REQUIRE(ds.is_ok());
+    const Dataset& it = ds->find(0x00283010)->items[0];
+    auto s = image::read_lut(it, true);
+    auto u = image::read_lut(it, false);
+    REQUIRE(s.is_ok() && u.is_ok());
+    CHECK_EQ(s->first_mapped, -1024);
+    CHECK_EQ(u->first_mapped, 64512);
 }

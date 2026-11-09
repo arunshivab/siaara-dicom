@@ -30,6 +30,28 @@ const Entry* lookup_keyword(std::string_view keyword) noexcept {
     return nullptr;
 }
 
+bool is_lut_descriptor(Tag tag) noexcept {
+    return tag == 0x00283002u || (tag >= 0x00281100u && tag <= 0x00281103u) || (tag >= 0x00281111u && tag <= 0x00281113u);
+}
+
+bool us_or_ss_by_pixel_representation(Tag tag) noexcept {
+    switch (tag) {
+        case 0x00189810u:  // Zero Velocity Pixel Value
+        case 0x00221452u:  // Mapped Pixel Value
+        case 0x00280071u:  // Perimeter Value (retired)
+        case 0x00280104u: case 0x00280105u:  // Smallest / Largest Valid Pixel Value (retired)
+        case 0x00280106u: case 0x00280107u:  // Smallest / Largest Image Pixel Value
+        case 0x00280108u: case 0x00280109u:  // Smallest / Largest Pixel Value in Series
+        case 0x00280110u: case 0x00280111u:  // Smallest / Largest Image Pixel Value in Plane (retired)
+        case 0x00280120u: case 0x00280121u:  // Pixel Padding Value / Range Limit
+        case 0x00409211u: case 0x00409216u:  // Real World Value Last / First Value Mapped
+        case 0x00603004u: case 0x00603006u:  // Histogram First / Last Bin Value
+            return true;
+        default:
+            return is_lut_descriptor(tag);
+    }
+}
+
 VR implicit_vr(Tag tag) noexcept {
     if (tag_is_private(tag)) {
         // Private creator elements (gggg,0010-00FF) are LO by definition (PS3.5 7.8.1).

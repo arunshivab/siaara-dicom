@@ -127,6 +127,9 @@ struct Element {
         std::uint32_t length = 0;         // stored value length (defined-length values)
         std::uint32_t fragment_count = 0; // encapsulated: fragments as read (including the offset table)
         std::uint32_t group_bytes = 0;    // group length (gggg,0000): actual size of the group as read
+        // The VR was not in the stream (implicit VR, or an unknown VR read as implicit): it came
+        // from the dictionary, and for "US or SS" elements from Pixel Representation (F8).
+        bool vr_inferred = false;
     } read;
     // Byte offset of this element's header in the parsed stream (the file for native syntaxes; the
     // inflated stream for the deflated syntax, see DicomFile::offsets_are_file_offsets). 0 if built in memory.

@@ -57,8 +57,11 @@ public:
             assert(end <= limit_);
             if (end < limit_) limit_ = static_cast<std::size_t>(end);
         }
+        // Pixel Representation is inherited by items and scoped to the data set that holds it (F8).
+        const int saved_pixel_rep = pixel_rep_;
         bool ordered = true;
         Status s = parse_elements(ds, syn, end, undefined, depth, only_group, ordered);
+        pixel_rep_ = saved_pixel_rep;
         if (!ordered) {
             std::vector<Tag> dups;
             ds.sort_by_tag(&dups);
@@ -119,7 +122,12 @@ public:
             e.offset = start;
             e.read.parsed = true;
             std::uint32_t len = 0;
-            if (Status s = read_vr_and_length(syn, tag, e.vr, len); !s) return s;
+            if (Status s = read_vr_and_length(syn, tag, e.vr, len, e.read.vr_inferred); !s) return s;
+            // F8: an inferred "US or SS" VR follows Pixel Representation (PS3.5 / PS3.6), so the
+            // getters, DICOM JSON and the C API read the value signed when it is 1. The bytes
+            // are unchanged.
+            if (e.read.vr_inferred && e.vr == VR::US && pixel_rep_ == 1 && dict::us_or_ss_by_pixel_representation(tag))
+                e.vr = VR::SS;
 
             if (++element_count_ > opt_.max_elements)
                 return Status(Errc::LimitExceeded, "too many elements", start, tag);
@@ -185,6 +193,8 @@ public:
                         e.value = value_bytes(e.vr, pos_, len, syn, unit);
                     if (depth == 0 && tag == tags::BitsAllocated && e.value.size() >= 2)
                         bits_allocated_ = load_le16(e.value.data());
+                    if (tag == tags::PixelRepresentation && e.value.size() >= 2)
+                        pixel_rep_ = load_le16(e.value.data()) == 0 ? 0 : 1;
                     if (Status s = advance_to(vend, tag); !s) return s;
                 }
             }
@@ -271,7 +281,7 @@ private:
         return v;
     }
 
-    Status read_vr_and_length(Syntax syn, Tag tag, VR& vr, std::uint32_t& len) {
+    Status read_vr_and_length(Syntax syn, Tag tag, VR& vr, std::uint32_t& len, bool& inferred) {
         // Item-level tags (FFFE,xxxx) never carry a VR.
         if (tag_group(tag) == 0xFFFE) {
             vr = VR::None;
@@ -280,6 +290,7 @@ private:
         }
         if (!syn.explicit_vr) {
             vr = dict::implicit_vr(tag);
+            inferred = true;
             len = read_u32(syn);
             return Status::ok();
         }
@@ -292,6 +303,7 @@ private:
             if (!opt_.lenient) return Status(Errc::Malformed, "unknown VR", pos_, tag);
             warn("unknown VR; read as implicit");
             vr = dict::implicit_vr(tag);
+            inferred = true;
             len = read_u32(syn);
             return Status::ok();
         }
@@ -494,6 +506,7 @@ private:
     bool stopped_at_pixels_ = false;
     std::uint64_t stop_offset_ = 0;
     std::uint16_t bits_allocated_ = 0;
+    int pixel_rep_ = -1;  // Pixel Representation in scope (-1 unknown), see parse() (F8)
     std::uint32_t loss_ = 0;
     std::uint64_t loss_offset_ = 0;
     std::uint64_t bytes_skipped_ = 0;
