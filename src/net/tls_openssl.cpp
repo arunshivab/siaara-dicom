@@ -2,9 +2,10 @@
 // OpenSSL 3.x, loaded at run time.
 //
 // Nothing is linked at build time and no OpenSSL header is needed. On first use libcrypto.so.3 and
-// libssl.so.3 are opened by soname (the dynamic loader's system search path; never a path relative
-// to the current directory), the version is checked (>= 3.0.0) and every entry point below is
-// resolved before any is called. The libraries stay loaded for the life of the process.
+// libssl.so.3 are opened by absolute path from a fixed list of system library folders (never
+// through LD_LIBRARY_PATH, RUNPATH or the current directory), the version is checked (>= 3.0.0)
+// and every entry point below is resolved before any is called. On success the libraries stay
+// loaded for the life of the process; on any failure both are closed again.
 //
 // The prototypes are written from the OpenSSL 3.0 manual pages; every OpenSSL object is opaque
 // here (void*). Constants are the documented numeric values of the macros named in the comments.
@@ -153,43 +154,104 @@ bool resolve(void* lib, const char* name, F& fn, std::string& missing) {
 
 #define SIAARA_SSL_SYM(lib, name) ok = resolve(lib, #name, a.name, missing) && ok
 
+// The system library folders searched for OpenSSL, most specific first. Only these absolute
+// paths are ever passed to dlopen: LD_LIBRARY_PATH, the executable's RUNPATH/RPATH and the
+// current directory play no part, so a planted libcrypto.so.3 cannot run its constructors in
+// this process (dlopen runs them before any check after it could). A folder holding a library of
+// the wrong ELF class (32/64-bit) fails dlopen without running anything; the next one is tried.
+#if defined(__x86_64__) && defined(__ILP32__)
+#define SIAARA_LIB_TRIPLET "x86_64-linux-gnux32"
+#elif defined(__x86_64__)
+#define SIAARA_LIB_TRIPLET "x86_64-linux-gnu"
+#elif defined(__i386__)
+#define SIAARA_LIB_TRIPLET "i386-linux-gnu"
+#elif defined(__aarch64__)
+#define SIAARA_LIB_TRIPLET "aarch64-linux-gnu"
+#elif defined(__arm__) && defined(__ARM_PCS_VFP)
+#define SIAARA_LIB_TRIPLET "arm-linux-gnueabihf"
+#elif defined(__arm__)
+#define SIAARA_LIB_TRIPLET "arm-linux-gnueabi"
+#elif defined(__riscv) && __riscv_xlen == 64
+#define SIAARA_LIB_TRIPLET "riscv64-linux-gnu"
+#elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
+#define SIAARA_LIB_TRIPLET "powerpc64le-linux-gnu"
+#elif defined(__s390x__)
+#define SIAARA_LIB_TRIPLET "s390x-linux-gnu"
+#elif defined(__loongarch64)
+#define SIAARA_LIB_TRIPLET "loongarch64-linux-gnu"
+#endif
+
+const char* const kLibDirs[] = {
+#if defined(SIAARA_LIB_TRIPLET)
+    "/usr/lib/" SIAARA_LIB_TRIPLET "/",
+    "/lib/" SIAARA_LIB_TRIPLET "/",
+#endif
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    "/usr/lib64/",
+    "/lib64/",
+#else
+    "/usr/lib32/",
+#endif
+    "/usr/lib/",
+    "/lib/",
+    "/usr/local/lib64/",
+    "/usr/local/lib/",
+};
+
+// dlopen of `soname` from the first system folder that has a loadable copy, or null.
+void* open_system_library(const char* soname, std::string& path) {
+    for (const char* dir : kLibDirs) {
+        const std::string p = std::string(dir) + soname;
+        if (void* h = ::dlopen(p.c_str(), RTLD_NOW | RTLD_LOCAL)) {
+            path = p;
+            return h;
+        }
+    }
+    return nullptr;
+}
+
+// The file a symbol of `lib` lives in, or empty.
+std::string symbol_file(void* lib, const char* name) {
+    void* sym = ::dlsym(lib, name);
+    Dl_info info{};
+    if (!sym || ::dladdr(sym, &info) == 0 || !info.dli_fname) return {};
+    return info.dli_fname;
+}
+
 void load(Library& L) {
-    // By soname only: the loader searches its configured system paths (ld.so.cache, /lib, /usr/lib,
-    // LD_LIBRARY_PATH as set by the administrator); a name without '/' is never looked up in the
-    // current directory.
-    void* crypto = ::dlopen("libcrypto.so.3", RTLD_NOW | RTLD_LOCAL);
+    // Absolute system paths only (see kLibDirs). libssl's own DT_NEEDED entry for libcrypto.so.3
+    // is satisfied by the copy loaded here first (the loader matches already loaded sonames).
+    std::string crypto_path, ssl_path;
+    void* crypto = open_system_library("libcrypto.so.3", crypto_path);
     if (!crypto) {
-        L.reason = "the system OpenSSL 3 library (libcrypto.so.3) was not found";
+        L.reason = "the system OpenSSL 3 library (libcrypto.so.3) was not found in the system library folders";
         return;
     }
-    void* ssl = ::dlopen("libssl.so.3", RTLD_NOW | RTLD_LOCAL);
+    void* ssl = open_system_library("libssl.so.3", ssl_path);
     if (!ssl) {
-        L.reason = "the system OpenSSL 3 library (libssl.so.3) was not found";
+        ::dlclose(crypto);
+        L.reason = "the system OpenSSL 3 library (libssl.so.3) was not found in the system library folders";
         return;
     }
+    auto refuse = [&](const std::string& why) {
+        ::dlclose(ssl);
+        ::dlclose(crypto);
+        L.reason = why;
+    };
     Api a{};
     std::string missing;
     bool ok = true;
     SIAARA_SSL_SYM(crypto, OpenSSL_version_num);
     SIAARA_SSL_SYM(crypto, OpenSSL_version);
-    if (!ok) {
-        L.reason = "libcrypto.so.3 lacks " + missing;
-        return;
-    }
-    // Refuse a library that the loader found through a relative search path entry.
-    for (void* lib : {crypto, ssl}) {
-        void* sym = ::dlsym(lib, lib == crypto ? "OpenSSL_version_num" : "SSL_new");
-        Dl_info info{};
-        if (!sym || ::dladdr(sym, &info) == 0 || !info.dli_fname || info.dli_fname[0] != '/') {
-            L.reason = "refusing an OpenSSL library that was not loaded from an absolute system path";
-            return;
-        }
-    }
+    if (!ok) return refuse("libcrypto.so.3 lacks " + missing);
+    // Both libraries really come from absolute paths, and libssl uses the libcrypto loaded above.
+    const std::string crypto_file = symbol_file(crypto, "OpenSSL_version_num");
+    const std::string ssl_file = symbol_file(ssl, "SSL_new");
+    if (crypto_file.empty() || crypto_file[0] != '/' || ssl_file.empty() || ssl_file[0] != '/' ||
+        symbol_file(ssl, "OpenSSL_version_num") != crypto_file)
+        return refuse("refusing an OpenSSL library that was not loaded from an absolute system path");
     const unsigned long v = a.OpenSSL_version_num();
-    if (v < kMinVersion) {
-        L.reason = "OpenSSL 3.0 or newer is required";
-        return;
-    }
+    if (v < kMinVersion) return refuse("OpenSSL 3.0 or newer is required");
     SIAARA_SSL_SYM(crypto, ERR_get_error);
     SIAARA_SSL_SYM(crypto, ERR_error_string_n);
     SIAARA_SSL_SYM(crypto, ERR_clear_error);
@@ -255,14 +317,9 @@ void load(Library& L) {
     SIAARA_SSL_SYM(ssl, SSL_get_current_cipher);
     SIAARA_SSL_SYM(ssl, SSL_CIPHER_get_protocol_id);
     SIAARA_SSL_SYM(ssl, SSL_get0_peer_certificate);
-    if (!ok) {
-        L.reason = "the system OpenSSL lacks " + missing;
-        return;
-    }
-    if (a.OPENSSL_init_ssl(kInitLoadSslStrings | kInitLoadCryptoStrings, nullptr) != 1) {
-        L.reason = "OpenSSL initialisation failed";
-        return;
-    }
+    if (!ok) return refuse("the system OpenSSL lacks " + missing);
+    if (a.OPENSSL_init_ssl(kInitLoadSslStrings | kInitLoadCryptoStrings, nullptr) != 1)
+        return refuse("OpenSSL initialisation failed");
     // "OpenSSL 3.0.13 30 Jan 2024" -> "OpenSSL 3.0.13"
     std::string text = a.OpenSSL_version(kVersionText) ? a.OpenSSL_version(kVersionText) : "OpenSSL 3";
     const std::size_t sp = text.find(' ');
