@@ -292,7 +292,7 @@ nw_parameters_t AppleContext::make_parameters(const std::string& peer_name, std:
                     if (!ok) {
                         if (err) {
                             CFStringRef d = CFErrorCopyDescription(err);
-                            why = cf_string(d);
+                            why = cf_string(d) + " (code " + std::to_string(static_cast<long>(CFErrorGetCode(err))) + ")";
                             if (d) CFRelease(d);
                         }
                         if (why.empty()) why = "trust evaluation failed";

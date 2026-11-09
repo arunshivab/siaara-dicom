@@ -460,12 +460,23 @@ public:
         bool retried_credentials = false;
         while (true) {
             if ((server_ || have_ctx_) && in_.empty()) return Step::NeedInput;
+            const std::size_t mark = out.size();
             SECURITY_STATUS st = step(in_, out);
             if (st == SEC_I_INCOMPLETE_CREDENTIALS && !server_ && !retried_credentials) {
                 retried_credentials = true;  // asked for a certificate we do not have: go on without
                 continue;
             }
             if (st == SEC_E_INCOMPLETE_MESSAGE) return Step::NeedInput;
+            if (st == SEC_E_OK && server_ && s_.require_client_certificate) {
+                // SChannel completes the handshake even when the client sent no (or an untrusted)
+                // certificate. Check it before the final flight (TLS 1.2: the server Finished) leaves,
+                // so the client's handshake fails too instead of seeing a completed one.
+                if (Status c = check_client_certificate(); !c) {
+                    out.resize(mark);  // drop the final flight
+                    fatal_alert(out);
+                    return c;
+                }
+            }
             if (st == SEC_E_OK) {
                 if (::QueryContextAttributesW(&ctx_, SECPKG_ATTR_STREAM_SIZES, &sizes_) != SEC_E_OK)
                     return Status(Errc::NetworkError, "cannot query the TLS record sizes");
@@ -622,6 +633,39 @@ private:
     bool renegotiating_ = false;
     SecPkgContext_StreamSizes sizes_{};
     std::vector<std::uint8_t> in_;
+
+    Status check_client_certificate() {
+        PCCERT_CONTEXT peer = nullptr;
+        const SECURITY_STATUS q = ::QueryContextAttributesW(&ctx_, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &peer);
+        if (q != SEC_E_OK || !peer) {
+            tls_log(s_, "TLS: client sent no certificate (" + sspi_text(q) + "); mutual TLS required, handshake refused");
+            return Status(Errc::NetworkError, "the client sent no certificate (mutual TLS required)");
+        }
+        Status st;
+        if (!s_.insecure_skip_validation) st = c_.verify(peer, false, std::string());
+        ::CertFreeCertificateContext(peer);
+        if (!st) tls_log(s_, "TLS: client certificate refused before the server Finished: " + st.message);
+        return st;
+    }
+
+    // Best effort: a fatal bad_certificate alert in place of the dropped final flight.
+    void fatal_alert(std::vector<std::uint8_t>& out) noexcept {
+        try {
+            SCHANNEL_ALERT_TOKEN tok{};
+            tok.dwTokenType = SCHANNEL_ALERT;
+            tok.dwAlertType = TLS1_ALERT_FATAL;
+            tok.dwAlertNumber = TLS1_ALERT_BAD_CERTIFICATE;
+            SecBuffer b;
+            b.BufferType = SECBUFFER_TOKEN;
+            b.cbBuffer = sizeof tok;
+            b.pvBuffer = &tok;
+            SecBufferDesc d{SECBUFFER_VERSION, 1, &b};
+            if (::ApplyControlToken(&ctx_, &d) != SEC_E_OK) return;
+            std::vector<std::uint8_t> none;
+            (void)step(none, out);
+        } catch (...) {
+        }
+    }
 
     // One InitializeSecurityContextW / AcceptSecurityContext call with `input` (consumed, the
     // unused tail kept); output tokens and alerts are appended to `out`.
