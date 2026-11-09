@@ -8,7 +8,8 @@
  *  - Strings in and out are UTF-8. Output strings use a caller buffer: pass buf/cap; the function
  *    always writes a NUL terminator when cap > 0 and reports the full length (without NUL) in
  *    *needed. If cap is too small it returns SIAARA_ERR_BUFFER_TOO_SMALL.
- *  - Ownership is stated per function: "borrowed" pointers stay valid until the owning handle is freed.
+ *  - Ownership is stated per function: "borrowed" pointers stay valid until the owning handle is
+ *    freed, unless the function says otherwise (e.g. raw values and items, below).
  *  - Thread safety: a siaara_file and the data sets borrowed from it may be read from many threads
  *    at once; writes need exclusive access.
  */
@@ -30,6 +31,13 @@
 #else
 #  define SIAARA_CALL
 #  define SIAARA_API __attribute__((visibility("default")))
+#endif
+
+/* Functions that cannot fail and never throw are declared noexcept for C++ callers. */
+#ifdef __cplusplus
+#  define SIAARA_NOEXCEPT noexcept
+#else
+#  define SIAARA_NOEXCEPT
 #endif
 
 #ifdef __cplusplus
@@ -60,11 +68,11 @@ enum {
 
 /* ---------------------------------------------------------------- version */
 #define SIAARA_ABI_VERSION 1u
-SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void);
+SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void) SIAARA_NOEXCEPT;
 /* Static string, never freed. */
-SIAARA_API const char* SIAARA_CALL siaara_version_string(void);
+SIAARA_API const char* SIAARA_CALL siaara_version_string(void) SIAARA_NOEXCEPT;
 /* Message for the last failed call on this thread; valid until the next call on this thread. */
-SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void);
+SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void) SIAARA_NOEXCEPT;
 
 /* ---------------------------------------------------------------- handles */
 typedef struct siaara_file siaara_file;        /* a parsed Part 10 file (owns its data sets) */
@@ -87,7 +95,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* utf8_path, siz
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open_memory(const uint8_t* data, size_t size,
                                                              const siaara_read_options* options,
                                                              siaara_file** out);
-SIAARA_API void SIAARA_CALL siaara_file_free(siaara_file* file);
+SIAARA_API void SIAARA_CALL siaara_file_free(siaara_file* file) SIAARA_NOEXCEPT;
 
 /* Creates an empty file (explicit VR little endian). Caller owns *out. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_create(siaara_file** out);
@@ -105,7 +113,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, c
 
 /* ---------------------------------------------------------------- data set access */
 /* Tags are (group << 16) | element. vm_index is 0-based. */
-SIAARA_API int32_t SIAARA_CALL siaara_dataset_contains(const siaara_dataset* ds, uint32_t tag);
+SIAARA_API int32_t SIAARA_CALL siaara_dataset_contains(const siaara_dataset* ds, uint32_t tag) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_vr(const siaara_dataset* ds, uint32_t tag, char out_vr[3]);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_vm(const siaara_dataset* ds, uint32_t tag, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_string(const siaara_dataset* ds, uint32_t tag,
@@ -115,12 +123,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_int64(const siaara_datas
                                                               uint32_t vm_index, int64_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_double(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t vm_index, double* out);
-/* Raw value bytes, borrowed (valid until the owning file is freed or the element is changed). */
+/* Raw value bytes, borrowed (valid until the owning file is freed or this element is changed or
+ * removed; changes to other elements do not invalidate it). */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_raw(const siaara_dataset* ds, uint32_t tag,
                                                             const uint8_t** out_data, size_t* out_size);
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item_count(const siaara_dataset* ds, uint32_t tag,
                                                                uint32_t* out);
-/* Borrowed item data set of a sequence. */
+/* Borrowed item data set of a sequence. Valid until the file is freed, this item is removed, or
+ * the sequence element is changed or removed. Adding, changing or removing other elements of the
+ * parent, or other items of the sequence, does not invalidate it (items have stable storage). */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_item(siaara_dataset* ds, uint32_t tag,
                                                          uint32_t index, siaara_dataset** out);
 /* Number of top-level elements and the tag at a position (for iteration). */
@@ -271,7 +282,7 @@ typedef struct siaara_web_client siaara_web_client;
  * connect and to every network wait; 0 = default (30 s). Caller owns *out. */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create(const char* base_url, size_t len, int32_t timeout_ms,
                                                               siaara_web_client** out);
-SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client);
+SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client) SIAARA_NOEXCEPT;
 /* Authorization header value sent with every request, e.g. "Bearer abc" or "Basic dXNlcjpwdw==".
  * value NULL (or len 0) removes it. The value is copied. */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_authorization(siaara_web_client* client, const char* value,
@@ -425,7 +436,7 @@ enum { SIAARA_ADD_ADDED = 0, SIAARA_ADD_REPLACED = 1, SIAARA_ADD_KEPT_EXISTING =
 SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* utf8_root, size_t root_len,
                                                        const siaara_store_options* options,
                                                        siaara_store** out);
-SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store);
+SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) SIAARA_NOEXCEPT;
 /* policy SIAARA_DUP_*, mode SIAARA_ADD_*; *outcome (may be NULL) receives SIAARA_ADD_ADDED etc. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_add_file(siaara_store* store, const char* utf8_path,
                                                            size_t path_len, int32_t policy, int32_t mode,
@@ -482,7 +493,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_stor
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_result* result, uint32_t index,
                                                              siaara_index_record* out, char* buf, size_t cap,
                                                              size_t* needed);
-SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* result);
+SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* result) SIAARA_NOEXCEPT;
 
 /* key: for SIAARA_LEVEL_PATIENT the key from siaara_store_patient_key, otherwise the Study,
  * Series or SOP Instance UID. Copied files are deleted;
@@ -923,7 +934,7 @@ enum {
 
 /* Reads the SR content tree of the file. Caller owns *out: free with siaara_sr_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_open(const siaara_file* file, siaara_sr** out);
-SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr);
+SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_count(const siaara_sr* sr, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_sr_node(const siaara_sr* sr, uint32_t index, siaara_sr_node_info* out);
 /* Child node indices (count elements). Buffer rules as for siaara_series_sort. */
@@ -956,7 +967,7 @@ typedef struct siaara_segment_info {
 
 /* Reads the segmentation description of the file. Caller owns *out: free with siaara_seg_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_seg_open(const siaara_file* file, siaara_seg** out);
-SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg);
+SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg) SIAARA_NOEXCEPT;
 /* *type receives SIAARA_SEG_*, *frames the Number of Frames (both may be NULL). */
 SIAARA_API siaara_status SIAARA_CALL siaara_seg_info(const siaara_seg* seg, int32_t* type, uint32_t* frames,
                                                      uint32_t* max_fractional);
@@ -989,7 +1000,7 @@ typedef struct siaara_rt_roi_info {
 } siaara_rt_roi_info;
 
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* file, siaara_rtstruct** out);
-SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt);
+SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt) SIAARA_NOEXCEPT;
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_count(const siaara_rtstruct* rt, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi(const siaara_rtstruct* rt, uint32_t index, siaara_rt_roi_info* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_name(const siaara_rtstruct* rt, uint32_t index, char* buf,
@@ -1095,7 +1106,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_volume_warning(const siaara_volume* 
 /* Borrowed voxel buffer (int16_t or float, as voxel_type says); valid until the volume is freed. */
 SIAARA_API siaara_status SIAARA_CALL siaara_volume_data(const siaara_volume* volume, const void** out_data,
                                                         uint64_t* out_bytes);
-SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume);
+SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume) SIAARA_NOEXCEPT;
 
 enum {
     SIAARA_VIEW_MPR = 0,
@@ -1127,7 +1138,7 @@ enum {
  * must not be changed while it renders; one view may render from one thread at a time. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_create(const siaara_volume* volume, uint32_t width, uint32_t height,
                                                         siaara_view** out);
-SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view);
+SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view) SIAARA_NOEXCEPT;
 /* Plane: centre point, viewing direction (into the screen) and up vector (patient mm, LPS);
  * screen right = normal x up. pixel_spacing in mm per pixel, 0 = fit the volume. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_set_plane(siaara_view* view, const double point[3],

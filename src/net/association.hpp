@@ -89,7 +89,13 @@ struct AssociationLimits {
     PduLimits pdu;
     std::uint32_t max_receive_pdu = 65536;            // advertised maximum length (clamped to pdu.max_pdu_length)
     std::uint64_t max_command_size = 1u << 20;        // reassembled command set
-    std::uint64_t max_dataset_size = 2ull << 30;      // reassembled data set
+    // Reassembled data set held in memory (NET-04). With a spool configured, data sets above the
+    // spool threshold go to disk instead and are bounded by SpoolConfig::max_size.
+    std::uint64_t max_dataset_size = 256ull << 20;
+    // P-DATA-TF PDUs longer than the maximum length we advertised (max_receive_pdu) violate
+    // PS3.8 D.1. true: abort the association. false (lenient): accept them up to
+    // pdu.max_pdu_length and count them (Association::oversized_pdus()).
+    bool enforce_max_receive_pdu = false;
 };
 
 // An accepted (or rejected) presentation context after negotiation.
@@ -215,6 +221,8 @@ public:
     std::uint16_t next_message_id() noexcept;
     // Last A-ABORT received from the peer, if any.
     std::optional<Abort> peer_abort() const noexcept { return peer_abort_; }
+    // P-DATA-TF PDUs received that were longer than our advertised maximum length (lenient mode).
+    std::uint64_t oversized_pdus() const noexcept { return oversized_pdus_; }
 
 private:
     Association(std::unique_ptr<Transport> t, bool requestor, const Timeouts& to, const AssociationLimits& lim);
@@ -239,6 +247,7 @@ private:
     std::optional<Abort> peer_abort_;
     std::atomic<bool> interrupted_{false};
     std::uint8_t pending_abort_reason_ = abort_reason::UnexpectedPdu;
+    std::uint64_t oversized_pdus_ = 0;
 };
 
 }  // namespace siaara::net

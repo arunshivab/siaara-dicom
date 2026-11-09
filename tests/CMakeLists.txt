@@ -72,6 +72,11 @@ target_compile_options(deid_tool PRIVATE ${SIAARA_WARN})
 set(SIAARA_NEMA_PART15 "" CACHE FILEPATH "PS3.15 DocBook XML (part15.xml) for the de-identification table check")
 set(SIAARA_NEMA_PART16 "" CACHE FILEPATH "PS3.16 DocBook XML (part16.xml) for the de-identification table check")
 find_package(Python3 COMPONENTS Interpreter QUIET)
+# CAPI-03 (review R-013): every exported C function is guarded against exceptions.
+if(Python3_FOUND)
+  add_test(NAME capi_guarded
+           COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_capi_guarded.py ${PROJECT_SOURCE_DIR})
+endif()
 if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART15}" AND EXISTS "${SIAARA_NEMA_PART16}")
   add_test(NAME deid_table_matches_generator
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/deid_table_check.py

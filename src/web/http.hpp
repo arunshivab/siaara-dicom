@@ -28,11 +28,30 @@ struct Limits {
     std::size_t max_request_line = 8192;      // request-line / status-line, bytes (414 when exceeded)
     std::size_t max_header_bytes = 64 * 1024; // whole header section (431)
     std::size_t max_headers = 100;            // header field lines (431)
-    std::uint64_t max_body = 1ull << 30;      // decoded body (413)
+    std::uint64_t max_body = 256ull << 20;    // decoded body (413)
     std::size_t max_chunk_line = 4096;        // chunk-size line including extensions
     int read_timeout_ms = 30000;              // each wait for incoming bytes
     int write_timeout_ms = 30000;             // each wait for send-buffer space
-    int header_timeout_ms = 30000;            // the whole start line + header section
+    // The whole start line + header section, from the first byte of the message (408).
+    int header_timeout_ms = 30000;
+    // The whole message body (408); 0: no overall deadline.
+    int body_timeout_ms = 10 * 60 * 1000;
+    // Minimum average body rate (bytes/s) over each body_rate_window_ms (408); 0: none.
+    std::uint32_t min_body_rate = 1024;
+    int body_rate_window_ms = 30000;
+};
+
+// Server-wide budget for request bodies held in memory at once (WEB-01). Thread safe.
+class BodyBudget {
+public:
+    explicit BodyBudget(std::uint64_t limit) noexcept : limit_(limit) {}
+    bool take(std::uint64_t n) noexcept;
+    void give(std::uint64_t n) noexcept;
+    std::uint64_t in_use() const noexcept { return used_.load(); }
+
+private:
+    std::atomic<std::uint64_t> used_{0};
+    std::uint64_t limit_;
 };
 
 struct Header {
@@ -89,6 +108,7 @@ std::string percent_encode(std::string_view s);  // everything except unreserved
 // For a query key or value: also leaves the RFC 3986 query characters "/:@!$'()*,;?" as they
 // are (some servers do not decode them); '&', '=', '+', '#' and '%' are always encoded.
 std::string percent_encode_query(std::string_view s);
+// Fails (Malformed) on bad escapes and on decoded C0 controls or DEL (PARSE-40: e.g. %00).
 Result<std::string> percent_decode(std::string_view s, bool plus_is_space);
 struct Target {
     std::string path;                                        // decoded
@@ -108,6 +128,13 @@ Result<Url> parse_url(std::string_view url);
 class Connection {
 public:
     Connection(std::unique_ptr<net::Transport> t, const Limits& limits);
+    ~Connection();
+    Connection(const Connection&) = delete;
+    Connection& operator=(const Connection&) = delete;
+    // Request bodies are charged to `budget` while held (until release_body_budget() or the next
+    // read_request()); a request that would exceed it fails with Errc::Rejected (503).
+    void set_body_budget(std::shared_ptr<BodyBudget> budget) noexcept { budget_ = std::move(budget); }
+    void release_body_budget() noexcept;
 
     // Reads one request. `first_byte_timeout_ms` bounds the wait for the start of the request
     // (keep-alive idle time). On failure, suggested_status() is the status to answer with
@@ -135,8 +162,19 @@ private:
     std::size_t pos_ = 0;
     int suggested_ = 0;
     std::int64_t deadline_ms_ = 0;  // steady-clock deadline for the header section; 0: none
+    bool arm_header_deadline_ = false;  // set deadline_ms_ when the first byte of a message arrives
+    // Body reading (WEB-01): overall deadline and minimum-rate window.
+    bool in_body_ = false;
+    std::int64_t body_deadline_ms_ = 0;
+    std::int64_t window_end_ms_ = 0;
+    std::uint64_t window_bytes_ = 0;
+    std::size_t last_read_ = 0;
+    std::shared_ptr<BodyBudget> budget_;
+    std::uint64_t reserved_ = 0;
 
     Status fill(int timeout_ms);
+    Status fill_once(int timeout_ms);
+    void begin_body();
     Status read_line(std::size_t cap, std::string& line, int first_timeout_ms, bool& got_any);
     Status read_headers(Headers& h);
     Status read_exact(std::uint64_t n, std::string& out);
@@ -144,6 +182,9 @@ private:
     Status read_to_close(std::string& body);
     int timeout_now(int base) const;
 };
+
+// True for "127.x.x.x", "::1", "[::1]" and "localhost".
+bool is_loopback_address(std::string_view host) noexcept;
 
 // Keep-alive decision for a message (RFC 9112 9.3).
 bool wants_close(const Headers& h, int version_minor) noexcept;
@@ -176,9 +217,17 @@ private:
 
 // ---------------------------------------------------------------- server
 struct ServerConfig {
+    // Plain HTTP is refused on an address other than loopback unless allow_insecure_remote is set
+    // (APP-01); DicomwebServer also requires authorize or client certificates there.
     std::string bind_address = "127.0.0.1";
+    bool allow_insecure_remote = false;  // when set, a warning is logged at start
     std::uint16_t port = 0;              // 0: ephemeral, see Server::port()
     std::size_t max_connections = 32;    // further connections get 503 and are closed
+    // Concurrent connections from one peer address (NET-04); further ones get 503. 0: unlimited.
+    // (Browsers open up to 6 per host.)
+    std::size_t max_connections_per_peer = 8;
+    // Request bytes held in memory across all connections (WEB-01); over it: 503. 0: unlimited.
+    std::uint64_t max_inflight_body_bytes = 1ull << 30;
     Limits limits;
     int idle_timeout_ms = 15000;         // keep-alive wait for the next request
     std::uint32_t max_requests_per_connection = 1000;
@@ -210,7 +259,9 @@ private:
         std::thread thread;
         std::atomic<bool> done{false};
         net::Transport* transport = nullptr;
+        std::string peer;
     };
+    std::shared_ptr<BodyBudget> budget_;
     ServerConfig cfg_;
     Handler handler_;
     net::TcpListener listener_;

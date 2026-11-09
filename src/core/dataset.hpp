@@ -2,8 +2,14 @@
 // Values are kept in little-endian byte order in memory (big-endian input is swapped on read).
 #pragma once
 
+#include <compare>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <iterator>
 #include <memory>
+#include <type_traits>
+#include <utility>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,6 +21,94 @@
 namespace siaara {
 
 class Dataset;
+
+// The items of a sequence. Each item has its own heap allocation, so a reference (or a borrowed
+// C API handle) to an item stays valid while sibling items are added or removed and while the
+// element itself moves (e.g. when its parent data set grows), until that item is removed or the
+// sequence is replaced (R-033, CAPI-05). Vector-like interface over Dataset references.
+class ItemList {
+    using Store = std::vector<std::unique_ptr<Dataset>>;
+
+public:
+    template <bool Const>
+    class Iter {
+        using Base = std::conditional_t<Const, Store::const_iterator, Store::iterator>;
+
+    public:
+        using iterator_category = std::random_access_iterator_tag;
+        using value_type = Dataset;
+        using difference_type = std::ptrdiff_t;
+        using reference = std::conditional_t<Const, const Dataset&, Dataset&>;
+        using pointer = std::conditional_t<Const, const Dataset*, Dataset*>;
+        Iter() = default;
+        explicit Iter(Base b) : b_(b) {}
+        template <bool C = Const, class = std::enable_if_t<C>>
+        Iter(const Iter<false>& o) : b_(o.base()) {}  // NOLINT(google-explicit-constructor)
+        reference operator*() const { return **b_; }
+        pointer operator->() const { return b_->get(); }
+        reference operator[](difference_type n) const { return *b_[n]; }
+        Iter& operator++() { ++b_; return *this; }
+        Iter operator++(int) { Iter t = *this; ++b_; return t; }
+        Iter& operator--() { --b_; return *this; }
+        Iter operator--(int) { Iter t = *this; --b_; return t; }
+        Iter& operator+=(difference_type n) { b_ += n; return *this; }
+        Iter& operator-=(difference_type n) { b_ -= n; return *this; }
+        friend Iter operator+(Iter a, difference_type n) { return a += n; }
+        friend Iter operator+(difference_type n, Iter a) { return a += n; }
+        friend Iter operator-(Iter a, difference_type n) { return a -= n; }
+        friend difference_type operator-(const Iter& a, const Iter& b) { return a.b_ - b.b_; }
+        friend bool operator==(const Iter& a, const Iter& b) { return a.b_ == b.b_; }
+        friend auto operator<=>(const Iter& a, const Iter& b) { return a.b_ <=> b.b_; }
+        Base base() const { return b_; }
+
+    private:
+        Base b_{};
+    };
+    using value_type = Dataset;
+    using size_type = std::size_t;
+    using iterator = Iter<false>;
+    using const_iterator = Iter<true>;
+    using reference = Dataset&;
+    using const_reference = const Dataset&;
+
+    ItemList() = default;
+    ItemList(const ItemList& o);
+    ItemList(ItemList&&) noexcept = default;
+    ItemList& operator=(const ItemList& o);
+    ItemList& operator=(ItemList&&) noexcept = default;
+    ~ItemList() = default;
+    ItemList(std::vector<Dataset>&& v);       // NOLINT(google-explicit-constructor)
+    ItemList(const std::vector<Dataset>& v);  // NOLINT(google-explicit-constructor)
+    ItemList(std::initializer_list<Dataset> v);
+
+    std::size_t size() const noexcept { return v_.size(); }
+    bool empty() const noexcept { return v_.empty(); }
+    void clear() noexcept { v_.clear(); }
+    void reserve(std::size_t n) { v_.reserve(n); }
+    Dataset& operator[](std::size_t i) { return *v_[i]; }
+    const Dataset& operator[](std::size_t i) const { return *v_[i]; }
+    Dataset& front() { return *v_.front(); }
+    const Dataset& front() const { return *v_.front(); }
+    Dataset& back() { return *v_.back(); }
+    const Dataset& back() const { return *v_.back(); }
+    iterator begin() noexcept { return iterator(v_.begin()); }
+    iterator end() noexcept { return iterator(v_.end()); }
+    const_iterator begin() const noexcept { return const_iterator(v_.begin()); }
+    const_iterator end() const noexcept { return const_iterator(v_.end()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    void push_back(const Dataset& d);
+    void push_back(Dataset&& d);
+    template <class... A>
+    Dataset& emplace_back(A&&... a);
+    void pop_back() { v_.pop_back(); }
+    void assign(std::size_t n, const Dataset& d);
+    iterator erase(const_iterator pos) { return iterator(v_.erase(pos.base())); }
+    iterator erase(const_iterator first, const_iterator last) { return iterator(v_.erase(first.base(), last.base())); }
+
+private:
+    Store v_;
+};
 
 // One data element. Exactly one of value / items / fragments is used:
 //  - normal elements: value
@@ -28,7 +122,7 @@ struct Element {
     // inflated stream for the deflated syntax, see DicomFile::offsets_are_file_offsets). 0 if built in memory.
     std::uint64_t offset = 0;
     Bytes value;
-    std::vector<Dataset> items;
+    ItemList items;  // stable item addresses (see ItemList)
     std::vector<Bytes> fragments;
 
     bool is_sequence() const noexcept { return vr == VR::SQ; }
@@ -54,6 +148,12 @@ public:
     bool remove(Tag tag);
     // Fast path used by the parser when tags arrive in ascending order.
     void append_sorted(Element e);
+    // Bulk building (parsers): append in arrival order, then call sort_by_tag() once. Between the
+    // two calls the data set may be out of order and lookups are not valid.
+    void append_unsorted(Element e) { elements_.push_back(std::move(e)); }
+    // Stable sort by tag; of duplicate tags the last appended is kept (as put() would) and the
+    // duplicate tags are reported in `duplicates` when given. O(n log n).
+    void sort_by_tag(std::vector<Tag>* duplicates = nullptr);
 
     // ---- typed getters (value multiplicity index `vm`, 0-based)
     // Text value with trailing padding (spaces / NULs) removed; leading spaces kept except where
@@ -77,6 +177,44 @@ public:
 private:
     std::vector<Element> elements_;
 };
+
+// ---- ItemList members that need the complete Dataset
+inline ItemList::ItemList(const ItemList& o) {
+    v_.reserve(o.v_.size());
+    for (const auto& p : o.v_) v_.push_back(std::make_unique<Dataset>(*p));
+}
+inline ItemList& ItemList::operator=(const ItemList& o) {
+    if (this != &o) {
+        ItemList t(o);
+        v_ = std::move(t.v_);
+    }
+    return *this;
+}
+inline ItemList::ItemList(std::vector<Dataset>&& v) {
+    v_.reserve(v.size());
+    for (auto& d : v) v_.push_back(std::make_unique<Dataset>(std::move(d)));
+}
+inline ItemList::ItemList(const std::vector<Dataset>& v) {
+    v_.reserve(v.size());
+    for (const auto& d : v) v_.push_back(std::make_unique<Dataset>(d));
+}
+inline ItemList::ItemList(std::initializer_list<Dataset> v) {
+    v_.reserve(v.size());
+    for (const auto& d : v) v_.push_back(std::make_unique<Dataset>(d));
+}
+inline void ItemList::push_back(const Dataset& d) { v_.push_back(std::make_unique<Dataset>(d)); }
+inline void ItemList::push_back(Dataset&& d) { v_.push_back(std::make_unique<Dataset>(std::move(d))); }
+inline void ItemList::assign(std::size_t n, const Dataset& d) {
+    Store t;
+    t.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) t.push_back(std::make_unique<Dataset>(d));
+    v_ = std::move(t);
+}
+template <class... A>
+Dataset& ItemList::emplace_back(A&&... a) {
+    v_.push_back(std::make_unique<Dataset>(std::forward<A>(a)...));
+    return *v_.back();
+}
 
 // Result of reading a Part 10 file or a raw data set.
 struct DicomFile {

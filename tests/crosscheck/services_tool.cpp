@@ -59,6 +59,7 @@ ScpConfig scp_config(const std::string& ae) {
     c.bind_address = "127.0.0.1";
     c.port = 0;
     c.require_called_ae = false;
+    c.allow_any_calling_ae = true;
     return c;
 }
 

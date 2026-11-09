@@ -98,6 +98,7 @@ ScpConfig scp_config(const std::string& ae = "TEST_SCP") {
     c.bind_address = "127.0.0.1";
     c.port = 0;
     c.max_associations = 4;
+    c.allow_any_calling_ae = true;
     c.timeouts = fast_timeouts();
     return c;
 }

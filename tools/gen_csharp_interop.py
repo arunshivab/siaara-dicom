@@ -113,7 +113,7 @@ class Model:
         self.callbacks = {}    # name -> (ret CType, [(CType, name)])
         self.structs = []      # (name, [(CType, field)])
         self.functions = []    # (name, ret CType, [(CType, name)])
-        skip_defines = {"SIAARA_SIAARA_H", "SIAARA_CALL", "SIAARA_API"}
+        skip_defines = {"SIAARA_SIAARA_H", "SIAARA_CALL", "SIAARA_API", "SIAARA_NOEXCEPT"}
         for m in re.finditer(r"^\s*#\s*define\s+(SIAARA_[A-Z0-9_]+)[ \t]+([^\n]+)$", src, flags=re.M):
             if m.group(1) not in skip_defines and "__" not in m.group(2):
                 self.defines.append((m.group(1), m.group(2).strip()))
@@ -143,7 +143,7 @@ class Model:
                     fields.append((ct2, n2))
             self.structs.append((m.group(3), fields))
         body = src[src.index('extern "C"'):]
-        for m in re.finditer(r"SIAARA_API\s+([\w\s\*]+?)\s*SIAARA_CALL\s+(\w+)\s*\((.*?)\)\s*;", body, flags=re.S):
+        for m in re.finditer(r"SIAARA_API\s+([\w\s\*]+?)\s*SIAARA_CALL\s+(\w+)\s*\((.*?)\)\s*(?:SIAARA_NOEXCEPT\s*)?;", body, flags=re.S):
             ret, _ = parse_decl(m.group(1) + " _r")
             self.functions.append((m.group(2), ret, self.parse_params(m.group(3))))
         self.struct_names = {s for s, _ in self.structs}
