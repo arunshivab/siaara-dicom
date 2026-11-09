@@ -639,6 +639,272 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write(const char* utf8_root
                                                            const siaara_dicomdir_write_options* options,
                                                            uint32_t* warnings);
 
+/* ---------------------------------------------------------------- clinical objects (appended) */
+/* Plane geometry, orientation, series sorting, SUV, ROI statistics, Structured Reports, DICOM SEG
+ * and RT Structure Sets (src/clinical). Pixel coordinates in ROI calls are PIXEL annotation
+ * units (PS3.3 C.10.5.1.2): x = column, y = row, (0,0) = top left corner of the first pixel.
+ * Geometry positions use pixel indices with pixel (0,0) centred on Image Position (Patient). */
+
+enum {
+    SIAARA_SPACING_NONE = 0,
+    SIAARA_SPACING_PIXEL_SPACING = 1,          /* Pixel Spacing or Pixel Measures functional group */
+    SIAARA_SPACING_IMAGER = 2,                 /* Imager Pixel Spacing at the detector */
+    SIAARA_SPACING_IMAGER_MAGNIFIED = 3,       /* Imager Pixel Spacing / Estimated Radiographic Magnification Factor */
+    SIAARA_SPACING_NOMINAL_SCANNED = 4,        /* Nominal Scanned Pixel Spacing */
+    SIAARA_SPACING_ULTRASOUND_REGION = 5       /* Sequence of Ultrasound Regions physical deltas */
+};
+
+typedef struct siaara_plane_geometry {
+    uint32_t struct_size;            /* set to sizeof(siaara_plane_geometry) */
+    uint32_t rows;
+    uint32_t columns;
+    int32_t has_position;            /* 0/1 */
+    int32_t has_orientation;         /* 0/1 */
+    int32_t spacing_source;          /* SIAARA_SPACING_* */
+    int32_t spacing_at_detector;     /* 0/1: spacing applies at the detector plane */
+    int32_t reserved0;
+    double position[3];              /* mm, LPS */
+    double row_cosine[3];
+    double column_cosine[3];
+    double normal[3];
+    double pixel_spacing[2];         /* row spacing, column spacing (mm); 0 when unknown */
+    double slice_thickness;          /* 0 when absent */
+    double spacing_between_slices;   /* 0 when absent */
+    double magnification;            /* magnification factor applied to the spacing (1 = none) */
+} siaara_plane_geometry;
+
+/* Geometry of frame `frame` (0-based): functional groups first, then the classic attributes. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_geometry(const siaara_file* file, uint32_t frame,
+                                                           siaara_plane_geometry* out);
+
+typedef struct siaara_edge_labels {
+    uint32_t struct_size;            /* set to sizeof(siaara_edge_labels) */
+    char left[4];                    /* e.g. "R", "RA", "RAF"; NUL-terminated */
+    char right[4];
+    char top[4];
+    char bottom[4];
+} siaara_edge_labels;
+
+/* Patient orientation letters at the image edges. SIAARA_ERR_NOT_FOUND without orientation. */
+SIAARA_API siaara_status SIAARA_CALL siaara_orientation_labels(const siaara_file* file, uint32_t frame,
+                                                               siaara_edge_labels* out);
+
+/* Series sort warnings (bit mask). */
+enum {
+    SIAARA_SORT_MISSING_GEOMETRY = 1 << 0,
+    SIAARA_SORT_MULTIPLE_STACKS = 1 << 1,
+    SIAARA_SORT_MIXED_ORIENTATION = 1 << 2,
+    SIAARA_SORT_DUPLICATE_POSITIONS = 1 << 3,
+    SIAARA_SORT_UNEVEN_SPACING = 1 << 4,
+    SIAARA_SORT_GANTRY_TILT = 1 << 5,
+    SIAARA_SORT_MULTIPLE_FRAMES_OF_REFERENCE = 1 << 6,
+    SIAARA_SORT_TEMPORAL_SPLIT = 1 << 7,
+    SIAARA_SORT_SIZE_MISMATCH = 1 << 8
+};
+#define SIAARA_SORT_EXPAND_FRAMES 1u   /* flag: one entry per frame of enhanced multi-frame files */
+
+/* Sorts files (NULL entries are skipped) along the slice normal, then Instance Number and
+ * acquisition time, after splitting by stack, temporal position and orientation. Writes *needed
+ * entries: out_instance[k] = index into files, out_frame[k] (may be NULL) = 0-based frame,
+ * out_group[k] (may be NULL) = stack / temporal group number. *warnings (may be NULL) receives
+ * SIAARA_SORT_* bits. cap < *needed: SIAARA_ERR_BUFFER_TOO_SMALL (warnings still set). */
+SIAARA_API siaara_status SIAARA_CALL siaara_series_sort(const siaara_file* const* files, size_t count, uint32_t flags,
+                                                        uint32_t* out_instance, uint32_t* out_frame,
+                                                        uint32_t* out_group, size_t cap, size_t* needed,
+                                                        uint32_t* warnings);
+
+/* SUV warnings (bit mask; see src/clinical/suv.hpp for the meaning of each). */
+enum {
+    SIAARA_SUV_MISSING_WEIGHT = 1 << 0,
+    SIAARA_SUV_MISSING_DOSE = 1 << 1,
+    SIAARA_SUV_MISSING_HALF_LIFE = 1 << 2,
+    SIAARA_SUV_MISSING_INJECTION_TIME = 1 << 3,
+    SIAARA_SUV_MISSING_SCAN_TIME = 1 << 4,
+    SIAARA_SUV_INCONSISTENT_TIMES = 1 << 5,
+    SIAARA_SUV_COUNTS_WITHOUT_SCALE = 1 << 6,
+    SIAARA_SUV_NOT_DECAY_CORRECTED = 1 << 7,
+    SIAARA_SUV_NOT_ATTENUATION_CORRECTED = 1 << 8,
+    SIAARA_SUV_UNSUPPORTED_UNITS = 1 << 9,
+    SIAARA_SUV_SERIES_AFTER_ACQUISITION = 1 << 10,
+    SIAARA_SUV_MISSING_HEIGHT = 1 << 11,
+    SIAARA_SUV_MISSING_SEX = 1 << 12,
+    SIAARA_SUV_MIDNIGHT_ROLLOVER = 1 << 13,
+    SIAARA_SUV_INJECTION_DATE_ASSUMED = 1 << 14,
+    SIAARA_SUV_MISSING_UNITS = 1 << 15,
+    SIAARA_SUV_IMPLAUSIBLE_VALUE = 1 << 16,
+    SIAARA_SUV_ALREADY_SUV = 1 << 17,
+    SIAARA_SUV_UNKNOWN_DECAY_CORRECTION = 1 << 18,
+    SIAARA_SUV_MULTIPLE_RADIOPHARMACEUTICALS = 1 << 19,
+    SIAARA_SUV_TIMEZONE_MISMATCH = 1 << 20,
+    SIAARA_SUV_VENDOR_FACTOR_USED = 1 << 21,
+    SIAARA_SUV_PER_IMAGE_SCAN_TIME = 1 << 22
+};
+
+typedef struct siaara_suv {
+    uint32_t struct_size;            /* set to sizeof(siaara_suv) */
+    uint32_t warnings;               /* SIAARA_SUV_* */
+    int32_t has_bw;                  /* 0/1 for each factor below */
+    int32_t has_lbm_james;
+    int32_t has_lbm_janmahasatian;
+    int32_t has_bsa;
+    int32_t has_ibw;
+    int32_t reserved0;
+    double bw;                       /* SUV = modality value (Bq/ml) x factor; body weight, g/ml */
+    double lbm_james;
+    double lbm_janmahasatian;
+    double bsa;                      /* cm2/ml */
+    double ibw;
+    double decay_seconds;            /* 0 when unknown */
+    double decayed_dose_bq;          /* 0 when unknown */
+} siaara_suv;
+
+/* SUV factors for a PET frame. Returns SIAARA_OK even when no factor can be computed: check
+ * has_bw and warnings. */
+SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, uint32_t frame, siaara_suv* out);
+
+enum {
+    SIAARA_ROI_RECTANGLE = 0,        /* params: x0 y0 x1 y1 */
+    SIAARA_ROI_ELLIPSE = 1,          /* params: cx cy rx ry angle(radians) */
+    SIAARA_ROI_CIRCLE = 2,           /* params: cx cy radius */
+    SIAARA_ROI_POLYGON = 3,          /* params: x y pairs (at least 3 vertices) */
+    SIAARA_ROI_FREEHAND = 4          /* params: x y pairs */
+};
+
+typedef struct siaara_roi_stats {
+    uint32_t struct_size;            /* set to sizeof(siaara_roi_stats) */
+    int32_t has_area_mm2;
+    int32_t spacing_source;          /* SIAARA_SPACING_* used for area_mm2 */
+    int32_t reserved0;
+    uint64_t pixels;                 /* pixels with a non-zero weight */
+    double count;                    /* sum of weights */
+    double sum, mean, sd, sd_sample, min, max;
+    double area_px, area_mm2;
+} siaara_roi_stats;
+
+/* Statistics of the modality values of a grayscale frame inside a shape. partial = 1 weights
+ * pixels by covered area. */
+SIAARA_API siaara_status SIAARA_CALL siaara_roi_stats_compute(const siaara_file* file, uint32_t frame, int32_t shape,
+                                                              const double* params, size_t param_count, int32_t partial,
+                                                              siaara_roi_stats* out);
+
+/* ---- Structured Reports */
+typedef struct siaara_sr siaara_sr;
+
+enum {
+    SIAARA_SR_CONTAINER = 0, SIAARA_SR_TEXT = 1, SIAARA_SR_CODE = 2, SIAARA_SR_NUM = 3, SIAARA_SR_DATETIME = 4,
+    SIAARA_SR_DATE = 5, SIAARA_SR_TIME = 6, SIAARA_SR_UIDREF = 7, SIAARA_SR_PNAME = 8, SIAARA_SR_COMPOSITE = 9,
+    SIAARA_SR_IMAGE = 10, SIAARA_SR_WAVEFORM = 11, SIAARA_SR_SCOORD = 12, SIAARA_SR_SCOORD3D = 13,
+    SIAARA_SR_TCOORD = 14, SIAARA_SR_TABLE = 15, SIAARA_SR_REFERENCE = 16, SIAARA_SR_UNKNOWN = 17
+};
+enum {
+    SIAARA_REL_NONE = 0, SIAARA_REL_CONTAINS = 1, SIAARA_REL_HAS_PROPERTIES = 2, SIAARA_REL_HAS_OBS_CONTEXT = 3,
+    SIAARA_REL_HAS_ACQ_CONTEXT = 4, SIAARA_REL_INFERRED_FROM = 5, SIAARA_REL_SELECTED_FROM = 6,
+    SIAARA_REL_HAS_CONCEPT_MOD = 7, SIAARA_REL_UNKNOWN = 8
+};
+
+typedef struct siaara_sr_node_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_sr_node_info) */
+    int32_t parent;                  /* -1 for the root */
+    uint32_t depth;
+    uint32_t child_count;
+    int32_t value_type;              /* SIAARA_SR_* */
+    int32_t relationship;            /* SIAARA_REL_* */
+    int32_t referenced_node;         /* SIAARA_SR_REFERENCE: target node, -1 if unresolved */
+    int32_t has_numeric;
+    double numeric;                  /* NUM value */
+    uint32_t reference_count;        /* COMPOSITE / IMAGE / WAVEFORM references */
+    uint32_t graphic_point_values;   /* SCOORD / SCOORD3D: number of Graphic Data values */
+} siaara_sr_node_info;
+
+enum {
+    SIAARA_SRF_CONCEPT_VALUE = 0, SIAARA_SRF_CONCEPT_SCHEME = 1, SIAARA_SRF_CONCEPT_MEANING = 2,
+    SIAARA_SRF_TEXT = 3,             /* TEXT, DATETIME, DATE, TIME, UIDREF, PNAME value */
+    SIAARA_SRF_CODE_VALUE = 4, SIAARA_SRF_CODE_SCHEME = 5, SIAARA_SRF_CODE_MEANING = 6,
+    SIAARA_SRF_NUMERIC_TEXT = 7, SIAARA_SRF_UNITS_VALUE = 8, SIAARA_SRF_UNITS_SCHEME = 9, SIAARA_SRF_UNITS_MEANING = 10,
+    SIAARA_SRF_REFERENCED_SOP_CLASS = 11, SIAARA_SRF_REFERENCED_SOP_INSTANCE = 12, /* first reference */
+    SIAARA_SRF_GRAPHIC_TYPE = 13, SIAARA_SRF_VALUE_TYPE = 14, SIAARA_SRF_RELATIONSHIP = 15,
+    SIAARA_SRF_CONTINUITY = 16, SIAARA_SRF_TEMPLATE_ID = 17, SIAARA_SRF_POSITION = 18 /* "1.2.3" */
+};
+
+/* Reads the SR content tree of the file. Caller owns *out: free with siaara_sr_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_open(const siaara_file* file, siaara_sr** out);
+SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr);
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_count(const siaara_sr* sr, uint32_t* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node(const siaara_sr* sr, uint32_t index, siaara_sr_node_info* out);
+/* Child node indices (count elements). Buffer rules as for siaara_series_sort. */
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_children(const siaara_sr* sr, uint32_t index, uint32_t* buf,
+                                                             size_t cap, size_t* needed);
+/* A text field (SIAARA_SRF_*) of a node; string buffer rules. */
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_string(const siaara_sr* sr, uint32_t index, int32_t field,
+                                                           char* buf, size_t cap, size_t* needed);
+/* SCOORD / SCOORD3D Graphic Data values (count doubles). */
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_graphic_data(const siaara_sr* sr, uint32_t index, double* buf,
+                                                                 size_t cap, size_t* needed);
+/* Plain-text rendering of the whole tree; string buffer rules. */
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_to_text(const siaara_sr* sr, char* buf, size_t cap, size_t* needed);
+
+/* ---- Segmentation (DICOM SEG) */
+typedef struct siaara_seg siaara_seg;
+
+enum { SIAARA_SEG_BINARY = 0, SIAARA_SEG_FRACTIONAL = 1, SIAARA_SEG_LABELMAP = 2 };
+
+typedef struct siaara_segment_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_segment_info) */
+    uint32_t number;                 /* Segment Number */
+    uint32_t frame_count;            /* SEG frames holding the segment */
+    int32_t has_color;
+    uint8_t rgb[3];                  /* from Recommended Display CIELab Value */
+    uint8_t reserved0;
+    uint16_t cielab[3];
+    uint16_t reserved1;
+} siaara_segment_info;
+
+/* Reads the segmentation description of the file. Caller owns *out: free with siaara_seg_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_open(const siaara_file* file, siaara_seg** out);
+SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg);
+/* *type receives SIAARA_SEG_*, *frames the Number of Frames (both may be NULL). */
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_info(const siaara_seg* seg, int32_t* type, uint32_t* frames,
+                                                     uint32_t* max_fractional);
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment_count(const siaara_seg* seg, uint32_t* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment(const siaara_seg* seg, uint32_t index, siaara_segment_info* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment_label(const siaara_seg* seg, uint32_t index, char* buf,
+                                                              size_t cap, size_t* needed);
+/* SEG frames (0-based) of segment `segment_number` derived from the source instance and 1-based
+ * frame (0 = any). Array buffer rules. */
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_frames_for_source(const siaara_seg* seg, uint32_t segment_number,
+                                                                  const char* sop_instance_uid, size_t len,
+                                                                  uint32_t frame, uint32_t* buf, size_t cap,
+                                                                  size_t* needed);
+/* Mask of SEG frame `frame` (rows x columns bytes): BINARY 0/1, FRACTIONAL the stored value,
+ * LABELMAP 1 where the label is segment_number. `file` must be the file the seg was opened from. */
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_mask(const siaara_file* file, const siaara_seg* seg, uint32_t frame,
+                                                     uint32_t segment_number, uint8_t* buf, size_t cap,
+                                                     size_t* needed);
+
+/* ---- RT Structure Set */
+typedef struct siaara_rtstruct siaara_rtstruct;
+
+typedef struct siaara_rt_roi_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_rt_roi_info) */
+    int32_t number;                  /* ROI Number */
+    uint32_t contour_count;
+    int32_t has_color;
+    uint8_t rgb[3];                  /* ROI Display Color */
+    uint8_t reserved0;
+} siaara_rt_roi_info;
+
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* file, siaara_rtstruct** out);
+SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt);
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_count(const siaara_rtstruct* rt, uint32_t* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi(const siaara_rtstruct* rt, uint32_t index, siaara_rt_roi_info* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_name(const siaara_rtstruct* rt, uint32_t index, char* buf,
+                                                              size_t cap, size_t* needed);
+/* Contour points as x y z triplets in patient coordinates (mm): *needed = 3 x points doubles.
+ * *closed (may be NULL) = 1 for CLOSED_PLANAR. */
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara_rtstruct* rt, uint32_t roi,
+                                                                    uint32_t contour, double* buf, size_t cap,
+                                                                    size_t* needed, int32_t* closed);
+
 #ifdef __cplusplus
 }
 #endif

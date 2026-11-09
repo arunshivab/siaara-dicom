@@ -1228,3 +1228,477 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write(const char* root, siz
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- clinical objects (appended)
+#include "clinical/geometry.hpp"
+#include "clinical/roi.hpp"
+#include "clinical/rtstruct.hpp"
+#include "clinical/seg.hpp"
+#include "clinical/sr.hpp"
+#include "clinical/suv.hpp"
+
+struct siaara_sr {
+    siaara::clinical::SrDocument doc;
+};
+struct siaara_seg {
+    siaara::clinical::Segmentation seg;
+};
+struct siaara_rtstruct {
+    siaara::clinical::RtStructureSet rt;
+};
+
+namespace {
+
+namespace cl = siaara::clinical;
+
+template <class T>
+siaara_status copy_array(const T* data, size_t n, T* buf, size_t cap, size_t* needed) {
+    if (needed) *needed = n;
+    if (n == 0) return ok();
+    if (!buf || cap < n) return fail(Errc::BufferTooSmall, "buffer too small");
+    std::memcpy(buf, data, n * sizeof(T));
+    return ok();
+}
+
+void copy_label(const std::string& s, char (&out)[4]) {
+    const size_t n = std::min<size_t>(s.size(), 3);
+    std::memcpy(out, s.data(), n);
+    out[n] = '\0';
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_geometry(const siaara_file* file, uint32_t frame,
+                                                           siaara_plane_geometry* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out || out->struct_size < sizeof(siaara_plane_geometry))
+            return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
+        auto g = cl::frame_geometry(file->file.dataset, frame);
+        if (!g) return fail(g.error());
+        const uint32_t size = out->struct_size;
+        std::memset(out, 0, sizeof(siaara_plane_geometry));
+        out->struct_size = size;
+        out->rows = g->rows;
+        out->columns = g->columns;
+        out->has_position = g->has_position ? 1 : 0;
+        out->has_orientation = g->has_orientation ? 1 : 0;
+        out->spacing_source = static_cast<int32_t>(g->spacing.source);
+        out->spacing_at_detector = g->spacing.at_detector ? 1 : 0;
+        auto put3 = [](const cl::Vec3& v, double* d) { d[0] = v.x, d[1] = v.y, d[2] = v.z; };
+        put3(g->position, out->position);
+        put3(g->row_cosine, out->row_cosine);
+        put3(g->column_cosine, out->column_cosine);
+        put3(g->normal, out->normal);
+        out->pixel_spacing[0] = g->spacing.row;
+        out->pixel_spacing[1] = g->spacing.column;
+        out->slice_thickness = g->slice_thickness.value_or(0.0);
+        out->spacing_between_slices = g->spacing_between_slices.value_or(0.0);
+        out->magnification = g->spacing.magnification;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_orientation_labels(const siaara_file* file, uint32_t frame,
+                                                               siaara_edge_labels* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out || out->struct_size < sizeof(siaara_edge_labels))
+            return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
+        auto g = cl::frame_geometry(file->file.dataset, frame);
+        if (!g) return fail(g.error());
+        auto e = cl::edge_labels(*g);
+        if (!e) return fail(Errc::NotFound, "no Image Orientation (Patient)");
+        copy_label(e->left, out->left);
+        copy_label(e->right, out->right);
+        copy_label(e->top, out->top);
+        copy_label(e->bottom, out->bottom);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_series_sort(const siaara_file* const* files, size_t count, uint32_t flags,
+                                                        uint32_t* out_instance, uint32_t* out_frame,
+                                                        uint32_t* out_group, size_t cap, size_t* needed,
+                                                        uint32_t* warnings) {
+    return guarded([&]() -> siaara_status {
+        if (count && !files) return fail(Errc::InvalidArgument, "files must not be NULL");
+        std::vector<const siaara::Dataset*> ds(count, nullptr);
+        for (size_t i = 0; i < count; ++i)
+            if (files[i]) ds[i] = &files[i]->file.dataset;
+        cl::SeriesSortOptions o;
+        o.expand_frames = (flags & SIAARA_SORT_EXPAND_FRAMES) != 0;
+        const cl::SeriesSort r = cl::sort_series(ds, o);
+        if (warnings) *warnings = r.warnings;
+        if (needed) *needed = r.order.size();
+        if (r.order.empty()) return ok();
+        if (!out_instance || cap < r.order.size()) return fail(Errc::BufferTooSmall, "buffer too small");
+        std::vector<uint32_t> group_of(r.items.size(), 0);
+        for (size_t g = 0; g < r.groups.size(); ++g)
+            for (auto i : r.groups[g].items) group_of[i] = static_cast<uint32_t>(g);
+        for (size_t k = 0; k < r.order.size(); ++k) {
+            const auto& it = r.items[r.order[k]];
+            out_instance[k] = it.instance;
+            if (out_frame) out_frame[k] = it.frame;
+            if (out_group) out_group[k] = group_of[r.order[k]];
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, uint32_t frame, siaara_suv* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out || out->struct_size < sizeof(siaara_suv))
+            return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
+        const cl::SuvResult r = cl::compute_suv(file->file.dataset, frame);
+        const uint32_t size = out->struct_size;
+        std::memset(out, 0, sizeof(siaara_suv));
+        out->struct_size = size;
+        out->warnings = r.warnings;
+        auto put = [](const std::optional<double>& v, int32_t& has, double& d) {
+            has = v ? 1 : 0;
+            d = v.value_or(0.0);
+        };
+        put(r.bw, out->has_bw, out->bw);
+        put(r.lbm_james, out->has_lbm_james, out->lbm_james);
+        put(r.lbm_janmahasatian, out->has_lbm_janmahasatian, out->lbm_janmahasatian);
+        put(r.bsa, out->has_bsa, out->bsa);
+        put(r.ibw, out->has_ibw, out->ibw);
+        out->decay_seconds = r.decay_seconds.value_or(0.0);
+        out->decayed_dose_bq = r.decayed_dose_bq.value_or(0.0);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_roi_stats_compute(const siaara_file* file, uint32_t frame, int32_t shape,
+                                                              const double* params, size_t param_count, int32_t partial,
+                                                              siaara_roi_stats* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out || out->struct_size < sizeof(siaara_roi_stats) || (param_count && !params))
+            return fail(Errc::InvalidArgument, "file, params and out (with struct_size) must be set");
+        cl::Roi roi;
+        auto need = [&](size_t n) { return param_count == n; };
+        switch (shape) {
+            case SIAARA_ROI_RECTANGLE:
+                if (!need(4)) return fail(Errc::InvalidArgument, "rectangle needs 4 parameters");
+                roi = cl::Roi::rectangle(params[0], params[1], params[2], params[3]);
+                break;
+            case SIAARA_ROI_ELLIPSE:
+                if (!need(5)) return fail(Errc::InvalidArgument, "ellipse needs 5 parameters");
+                roi = cl::Roi::ellipse(params[0], params[1], params[2], params[3], params[4]);
+                break;
+            case SIAARA_ROI_CIRCLE:
+                if (!need(3)) return fail(Errc::InvalidArgument, "circle needs 3 parameters");
+                roi = cl::Roi::circle(params[0], params[1], params[2]);
+                break;
+            case SIAARA_ROI_POLYGON:
+            case SIAARA_ROI_FREEHAND: {
+                if (param_count < 6 || param_count % 2) return fail(Errc::InvalidArgument, "polygon needs x y pairs");
+                std::vector<cl::Point2> v;
+                v.reserve(param_count / 2);
+                for (size_t i = 0; i + 1 < param_count; i += 2) v.push_back({params[i], params[i + 1]});
+                roi = shape == SIAARA_ROI_POLYGON ? cl::Roi::polygon(std::move(v)) : cl::Roi::freehand(std::move(v));
+                break;
+            }
+            default: return fail(Errc::InvalidArgument, "unknown ROI shape");
+        }
+        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
+        if (!img) return fail(img.error());
+        const auto& pi = img->info();
+        if (pi.samples_per_pixel != 1) return fail(Errc::Unsupported, "ROI statistics need a grayscale image");
+        if (frame >= img->frames().frame_count()) return fail(Errc::InvalidArgument, "frame index out of range");
+        std::vector<float> values(static_cast<size_t>(pi.pixels()));
+        if (Status s = siaara::image::decode_modality_f32(*img, frame, values); !s) return fail(s);
+        const cl::PixelSpacingInfo sp = cl::resolve_pixel_spacing(file->file.dataset, frame);
+        cl::RoiOptions o;
+        o.partial_pixels = partial != 0;
+        auto r = cl::roi_stats(values, pi.rows, pi.columns, roi, &sp, o);
+        if (!r) return fail(r.error());
+        const uint32_t size = out->struct_size;
+        std::memset(out, 0, sizeof(siaara_roi_stats));
+        out->struct_size = size;
+        out->has_area_mm2 = r->area_mm2 ? 1 : 0;
+        out->spacing_source = static_cast<int32_t>(r->spacing_source);
+        out->pixels = r->pixels;
+        out->count = r->count;
+        out->sum = r->sum;
+        out->mean = r->mean;
+        out->sd = r->sd;
+        out->sd_sample = r->sd_sample;
+        out->min = r->min;
+        out->max = r->max;
+        out->area_px = r->area_px;
+        out->area_mm2 = r->area_mm2.value_or(0.0);
+        return ok();
+    });
+}
+
+// ---- Structured Reports
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_open(const siaara_file* file, siaara_sr** out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        *out = nullptr;
+        auto r = cl::read_sr(file->file.dataset);
+        if (!r) return fail(r.error());
+        *out = new siaara_sr{std::move(r).value()};
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_sr_free(siaara_sr* sr) { delete sr; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_count(const siaara_sr* sr, uint32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!sr || !out) return fail(Errc::InvalidArgument, "sr and out must not be NULL");
+        *out = static_cast<uint32_t>(sr->doc.nodes.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node(const siaara_sr* sr, uint32_t index, siaara_sr_node_info* out) {
+    return guarded([&]() -> siaara_status {
+        if (!sr || !out || out->struct_size < sizeof(siaara_sr_node_info))
+            return fail(Errc::InvalidArgument, "sr and out (with struct_size) must be set");
+        if (index >= sr->doc.nodes.size()) return fail(Errc::InvalidArgument, "node index out of range");
+        const cl::SrNode& n = sr->doc.nodes[index];
+        out->parent = n.parent;
+        out->depth = n.depth;
+        out->child_count = static_cast<uint32_t>(n.children.size());
+        out->value_type = static_cast<int32_t>(n.value_type);
+        out->relationship = static_cast<int32_t>(n.relationship);
+        out->referenced_node = n.referenced_node;
+        out->has_numeric = n.numeric ? 1 : 0;
+        out->numeric = n.numeric.value_or(0.0);
+        out->reference_count = static_cast<uint32_t>(n.references.size());
+        out->graphic_point_values = static_cast<uint32_t>(n.graphic_data.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_children(const siaara_sr* sr, uint32_t index, uint32_t* buf,
+                                                             size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!sr) return fail(Errc::InvalidArgument, "sr must not be NULL");
+        if (index >= sr->doc.nodes.size()) return fail(Errc::InvalidArgument, "node index out of range");
+        const auto& c = sr->doc.nodes[index].children;
+        return copy_array(c.data(), c.size(), buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_string(const siaara_sr* sr, uint32_t index, int32_t field,
+                                                           char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!sr) return fail(Errc::InvalidArgument, "sr must not be NULL");
+        if (index >= sr->doc.nodes.size()) return fail(Errc::InvalidArgument, "node index out of range");
+        const cl::SrNode& n = sr->doc.nodes[index];
+        static const std::string kEmpty;
+        auto code_field = [&](const std::optional<cl::Code>& c, int which) -> const std::string& {
+            if (!c) return kEmpty;
+            return which == 0 ? c->value : (which == 1 ? c->scheme : c->meaning);
+        };
+        std::string tmp;
+        const std::string* s = &kEmpty;
+        switch (field) {
+            case SIAARA_SRF_CONCEPT_VALUE: s = &code_field(n.concept_name, 0); break;
+            case SIAARA_SRF_CONCEPT_SCHEME: s = &code_field(n.concept_name, 1); break;
+            case SIAARA_SRF_CONCEPT_MEANING: s = &code_field(n.concept_name, 2); break;
+            case SIAARA_SRF_TEXT: s = &n.text; break;
+            case SIAARA_SRF_CODE_VALUE: s = &code_field(n.code, 0); break;
+            case SIAARA_SRF_CODE_SCHEME: s = &code_field(n.code, 1); break;
+            case SIAARA_SRF_CODE_MEANING: s = &code_field(n.code, 2); break;
+            case SIAARA_SRF_NUMERIC_TEXT: s = &n.numeric_text; break;
+            case SIAARA_SRF_UNITS_VALUE: s = &code_field(n.units, 0); break;
+            case SIAARA_SRF_UNITS_SCHEME: s = &code_field(n.units, 1); break;
+            case SIAARA_SRF_UNITS_MEANING: s = &code_field(n.units, 2); break;
+            case SIAARA_SRF_REFERENCED_SOP_CLASS:
+                if (!n.references.empty()) s = &n.references.front().sop_class_uid;
+                break;
+            case SIAARA_SRF_REFERENCED_SOP_INSTANCE:
+                if (!n.references.empty()) s = &n.references.front().sop_instance_uid;
+                break;
+            case SIAARA_SRF_GRAPHIC_TYPE: s = &n.graphic_type; break;
+            case SIAARA_SRF_VALUE_TYPE: tmp = std::string(cl::value_type_name(n.value_type)); s = &tmp; break;
+            case SIAARA_SRF_RELATIONSHIP: s = &n.relationship_text; break;
+            case SIAARA_SRF_CONTINUITY: s = &n.continuity; break;
+            case SIAARA_SRF_TEMPLATE_ID: s = &n.template_id; break;
+            case SIAARA_SRF_POSITION:
+                for (size_t i = 0; i < n.position.size(); ++i) {
+                    if (i) tmp.push_back('.');
+                    tmp += std::to_string(n.position[i]);
+                }
+                s = &tmp;
+                break;
+            default: return fail(Errc::InvalidArgument, "unknown field");
+        }
+        return copy_out(*s, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_node_graphic_data(const siaara_sr* sr, uint32_t index, double* buf,
+                                                                 size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!sr) return fail(Errc::InvalidArgument, "sr must not be NULL");
+        if (index >= sr->doc.nodes.size()) return fail(Errc::InvalidArgument, "node index out of range");
+        const auto& g = sr->doc.nodes[index].graphic_data;
+        return copy_array(g.data(), g.size(), buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_sr_to_text(const siaara_sr* sr, char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!sr) return fail(Errc::InvalidArgument, "sr must not be NULL");
+        return copy_out(cl::sr_to_text(sr->doc), buf, cap, needed);
+    });
+}
+
+// ---- Segmentation
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_open(const siaara_file* file, siaara_seg** out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        *out = nullptr;
+        auto r = cl::read_segmentation(file->file.dataset);
+        if (!r) return fail(r.error());
+        *out = new siaara_seg{std::move(r).value()};
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_seg_free(siaara_seg* seg) { delete seg; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_info(const siaara_seg* seg, int32_t* type, uint32_t* frames,
+                                                     uint32_t* max_fractional) {
+    return guarded([&]() -> siaara_status {
+        if (!seg) return fail(Errc::InvalidArgument, "seg must not be NULL");
+        if (type) *type = static_cast<int32_t>(seg->seg.type);
+        if (frames) *frames = seg->seg.number_of_frames;
+        if (max_fractional) *max_fractional = seg->seg.max_fractional;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment_count(const siaara_seg* seg, uint32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!seg || !out) return fail(Errc::InvalidArgument, "seg and out must not be NULL");
+        *out = static_cast<uint32_t>(seg->seg.segments.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment(const siaara_seg* seg, uint32_t index, siaara_segment_info* out) {
+    return guarded([&]() -> siaara_status {
+        if (!seg || !out || out->struct_size < sizeof(siaara_segment_info))
+            return fail(Errc::InvalidArgument, "seg and out (with struct_size) must be set");
+        if (index >= seg->seg.segments.size()) return fail(Errc::InvalidArgument, "segment index out of range");
+        const cl::Segment& s = seg->seg.segments[index];
+        const uint32_t size = out->struct_size;
+        std::memset(out, 0, sizeof(siaara_segment_info));
+        out->struct_size = size;
+        out->number = s.number;
+        out->frame_count = static_cast<uint32_t>(s.frames.size());
+        out->has_color = s.rgb ? 1 : 0;
+        if (s.rgb) std::memcpy(out->rgb, s.rgb->data(), 3);
+        if (s.cielab)
+            for (int k = 0; k < 3; ++k) out->cielab[k] = (*s.cielab)[static_cast<size_t>(k)];
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment_label(const siaara_seg* seg, uint32_t index, char* buf,
+                                                              size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!seg) return fail(Errc::InvalidArgument, "seg must not be NULL");
+        if (index >= seg->seg.segments.size()) return fail(Errc::InvalidArgument, "segment index out of range");
+        return copy_out(seg->seg.segments[index].label, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_frames_for_source(const siaara_seg* seg, uint32_t segment_number,
+                                                                  const char* sop, size_t len, uint32_t frame,
+                                                                  uint32_t* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!seg || !sop) return fail(Errc::InvalidArgument, "seg and sop_instance_uid must not be NULL");
+        const auto f = seg->seg.frames_for_source(segment_number, std::string_view(sop, len), frame);
+        return copy_array(f.data(), f.size(), buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_seg_mask(const siaara_file* file, const siaara_seg* seg, uint32_t frame,
+                                                     uint32_t segment_number, uint8_t* buf, size_t cap,
+                                                     size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !seg) return fail(Errc::InvalidArgument, "file and seg must not be NULL");
+        auto m = cl::segment_mask(file->file.dataset, file->file.transfer_syntax, seg->seg, frame, segment_number);
+        if (!m) return fail(m.error());
+        return copy_array(m->data(), m->size(), buf, cap, needed);
+    });
+}
+
+// ---- RT Structure Set
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_open(const siaara_file* file, siaara_rtstruct** out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        *out = nullptr;
+        auto r = cl::read_rtstruct(file->file.dataset);
+        if (!r) return fail(r.error());
+        *out = new siaara_rtstruct{std::move(r).value()};
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_rtstruct_free(siaara_rtstruct* rt) { delete rt; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_count(const siaara_rtstruct* rt, uint32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!rt || !out) return fail(Errc::InvalidArgument, "rt and out must not be NULL");
+        *out = static_cast<uint32_t>(rt->rt.rois.size());
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi(const siaara_rtstruct* rt, uint32_t index, siaara_rt_roi_info* out) {
+    return guarded([&]() -> siaara_status {
+        if (!rt || !out || out->struct_size < sizeof(siaara_rt_roi_info))
+            return fail(Errc::InvalidArgument, "rt and out (with struct_size) must be set");
+        if (index >= rt->rt.rois.size()) return fail(Errc::InvalidArgument, "ROI index out of range");
+        const cl::RtRoi& r = rt->rt.rois[index];
+        const uint32_t size = out->struct_size;
+        std::memset(out, 0, sizeof(siaara_rt_roi_info));
+        out->struct_size = size;
+        out->number = static_cast<int32_t>(std::clamp<std::int64_t>(r.number, INT32_MIN, INT32_MAX));
+        out->contour_count = static_cast<uint32_t>(r.contours.size());
+        out->has_color = r.color ? 1 : 0;
+        if (r.color) std::memcpy(out->rgb, r.color->data(), 3);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_roi_name(const siaara_rtstruct* rt, uint32_t index, char* buf,
+                                                              size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!rt) return fail(Errc::InvalidArgument, "rt must not be NULL");
+        if (index >= rt->rt.rois.size()) return fail(Errc::InvalidArgument, "ROI index out of range");
+        return copy_out(rt->rt.rois[index].name, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara_rtstruct* rt, uint32_t roi,
+                                                                    uint32_t contour, double* buf, size_t cap,
+                                                                    size_t* needed, int32_t* closed) {
+    return guarded([&]() -> siaara_status {
+        if (!rt) return fail(Errc::InvalidArgument, "rt must not be NULL");
+        if (roi >= rt->rt.rois.size() || contour >= rt->rt.rois[roi].contours.size())
+            return fail(Errc::InvalidArgument, "ROI or contour index out of range");
+        const cl::RtContour& c = rt->rt.rois[roi].contours[contour];
+        if (closed) *closed = c.geometric_type == "CLOSED_PLANAR" ? 1 : 0;
+        std::vector<double> xyz;
+        xyz.reserve(c.points.size() * 3);
+        for (const auto& p : c.points) {
+            xyz.push_back(p.x);
+            xyz.push_back(p.y);
+            xyz.push_back(p.z);
+        }
+        return copy_array(xyz.data(), xyz.size(), buf, cap, needed);
+    });
+}
+
+}  // extern "C"
