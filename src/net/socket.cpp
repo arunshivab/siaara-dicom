@@ -1,6 +1,7 @@
 // SIAARA DICOM Toolkit - TCP transport for POSIX sockets and Winsock2.
 #include "net/socket.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -83,7 +84,10 @@ void tune_stream_socket(Handle h) {
 int clamp_timeout(int ms) { return ms < 0 ? 0 : ms; }
 
 // Waits for `events` on one socket. Returns 1 ready, 0 timeout, -1 error (errno/WSA set).
-int wait_one(Handle h, short events, int timeout_ms) {
+// `cancel`, when given, is checked between short poll slices: WSAPoll does not reliably wake a
+// waiting thread when another thread shuts the socket down, so a local shutdown must be noticed
+// without relying on the poll result.
+int wait_one(Handle h, short events, int timeout_ms, const std::atomic<bool>* cancel = nullptr) {
     using clock = std::chrono::steady_clock;
     const auto deadline = clock::now() + std::chrono::milliseconds(clamp_timeout(timeout_ms));
     while (true) {
@@ -91,14 +95,21 @@ int wait_one(Handle h, short events, int timeout_ms) {
         p.fd = h;
         p.events = events;
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count();
-        const int wait_ms = left <= 0 ? 0 : (left > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max()
-                                                                                       : static_cast<int>(left));
+        int wait_ms = left <= 0 ? 0 : (left > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max()
+                                                                                 : static_cast<int>(left));
+        if (cancel) {
+            if (cancel->load()) return 1;  // the following recv/send reports the shutdown
+            if (wait_ms > 50) wait_ms = 50;
+        }
         const int r = do_poll(&p, 1, wait_ms);
         if (r < 0) {
             if (interrupted(last_error())) continue;
             return -1;
         }
-        if (r == 0) return 0;
+        if (r == 0) {
+            if (cancel && left > 50) continue;
+            return 0;
+        }
         return 1;  // readiness, hang-up or error: the following call reports which
     }
 }
@@ -122,7 +133,7 @@ public:
                               ? std::numeric_limits<int>::max()
                               : static_cast<int>(n);
         while (true) {
-            const int w = wait_one(to_handle(fd), POLLIN, timeout_ms);
+            const int w = wait_one(to_handle(fd), POLLIN, timeout_ms, &shut_);
             if (w < 0) return Status(Errc::NetworkError, error_text("poll", last_error()));
             if (w == 0) return Status(Errc::Timeout, "read timed out");
 #if defined(_WIN32)
@@ -159,7 +170,7 @@ public:
             const int e = last_error();
             if (r < 0 && interrupted(e)) continue;
             if (r < 0 && would_block(e)) {
-                const int w = wait_one(to_handle(fd), POLLOUT, timeout_ms);
+                const int w = wait_one(to_handle(fd), POLLOUT, timeout_ms, &shut_);
                 if (w < 0) return Status(Errc::NetworkError, error_text("poll", last_error()));
                 if (w == 0) return Status(Errc::Timeout, "write timed out");
                 continue;
@@ -172,7 +183,7 @@ public:
     Result<bool> wait_readable(int timeout_ms) override {
         const std::intptr_t fd = fd_.load();
         if (fd == kInvalid) return Status(Errc::NetworkError, "socket closed");
-        const int w = wait_one(to_handle(fd), POLLIN, timeout_ms);
+        const int w = wait_one(to_handle(fd), POLLIN, timeout_ms, &shut_);
         if (w < 0) return Status(Errc::NetworkError, error_text("poll", last_error()));
         return w > 0;
     }
@@ -180,6 +191,7 @@ public:
     void shutdown() noexcept override {
         const std::intptr_t fd = fd_.load();
         if (fd == kInvalid) return;
+        shut_.store(true);
 #if defined(_WIN32)
         (void)::shutdown(to_handle(fd), SD_BOTH);
 #else
@@ -205,6 +217,7 @@ public:
 
 private:
     std::atomic<std::intptr_t> fd_;
+    std::atomic<bool> shut_{false};
 };
 
 // Connects one candidate address with a deadline. Returns the connected handle or kInvalid.
