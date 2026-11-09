@@ -1150,6 +1150,17 @@ Status VkSession::run(param::Kernel k, std::uint32_t width, std::uint32_t height
     V::CommandBufferBeginInfo bi{V::st::CommandBufferBeginInfo, nullptr, V::kCommandBufferOneTimeSubmit, nullptr};
     r = c.f.BeginCommandBuffer(cb_, &bi);
     if (r != V::res::Success) return vk_error("vkBeginCommandBuffer", r);
+    // Order this frame's transfer writes after the previous frame's GPU work on the same buffers
+    // (write-after-read on params / data, write-after-write on the read-back buffer).
+    const V::BufferMemoryBarrier pre[3] = {
+        {V::st::BufferMemoryBarrier, nullptr, 0, V::kAccessTransferWrite, V::kQueueFamilyIgnored, V::kQueueFamilyIgnored,
+         params_.buffer, 0, V::kWholeSize},
+        {V::st::BufferMemoryBarrier, nullptr, 0, V::kAccessTransferWrite, V::kQueueFamilyIgnored, V::kQueueFamilyIgnored,
+         data_.buffer, 0, V::kWholeSize},
+        {V::st::BufferMemoryBarrier, nullptr, V::kAccessTransferWrite, V::kAccessTransferWrite, V::kQueueFamilyIgnored,
+         V::kQueueFamilyIgnored, readback_.buffer, 0, V::kWholeSize},
+    };
+    c.f.CmdPipelineBarrier(cb_, V::kStageTransfer | V::kStageComputeShader, V::kStageTransfer, 0, 0, nullptr, 3, pre, 0, nullptr);
     const V::BufferCopy pc{0, 0, pbytes};
     c.f.CmdCopyBuffer(cb_, staging_.buffer, params_.buffer, 1, &pc);
     const V::BufferCopy dc{data_off, 0, dbytes};
