@@ -1,3 +1,8 @@
+# Test-only code may use the plain C stdio API; the library itself never does.
+if(MSVC)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 file(GLOB SIAARA_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 add_executable(siaara_tests ${SIAARA_TEST_SOURCES})
 target_link_libraries(siaara_tests PRIVATE siaara_static)
