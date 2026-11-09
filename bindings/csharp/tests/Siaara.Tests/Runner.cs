@@ -182,6 +182,9 @@ internal static class Program
             ClinicalTests.Register();
             VolumeTests.Register();
             InteropTests.Register();
+            ViewerTests.Register();
+            NetworkTests.Register();
+            EncoderTests.Register();
             return T.Run(filters);
         }
         finally

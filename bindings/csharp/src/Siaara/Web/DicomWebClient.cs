@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -43,6 +44,31 @@ public sealed record TlsOptions
     /// <summary>Hides the password.</summary>
     /// <returns>A description without secrets.</returns>
     public override string ToString() => "TlsOptions { CaFile = " + CaFile + ", Pkcs12File = " + Pkcs12File + ", ... }";
+
+    /// <summary>The C struct; its strings live in mem (wiped when mem is disposed).</summary>
+    internal siaara_tls_options ToNative(NativeAllocations mem) => new()
+    {
+        struct_size = StructSize.Of<siaara_tls_options>(),
+        ca_file = mem.Utf8(CaFile),
+        certificate_file = mem.Utf8(CertificateFile),
+        private_key_file = mem.Utf8(PrivateKeyFile),
+        pkcs12_file = mem.Utf8(Pkcs12File),
+        password = mem.Utf8(Password),
+        os_identity = mem.Utf8(OsIdentity),
+        expected_identity = mem.Utf8(ExpectedIdentity),
+        insecure_skip_validation = InsecureSkipValidation ? 1 : 0,
+        tls13_only = Tls13Only ? 1 : 0,
+    };
+}
+
+/// <summary>One part of a DICOMweb response.</summary>
+/// <param name="ContentType">Content-Type of the part.</param>
+/// <param name="Data">The bytes.</param>
+public sealed record DicomWebPart(string ContentType, byte[] Data)
+{
+    /// <summary>Parses the part as a Part 10 stream.</summary>
+    /// <returns>The file (caller disposes).</returns>
+    public DicomFile ToDicomFile() => DicomFile.Open(Data);
 }
 
 /// <summary>
@@ -52,8 +78,9 @@ public sealed record TlsOptions
 /// </summary>
 /// <remarks>
 /// The *Async methods run the blocking native call on a thread-pool thread (Task.Run): the C API has
-/// no asynchronous I/O. Cancellation only prevents a call that has not started; a running request
-/// ends by completing or by the client's timeout.
+/// no asynchronous I/O. Cancelling the token also aborts a request in progress (a native token is
+/// attached to the client for the call; its connection is shut down), surfacing as
+/// OperationCanceledException.
 /// </remarks>
 public sealed class DicomWebClient : IDisposable
 {
@@ -167,11 +194,11 @@ public sealed class DicomWebClient : IDisposable
     /// <param name="query">URL query, or null.</param>
     /// <param name="studyInstanceUid">Study, or null.</param>
     /// <param name="seriesInstanceUid">Series, or null.</param>
-    /// <param name="cancellationToken">Cancels before the request starts.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress: its connection is closed).</param>
     /// <returns>The JSON text.</returns>
     public Task<string> SearchAsync(QidoLevel level, string? query = null, string? studyInstanceUid = null,
         string? seriesInstanceUid = null, CancellationToken cancellationToken = default) =>
-        Task.Run(() => Search(level, query, studyInstanceUid, seriesInstanceUid), cancellationToken);
+        Task.Run(() => WithToken(() => Search(level, query, studyInstanceUid, seriesInstanceUid), cancellationToken), cancellationToken);
 
     /// <summary>The body of the last successful QIDO response.</summary>
     /// <returns>The JSON text.</returns>
@@ -207,11 +234,11 @@ public sealed class DicomWebClient : IDisposable
     /// <param name="studyInstanceUid">Study.</param>
     /// <param name="seriesInstanceUid">Series.</param>
     /// <param name="sopInstanceUid">Instance.</param>
-    /// <param name="cancellationToken">Cancels before the request starts.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress: its connection is closed).</param>
     /// <returns>The instance.</returns>
     public Task<DicomFile> RetrieveInstanceAsync(string studyInstanceUid, string seriesInstanceUid, string sopInstanceUid,
         CancellationToken cancellationToken = default) =>
-        Task.Run(() => RetrieveInstance(studyInstanceUid, seriesInstanceUid, sopInstanceUid), cancellationToken);
+        Task.Run(() => WithToken(() => RetrieveInstance(studyInstanceUid, seriesInstanceUid, sopInstanceUid), cancellationToken), cancellationToken);
 
     /// <summary>STOW-RS of one file (in its current transfer syntax).</summary>
     /// <param name="file">The file.</param>
@@ -231,10 +258,222 @@ public sealed class DicomWebClient : IDisposable
     /// <summary>STOW-RS on a thread-pool thread (blocking network I/O).</summary>
     /// <param name="file">The file.</param>
     /// <param name="studyInstanceUid">Target study, or null.</param>
-    /// <param name="cancellationToken">Cancels before the request starts.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress: its connection is closed).</param>
     /// <returns>The task.</returns>
     public Task StoreAsync(DicomFile file, string? studyInstanceUid = null, CancellationToken cancellationToken = default) =>
-        Task.Run(() => Store(file, studyInstanceUid), cancellationToken);
+        Task.Run(() => WithToken(() =>
+        {
+            Store(file, studyInstanceUid);
+            return true;
+        }, cancellationToken), cancellationToken);
+
+    // ------------------------------------------------------------------ cancellation, metadata, frames, bulk retrieve
+
+    /// <summary>
+    /// Runs body with a native token attached to the client (siaara_web_client_set_cancel), so
+    /// cancelling aborts the request in progress. Cancellation surfaces as OperationCanceledException.
+    /// </summary>
+    private T WithToken<T>(Func<T> body, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!token.CanBeCanceled)
+        {
+            return body();
+        }
+        lock (_gate)
+        {
+            using var l = new HandleLease(_handle);
+            using var cancel = new NativeCancellation(token);
+            Status.Check(Native.siaara_web_client_set_cancel(l.Pointer, cancel.Pointer));
+            try
+            {
+                return body();
+            }
+            catch (SiaaraException e) when (e.ErrorCode == SiaaraErrorCode.Cancelled)
+            {
+                throw new OperationCanceledException(e.Message, e, token);
+            }
+            finally
+            {
+                _ = Native.siaara_web_client_set_cancel(l.Pointer, 0);
+            }
+        }
+    }
+
+    /// <summary>WADO-RS metadata (DICOM JSON array) of a study, a series or an instance.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null for the study.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <returns>The JSON text.</returns>
+    public string RetrieveMetadata(string studyInstanceUid, string? seriesInstanceUid = null, string? sopInstanceUid = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(studyInstanceUid);
+        byte[] st = Status.Utf8Z(studyInstanceUid)!;
+        byte[]? se = Status.Utf8Z(seriesInstanceUid), si = Status.Utf8Z(sopInstanceUid);
+        lock (_gate)
+        {
+            using var l = new HandleLease(_handle);
+            int r = Native.siaara_web_wado_metadata(l.Pointer, st, se, si, default, out _);
+            Status.Check(r);
+            return Status.ReadString(l.Pointer, static (nint c, Span<byte> b, out nuint n) => Native.siaara_web_last_response(c, b, out n));
+        }
+    }
+
+    /// <summary>WADO-RS metadata on a thread-pool thread.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress).</param>
+    /// <returns>The JSON text.</returns>
+    public Task<string> RetrieveMetadataAsync(string studyInstanceUid, string? seriesInstanceUid = null, string? sopInstanceUid = null,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => WithToken(() => RetrieveMetadata(studyInstanceUid, seriesInstanceUid, sopInstanceUid), cancellationToken), cancellationToken);
+
+    /// <summary>WADO-RS frames (1-based) of an instance, one part per frame.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series.</param>
+    /// <param name="sopInstanceUid">Instance.</param>
+    /// <param name="frames">1-based frame numbers.</param>
+    /// <param name="transferSyntaxes">Acceptable syntaxes in preference order ("*" = as stored); null = server default.</param>
+    /// <returns>The parts.</returns>
+    public IReadOnlyList<DicomWebPart> RetrieveFrames(string studyInstanceUid, string seriesInstanceUid, string sopInstanceUid,
+        IReadOnlyList<int> frames, IReadOnlyList<string>? transferSyntaxes = null)
+    {
+        ArgumentNullException.ThrowIfNull(frames);
+        var f = new uint[frames.Count];
+        for (int i = 0; i < f.Length; i++)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(frames[i], nameof(frames));
+            f[i] = (uint)frames[i];
+        }
+        using var mem = new NativeAllocations();
+        nint[] ts = Syntaxes(mem, transferSyntaxes);
+        return Parts(l => (Native.siaara_web_wado_frames(l, Status.Utf8Z(studyInstanceUid), Status.Utf8Z(seriesInstanceUid),
+            Status.Utf8Z(sopInstanceUid), f, (uint)f.Length, ts, (uint)ts.Length, out nint p), p));
+    }
+
+    /// <summary>WADO-RS frames on a thread-pool thread.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series.</param>
+    /// <param name="sopInstanceUid">Instance.</param>
+    /// <param name="frames">1-based frame numbers.</param>
+    /// <param name="transferSyntaxes">Acceptable syntaxes, or null.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress).</param>
+    /// <returns>The parts.</returns>
+    public Task<IReadOnlyList<DicomWebPart>> RetrieveFramesAsync(string studyInstanceUid, string seriesInstanceUid, string sopInstanceUid,
+        IReadOnlyList<int> frames, IReadOnlyList<string>? transferSyntaxes = null, CancellationToken cancellationToken = default) =>
+        Task.Run(() => WithToken(() => RetrieveFrames(studyInstanceUid, seriesInstanceUid, sopInstanceUid, frames,
+            transferSyntaxes), cancellationToken), cancellationToken);
+
+    /// <summary>WADO-RS retrieve of a study, a series or an instance: Part 10 streams.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null for the whole study.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <param name="transferSyntaxes">Acceptable syntaxes, or null.</param>
+    /// <returns>The parts.</returns>
+    public IReadOnlyList<DicomWebPart> Retrieve(string studyInstanceUid, string? seriesInstanceUid = null, string? sopInstanceUid = null,
+        IReadOnlyList<string>? transferSyntaxes = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(studyInstanceUid);
+        using var mem = new NativeAllocations();
+        nint[] ts = Syntaxes(mem, transferSyntaxes);
+        return Parts(l => (Native.siaara_web_wado_retrieve(l, Status.Utf8Z(studyInstanceUid), Status.Utf8Z(seriesInstanceUid),
+            Status.Utf8Z(sopInstanceUid), ts, (uint)ts.Length, out nint p), p));
+    }
+
+    /// <summary>WADO-RS retrieve on a thread-pool thread.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <param name="transferSyntaxes">Acceptable syntaxes, or null.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress).</param>
+    /// <returns>The parts.</returns>
+    public Task<IReadOnlyList<DicomWebPart>> RetrieveAsync(string studyInstanceUid, string? seriesInstanceUid = null,
+        string? sopInstanceUid = null, IReadOnlyList<string>? transferSyntaxes = null, CancellationToken cancellationToken = default) =>
+        Task.Run(() => WithToken(() => Retrieve(studyInstanceUid, seriesInstanceUid, sopInstanceUid, transferSyntaxes), cancellationToken),
+            cancellationToken);
+
+    /// <summary>Retrieves a study / series / instance and adds it to a store (siaara_web_parts_add_to_store).</summary>
+    /// <param name="store">Destination.</param>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null.</param>
+    /// <param name="replaceDuplicates">Replace instances already present.</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress).</param>
+    /// <returns>Instances added.</returns>
+    public Task<int> RetrieveIntoStoreAsync(DicomStore store, string studyInstanceUid, string? seriesInstanceUid = null,
+        bool replaceDuplicates = false, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentException.ThrowIfNullOrEmpty(studyInstanceUid);
+        return Task.Run(() => WithToken(() =>
+        {
+            using var mem = new NativeAllocations();
+            lock (_gate)
+            {
+                using var l = new HandleLease(_handle);
+                Status.Check(Native.siaara_web_wado_retrieve(l.Pointer, Status.Utf8Z(studyInstanceUid), Status.Utf8Z(seriesInstanceUid),
+                    default, default, 0, out nint p));
+                using var parts = new WebPartsHandle();
+                parts.Attach(p);
+                using var s = new HandleLease(store.Handle);
+                Status.Check(Native.siaara_web_parts_add_to_store(p, s.Pointer, replaceDuplicates ? C.SIAARA_DUP_REPLACE : C.SIAARA_DUP_KEEP,
+                    out uint added, out _));
+                return (int)added;
+            }
+        }, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>WADO-URI (legacy): the response body.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series.</param>
+    /// <param name="sopInstanceUid">Object.</param>
+    /// <param name="contentType">Content type, or null = application/dicom.</param>
+    /// <param name="transferSyntax">Transfer syntax UID, or null.</param>
+    /// <returns>The body.</returns>
+    public byte[] WadoUri(string studyInstanceUid, string seriesInstanceUid, string sopInstanceUid, string? contentType = null,
+        string? transferSyntax = null)
+    {
+        DicomWebPart[] parts = Parts(l => (Native.siaara_web_wado_uri(l, Status.Utf8Z(studyInstanceUid),
+            Status.Utf8Z(seriesInstanceUid), Status.Utf8Z(sopInstanceUid), Status.Utf8Z(contentType), Status.Utf8Z(transferSyntax),
+            out nint p), p));
+        return parts.Length == 0 ? Array.Empty<byte>() : parts[0].Data;
+    }
+
+    private static nint[] Syntaxes(NativeAllocations mem, IReadOnlyList<string>? ts)
+    {
+        if (ts is null)
+        {
+            return Array.Empty<nint>();
+        }
+        var r = new nint[ts.Count];
+        for (int i = 0; i < r.Length; i++)
+        {
+            r[i] = mem.Utf8(ts[i] ?? throw new ArgumentException("null transfer syntax", nameof(ts)));
+        }
+        return r;
+    }
+
+    private DicomWebPart[] Parts(Func<nint, (int Status, nint Parts)> call)
+    {
+        lock (_gate)
+        {
+            using var l = new HandleLease(_handle);
+            (int st, nint p) = call(l.Pointer);
+            Status.Check(st);
+            using var h = new WebPartsHandle();
+            h.Attach(p);
+            Status.Check(Native.siaara_web_parts_count(p, out uint n));
+            var list = new DicomWebPart[n];
+            for (uint i = 0; i < n; i++)
+            {
+                var state = (Parts: p, Index: i);
+                string ct = Status.ReadString(state, static (s, b, out need) => Native.siaara_web_parts_get(s.Parts, s.Index, out _, out _, b, out need));
+                Status.Check(Native.siaara_web_parts_get(p, i, out nint data, out ulong size, default, out _));
+                list[i] = new DicomWebPart(ct, NativeSpan.Bytes(data, (nuint)size).ToArray());
+            }
+            return list;
+        }
+    }
 
     /// <summary>Closes the connection.</summary>
     public void Dispose()

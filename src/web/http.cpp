@@ -932,8 +932,15 @@ Client::Client(std::string host, std::uint16_t port, const Limits& limits, int c
     : host_(std::move(host)), port_(port), lim_(limits), connect_timeout_ms_(connect_timeout_ms) {}
 
 void Client::close() noexcept {
+    std::lock_guard<std::mutex> l(conn_mu_);
     if (conn_) conn_->close();
     conn_.reset();
+}
+
+void Client::interrupt() noexcept {
+    interrupted_.store(true);
+    std::lock_guard<std::mutex> l(conn_mu_);
+    if (conn_ && conn_->is_open()) conn_->transport().shutdown();
 }
 
 Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_bytes) {
@@ -942,7 +949,9 @@ Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_byte
     if (!reused) {
         auto t = connector ? connector(host_, port_, connect_timeout_ms_) : net::tcp_connect(host_, port_, connect_timeout_ms_);
         if (!t) return t.take_error();
-        conn_ = std::make_unique<Connection>(std::move(t).value(), lim_);
+        auto c = std::make_unique<Connection>(std::move(t).value(), lim_);
+        std::lock_guard<std::mutex> l(conn_mu_);
+        conn_ = std::move(c);
     }
     Request full = rq;
     if (!find_header(full.headers, "Host")) {
@@ -966,8 +975,10 @@ Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_byte
 }
 
 Result<Response> Client::send(const Request& rq) {
+    interrupted_.store(false);
     bool reused = false, got_bytes = false;
     auto r = attempt(rq, reused, got_bytes);
+    if (!r && interrupted_.load()) return Status(Errc::Cancelled, "http: request interrupted");
     if (!r && reused && !got_bytes) return attempt(rq, reused, got_bytes);
     return r;
 }

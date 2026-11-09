@@ -178,11 +178,40 @@ public static class Dicomdir
     /// <param name="root">Output folder.</param>
     /// <param name="files">Files to include.</param>
     /// <param name="options">Options, or null.</param>
-    /// <param name="cancellationToken">Cancels before the work starts.</param>
+    /// <param name="cancellationToken">Cancels, also while running (copied files stay; no DICOMDIR is written).</param>
+    /// <param name="progress">Two steps per file: read, copy (optional).</param>
     /// <returns>Number of warnings.</returns>
     public static Task<int> WriteAsync(string root, IReadOnlyList<string> files, DicomdirWriteOptions? options = null,
-        CancellationToken cancellationToken = default) =>
-        Task.Run(() => Write(root, files, options), cancellationToken);
+        IProgress<OperationProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(root);
+        ArgumentNullException.ThrowIfNull(files);
+        return Task.Run(() =>
+        {
+            using var mem = new NativeAllocations();
+            var ptrs = new nint[files.Count];
+            var lens = new nuint[files.Count];
+            for (int i = 0; i < files.Count; i++)
+            {
+                ArgumentException.ThrowIfNullOrEmpty(files[i], nameof(files));
+                ptrs[i] = mem.Utf8(files[i]);
+                lens[i] = (nuint)System.Text.Encoding.UTF8.GetByteCount(files[i]);
+            }
+            var o = new siaara_dicomdir_write_options { struct_size = StructSize.Of<siaara_dicomdir_write_options>() };
+            if (options is not null)
+            {
+                o.profile = (int)options.Profile;
+                o.overwrite = options.Overwrite ? 1 : 0;
+                o.allow_any_transfer_syntax = options.AllowAnyTransferSyntax ? 1 : 0;
+                o.file_set_id = mem.Utf8(options.FileSetId);
+            }
+            byte[] r = Status.Utf8(root);
+            uint warnings = 0;
+            LongCall.Run(progress, (c, cb, u) =>
+                Native.siaara_dicomdir_write_ex(r, ptrs, lens, (nuint)files.Count, in o, c, cb, u, out warnings), cancellationToken);
+            return (int)warnings;
+        }, cancellationToken);
+    }
 
     private sealed class Sink : IDicomdirSink
     {

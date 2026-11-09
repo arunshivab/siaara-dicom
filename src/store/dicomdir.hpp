@@ -77,6 +77,9 @@ struct DicomdirWriteOptions {
     std::string file_set_id;              // (0004,1130), up to 16 of A-Z 0-9 _ space
     bool overwrite = false;               // replace an existing DICOMDIR / files
     bool allow_any_transfer_syntax = false;  // copy files the profile does not allow (warned)
+    // Called before each input file is read and before each is copied: (steps done, 2 x files).
+    // Returning false stops with Errc::Cancelled (files copied so far stay; no DICOMDIR is written).
+    std::function<bool(std::uint64_t done, std::uint64_t total)> progress;
 };
 
 struct DicomdirWriteSummary {
