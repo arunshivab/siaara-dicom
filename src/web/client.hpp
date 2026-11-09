@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,9 @@ struct DicomwebClientConfig {
     // Returns the Authorization header value for each request (e.g. from bearer_auth() or
     // basic_auth()); an empty string sends none.
     std::function<std::string()> authorization;
+    // Used for https:// base URLs (trust anchors, client identity for mutual TLS, ...); the
+    // `enabled` flag is implied by the scheme. Setting tls.enabled with an http:// URL is an error.
+    net::TlsSettings tls;
 };
 
 std::string bearer_auth(std::string_view token);
@@ -104,6 +108,7 @@ private:
     http::Url url_;
     http::Url wado_url_;
     std::optional<http::Client> http_;
+    std::shared_ptr<net::TlsContext> tls_;
 
     Result<http::Response> send(http::Request rq);
     Result<std::vector<Dataset>> qido(std::string path, const QidoParams& q);

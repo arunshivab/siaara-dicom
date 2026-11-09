@@ -377,7 +377,8 @@ Result<Url> parse_url(std::string_view url) {
     const auto sep = url.find("://");
     if (sep == std::string_view::npos) return Status(Errc::InvalidArgument, "URL has no scheme");
     u.scheme = to_lower(url.substr(0, sep));
-    if (u.scheme != "http") return Status(Errc::Unsupported, "only http:// URLs are supported (no TLS transport yet)");
+    if (u.scheme != "http" && u.scheme != "https") return Status(Errc::Unsupported, "only http:// and https:// URLs are supported");
+    if (u.scheme == "https") u.port = 443;
     auto rest = url.substr(sep + 3);
     const auto slash = rest.find('/');
     auto authority = rest.substr(0, slash);
@@ -861,7 +862,7 @@ Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_byte
     Request full = rq;
     if (!find_header(full.headers, "Host")) {
         std::string h = host_.find(':') != std::string::npos ? "[" + host_ + "]" : host_;
-        if (port_ != 80) h += ":" + std::to_string(port_);
+        if (port_ != default_port) h += ":" + std::to_string(port_);
         full.headers.insert(full.headers.begin(), {"Host", h});
     }
     if (Status st = conn_->write_request(full); !st) {
@@ -895,7 +896,17 @@ Status Server::start(const ServerConfig& cfg, Handler handler) {
     cfg_ = cfg;
     handler_ = std::move(handler);
     stopping_ = false;
-    if (Status st = listener_.listen(cfg_.bind_address, cfg_.port); !st) return st;
+    if (cfg_.tls.enabled) {
+        net::TlsSettings ts = cfg_.tls;
+        if (!ts.log && cfg_.log) ts.log = cfg_.log;
+        auto ctx = net::TlsContext::create(ts, net::TlsContext::Role::Server);
+        net::tls_wipe_secret(ts.identity.password);
+        net::tls_wipe_secret(cfg_.tls.identity.password);  // the context keeps (and later wipes) its own copy
+        if (!ctx) return ctx.take_error();
+        if (Status st = tls_listener_.listen(std::move(ctx).value(), cfg_.bind_address, cfg_.port); !st) return st;
+    } else if (Status st = listener_.listen(cfg_.bind_address, cfg_.port); !st) {
+        return st;
+    }
     accept_thread_ = std::thread([this] { accept_loop(); });
     return Status::ok();
 }
@@ -922,6 +933,7 @@ void Server::stop() noexcept {
     stopping_ = true;
     if (accept_thread_.joinable()) accept_thread_.join();
     listener_.close();
+    tls_listener_.close();
     {
         std::lock_guard<std::mutex> lk(mu_);
         for (auto& w : workers_)
@@ -935,7 +947,14 @@ void Server::stop() noexcept {
 
 void Server::accept_loop() {
     while (!stopping_.load()) {
-        auto t = listener_.accept(200);
+        Result<std::unique_ptr<net::Transport>> t = Status(Errc::Timeout, "");
+        if (cfg_.tls.enabled) {
+            auto s = tls_listener_.accept(200);
+            if (s) t = std::unique_ptr<net::Transport>(std::move(s).value());
+            else t = s.take_error();
+        } else {
+            t = listener_.accept(200);
+        }
         if (!t) {
             if (t.error().code == Errc::Timeout) {
                 reap(false);
@@ -950,6 +969,12 @@ void Server::accept_loop() {
         {
             std::lock_guard<std::mutex> lk(mu_);
             active = workers_.size();
+        }
+        if (active >= cfg_.max_connections && cfg_.tls.enabled) {
+            // A 503 would need a TLS handshake on the accept thread; just close.
+            t.value()->close();
+            if (cfg_.log) cfg_.log("http: connection refused (busy)");
+            continue;
         }
         if (active >= cfg_.max_connections) {
             Connection c(std::move(t).value(), cfg_.limits);
@@ -970,6 +995,20 @@ void Server::accept_loop() {
         w->transport = raw;
         auto owned = std::make_shared<std::unique_ptr<net::Transport>>(std::move(t).value());
         w->thread = std::thread([this, w, owned]() mutable {
+            if (cfg_.tls.enabled) {
+                // Handshake on this thread; stop() shuts the socket down through w->transport.
+                Status hs = static_cast<net::TlsTransport*>(owned->get())->handshake(cfg_.tls.handshake_timeout_ms);
+                if (!hs) {
+                    if (cfg_.log) cfg_.log("http: " + hs.message);
+                    {
+                        std::lock_guard<std::mutex> lk2(mu_);
+                        w->transport = nullptr;
+                    }
+                    owned->reset();
+                    w->done = true;
+                    return;
+                }
+            }
             const std::string peer = (*owned)->peer_address();
             Connection c(std::move(*owned), cfg_.limits);
             serve(c, peer);

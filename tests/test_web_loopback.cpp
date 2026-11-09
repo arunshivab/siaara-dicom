@@ -511,7 +511,7 @@ TEST_CASE("web/loopback C API") {
     // DICOMweb client against the loopback server.
     Fixture fx;
     siaara_web_client* wc = nullptr;
-    CHECK(siaara_web_client_create("https://x/", 10, 0, &wc) == SIAARA_ERR_UNSUPPORTED);
+    CHECK(siaara_web_client_create("ftp://x/", 8, 0, &wc) == SIAARA_ERR_UNSUPPORTED);  // https:// is supported now
     REQUIRE(siaara_web_client_create(fx.base.data(), fx.base.size(), 5000, &wc) == SIAARA_OK);
     CHECK(siaara_web_client_set_authorization(wc, "Bearer a\r\nX: y", 14) == SIAARA_ERR_INVALID_ARGUMENT);
     CHECK(siaara_web_client_set_authorization(wc, "Bearer abc", 10) == SIAARA_OK);

@@ -291,7 +291,8 @@ TEST_CASE("web/http targets and URLs") {
     CHECK_EQ(u->host, std::string("::1"));
     CHECK_EQ(u->port, 8042);
     CHECK_EQ(u->path, std::string("/dicom-web"));
-    CHECK(http::parse_url("https://x/").error().code == Errc::Unsupported);
+    CHECK(http::parse_url("https://x/").is_ok() && http::parse_url("https://x/")->port == 443);  // TLS transport
+    CHECK(http::parse_url("ftp://x/").error().code == Errc::Unsupported);
     CHECK(!http::parse_url("http://x:0/").is_ok());
     CHECK(!http::parse_url("http://x:70000/").is_ok());
     CHECK(!http::parse_url("http://user@x/").is_ok());

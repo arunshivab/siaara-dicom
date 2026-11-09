@@ -20,6 +20,7 @@
 
 #include "core/status.hpp"
 #include "net/socket.hpp"
+#include "net/tls.hpp"
 
 namespace siaara::web::http {
 
@@ -96,9 +97,9 @@ struct Target {
 };
 Result<Target> parse_target(std::string_view target);
 struct Url {
-    std::string scheme;  // "http" (https needs a TLS transport)
+    std::string scheme;  // "http" or "https"
     std::string host;
-    std::uint16_t port = 80;
+    std::uint16_t port = 80;  // default 80 for http, 443 for https
     std::string path;    // without trailing '/'
 };
 Result<Url> parse_url(std::string_view url);
@@ -158,9 +159,11 @@ public:
     // request is retried once on a new connection.
     Result<Response> send(const Request& rq);
     void close() noexcept;
-    // Optional transport factory (e.g. TLS later); default: plain TCP.
+    // Optional transport factory (e.g. TLS); default: plain TCP.
     std::function<Result<std::unique_ptr<net::Transport>>(const std::string& host, std::uint16_t port, int timeout_ms)>
         connector;
+    // The scheme's default port, left out of the Host header (443 for https).
+    std::uint16_t default_port = 80;
 
 private:
     std::string host_;
@@ -181,6 +184,8 @@ struct ServerConfig {
     std::uint32_t max_requests_per_connection = 1000;
     // Diagnostics (addresses, status codes; never request content).
     std::function<void(const std::string&)> log;
+    // HTTPS when tls.enabled (every connection on this port; tls.log defaults to log).
+    net::TlsSettings tls;
 };
 
 using Handler = std::function<void(const Request&, Response&)>;
@@ -193,7 +198,7 @@ public:
     Server& operator=(const Server&) = delete;
 
     Status start(const ServerConfig& cfg, Handler handler);
-    std::uint16_t port() const noexcept { return listener_.port(); }
+    std::uint16_t port() const noexcept { return cfg_.tls.enabled ? tls_listener_.port() : listener_.port(); }
     // Stops accepting, wakes every connection and joins all threads.
     void stop() noexcept;
 
@@ -209,6 +214,7 @@ private:
     ServerConfig cfg_;
     Handler handler_;
     net::TcpListener listener_;
+    net::TlsListener tls_listener_;  // instead of listener_ when cfg_.tls.enabled
     std::thread accept_thread_;
     std::atomic<bool> stopping_{false};
     std::mutex mu_;

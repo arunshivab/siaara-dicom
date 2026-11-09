@@ -302,6 +302,37 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_instance(siaara_web_client*
 SIAARA_API siaara_status SIAARA_CALL siaara_web_stow(siaara_web_client* client, const siaara_file* file,
                                                      const char* study_uid);
 
+/* ---------------------------------------------------------------- TLS (PS3.15 B.12 / B.13) */
+/* TLS uses the operating system's own implementation: SChannel on Windows, Network.framework on
+ * macOS, the system OpenSSL 3 (loaded at run time) on Linux. TLS 1.2 minimum, 1.3 preferred,
+ * ECDHE + AEAD cipher suites only, certificate validation on by default, never a fallback to
+ * plain TCP. Note: https:// base URLs are also accepted by siaara_web_client_create (OS trust
+ * store, no client certificate).
+ *
+ * Returns 1 when TLS can be used in this process, else 0 with the reason in
+ * siaara_last_error_message() (e.g. the system OpenSSL 3 library was not found). */
+SIAARA_API int32_t SIAARA_CALL siaara_tls_available(void);
+
+typedef struct siaara_tls_options {
+    uint32_t struct_size;              /* sizeof(siaara_tls_options) */
+    const char* ca_file;               /* PEM trust anchors; NULL: the OS trust store */
+    const char* certificate_file;      /* client certificate chain, PEM (Linux/OpenSSL only) */
+    const char* private_key_file;      /* its private key, PEM (Linux/OpenSSL only) */
+    const char* pkcs12_file;           /* client identity as PKCS#12 (every OS) */
+    const char* password;              /* PKCS#12 / encrypted key password; copied, wiped when freed */
+    const char* os_identity;           /* Windows: certificate thumbprint in CurrentUser\MY;
+                                          macOS: keychain identity label */
+    const char* expected_identity;     /* name or IP the server certificate must carry; NULL: URL host */
+    int32_t insecure_skip_validation;  /* nonzero: DANGEROUS, no certificate checks (warned per connection) */
+    int32_t tls13_only;                /* nonzero: refuse TLS 1.2 */
+} siaara_tls_options;
+
+/* As siaara_web_client_create, for an https:// base_url with TLS options (options may be NULL).
+ * All strings are NUL-terminated and copied. Caller owns *out. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* base_url, size_t len, int32_t timeout_ms,
+                                                                  const siaara_tls_options* options,
+                                                                  siaara_web_client** out);
+
 #ifdef __cplusplus
 }
 #endif
