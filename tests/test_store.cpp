@@ -40,7 +40,7 @@ namespace {
 std::unique_ptr<Store> open_store(const fs::path& root, StoreOptions opt = {}) {
     auto r = Store::open(root.string(), opt);
     if (!r) {
-        std::fprintf(stderr, "  open failed: %s\n", r.error().message.c_str());
+        std::fprintf(stderr, "  open failed (code %d): %s\n", static_cast<int>(r.error().code), r.error().message.c_str());
         return nullptr;
     }
     return std::move(r).value();
@@ -809,6 +809,12 @@ TEST_CASE("store: reopen, compaction and stale journals") {
     REQUIRE(st != nullptr);
     CHECK_EQ(st->stats().instances, 13u);
     CHECK_EQ(st->stats().patients, 4u);
+    CHECK_EQ(st->stats().replayed_records, 0u);  // the stale journal was not replayed...
+    {                                              // ...but replaced by an empty current one
+        const auto j0 = store_synth::read_bytes(td / "s" / "index" / "journal.sxj");
+        REQUIRE(j0.size() == 16);
+        CHECK_EQ(load_le32(j0.data() + 12), static_cast<std::uint32_t>(st->stats().generation));
+    }
     auto q = st->query(at(Level::Instance));
     REQUIRE(q.is_ok() && q->rows.size() == 13);
     for (const auto& r : q->rows) {

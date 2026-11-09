@@ -33,7 +33,10 @@ bool is_within(const std::filesystem::path& root, const std::filesystem::path& p
 
 // safe_join, then, if the file does not exist and `case_insensitive`, looks each component up
 // case-insensitively (ASCII) in its folder: media written on one system and read on another
-// often differ in case. Finally checks is_within. NotFound when no file matches.
+// often differ in case. With case_insensitive = false no extra lookup is done and the file system
+// decides: on a case-insensitive one (NTFS, default APFS) a File ID differing from the stored name
+// only in case still resolves, because it names the same file. Finally checks is_within.
+// NotFound when no file matches.
 Result<std::filesystem::path> resolve_file_id(const std::filesystem::path& root,
                                               const std::vector<std::string>& components,
                                               bool case_insensitive);

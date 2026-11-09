@@ -918,7 +918,10 @@ struct Store::Impl {
             return journal_reset(snapshot_gen);
         }
         std::size_t good_end = 0;
+        bool stale = false;
         {
+            // Nothing may replace or truncate the journal while this mapping exists: on Windows a
+            // mapped file cannot be renamed over (MoveFileEx fails), so act after the scope ends.
             auto bytes = io::map_file(to_utf8(journal_path));
             if (!bytes) return bytes.take_error();
             const std::uint8_t* p = bytes->data();
@@ -926,9 +929,9 @@ struct Store::Impl {
             if (std::memcmp(p, kJournalMagic, 8) != 0) return Status(Errc::Malformed, "index journal is not a SIAARA journal");
             if (load_le32(p + 8) != kFormatVersion) return Status(Errc::Unsupported, "unsupported journal version");
             const std::uint32_t jgen = load_le32(p + 12);
-            if (jgen < snapshot_gen) return journal_reset(snapshot_gen);  // already in the snapshot
             if (jgen > snapshot_gen) return Status(Errc::Malformed, "index journal is newer than the snapshot");
-            FrameReader fr(p, n);
+            stale = jgen < snapshot_gen;  // already contained in the snapshot: do not replay
+            FrameReader fr(p, stale ? kHeaderSize : n);  // a stale journal yields no records
             char type = 0;
             const std::uint8_t* pl = nullptr;
             std::size_t len = 0;
@@ -953,6 +956,10 @@ struct Store::Impl {
             counters.replayed_records = applied;
             counters.journal_records = applied;
             counters.recovered_bytes = n - good_end;
+        }
+        if (stale) {
+            counters.replayed_records = counters.journal_records = counters.recovered_bytes = 0;
+            return journal_reset(snapshot_gen);  // the mapping is gone now
         }
         auto f = OsFile::open(journal_path, OsFile::Mode::ReadWrite);
         if (!f) return f.take_error();

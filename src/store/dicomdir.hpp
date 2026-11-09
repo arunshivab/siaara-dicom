@@ -44,7 +44,8 @@ struct DicomdirRecord {
 struct DicomdirReadOptions {
     bool include_inactive = false;   // also report records whose in-use flag is 0
     bool resolve_files = true;       // resolve and check Referenced File IDs
-    bool case_insensitive = true;    // look File IDs up case-insensitively when needed
+    bool case_insensitive = true;    // look File IDs up case-insensitively when needed; false
+                                     // leaves matching to the file system (see resolve_file_id)
     std::uint32_t max_depth = 16;
 };
 

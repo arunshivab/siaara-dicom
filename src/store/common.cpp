@@ -432,8 +432,10 @@ Status write_replace(const fs::path& p, const std::uint8_t* data, std::size_t si
     std::error_code ec;
     fs::rename(tmp, p, ec);
     if (ec) {
+        // the system message names the cause (e.g. a sharing violation), never the path
+        const std::string why = ec.message();
         fs::remove(tmp, ec);
-        return Status(Errc::IoError, "rename failed");
+        return Status(Errc::IoError, "rename failed: " + why);
     }
     if (durable) sync_dir(p.parent_path());
     return Status::ok();
