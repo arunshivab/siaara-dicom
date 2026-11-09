@@ -50,7 +50,17 @@
 #include "volume/sampler.hpp"
 #include "volume/volume.hpp"
 
+namespace siaara::gpu {
+struct ViewGpu;  // GPU state of a view (src/gpu/gpu_view.cpp)
+}
+
 namespace siaara::volume {
+
+// Where View::render_rgba8 renders. Cpu (the default) is the reference renderer below. Auto uses a
+// hardware GPU (Vulkan or Metal, src/gpu) when one is present and the view's mode is supported
+// there, else the CPU; Gpu also accepts a software (CPU-type) GPU device. Both fall back to the
+// CPU renderer whenever the GPU cannot render a frame; last_backend() tells which one did.
+enum class RenderBackend : std::uint8_t { Auto, Cpu, Gpu };
 
 enum class ViewMode : std::uint8_t { Mpr, CurvedStraightened, CurvedStretched, VolumeRender, VolumeMip, VolumeMinIp };
 enum class SlabMode : std::uint8_t { None, Mip, MinIp, Average };
@@ -169,8 +179,23 @@ public:
     // Patient point -> screen point (x, y) and depth along the normal (planar modes only).
     Result<Vec3> project(Vec3 patient) const;
 
-    struct Bricks;  // min/max brick grid (render3d.cpp)
+    // GPU rendering (see RenderBackend). set_backend(Gpu) fails with Unsupported when no GPU
+    // device is available; Auto never fails.
+    Status set_backend(RenderBackend b);
+    RenderBackend backend() const noexcept { return backend_; }
+    // Cpu or Gpu: the renderer of the last render_rgba8 call (Cpu before the first).
+    RenderBackend last_backend() const noexcept;
+
+    struct Bricks {  // min/max brick grid
+        std::uint32_t size = 8;
+        std::array<std::uint32_t, 3> nb{0, 0, 0};
+        std::vector<float> mn, mx;
+        std::size_t index(std::uint32_t bx, std::uint32_t by, std::uint32_t bz) const noexcept {
+            return (static_cast<std::size_t>(bz) * nb[1] + by) * nb[0] + bx;
+        }
+    };
     friend struct RenderAccess;
+    friend struct GpuAccess;
 
 private:
     struct Overlay {
@@ -208,6 +233,15 @@ private:
     std::vector<std::uint8_t> brick_empty_;
     std::vector<Vec3> curve_;
     bool curve_spline_ = false;
+    RenderBackend backend_ = RenderBackend::Cpu;
+    std::shared_ptr<gpu::ViewGpu> gpu_;
 };
+
+namespace detail {
+// The CPU renderer's window mapping of a layer, t = clamp(value * a + b, 0, 1), and colour map
+// entries; the GPU backends build their tables from these so that both renderers agree.
+void window_coefficients(const LayerStyle& s, const Volume& v, double& a, double& b) noexcept;
+std::array<std::uint8_t, 3> colormap_rgb(ColorMap m, std::uint32_t entry) noexcept;
+}  // namespace detail
 
 }  // namespace siaara::volume

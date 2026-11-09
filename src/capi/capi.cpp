@@ -2204,3 +2204,64 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_pick(const siaara_view* view, d
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- GPU rendering (appended)
+#include "gpu/gpu.hpp"
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_gpu_devices(siaara_gpu_device_info* out, uint32_t cap, uint32_t* count) {
+    return guarded([&]() -> siaara_status {
+        if (!count) return fail(Errc::InvalidArgument, "count must not be NULL");
+        if (cap && !out) return fail(Errc::InvalidArgument, "out must not be NULL when cap > 0");
+        for (uint32_t i = 0; i < cap; ++i)
+            if (out[i].struct_size < sizeof(siaara_gpu_device_info))
+                return fail(Errc::InvalidArgument, "out[i].struct_size is too small");
+        const std::vector<siaara::gpu::DeviceInfo> devs = siaara::gpu::devices();
+        *count = static_cast<uint32_t>(devs.size());
+        for (uint32_t i = 0; i < cap && i < devs.size(); ++i) {
+            const auto& d = devs[i];
+            siaara_gpu_device_info& o = out[i];
+            const uint32_t size = o.struct_size;
+            std::memset(&o, 0, sizeof o);
+            o.struct_size = size;
+            o.api = static_cast<int32_t>(d.api);
+            o.type = static_cast<int32_t>(d.type);
+            o.vendor_id = d.vendor_id;
+            o.device_id = d.device_id;
+            o.memory_bytes = d.memory_bytes;
+            o.max_texture_3d = d.max_texture_3d;
+            o.selected = d.selected ? 1 : 0;
+            o.float32_filtering = d.float32_filtering ? 1 : 0;
+            o.int16_filtering = d.int16_filtering ? 1 : 0;
+            std::memcpy(o.name, d.name.data(), std::min(d.name.size(), sizeof o.name - 1));
+            std::memcpy(o.driver, d.driver.data(), std::min(d.driver.size(), sizeof o.driver - 1));
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_backend(siaara_view* view, int32_t backend) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        vol::RenderBackend b;
+        switch (backend) {
+            case SIAARA_BACKEND_AUTO: b = vol::RenderBackend::Auto; break;
+            case SIAARA_BACKEND_CPU: b = vol::RenderBackend::Cpu; break;
+            case SIAARA_BACKEND_GPU: b = vol::RenderBackend::Gpu; break;
+            default: return fail(Errc::InvalidArgument, "unknown backend");
+        }
+        if (Status s = view->view.set_backend(b); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view* view, int32_t* out_backend) {
+    return guarded([&]() -> siaara_status {
+        if (!view || !out_backend) return fail(Errc::InvalidArgument, "view and out_backend must not be NULL");
+        *out_backend = view->view.last_backend() == vol::RenderBackend::Gpu ? SIAARA_BACKEND_GPU : SIAARA_BACKEND_CPU;
+        return ok();
+    });
+}
+
+}  // extern "C"

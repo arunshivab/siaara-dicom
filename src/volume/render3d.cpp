@@ -8,20 +8,12 @@
 #include <new>
 #include <vector>
 
+#include "gpu/gpu.hpp"
 #include "image/color.hpp"
 #include "volume/parallel.hpp"
 #include "volume/resample.hpp"
 
 namespace siaara::volume {
-
-struct View::Bricks {
-    std::uint32_t size = 8;
-    std::array<std::uint32_t, 3> nb{0, 0, 0};
-    std::vector<float> mn, mx;
-    std::size_t index(std::uint32_t bx, std::uint32_t by, std::uint32_t bz) const noexcept {
-        return (static_cast<std::size_t>(bz) * nb[1] + by) * nb[0] + bx;
-    }
-};
 
 namespace {
 
@@ -164,6 +156,17 @@ struct CurveColumns {
 };
 
 }  // namespace
+
+namespace detail {
+void window_coefficients(const LayerStyle& s, const Volume& v, double& a, double& b) noexcept {
+    const WinMap m = make_window(s, v);
+    a = m.a;
+    b = m.b;
+}
+std::array<std::uint8_t, 3> colormap_rgb(ColorMap m, std::uint32_t entry) noexcept {
+    return colormap(m)[std::min(entry, 255u)];
+}
+}  // namespace detail
 
 double evaluate_piecewise(std::span<const ValuePoint> pts, double x) noexcept {
     if (pts.empty()) return 0.0;
@@ -855,10 +858,35 @@ RenderAccess::RayResult RenderAccess::cast(double u, double vv, Quality q, bool 
     return res;
 }
 
+Status View::set_backend(RenderBackend b) {
+    if (static_cast<int>(b) > static_cast<int>(RenderBackend::Gpu)) return Status(Errc::InvalidArgument, "view: unknown backend");
+    if (b == RenderBackend::Gpu && !gpu::acquire())
+        return Status(Errc::Unsupported, "view: no GPU device is available (" + gpu::unavailable_reason() + ")");
+    if (b != RenderBackend::Cpu && !gpu_) {
+        try {
+            gpu_ = gpu::make_view_state();
+        } catch (const std::bad_alloc&) {
+            return Status(Errc::OutOfMemory, "view: out of memory");
+        }
+    }
+    backend_ = b;
+    return Status::ok();
+}
+
+RenderBackend View::last_backend() const noexcept {
+    return gpu_ && gpu::last_render_was_gpu(*gpu_) ? RenderBackend::Gpu : RenderBackend::Cpu;
+}
+
 Status View::render_rgba8(std::span<std::uint8_t> out) const {
     if (!base_) return Status(Errc::InvalidArgument, "view: not initialised");
     const std::uint64_t need = std::uint64_t{w_} * h_ * 4u;
     if (out.size() < need) return Status(Errc::BufferTooSmall, "view: output buffer too small");
+    // GPU first (Auto / Gpu); any refusal or failure falls through to the CPU renderer below.
+    if (gpu_) {
+        if (backend_ != RenderBackend::Cpu && gpu::render_view(*this, *gpu_, out, backend_ == RenderBackend::Gpu))
+            return Status::ok();
+        gpu::note_cpu_render(*gpu_);
+    }
     const bool vr = mode_ == ViewMode::VolumeRender || mode_ == ViewMode::VolumeMip || mode_ == ViewMode::VolumeMinIp;
     if (vr && (!bricks_ || brick_empty_.size() != bricks_->mn.size()))
         return Status(Errc::Internal, "view: volume rendering not prepared");
