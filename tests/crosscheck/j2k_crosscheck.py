@@ -480,6 +480,167 @@ def section_opj_streams():
         report(ok, f"{desc}: peak error vs OpenJPEG {d}{conv}" + ("" if exact_src is None else f", lossless round trip {'exact' if exact_src else 'NOT exact'}"))
 
 
+# ------------------------------------------------------------------ 4. DICOM files
+
+J2K_TS = {"1.2.840.10008.1.2.4.90", "1.2.840.10008.1.2.4.91", "1.2.840.10008.1.2.4.201",
+          "1.2.840.10008.1.2.4.202", "1.2.840.10008.1.2.4.203"}
+
+
+def dicom_files():
+    files = []
+    try:
+        from pydicom.data import get_testdata_files
+        files += get_testdata_files("*")
+    except Exception:
+        pass
+    files += glob.glob(os.path.join(PLJ_DATA, "ljdata", "ds", "*", "*.dcm"))
+    seen, out = set(), []
+    for f in files:
+        b = os.path.basename(f)
+        if b in seen or not f.lower().endswith(".dcm"):
+            continue
+        seen.add(b)
+        out.append(f)
+    return sorted(out)
+
+
+def section_dicom():
+    print("== 4. DICOM files with JPEG 2000 / HTJ2K transfer syntaxes")
+    try:
+        import warnings
+        warnings.simplefilter("ignore")
+        import pydicom
+        from pydicom.encaps import generate_frames
+    except Exception:
+        skip("pydicom not installed")
+        return
+    for f in dicom_files():
+        try:
+            ds = pydicom.dcmread(f)
+            ts = str(ds.file_meta.TransferSyntaxUID)
+        except Exception:
+            continue
+        if ts not in J2K_TS:
+            continue
+        name = os.path.basename(f)
+        nframes = int(getattr(ds, "NumberOfFrames", 1) or 1)
+        rows, cols = int(ds.Rows), int(ds.Columns)
+        spp = int(ds.SamplesPerPixel)
+        ba, bs = int(ds.BitsAllocated), int(ds.BitsStored)
+        sgn = int(ds.PixelRepresentation)
+        frames = list(generate_frames(ds.PixelData, number_of_frames=nframes))
+        worst, bad, rejected, oracle_fail = 0, 0, None, 0
+        for i, fr in enumerate(frames):
+            src = os.path.join(TMP, "frame.j2k")
+            with open(src, "wb") as fh:
+                fh.write(fr)
+            dst = os.path.join(TMP, "frame.raw")
+            p = run([TOOL, "frame", src, dst, str(rows), str(cols), str(spp), str(ba), str(bs), str(sgn)])
+            info = probe(src)
+            if p.returncode != 0:
+                rejected = p.stderr.strip().splitlines()[-1] if p.stderr.strip() else "?"
+                # A rejection is correct only when the codestream disagrees with the data set.
+                disagree = info is None or (info["width"], info["height"], info["components"], info["precision"], info["signed"]) != (cols, rows, spp, bs, sgn)
+                if not disagree:
+                    bad += 1
+                continue
+            dt = np.dtype(("<i" if sgn else "<u") + str(ba // 8))
+            ours = np.fromfile(dst, dtype=dt).astype(np.int64)
+            ref = None
+            if openjpeg is not None:
+                try:
+                    ref = np.asarray(openjpeg.decode(fr)).astype(np.int64).ravel()
+                except Exception:
+                    ref = None
+            if ref is None or ref.size != ours.size:
+                oracle_fail += 1
+                continue
+            d = int(np.abs(ours - ref).max()) if ours.size else 0
+            worst = max(worst, d)
+            limit = 0 if info and info["reversible"] else 1
+            if d > limit:
+                bad += 1
+        desc = f"{name} ({ts.rsplit('.', 1)[-1]}, {rows}x{cols}x{spp}, {bs}/{ba}-bit{' signed' if sgn else ''}, {len(frames)} frame(s))"
+        if rejected is not None and bad == 0:
+            report(True, f"{desc}: rejected as required (codestream header disagrees with the data set, or the codestream is invalid): {rejected}")
+        elif oracle_fail == len(frames):
+            skip(f"{desc}: oracle could not decode it")
+        else:
+            report(bad == 0, f"{desc}: peak error vs pylibjpeg-openjpeg {worst}" + (f", {bad} frame(s) bad" if bad else ""))
+
+
+# ------------------------------------------------------------------ 5. SIAARA-encoded streams
+
+def section_ours():
+    print("== 5. Codestreams written by SIAARA, decoded by the oracles")
+    if not OPJ_DEC and openjpeg is None:
+        skip("no oracle decoder")
+        return
+    rng = np.random.default_rng(99)
+    cases = [
+        # (w, h, nc, bits, signed, mode, quality, layers, levels, tile, progression)
+        (64, 64, 1, 8, False, "lossless", 90, 1, 5, 0, 0),
+        (1, 1, 1, 8, False, "lossless", 90, 1, 5, 0, 0),
+        (1, 29, 1, 12, False, "lossless", 90, 1, 5, 0, 0),
+        (7, 13, 3, 8, False, "lossless", 90, 2, 5, 0, 1),
+        (513, 511, 1, 16, False, "lossless", 90, 1, 6, 0, 0),
+        (100, 80, 1, 16, True, "lossless", 90, 3, 4, 0, 2),
+        (120, 90, 3, 8, False, "lossless", 90, 2, 5, 48, 3),
+        (120, 90, 3, 12, False, "lossless", 90, 1, 5, 64, 4),
+        (128, 96, 3, 8, False, "lossy", 90, 1, 5, 0, 0),
+        (128, 96, 3, 8, False, "lossy", 50, 3, 5, 0, 1),
+        (97, 61, 1, 12, False, "lossy", 80, 2, 4, 32, 2),
+        (300, 200, 1, 16, False, "lossy", 85, 1, 5, 0, 0),
+        (64, 64, 1, 8, False, "ht", 90, 1, 5, 0, 0),
+        (1, 1, 1, 8, False, "ht", 90, 1, 5, 0, 0),
+        (7, 13, 3, 8, False, "ht", 90, 1, 5, 0, 0),
+        (513, 511, 1, 16, False, "ht", 90, 1, 5, 0, 0),
+        (100, 80, 1, 16, True, "ht", 90, 1, 3, 0, 2),
+        (200, 150, 3, 12, False, "ht", 90, 1, 5, 64, 4),
+    ]
+    for (w, h, nc, bits, sgn, mode, q, layers, levels, tile, prog) in cases:
+        planes = synth_image(rng, w, h, nc, bits, sgn)
+        ba = 8 if bits <= 8 else 16
+        dt = np.dtype(("<i" if sgn else "<u") + str(ba // 8))
+        raw = os.path.join(TMP, "enc_in.raw")
+        np.stack(planes, axis=-1).astype(dt).tofile(raw)
+        stream = os.path.join(TMP, "enc_out.j2k")
+        p = run([TOOL, "encode", raw, stream, str(h), str(w), str(nc), str(ba), str(bits), "1" if sgn else "0",
+                 mode, str(q), str(layers), str(levels), str(tile), str(prog)])
+        desc = f"{w}x{h}x{nc} {bits}-bit{' signed' if sgn else ''} {mode} q={q} layers={layers} levels={levels} tile={tile} prog={prog}"
+        if p.returncode != 0:
+            report(False, f"{desc}: SIAARA encode failed: {p.stderr.strip()}")
+            continue
+        ours, comps = ours_components(stream)
+        if ours is None:
+            report(False, f"{desc}: SIAARA decode failed: {comps}")
+            continue
+        size = os.path.getsize(stream)
+        results_txt = []
+        ok = True
+        for oracle_name, ref in (("OpenJPEG", opj_components(stream)), ("pylibjpeg-openjpeg", pylibjpeg_components(stream))):
+            if ref is None:
+                results_txt.append(f"{oracle_name}: no decode")
+                ok = False
+                continue
+            if mode != "lossy":
+                d = compare(planes, ref)
+                ok = ok and d == 0
+                results_txt.append(f"{oracle_name} vs source {d}")
+            else:
+                d = compare(ours, ref, comps)
+                limit = 2 if bits > 12 else 1
+                ok = ok and d is not None and d <= limit
+                results_txt.append(f"{oracle_name} vs SIAARA {d}")
+        if mode == "lossy":
+            mse = np.mean([((a - b) ** 2).mean() for a, b in zip(ours, planes)])
+            top = (1 << bits) - 1
+            results_txt.append(f"PSNR {10 * np.log10(top * top / mse):.1f} dB" if mse > 0 else "PSNR inf")
+        else:
+            ok = ok and all(np.array_equal(a, b) for a, b in zip(ours, planes))
+        report(ok, f"{desc}: {size} bytes; " + ", ".join(results_txt))
+
+
 # ------------------------------------------------------------------ main
 
 if __name__ == "__main__":
@@ -487,6 +648,8 @@ if __name__ == "__main__":
     section_files()
     section_nonregression()
     section_opj_streams()
+    section_dicom()
+    section_ours()
     print(f"\n{results['ok']} ok, {results['bad']} failed, {results['skip']} skipped")
     shutil.rmtree(TMP, ignore_errors=True)
     sys.exit(1 if results["bad"] else 0)
