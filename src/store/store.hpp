@@ -149,6 +149,11 @@ public:
     // Buffers are always copied into the store (raw data sets are re-written as Part 10 files).
     Result<AddOutcome> add_buffer(const Bytes& data, DuplicatePolicy policy = DuplicatePolicy::Keep);
 
+    // Bulk-indexes records of files kept in place (as AddMode::Reference, without reading the
+    // files): each record needs SopInstanceUid, SeriesInstanceUid, StudyInstanceUid and an
+    // absolute FilePath. Existing UIDs are replaced. For importing an existing index.
+    Result<std::size_t> add_records(const std::vector<IndexRecord>& records);
+
     Result<QueryResult> query(const QueryFilter& f) const;
     // Series of a study ordered by Series Number, then Series Date/Time, then UID.
     Result<std::vector<IndexRecord>> series_of(const std::string& study_uid) const;

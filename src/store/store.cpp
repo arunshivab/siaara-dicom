@@ -1156,6 +1156,49 @@ Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy) 
     return impl_->add_bytes(data, policy, AddMode::Copy, {});
 }
 
+Result<std::size_t> Store::add_records(const std::vector<IndexRecord>& records) {
+    std::vector<std::uint8_t> framed;
+    std::vector<IndexRecord> recs;
+    recs.reserve(records.size());
+    const std::uint64_t now = now_seconds();
+    for (const auto& r0 : records) {
+        if (r0[Str::SopInstanceUid].empty() || r0[Str::SeriesInstanceUid].empty() ||
+            r0[Str::StudyInstanceUid].empty() || r0[Str::FilePath].empty())
+            return Status(Errc::InvalidArgument, "record lacks a UID or file path");
+        IndexRecord r = r0;
+        r.flags |= kReferenced;
+        r[Str::ModalitiesInStudy].clear();
+        r[Str::RecordType].clear();
+        if (!r.added_time) r.added_time = now;
+        ByteWriter bw;
+        encode_record(bw, r);
+        frame(framed, 'A', bw.buf);
+        recs.push_back(std::move(r));
+    }
+    std::vector<Event> events;
+    bool want_events = false;
+    {
+        std::lock_guard<std::mutex> g(impl_->cb_mutex);
+        want_events = static_cast<bool>(impl_->callback);
+    }
+    {
+        std::lock_guard<std::mutex> w(impl_->writer);
+        if (Status s = impl_->journal_append(framed, recs.size()); !s) return s;
+        {
+            std::unique_lock<std::shared_mutex> g(impl_->rw);
+            for (const auto& r : recs) {
+                const bool replaced = impl_->st.apply_add(r, true);
+                if (want_events)
+                    events.push_back({replaced ? EventKind::Replaced : EventKind::Added, r[Str::SopInstanceUid],
+                                      r[Str::SeriesInstanceUid], r[Str::StudyInstanceUid]});
+            }
+        }
+        if (Status s = impl_->maybe_compact(); !s) return s;
+    }
+    impl_->emit(events);
+    return recs.size();
+}
+
 Result<QueryResult> Store::query(const QueryFilter& q) const {
     Compiled c;
     if (Status s = c.compile(q); !s) return s;
