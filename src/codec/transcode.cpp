@@ -414,6 +414,8 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
     if (!target_encapsulated && (native_total > p.frames.memory_budget || native_total > SIZE_MAX))
         return Status(Errc::LimitExceeded, "transcode: native pixel data exceeds the memory budget");
 
+    if (fr.frame_bytes() > p.frames.memory_budget || fr.frame_bytes() > SIZE_MAX)
+        return Status(Errc::LimitExceeded, "transcode: frame exceeds the memory budget");
     std::vector<std::uint8_t> raw(static_cast<std::size_t>(fr.frame_bytes()));
     std::vector<std::uint8_t> work(static_cast<std::size_t>(work_bytes));
     std::vector<std::uint8_t> tmp;

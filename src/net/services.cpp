@@ -58,7 +58,6 @@ constexpr Tag kBasicGrayscaleImageSequence = 0x20200110;
 constexpr Tag kBasicColorImageSequence = 0x20200111;
 constexpr Tag kPrinterStatus = 0x21100010;
 constexpr Tag kPrinterStatusInfo = 0x21100020;
-constexpr Tag kPrinterName = 0x21100030;
 
 constexpr std::uint16_t kNoSuchActionType = 0x0123;
 
@@ -1015,8 +1014,7 @@ Result<Scu::NResponse> PrintScu::call(Command rq, const Dataset* ds) {
 
 Result<Dataset> PrintScu::printer_status() {
     Result<Scu::NResponse> r =
-        call(make_n_get_rq(0, sop::Printer, sop::PrinterInstance, {kPrinterStatus, kPrinterStatusInfo, kPrinterName}),
-             nullptr);
+        call(make_n_get_rq(0, sop::Printer, sop::PrinterInstance, {kPrinterStatus, kPrinterStatusInfo}), nullptr);
     if (!r) return r.take_error();
     if (is_failure(last_status_)) return status_error("Printer N-GET", last_status_);
     return std::move(r->dataset);

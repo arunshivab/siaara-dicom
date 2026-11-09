@@ -77,3 +77,7 @@ if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART15}" AND EXISTS "${SIAARA_NEMA_PA
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/deid_table_check.py
                    ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART15} ${SIAARA_NEMA_PART16})
 endif()
+# Test-only helper for tests/crosscheck/services_crosscheck.py (not installed).
+add_executable(services_tool crosscheck/services_tool.cpp)
+target_link_libraries(services_tool PRIVATE siaara_static)
+target_compile_options(services_tool PRIVATE ${SIAARA_TEST_WARN})

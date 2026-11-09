@@ -145,6 +145,7 @@ Result<SpoolWriter::Finished> SpoolWriter::finish() {
     // From here on the SpoolFile owns (and eventually deletes) the file.
     auto file = std::make_shared<SpoolFile>(path_, prefix_size_);
     if (!good) return Status(Errc::IoError, "cannot write spool file");
+    if (prefix_size_ + written_ > SIZE_MAX) return Status(Errc::LimitExceeded, "spool file too large to map");
     Result<Bytes> m = io::map_file(path_, true);
     if (!m) return m.take_error();
     if (m->size() != prefix_size_ + written_) return Status(Errc::IoError, "spool file size mismatch");
