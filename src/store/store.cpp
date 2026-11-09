@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 #include <shared_mutex>
 #include <string_view>
@@ -240,38 +241,84 @@ void multimap_erase(M& m, const K& k, V* p) {
         }
 }
 
+// ---------------------------------------------------------------- ordering
+bool patient_less(const Patient* a, const Patient* b) {
+    if (a->forms[0] != b->forms[0]) return a->forms[0] < b->forms[0];
+    return a->key < b->key;
+}
+bool study_less(const Study* a, const Study* b) {  // newest first
+    if (a->date_key != b->date_key) return a->date_key > b->date_key;
+    if (a->f[2] != b->f[2]) return a->f[2] > b->f[2];
+    return a->uid() < b->uid();
+}
+bool series_less(const Series* a, const Series* b) {
+    if (a->has_number != b->has_number) return a->has_number;
+    if (a->number != b->number) return a->number < b->number;
+    if (a->f[4] != b->f[4]) return a->f[4] < b->f[4];
+    if (a->f[5] != b->f[5]) return a->f[5] < b->f[5];
+    return a->uid() < b->uid();
+}
+bool instance_less_in_series(const Instance* a, const Instance* b) {
+    const bool ha = (a->flags & kHasInstanceNumber) != 0, hb = (b->flags & kHasInstanceNumber) != 0;
+    if (ha != hb) return ha;
+    if (a->instance_number != b->instance_number) return a->instance_number < b->instance_number;
+    const double pa = a->slice_pos(), pb = b->slice_pos();
+    if (pa != pb) return pa < pb;
+    return a->uid < b->uid;
+}
+bool instance_less(const Instance* a, const Instance* b) {
+    if (a->series != b->series) {
+        if (a->series->study != b->series->study) return study_less(a->series->study, b->series->study);
+        return series_less(a->series, b->series);
+    }
+    return instance_less_in_series(a, b);
+}
+
+struct StudyOrder {
+    using is_transparent = void;
+    bool operator()(const Study* a, const Study* b) const { return study_less(a, b); }
+    bool operator()(const Study* a, std::uint32_t d) const { return a->date_key > d; }
+    bool operator()(std::uint32_t d, const Study* b) const { return d > b->date_key; }
+};
+struct PatientOrder {
+    bool operator()(const Patient* a, const Patient* b) const { return patient_less(a, b); }
+};
+
 struct State {
     std::unordered_map<std::string_view, std::unique_ptr<Instance>> instances;
     std::unordered_map<std::string_view, std::unique_ptr<Series>> series;
     std::unordered_map<std::string_view, std::unique_ptr<Study>> studies;
     std::unordered_map<std::string_view, std::unique_ptr<Patient>> patients;
-    // secondary indexes
-    std::unordered_multimap<std::string, Patient*> by_patient_id;
-    std::multimap<std::string, Patient*> by_name_form;
-    std::unordered_multimap<std::string, Study*> by_accession;
-    std::multimap<std::uint32_t, Study*> by_date;
+    // secondary indexes; keys view strings owned by the nodes (re-indexed whenever they change)
+    std::unordered_multimap<std::string_view, Patient*> by_patient_id;
+    std::multimap<std::string_view, Patient*> by_name_form;
+    std::unordered_multimap<std::string_view, Study*> by_accession;
+    std::set<Study*, StudyOrder> ordered_studies;     // result order: newest first
+    std::set<Patient*, PatientOrder> ordered_patients; // result order: by folded name
     std::unordered_set<std::string> pool;
     std::uint64_t data_bytes = 0;
 
     const std::string* intern(const std::string& s) { return &*pool.insert(s).first; }
 
     void index_patient(Patient* p) {
-        by_patient_id.emplace(p->f[0], p);
+        by_patient_id.emplace(std::string_view(p->f[0]), p);
         for (const auto& form : p->forms)
-            if (!form.empty()) by_name_form.emplace(form, p);
+            if (!form.empty()) by_name_form.emplace(std::string_view(form), p);
+        ordered_patients.insert(p);
     }
     void unindex_patient(Patient* p) {
-        multimap_erase(by_patient_id, p->f[0], p);
+        multimap_erase(by_patient_id, std::string_view(p->f[0]), p);
         for (const auto& form : p->forms)
-            if (!form.empty()) multimap_erase(by_name_form, form, p);
+            if (!form.empty()) multimap_erase(by_name_form, std::string_view(form), p);
+        ordered_patients.erase(p);
     }
     void index_study(Study* s) {
-        if (!s->f[3].empty()) by_accession.emplace(s->f[3], s);
-        by_date.emplace(s->date_key, s);
+        if (!s->f[3].empty()) by_accession.emplace(std::string_view(s->f[3]), s);
+        ordered_studies.insert(s);
     }
     void unindex_study(Study* s) {
-        if (!s->f[3].empty()) multimap_erase(by_accession, s->f[3], s);
-        multimap_erase(by_date, s->date_key, s);
+        if (!s->f[3].empty()) multimap_erase(by_accession, std::string_view(s->f[3]), s);
+        ordered_studies.erase(s);
     }
 
     static void set_patient_fields(Patient& p, const IndexRecord& r, bool only_nonempty) {
@@ -489,39 +536,6 @@ std::size_t instance_count(const Patient& p) {
     return n;
 }
 
-// ---------------------------------------------------------------- ordering
-bool patient_less(const Patient* a, const Patient* b) {
-    if (a->forms[0] != b->forms[0]) return a->forms[0] < b->forms[0];
-    return a->key < b->key;
-}
-bool study_less(const Study* a, const Study* b) {  // newest first
-    if (a->date_key != b->date_key) return a->date_key > b->date_key;
-    if (a->f[2] != b->f[2]) return a->f[2] > b->f[2];
-    return a->uid() < b->uid();
-}
-bool series_less(const Series* a, const Series* b) {
-    if (a->has_number != b->has_number) return a->has_number;
-    if (a->number != b->number) return a->number < b->number;
-    if (a->f[4] != b->f[4]) return a->f[4] < b->f[4];
-    if (a->f[5] != b->f[5]) return a->f[5] < b->f[5];
-    return a->uid() < b->uid();
-}
-bool instance_less_in_series(const Instance* a, const Instance* b) {
-    const bool ha = (a->flags & kHasInstanceNumber) != 0, hb = (b->flags & kHasInstanceNumber) != 0;
-    if (ha != hb) return ha;
-    if (a->instance_number != b->instance_number) return a->instance_number < b->instance_number;
-    const double pa = a->slice_pos(), pb = b->slice_pos();
-    if (pa != pb) return pa < pb;
-    return a->uid < b->uid;
-}
-bool instance_less(const Instance* a, const Instance* b) {
-    if (a->series != b->series) {
-        if (a->series->study != b->series->study) return study_less(a->series->study, b->series->study);
-        return series_less(a->series, b->series);
-    }
-    return instance_less_in_series(a, b);
-}
-
 // ---------------------------------------------------------------- compiled filter
 struct Compiled {
     std::string name, pid, sex, acc, sdesc, ref, edesc, body, study_uid, series_uid, sop_uid;
@@ -697,29 +711,21 @@ struct Store::Impl {
         Status s;
         for (const auto& [pk, p] : st.patients) {
             ByteWriter w;
-            IndexRecord r;
-            fill_patient(*p, r);
-            encode_record(w, r);
+            for (const auto& v : p->f) w.str(v);
             frame(buf, 'P', w.buf);
             const std::uint32_t pord = pn++;
             for (const Study* study : p->studies) {
                 ByteWriter ws;
                 ws.u32(pord);
-                IndexRecord rs;
-                for (std::size_t i = 0; i < 7; ++i) rs[kStudyFields[i]] = study->f[i];
-                encode_record(ws, rs);
+                for (const auto& v : study->f) ws.str(v);
                 frame(buf, 'S', ws.buf);
                 const std::uint32_t sord = sn++;
                 for (const Series* e : study->series) {
                     ByteWriter we;
                     we.u32(sord);
-                    IndexRecord re;
-                    for (std::size_t i = 0; i < 7; ++i) re[kSeriesFields[i]] = e->f[i];
-                    if (e->has_number) {
-                        re.series_number = e->number;
-                        re.flags |= kHasSeriesNumber;
-                    }
-                    encode_record(we, re);
+                    for (const auto& v : e->f) we.str(v);
+                    we.u8(e->has_number ? 1 : 0);
+                    we.i32(e->number);
                     frame(buf, 'E', we.buf);
                     const std::uint32_t eord = en++;
                     for (const Instance* in : e->instances) {
@@ -800,7 +806,19 @@ struct Store::Impl {
             std::uint32_t parent = 0;
             if (type != 'P') parent = rd.u32();
             IndexRecord r;
-            if (!decode_record(rd, r)) return Status(Errc::Malformed, "index snapshot record is malformed");
+            bool good = true;
+            if (type == 'P') {
+                for (Str k : kPatientFields) r[k] = rd.str();
+            } else if (type == 'S') {
+                for (Str k : kStudyFields) r[k] = rd.str();
+            } else if (type == 'E') {
+                for (Str k : kSeriesFields) r[k] = rd.str();
+                if (rd.u8()) r.flags |= kHasSeriesNumber;
+                r.series_number = rd.i32();
+            } else {
+                good = decode_record(rd, r);
+            }
+            if (!good || !rd.ok() || !rd.at_end()) return Status(Errc::Malformed, "index snapshot record is malformed");
             switch (type) {
                 case 'P': pats.push_back(std::move(r)); break;
                 case 'S':
@@ -1205,67 +1223,87 @@ Result<QueryResult> Store::query(const QueryFilter& q) const {
     std::shared_lock<std::shared_mutex> g(impl_->rw);
     const State& st = impl_->st;
     QueryResult res;
+    const std::size_t want = q.limit ? q.offset + q.limit : SIZE_MAX;  // rows needed before paging
+    const bool any_filter = c.patient_f || c.study_f || c.series_f || c.instance_f;
 
-    // ---- candidate studies (or patients) from the most selective index
-    std::vector<const Study*> studies;
-    std::vector<const Patient*> patients;
-    bool by_study = true;
-    if (!c.sop_uid.empty()) {
-        if (auto it = st.instances.find(c.sop_uid); it != st.instances.end()) studies.push_back(it->second->series->study);
-    } else if (!c.series_uid.empty()) {
-        if (auto it = st.series.find(c.series_uid); it != st.series.end()) studies.push_back(it->second->study);
-    } else if (!c.study_uid.empty()) {
-        if (auto it = st.studies.find(c.study_uid); it != st.studies.end()) studies.push_back(it->second.get());
-    } else if (!c.acc.empty() && !has_wildcards(c.acc)) {
-        auto range = st.by_accession.equal_range(c.acc);
-        for (auto it = range.first; it != range.second; ++it) studies.push_back(it->second);
-    } else if (!c.pid.empty() && !has_wildcards(c.pid)) {
-        auto range = st.by_patient_id.equal_range(c.pid);
-        for (auto it = range.first; it != range.second; ++it) patients.push_back(it->second);
-        by_study = false;
-    } else if (c.date && (c.date_lo > 0 || c.date_hi < 99999999u)) {
-        for (auto it = st.by_date.lower_bound(std::max<std::uint32_t>(c.date_lo, 1));
-             it != st.by_date.end() && it->first <= c.date_hi; ++it)
-            studies.push_back(it->second);
-    } else if (!c.name.empty() && !literal_prefix(c.name).empty()) {
-        const std::string pre = literal_prefix(c.name);
-        std::unordered_set<const Patient*> seen;
-        for (auto it = st.by_name_form.lower_bound(pre);
-             it != st.by_name_form.end() && it->first.compare(0, pre.size(), pre) == 0; ++it)
-            if (seen.insert(it->second).second) patients.push_back(it->second);
-        by_study = false;
-    } else if (q.level == Level::Patient || c.patient_f) {
-        patients.reserve(st.patients.size());
-        for (const auto& kv : st.patients) patients.push_back(kv.second.get());
-        by_study = false;
-    } else {
-        studies.reserve(st.studies.size());
-        for (const auto& kv : st.studies) studies.push_back(kv.second.get());
-    }
-    if (!by_study && (q.level != Level::Patient || c.study_f || c.series_f || c.instance_f)) {
-        for (const Patient* p : patients)
-            if (c.patient_ok(*p)) studies.insert(studies.end(), p->studies.begin(), p->studies.end());
-        patients.clear();
-        by_study = true;
-    }
-
-    // ---- filter and expand
     std::vector<const Patient*> out_p;
     std::vector<const Study*> out_s;
     std::vector<const Series*> out_e;
     std::vector<const Instance*> out_i;
-    if (!by_study) {  // patient level, patient filters only
-        for (const Patient* p : patients)
-            if (c.patient_ok(*p)) out_p.push_back(p);
+    bool sorted = false;      // outputs already in result order
+    bool stopped = false;     // stopped early: total is a lower bound
+
+    // ---- patient level without study/series/instance filters: walk patients only
+    if (q.level == Level::Patient && !c.study_f && !c.series_f && !c.instance_f) {
+        std::vector<const Patient*> cands;
+        bool ordered = false;
+        if (!c.pid.empty() && !has_wildcards(c.pid)) {
+            auto range = st.by_patient_id.equal_range(std::string_view(c.pid));
+            for (auto it = range.first; it != range.second; ++it) cands.push_back(it->second);
+        } else if (!c.name.empty() && !literal_prefix(c.name).empty()) {
+            const std::string pre = literal_prefix(c.name);
+            std::unordered_set<const Patient*> seen;
+            for (auto it = st.by_name_form.lower_bound(std::string_view(pre));
+                 it != st.by_name_form.end() && it->first.substr(0, pre.size()) == pre; ++it)
+                if (seen.insert(it->second).second) cands.push_back(it->second);
+        } else {
+            ordered = true;
+        }
+        if (ordered) {
+            for (const Patient* p : st.ordered_patients) {
+                if (!c.patient_ok(*p)) continue;
+                out_p.push_back(p);
+                if (out_p.size() >= want && (!q.want_total || !c.patient_f)) {
+                    stopped = c.patient_f;
+                    break;
+                }
+            }
+            sorted = true;
+            res.total = c.patient_f ? out_p.size() : st.patients.size();
+        } else {
+            for (const Patient* p : cands)
+                if (c.patient_ok(*p)) out_p.push_back(p);
+            res.total = out_p.size();
+        }
     } else {
+        // ---- candidate studies from the most selective index
+        std::vector<const Study*> cands;
+        enum class From { List, All, DateRange } from = From::List;
+        if (!c.sop_uid.empty()) {
+            if (auto it = st.instances.find(c.sop_uid); it != st.instances.end()) cands.push_back(it->second->series->study);
+        } else if (!c.series_uid.empty()) {
+            if (auto it = st.series.find(c.series_uid); it != st.series.end()) cands.push_back(it->second->study);
+        } else if (!c.study_uid.empty()) {
+            if (auto it = st.studies.find(c.study_uid); it != st.studies.end()) cands.push_back(it->second.get());
+        } else if (!c.acc.empty() && !has_wildcards(c.acc)) {
+            auto range = st.by_accession.equal_range(std::string_view(c.acc));
+            for (auto it = range.first; it != range.second; ++it) cands.push_back(it->second);
+        } else if (!c.pid.empty() && !has_wildcards(c.pid)) {
+            auto range = st.by_patient_id.equal_range(std::string_view(c.pid));
+            for (auto it = range.first; it != range.second; ++it)
+                cands.insert(cands.end(), it->second->studies.begin(), it->second->studies.end());
+        } else if (c.date && (c.date_lo > 0 || c.date_hi < 99999999u)) {
+            from = From::DateRange;
+        } else if (!c.name.empty() && !literal_prefix(c.name).empty()) {
+            const std::string pre = literal_prefix(c.name);
+            std::unordered_set<const Patient*> seen;
+            for (auto it = st.by_name_form.lower_bound(std::string_view(pre));
+                 it != st.by_name_form.end() && it->first.substr(0, pre.size()) == pre; ++it)
+                if (seen.insert(it->second).second)
+                    cands.insert(cands.end(), it->second->studies.begin(), it->second->studies.end());
+        } else {
+            from = From::All;
+        }
+
         std::unordered_set<const Patient*> seen_p;
-        for (const Study* s : studies) {
-            if (!c.patient_ok(*s->patient) || !c.study_ok(*s)) continue;
+        auto inst_ok = [&](const Instance* in) { return c.sop_uid.empty() || in->uid == c.sop_uid; };
+        // Returns false to stop.
+        auto visit = [&](const Study* s) -> bool {
+            if (!c.patient_ok(*s->patient) || !c.study_ok(*s)) return true;
             bool any = false;
             if (q.level <= Level::Study && !c.series_f && !c.instance_f) {
                 any = true;
             } else {
-                auto inst_ok = [&](const Instance* in) { return c.sop_uid.empty() || in->uid == c.sop_uid; };
                 for (const Series* e : s->series) {
                     if (!c.series_ok(*e)) continue;
                     if (q.level == Level::Instance) {
@@ -1283,19 +1321,45 @@ Result<QueryResult> Store::query(const QueryFilter& q) const {
                     else break;
                 }
             }
-            if (!any) continue;
-            if (q.level == Level::Study) out_s.push_back(s);
+            if (!any) return true;
+            if (q.level == Level::Study) {
+                out_s.push_back(s);
+                // In study order, so the first `want` rows are final; with no filter the total is known.
+                if (from != From::List && out_s.size() >= want && (!q.want_total || !any_filter)) {
+                    stopped = any_filter;
+                    return false;
+                }
+            }
             if (q.level == Level::Patient && seen_p.insert(s->patient).second) out_p.push_back(s->patient);
+            return true;
+        };
+        if (from == From::All) {
+            for (const Study* s : st.ordered_studies)
+                if (!visit(s)) break;
+        } else if (from == From::DateRange) {
+            for (auto it = st.ordered_studies.lower_bound(c.date_hi);
+                 it != st.ordered_studies.end() && (*it)->date_key >= c.date_lo && (*it)->date_key != 0; ++it)
+                if (!visit(*it)) break;
+        } else {
+            for (const Study* s : cands)
+                if (!visit(s)) break;
         }
+        sorted = from != From::List && q.level == Level::Study;
+        if (q.level == Level::Study) res.total = (!any_filter && from == From::All) ? st.studies.size() : out_s.size();
+        else if (q.level == Level::Series) res.total = out_e.size();
+        else if (q.level == Level::Instance) res.total = out_i.size();
+        else res.total = out_p.size();
     }
+    res.total_is_exact = !stopped;
 
     auto page = [&](auto& v, auto less, auto fill) {
-        res.total = v.size();
         const std::size_t begin = std::min(q.offset, v.size());
         std::size_t end = v.size();
         if (q.limit && q.limit < end - begin) end = begin + q.limit;
-        if (end < v.size()) std::partial_sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(end), v.end(), less);
-        else std::sort(v.begin(), v.end(), less);
+        if (!sorted) {
+            if (end < v.size()) std::partial_sort(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(end), v.end(), less);
+            else std::sort(v.begin(), v.end(), less);
+        }
         res.rows.reserve(end - begin);
         for (std::size_t i = begin; i < end; ++i) {
             IndexRecord r;

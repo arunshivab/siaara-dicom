@@ -102,10 +102,14 @@ struct QueryFilter {
     std::string sop_instance_uid;   // exact
     std::size_t offset = 0;
     std::size_t limit = 0;          // 0 = all
+    // false: the query may stop as soon as offset + limit rows are known (fast paging over large
+    // stores); QueryResult::total is then only a lower bound when total_is_exact is false.
+    bool want_total = true;
 };
 
 struct QueryResult {
     std::size_t total = 0;          // matches before offset/limit
+    bool total_is_exact = true;
     std::vector<IndexRecord> rows;
 };
 

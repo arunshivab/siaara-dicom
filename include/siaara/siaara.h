@@ -402,7 +402,13 @@ typedef struct siaara_store_filter {
     const char* sop_instance_uid;
     uint32_t offset;               /* rows to skip (paging) */
     uint32_t limit;                /* 0 = all */
+    uint32_t flags;                /* SIAARA_QUERY_* */
+    uint32_t reserved0;
 } siaara_store_filter;
+
+/* The query may stop as soon as offset + limit rows are known: much faster paging over large
+ * stores, but the total reported by siaara_store_result_count is then a lower bound. */
+#define SIAARA_QUERY_NO_TOTAL 1u
 
 /* Results are a snapshot: later changes to the store do not alter them. Caller owns *out. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_query(const siaara_store* store, const siaara_store_filter* query,
@@ -413,9 +419,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_get_series(const siaara_store*
                                                              size_t len, siaara_store_result** out);
 SIAARA_API siaara_status SIAARA_CALL siaara_store_get_instances(const siaara_store* store, const char* series_uid,
                                                                 size_t len, siaara_store_result** out);
-/* *count = rows held; *total (may be NULL) = matches before offset/limit. */
+/* *count = rows held; *total (may be NULL) = matches before offset/limit; *total_exact (may be
+ * NULL) = 0 when SIAARA_QUERY_NO_TOTAL stopped the query early and *total is a lower bound. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_store_result* result, uint32_t* count,
-                                                               uint32_t* total);
+                                                               uint32_t* total, int32_t* total_exact);
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_result* result, uint32_t index,
                                                              siaara_index_record* out, char* buf, size_t cap,
                                                              size_t* needed);

@@ -552,6 +552,72 @@ TEST_CASE("store: query results carry counts, modalities, paging and order") {
     CHECK_EQ((*series)[0].num_instances, 1u);
 }
 
+TEST_CASE("store: early-exit paging returns the same rows as a full query") {
+    TempDir td("siaara-page");
+    auto st = open_store(td / "s");
+    REQUIRE(st != nullptr);
+    std::vector<IndexRecord> recs;
+    for (int i = 0; i < 300; ++i) {
+        IndexRecord r;
+        r[Str::PatientId] = "Q" + std::to_string(i % 40);
+        r[Str::PatientName] = (i % 3 ? "Anders^" : "Berg^") + std::to_string(i % 40);
+        r[Str::StudyInstanceUid] = "7.7." + std::to_string(i);
+        r[Str::StudyDate] = std::to_string(20000101 + (i % 25) * 10000 + (i % 12) * 100);
+        r[Str::StudyTime] = std::to_string(100000 + i);
+        r[Str::StudyDescription] = i % 2 ? "CT Chest" : "MR Head";
+        r[Str::SeriesInstanceUid] = r[Str::StudyInstanceUid] + ".1";
+        r[Str::Modality] = i % 2 ? "CT" : "MR";
+        r[Str::SopInstanceUid] = r[Str::SeriesInstanceUid] + ".1";
+        r[Str::FilePath] = (td / "x" / std::to_string(i)).string();
+        recs.push_back(r);
+    }
+    REQUIRE(st->add_records(recs).is_ok());
+    std::vector<QueryFilter> filters(6, at(Level::Study));
+    filters[1].study_description = "*chest*";
+    filters[2].study_date = "20050101-20151231";
+    filters[3].patient_name = "*ders*";
+    filters[4].modality = "MR";
+    filters[4].study_date = "20100101-";
+    filters[5] = at(Level::Patient);
+    filters[5].patient_name = "*erg*";
+    for (auto f : filters) {
+        auto full = st->query(f);
+        REQUIRE(full.is_ok());
+        for (std::size_t off : {0u, 7u, 50u}) {
+            f.offset = off;
+            f.limit = 10;
+            f.want_total = true;
+            auto a = st->query(f);
+            f.want_total = false;
+            auto b = st->query(f);
+            REQUIRE(a.is_ok() && b.is_ok());
+            CHECK_EQ(a->total, full->total);
+            CHECK(a->total_is_exact);
+            CHECK(b->total <= a->total);
+            REQUIRE(a->rows.size() == b->rows.size());
+            for (std::size_t i = 0; i < a->rows.size(); ++i) {
+                const Str k = f.level == Level::Patient ? Str::PatientId : Str::StudyInstanceUid;
+                CHECK_EQ(a->rows[i][k], b->rows[i][k]);
+                CHECK_EQ(a->rows[i][k], full->rows[off + i][k]);
+            }
+        }
+    }
+    // no filter: the total is exact even when stopping early
+    auto f = at(Level::Study);
+    f.limit = 5;
+    f.want_total = false;
+    auto r = st->query(f);
+    REQUIRE(r.is_ok());
+    CHECK_EQ(r->total, 300u);
+    CHECK(r->total_is_exact);
+    // date-range results come out newest first
+    f = at(Level::Study);
+    f.study_date = "20000101-20241231";
+    r = st->query(f);
+    REQUIRE(r.is_ok() && r->rows.size() > 2);
+    for (std::size_t i = 1; i < r->rows.size(); ++i) CHECK(r->rows[i - 1][Str::StudyDate] >= r->rows[i][Str::StudyDate]);
+}
+
 TEST_CASE("store: instance order by number, then slice position, then UID") {
     TempDir td("siaara-order");
     auto st = open_store(td / "s");
@@ -1010,7 +1076,9 @@ TEST_CASE("store: C API extract, store, query, delete, verify, stats") {
     siaara_store_result* res = nullptr;
     REQUIRE(siaara_store_query(st, &q, &res) == SIAARA_OK);
     uint32_t n = 0, total = 0;
-    CHECK_EQ(siaara_store_result_count(res, &n, &total), SIAARA_OK);
+    int32_t exact = 0;
+    CHECK_EQ(siaara_store_result_count(res, &n, &total, &exact), SIAARA_OK);
+    CHECK_EQ(exact, 1);
     CHECK_EQ(n, 1u);
     CHECK_EQ(total, 1u);
     siaara_index_record row{};
@@ -1028,13 +1096,13 @@ TEST_CASE("store: C API extract, store, query, delete, verify, stats") {
     CHECK_EQ(siaara_store_query(st, &q, &res), SIAARA_ERR_INVALID_ARGUMENT);
 
     REQUIRE(siaara_store_get_instances(st, s.series_uid.c_str(), s.series_uid.size(), &res) == SIAARA_OK);
-    CHECK_EQ(siaara_store_result_count(res, &n, nullptr), SIAARA_OK);
+    CHECK_EQ(siaara_store_result_count(res, &n, nullptr, nullptr), SIAARA_OK);
     CHECK_EQ(n, 1u);
     CHECK_EQ(siaara_store_result_get(res, 0, &row, rt.data(), rt.size(), &needed), SIAARA_OK);
     CHECK(fs::exists(str_of(row, rt.data(), SIAARA_IDX_FILE_PATH)));
     siaara_store_result_free(res);
     REQUIRE(siaara_store_get_series(st, s.study_uid.c_str(), s.study_uid.size(), &res) == SIAARA_OK);
-    CHECK_EQ(siaara_store_result_count(res, &n, nullptr), SIAARA_OK);
+    CHECK_EQ(siaara_store_result_count(res, &n, nullptr, nullptr), SIAARA_OK);
     CHECK_EQ(n, 1u);
     siaara_store_result_free(res);
 

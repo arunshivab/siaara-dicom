@@ -222,9 +222,11 @@ void bench_index(const fs::path& dir, std::size_t total, std::size_t per_series,
     f.limit = 1000;
     report("instances, MR in 2024, first 1000", time_query(q, f, 3));
 
+    std::printf("  RSS before compaction%s\n", rss().c_str());
     t0 = Clock::now();
     if (auto c = (*st)->compact(); !c) std::printf("  compact failed: %s\n", c.message.c_str());
     t1 = Clock::now();
+    std::printf("  RSS after compaction%s\n", rss().c_str());
     std::printf("  compaction (snapshot write + fsync): %.2f s, snapshot %.1f MB\n", secs(t0, t1),
                 static_cast<double>((*st)->stats().snapshot_bytes) / 1e6);
     st->reset();

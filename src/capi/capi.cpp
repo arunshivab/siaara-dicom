@@ -574,6 +574,7 @@ struct siaara_store {
 struct siaara_store_result {
     std::vector<siaara::store::IndexRecord> rows;
     std::size_t total = 0;
+    bool exact = true;
 };
 
 namespace {
@@ -750,11 +751,13 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_query(const siaara_store* stor
         f.sop_instance_uid = str_arg(q->sop_instance_uid);
         f.offset = q->offset;
         f.limit = q->limit;
+        f.want_total = (q->flags & SIAARA_QUERY_NO_TOTAL) == 0;
         auto r = store->store->query(f);
         if (!r) return fail(r.error());
         auto* res = new siaara_store_result;
         res->rows = std::move(r->rows);
         res->total = r->total;
+        res->exact = r->total_is_exact;
         *out = res;
         return ok();
     });
@@ -779,10 +782,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_get_instances(const siaara_sto
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_store_result* res, uint32_t* count,
-                                                               uint32_t* total) {
+                                                               uint32_t* total, int32_t* total_exact) {
     if (!res || !count) return fail(Errc::InvalidArgument, "result and count must not be NULL");
     *count = static_cast<uint32_t>(res->rows.size());
     if (total) *total = static_cast<uint32_t>(std::min<std::size_t>(res->total, UINT32_MAX));
+    if (total_exact) *total_exact = res->exact ? 1 : 0;
     return ok();
 }
 
