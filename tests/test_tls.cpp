@@ -38,6 +38,9 @@ namespace {
 namespace fs = std::filesystem;
 constexpr const char* kCT = "1.2.840.10008.5.1.4.1.1.2";
 constexpr const char* kP12Password = "siaara-test-p12";
+// PKCS#12 encryption every OS importer reads (OpenSSL 3 defaults to AES/PBKDF2, which older
+// Windows and macOS importers reject).
+constexpr const char* kP12Algorithms = " -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1";
 
 #if defined(_WIN32)
 constexpr const char* kQuiet = " >NUL 2>&1";
@@ -109,7 +112,7 @@ struct Pki {
                    run("openssl x509 -req -in " + q(csr) + " -CA " + q(ca) + " -CAkey " + q(ca_key) + " -set_serial " +
                        std::to_string(serial) + " -days 3 -out " + q(cert) + " -extfile " + q(dir / ext)) &&
                    run("openssl pkcs12 -export -in " + q(cert) + " -inkey " + q(key) + " -certfile " + q(ca) +
-                       " -out " + q(p12) + " -passout pass:" + kP12Password);
+                       " -out " + q(p12) + " -passout pass:" + kP12Password + kP12Algorithms);
         };
         if (!leaf("server", "localhost", "server.ext", 2, server, server_key, server_p12) ||
             !leaf("client", "SIAARA_SCU", "client.ext", 3, client, client_key, client_p12)) {
@@ -126,7 +129,7 @@ struct Pki {
         if (!run("openssl req -x509" + ec_key + " -keyout " + q(self_signed_key) + " -out " + q(self_signed) +
                  " -days 3 -subj \"/CN=localhost\" -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1\"") ||
             !run("openssl pkcs12 -export -in " + q(self_signed) + " -inkey " + q(self_signed_key) + " -out " +
-                 q(self_signed_p12) + " -passout pass:" + kP12Password)) {
+                 q(self_signed_p12) + " -passout pass:" + kP12Password + kP12Algorithms)) {
             why = "making the self-signed certificate failed";
             return;
         }
@@ -146,7 +149,7 @@ struct Pki {
                  " -in " + q(p("expired.csr")) + " -out " + q(expired) +
                  " -startdate 20200101000000Z -enddate 20200201000000Z -extfile " + q(p("server.ext"))) ||
             !run("openssl pkcs12 -export -in " + q(expired) + " -inkey " + q(expired_key) + " -out " + q(expired_p12) +
-                 " -passout pass:" + kP12Password)) {
+                 " -passout pass:" + kP12Password + kP12Algorithms)) {
             why = "making the expired certificate failed";
             return;
         }
