@@ -39,6 +39,10 @@ public:
                 if (undefined && depth > 0) return lenient_or(Errc::Truncated, "missing item delimiter");
                 return Status::ok();
             }
+            // File meta: a short tail that does not start with the meta group is the body (an empty
+            // deflated data set is only 2 bytes), not a truncated meta element.
+            if (only_group != 0 && size_ - pos_ < 8 && (size_ - pos_ < 2 || load_le16(p_ + pos_) != only_group))
+                return Status::ok();
             if (size_ - pos_ < 8) return lenient_or(Errc::Truncated, "truncated element header");
 
             const std::size_t start = pos_;
