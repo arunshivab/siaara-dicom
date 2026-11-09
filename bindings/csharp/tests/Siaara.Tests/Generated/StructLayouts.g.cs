@@ -677,6 +677,21 @@ internal static class StructLayouts
             r.Add("F siaara_scp_stats echoes " + Offset(ref s, ref s.echoes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_stats bytes_received " + Offset(ref s, ref s.bytes_received).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        {
+            var s = default(siaara_repair_options);
+            r.Add("S siaara_repair_options " + Unsafe.SizeOf<siaara_repair_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options fix " + Offset(ref s, ref s.fix).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options write " + Offset(ref s, ref s.write).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options detailed_report " + Offset(ref s, ref s.detailed_report).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options charset " + Offset(ref s, ref s.charset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options charset_len " + Offset(ref s, ref s.charset_len).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options recompute_group_lengths " + Offset(ref s, ref s.recompute_group_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options keep_last_duplicate " + Offset(ref s, ref s.keep_last_duplicate).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options overwrite " + Offset(ref s, ref s.overwrite).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options uid_seed " + Offset(ref s, ref s.uid_seed).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_repair_options uid_seed_len " + Offset(ref s, ref s.uid_seed_len).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         return r;
     }
 
@@ -729,6 +744,7 @@ internal static class StructLayouts
         r.Add("siaara_scp_options " + Marshal.SizeOf<siaara_scp_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_event " + Marshal.SizeOf<siaara_scp_event>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_stats " + Marshal.SizeOf<siaara_scp_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_repair_options " + Marshal.SizeOf<siaara_repair_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         return r;
     }
 }

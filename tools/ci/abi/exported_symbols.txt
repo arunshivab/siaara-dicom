@@ -94,6 +94,7 @@ siaara_pstate_open
 siaara_pstate_reference
 siaara_pstate_string
 siaara_render_rgba8
+siaara_repair_file
 siaara_roi_stats_compute
 siaara_rtstruct_contour_points
 siaara_rtstruct_free
@@ -147,6 +148,8 @@ siaara_store_verify
 siaara_store_verify_ex
 siaara_suv_factor
 siaara_tls_available
+siaara_validate_json
+siaara_validate_memory_json
 siaara_version_string
 siaara_view_create
 siaara_view_free
