@@ -243,8 +243,9 @@ TEST_CASE("capi/view2d: zoom, rotation, flips, pan, background, interpolation, g
     o.colormap = 99;
     CHECK(siaara_frame_render(fr, &o, nullptr, 0, &need) == SIAARA_ERR_INVALID_ARGUMENT);
     CHECK(siaara_frame_render(nullptr, nullptr, nullptr, 0, &need) == SIAARA_ERR_INVALID_ARGUMENT);
-    CHECK(siaara_frame_open(f, 1, &fr) == SIAARA_ERR_INVALID_ARGUMENT);
     siaara_frame_free(fr);
+    siaara_frame* none = nullptr;
+    CHECK(siaara_frame_open(f, 1, &none) == SIAARA_ERR_INVALID_ARGUMENT && none == nullptr);
     siaara_file_free(f);
 }
 
