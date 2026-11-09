@@ -164,7 +164,9 @@ Status malformed(const char* what, std::size_t off) { return Status(Errc::Malfor
 class Decoder {
 public:
     Decoder(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out)
-        : d_(in.data()), n_(in.size()), info_(info), out_(out) {}
+        : d_(in.data()), n_(in.size()), info_(info), out_(out) {
+        std::memset(coef_al_, -1, sizeof coef_al_);
+    }
     Status run();
 
 private:
@@ -247,6 +249,9 @@ private:
     std::uint32_t sof_rows_ = 0;
     bool dnl_seen_ = false;
     int scans_done_ = 0;
+    // Progressive: the Al of the last scan that coded coefficient k (zig-zag) of each component,
+    // -1 while it is still uncoded (T.81 G.1.1.1).
+    std::int8_t coef_al_[4][64];
     int hmax_ = 1, vmax_ = 1;
     std::uint32_t mcux_ = 0, mcuy_ = 0;
     int ncomp_ = 0;
@@ -364,6 +369,7 @@ Status Decoder::parse_sof(int marker, std::size_t b, std::size_t e) {
     }
     const std::uint32_t unit = mode_ == Mode::Lossless ? 1u : 8u;
     const std::uint32_t X = info_.columns, Y = info_.rows;
+    std::uint64_t work = 0;  // component planes and coefficients, charged to the memory budget
     mcux_ = (X + unit * static_cast<std::uint32_t>(hmax_) - 1) / (unit * static_cast<std::uint32_t>(hmax_));
     mcuy_ = (Y + unit * static_cast<std::uint32_t>(vmax_) - 1) / (unit * static_cast<std::uint32_t>(vmax_));
     for (int i = 0; i < ncomp_; ++i) {
@@ -380,6 +386,10 @@ Status Decoder::parse_sof(int marker, std::size_t b, std::size_t e) {
             samples > (std::uint64_t{1} << 36))
             return Status(Errc::LimitExceeded, "JPEG: component too large", b);
         c.stride = static_cast<std::size_t>(c.bw) * unit;
+        // The plane (16-bit samples) and, for progressive frames, 64 16-bit coefficients a block.
+        work += samples * 2u * (mode_ == Mode::Progressive ? 2u : 1u);
+        if (work > info_.effective_memory_budget())
+            return Status(Errc::LimitExceeded, "JPEG: component planes exceed the memory budget", b);
         c.plane.assign(static_cast<std::size_t>(samples), 0);
         if (mode_ == Mode::Progressive)
             c.coef.assign(static_cast<std::size_t>(c.bw) * c.bh * 64, 0);
@@ -419,6 +429,20 @@ Status Decoder::parse_sos(std::size_t b, std::size_t e, Scan& s) {
         if (s.ss > s.se || s.se > 63 || (s.ss == 0 && s.se != 0) || (s.ss > 0 && s.n != 1) ||
             s.ah > 13 || s.al > 13 || (s.ah != 0 && s.al != s.ah - 1))
             return malformed("JPEG: bad progressive scan parameters", p);
+        // T.81 G.1.1.1: a first scan (Ah = 0) codes coefficients no earlier scan coded; a
+        // refinement continues exactly where the previous scan of those coefficients stopped
+        // (its Ah is that scan's Al). Without this, every repeated all-EOB scan costs a pass
+        // over every block for a few bytes of input.
+        for (int i = 0; i < s.n; ++i) {
+            std::int8_t* al = coef_al_[s.ci[i]];
+            for (int k = s.ss; k <= s.se; ++k) {
+                if (s.ah == 0 && al[k] != -1)
+                    return malformed("JPEG: progressive scan codes coefficients an earlier scan coded", p);
+                if (s.ah != 0 && al[k] != s.ah)
+                    return malformed("JPEG: successive approximation scan does not refine the previous one", p);
+            }
+            for (int k = s.ss; k <= s.se; ++k) al[k] = static_cast<std::int8_t>(s.al);
+        }
     } else if (mode_ == Mode::Lossless) {
         if (s.ss < 1 || s.ss > 7) return malformed("JPEG: bad lossless predictor", p);
         if (s.al >= precision_) return malformed("JPEG: bad point transform", p);
@@ -886,6 +910,8 @@ Status Decoder::run() {
             case 0xDE: case 0xDF: return Status(Errc::Unsupported, "JPEG: hierarchical mode not supported", b);
             case 0xF7: return Status(Errc::Unsupported, "JPEG: JPEG-LS codestream given to the JPEG decoder", b);
             case 0xDA: {
+                if (static_cast<std::uint32_t>(scans_done_) >= info_.effective_max_scans())
+                    return Status(Errc::LimitExceeded, "JPEG: more scans than FrameInfo::max_scans", b);
                 Scan s;
                 if (st = parse_sos(b, e, s); !st) return st;
                 if (mode_ == Mode::Lossless)

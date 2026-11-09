@@ -421,3 +421,37 @@ TEST_CASE("codec limits/R-050 J2K SIZ disagreement is reported before the rest i
     CHECK_EQ(st.code, Errc::Malformed);
     CHECK(st.message.find("Rows/Columns") != std::string::npos);
 }
+
+// R-011 / R-050: the caller-settable limits of FrameInfo.
+TEST_CASE("codec limits/R-011 R-050 FrameInfo max_scans and memory_budget") {
+    FrameInfo fi = gray(1024, 1024);
+    CHECK_EQ(fi.effective_max_scans(), 1000u);
+    CHECK(fi.effective_memory_budget() == (std::uint64_t{4} << 30));
+    Buf out(static_cast<std::size_t>(fi.frame_bytes()));
+    ProgJpeg j(1024, 1024);
+    j.dc(0, 2);
+    for (int al = 2; al >= 0; --al) {
+        if (al < 2) j.dc(al + 1, al);
+        for (int k = 1; k <= 63; k += 9) j.ac(k, k + 8, al == 2 ? 0 : al + 1, al);
+    }
+    j.eoi();  // 3 DC + 21 AC = 24 scans
+    CHECK(decode_jpeg(j.b, fi, out).is_ok());
+    fi.max_scans = 24;
+    CHECK(decode_jpeg(j.b, fi, out).is_ok());
+    fi.max_scans = 23;
+    CHECK_EQ(decode_jpeg(j.b, fi, out).code, Errc::LimitExceeded);
+    // Progressive planes + coefficients of 1024 x 1024 need 4 MB.
+    fi.max_scans = 0;
+    fi.memory_budget = 3u << 20;
+    CHECK_EQ(decode_jpeg(j.b, fi, out).code, Errc::LimitExceeded);
+    fi.memory_budget = 5u << 20;
+    CHECK(decode_jpeg(j.b, fi, out).is_ok());
+    // JPEG 2000: the 256 x 256 tile buffer alone is 256 KB.
+    const Buf cs = j2k_stream(256, 256, 3, 0x44, 0x44);
+    FrameInfo f2 = gray(256, 256);
+    Buf o2(static_cast<std::size_t>(f2.frame_bytes()));
+    f2.memory_budget = 128u << 10;
+    CHECK_EQ(decode_j2k(cs, f2, o2).code, Errc::LimitExceeded);
+    f2.memory_budget = 0;
+    CHECK(decode_j2k(cs, f2, o2).is_ok());
+}
