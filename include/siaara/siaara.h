@@ -267,7 +267,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_from_json(const char* utf8, 
 /* A synchronous client with one persistent HTTP connection. Not thread safe: use one per thread. */
 typedef struct siaara_web_client siaara_web_client;
 
-/* base_url: "http://host:port/path" (https is not available yet). timeout_ms applies to the
+/* base_url: "http://host:port/path" or "https://host:port/path" (https: the OS trust store, no
+ * client certificate; siaara_web_client_create_tls takes TLS options). timeout_ms applies to the
  * connect and to every network wait; 0 = default (30 s). Caller owns *out. */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create(const char* base_url, size_t len, int32_t timeout_ms,
                                                               siaara_web_client** out);
@@ -707,8 +708,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_deid_replacement_uid(const uint8_t* 
 /* TLS uses the operating system's own implementation: SChannel on Windows, Network.framework on
  * macOS, the system OpenSSL 3 (loaded at run time) on Linux. TLS 1.2 minimum, 1.3 preferred,
  * ECDHE + AEAD cipher suites only, certificate validation on by default, never a fallback to
- * plain TCP. Note: https:// base URLs are also accepted by siaara_web_client_create (OS trust
- * store, no client certificate).
+ * plain TCP. https:// base URLs are also accepted by siaara_web_client_create (OS trust store,
+ * no client certificate).
  *
  * Returns 1 when TLS can be used in this process, else 0 with the reason in
  * siaara_last_error_message() (e.g. the system OpenSSL 3 library was not found). */
@@ -1477,6 +1478,282 @@ SIAARA_API siaara_status SIAARA_CALL siaara_pstate_reference(const siaara_pstate
 /* *out = 1 when the state applies to frame frame_1based (1-based) of that instance. */
 SIAARA_API siaara_status SIAARA_CALL siaara_pstate_applies(const siaara_pstate* ps, const char* sop_instance_uid,
                                                            size_t len, uint32_t frame_1based, int32_t* out);
+
+/* ---------------------------------------------------------------- cancellation */
+/* A cancellation token for long calls (DIMSE, DICOMweb, volume build, store verify / rebuild,
+ * DICOMDIR write). siaara_cancel_set may be called from any thread while calls that use the token
+ * run; they then stop at the next safe point and return SIAARA_ERR_CANCELLED. Network calls abort
+ * their association / connection at once (A-ABORT, socket shutdown), except while a TCP connect is
+ * in progress (bounded by the connect timeout). A token stays set until siaara_cancel_reset. The
+ * token must outlive the calls that use it. */
+typedef struct siaara_cancel siaara_cancel;
+
+SIAARA_API siaara_status SIAARA_CALL siaara_cancel_create(siaara_cancel** out);
+SIAARA_API void SIAARA_CALL siaara_cancel_free(siaara_cancel* token);
+/* Thread safety: any thread, at any time. */
+SIAARA_API siaara_status SIAARA_CALL siaara_cancel_set(siaara_cancel* token);
+/* Clears the token for reuse; do not call while a call uses it. */
+SIAARA_API siaara_status SIAARA_CALL siaara_cancel_reset(siaara_cancel* token);
+/* *out = 1 when set. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_cancel_is_set(const siaara_cancel* token, int32_t* out);
+
+/* ---------------------------------------------------------------- logging */
+enum { SIAARA_LOG_DEBUG = 0, SIAARA_LOG_INFO = 1, SIAARA_LOG_WARNING = 2, SIAARA_LOG_ERROR = 3 };
+/* Receives the library's diagnostics: association and TLS events, network services, failures.
+ * contains_phi = 1 when the message may hold patient data or instance identifiers (names,
+ * IDs, SOP Instance UIDs); 0 when it holds only AE titles, addresses, statuses and error text.
+ * message is UTF-8, valid during the call only. The callback may be called from
+ * several threads at once and must not call siaara_set_log_callback. */
+typedef void (SIAARA_CALL* siaara_log_callback)(void* user, int32_t level, int32_t contains_phi, const char* message);
+/* Installs (cb NULL: removes) the process-wide log callback for messages at min_level and above.
+ * Thread safety: any thread; a call already running may still use the previous callback. */
+SIAARA_API siaara_status SIAARA_CALL siaara_set_log_callback(siaara_log_callback cb, void* user, int32_t min_level);
+
+/* ---------------------------------------------------------------- DIMSE networking (PS3.7, PS3.4) */
+/* Every SCU call opens one association to the peer, performs the operation and releases the
+ * association; calls are independent and may run on many threads at once. Return values:
+ * SIAARA_OK when the final DIMSE status is Success or Warning; SIAARA_ERR_REJECTED when the
+ * association was rejected or the operation failed (the DIMSE status is in result->status);
+ * SIAARA_ERR_CANCELLED after siaara_cancel_set, a callback asking to stop, or a Cancel status;
+ * SIAARA_ERR_NETWORK / SIAARA_ERR_TIMEOUT for transport failures. */
+typedef struct siaara_dimse_peer {
+    uint32_t struct_size;            /* set to sizeof(siaara_dimse_peer) */
+    uint32_t port;                   /* 1..65535 */
+    const char* host;                /* name or address, NUL-terminated */
+    const char* calling_ae;          /* NULL: "SIAARA_SCU" */
+    const char* called_ae;           /* NULL: "ANY-SCP" */
+    const siaara_tls_options* tls;   /* NULL: plain TCP; else TLS (never a fallback to plain TCP) */
+    int32_t connect_timeout_ms;      /* 0 = 15000 */
+    int32_t acse_timeout_ms;         /* association negotiation and release; 0 = 30000 */
+    int32_t dimse_timeout_ms;        /* each DIMSE response; 0 = 60000 */
+    uint32_t max_pdu;                /* largest PDU we accept; 0 = 65536 */
+    int32_t allow_lossy_transcode;   /* 0/1: C-STORE may code lossily when the peer accepts only that */
+    uint32_t reserved0;
+} siaara_dimse_peer;
+
+typedef struct siaara_dimse_result {
+    uint32_t struct_size;            /* set to sizeof(siaara_dimse_result) */
+    uint32_t status;                 /* last / final DIMSE status (0 = Success, 0xFE00 = Cancel) */
+    uint32_t completed;              /* sub-operations or files: done with Success */
+    uint32_t failed;
+    uint32_t warning;
+    uint32_t remaining;              /* as reported by the peer (C-MOVE / C-GET), or files left */
+    uint32_t matches;                /* C-FIND responses */
+    uint32_t current;                /* progress callbacks: index of the item just handled */
+} siaara_dimse_result;
+
+/* Progress during C-MOVE / C-GET (every pending response) and C-STORE of several files (every
+ * file). Called on the calling thread. Return 0 to continue, non-zero to cancel (C-CANCEL for
+ * retrieves; the remaining files for C-STORE). */
+typedef int32_t (SIAARA_CALL* siaara_dimse_progress_callback)(void* user, const siaara_dimse_result* progress);
+/* One C-FIND match, borrowed during the call (read it with the data set functions). Return 0 to
+ * continue, non-zero to send C-CANCEL. Called on the calling thread. */
+typedef int32_t (SIAARA_CALL* siaara_find_callback)(void* user, const siaara_dataset* match);
+
+enum {
+    SIAARA_QR_PATIENT_ROOT = 0,      /* Patient Root Query/Retrieve Information Model */
+    SIAARA_QR_STUDY_ROOT = 1,        /* Study Root Query/Retrieve Information Model */
+    SIAARA_QR_WORKLIST = 2           /* Modality Worklist (C-FIND only) */
+};
+
+/* Thread safety for every siaara_dimse_* call: any thread; the arguments are only read. cancel,
+ * callbacks and result may be NULL. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_echo(const siaara_dimse_peer* peer, siaara_cancel* cancel,
+                                                       siaara_dimse_result* result);
+/* C-FIND. identifier: the query keys, with Query/Retrieve Level (0008,0052) for Q/R models
+ * (PATIENT, STUDY, SERIES, IMAGE). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* peer, int32_t model,
+                                                       const siaara_dataset* identifier, siaara_cancel* cancel,
+                                                       siaara_find_callback cb, void* user, siaara_dimse_result* result);
+/* C-MOVE to destination_ae (NUL-terminated; the peer must know its address). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* peer, int32_t model,
+                                                       const siaara_dataset* identifier, const char* destination_ae,
+                                                       siaara_cancel* cancel, siaara_dimse_progress_callback cb,
+                                                       void* user, siaara_dimse_result* result);
+
+typedef struct siaara_get_options {
+    uint32_t struct_size;            /* set to sizeof(siaara_get_options) */
+    int32_t duplicate_policy;        /* SIAARA_DUP_*, for the store */
+    siaara_store* store;             /* received instances are added here (may be NULL) */
+    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL) */
+    const char* const* sop_classes;  /* storage SOP classes to accept; NULL: the toolkit's list */
+    uint32_t sop_class_count;
+    int32_t native_only;             /* 0/1: propose only uncompressed transfer syntaxes */
+} siaara_get_options;
+
+/* C-GET; the instances arrive on the same association. options->store or ->folder is required. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* peer, int32_t model,
+                                                      const siaara_dataset* identifier, const siaara_get_options* options,
+                                                      siaara_cancel* cancel, siaara_dimse_progress_callback cb, void* user,
+                                                      siaara_dimse_result* result);
+/* C-STORE of files over one association: one presentation context per SOP class and transfer
+ * syntax found, plus uncompressed ones, so an instance the peer does not accept as stored is
+ * transcoded (lossy only with allow_lossy_transcode). Every file is attempted; result counts
+ * them. Returns SIAARA_OK when all were stored (Success or Warning), else SIAARA_ERR_REJECTED.
+ * paths[i] has length lens[i] (lens may be NULL: NUL-terminated). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse_peer* peer, const char* const* paths,
+                                                              const size_t* lens, uint32_t count, siaara_cancel* cancel,
+                                                              siaara_dimse_progress_callback cb, void* user,
+                                                              siaara_dimse_result* result);
+/* C-STORE of one file in memory (same transcoding rules). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store(const siaara_dimse_peer* peer, const siaara_file* file,
+                                                        siaara_cancel* cancel, siaara_dimse_result* result);
+/* Storage Commitment Push Model (PS3.4 J): requests commitment of `count` instances and waits
+ * up to wait_ms (0 = 60000) for the N-EVENT-REPORT on the same association.
+ * failure_reasons (may be NULL) receives per instance 0 = committed, else the Failure Reason
+ * (0x0110 ...), or 0xFFFF when the report did not mention it. result->completed / failed count
+ * them. SIAARA_ERR_TIMEOUT when no report arrived (a peer that reports on a new association is
+ * not supported here). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit(const siaara_dimse_peer* peer, const char* const* sop_classes,
+                                                         const char* const* sop_instances, uint32_t count, int32_t wait_ms,
+                                                         siaara_cancel* cancel, uint16_t* failure_reasons,
+                                                         siaara_dimse_result* result);
+/* A Modality Worklist query identifier (PS3.4 K.6) with the usual return keys; every argument
+ * may be NULL (universal matching); date may be a range "YYYYMMDD-YYYYMMDD". Caller owns *out:
+ * use its data set with siaara_dimse_find(SIAARA_QR_WORKLIST), free with siaara_file_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_worklist_query(const char* station_ae, const char* modality, const char* date,
+                                                           const char* patient_name, const char* patient_id,
+                                                           siaara_file** out);
+
+/* ---- Storage SCP */
+typedef struct siaara_scp siaara_scp;
+
+typedef struct siaara_scp_options {
+    uint32_t struct_size;            /* set to sizeof(siaara_scp_options) */
+    uint32_t port;                   /* 0 = an ephemeral port (siaara_scp_port) */
+    const char* ae_title;            /* NULL: "SIAARA_SCP" */
+    const char* bind_address;        /* NULL: all interfaces */
+    const char* const* allowed_calling_aes; /* NULL / 0: any peer */
+    uint32_t allowed_count;
+    uint32_t max_associations;       /* 0 = 8 */
+    int32_t accept_any_called_ae;    /* 0/1: also accept associations addressed to another AE title */
+    int32_t accept_any_sop_class;    /* 0/1: store any SOP class (default: the toolkit's storage list) */
+    int32_t accept_compressed;       /* 0/1: also accept the compressed transfer syntaxes the toolkit knows */
+    int32_t duplicate_policy;        /* SIAARA_DUP_* */
+    int32_t idle_timeout_ms;         /* 0 = 300000 */
+    int32_t dimse_timeout_ms;        /* 0 = 60000 */
+    uint32_t max_pdu;                /* 0 = 65536 */
+    uint32_t reserved0;
+    const siaara_tls_options* tls;   /* NULL: plain TCP; else every connection must use TLS (needs an identity) */
+} siaara_scp_options;
+
+enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
+
+typedef struct siaara_scp_event {
+    uint32_t struct_size;            /* sizeof(siaara_scp_event) */
+    int32_t kind;                    /* SIAARA_SCP_* */
+    uint32_t dimse_status;           /* status returned to the peer */
+    int32_t outcome;                 /* SIAARA_ADD_* for SIAARA_SCP_STORED */
+    const char* calling_ae;          /* strings valid during the callback only */
+    const char* sop_class_uid;       /* "" for SIAARA_SCP_ECHO */
+    const char* sop_instance_uid;
+    const char* peer_address;
+} siaara_scp_event;
+
+/* Called after each event, from the association's thread; never concurrently for one SCP. */
+typedef void (SIAARA_CALL* siaara_scp_callback)(void* user, const siaara_scp_event* event);
+
+typedef struct siaara_scp_stats {
+    uint32_t struct_size;            /* set to sizeof(siaara_scp_stats) */
+    uint32_t reserved0;
+    uint64_t active_associations;
+    uint64_t associations_handled;
+    uint64_t associations_rejected;
+    uint64_t instances_stored;
+    uint64_t store_failures;
+    uint64_t echoes;
+    uint64_t bytes_received;         /* data set bytes of stored instances */
+} siaara_scp_stats;
+
+/* Starts a Storage SCP (and Verification SCP) that adds every received instance to `store`,
+ * which must outlive the SCP. cb may be NULL. Caller owns *out: siaara_scp_free stops it.
+ * Thread safety: the SCP runs on its own threads; the functions below may be called from any. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* options, siaara_store* store,
+                                                      siaara_scp_callback cb, void* user, siaara_scp** out);
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_port(const siaara_scp* scp, uint32_t* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp, siaara_scp_stats* out);
+/* Stops accepting, aborts running associations and waits for the threads (no callback runs
+ * afterwards). Idempotent. Do not call from the SCP callback. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp);
+SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp);
+
+/* ---------------------------------------------------------------- DICOMweb additions (PS3.18) */
+/* Parts of a DICOMweb response (multipart bodies, or one body). Immutable: any thread. */
+typedef struct siaara_web_parts siaara_web_parts;
+
+/* Attaches a cancellation token to the client (NULL detaches): siaara_cancel_set then aborts the
+ * request the client is running (every siaara_web_* call, including the older ones), and the
+ * calls below refuse to start while it is set. The token must outlive the attachment.
+ * Thread safety: as every client call (one thread at a time). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_cancel(siaara_web_client* client, siaara_cancel* token);
+/* WADO-RS metadata (application/dicom+json array) of a study, a series (instance_uid NULL) or an
+ * instance; series_uid NULL for the whole study. String buffer rules; the body stays available
+ * through siaara_web_last_response. HTTP errors as for siaara_web_qido. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_metadata(siaara_web_client* client, const char* study_uid,
+                                                              const char* series_uid, const char* instance_uid, char* buf,
+                                                              size_t cap, size_t* needed);
+/* WADO-RS frames (1-based numbers) of an instance. transfer_syntaxes (ts_count entries, may be
+ * NULL / 0: server default) lists acceptable syntaxes in preference order ("*" = as stored);
+ * each part is one frame. Caller owns *out: free with siaara_web_parts_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_frames(siaara_web_client* client, const char* study_uid,
+                                                            const char* series_uid, const char* instance_uid,
+                                                            const uint32_t* frames, uint32_t count,
+                                                            const char* const* transfer_syntaxes, uint32_t ts_count,
+                                                            siaara_web_parts** out);
+/* WADO-RS retrieve of a whole study (series_uid and instance_uid NULL), a series (instance_uid
+ * NULL) or one instance: one Part 10 stream per part. Transfer syntaxes as above. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve(siaara_web_client* client, const char* study_uid,
+                                                              const char* series_uid, const char* instance_uid,
+                                                              const char* const* transfer_syntaxes, uint32_t ts_count,
+                                                              siaara_web_parts** out);
+/* WADO-URI (PS3.18 chapter 9): content_type NULL = "application/dicom", transfer_syntax may be
+ * NULL. The body is the single part. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_uri(siaara_web_client* client, const char* study_uid,
+                                                         const char* series_uid, const char* object_uid,
+                                                         const char* content_type, const char* transfer_syntax,
+                                                         siaara_web_parts** out);
+SIAARA_API void SIAARA_CALL siaara_web_parts_free(siaara_web_parts* parts);
+SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_count(const siaara_web_parts* parts, uint32_t* out);
+/* Borrowed bytes of part `index` (valid until the parts are freed) and its Content-Type in buf
+ * (string buffer rules; buf may be NULL with cap 0). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_get(const siaara_web_parts* parts, uint32_t index,
+                                                          const uint8_t** out_data, uint64_t* out_size, char* buf,
+                                                          size_t cap, size_t* needed);
+/* Parses part `index` as a Part 10 stream. Caller owns *out. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_open_file(const siaara_web_parts* parts, uint32_t index,
+                                                                siaara_file** out);
+/* Adds every part (Part 10 streams) to a store. *added / *failed may be NULL. Returns SIAARA_OK
+ * when all were added. Thread safety: as siaara_store_add_memory. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_add_to_store(const siaara_web_parts* parts, siaara_store* store,
+                                                                   int32_t policy, uint32_t* added, uint32_t* failed);
+
+/* ---------------------------------------------------------------- cancellable long calls */
+/* Progress of a long call: (steps done, total; 0 = unknown), on the calling thread or a worker,
+ * never concurrently. Return 0 to continue, non-zero to stop (SIAARA_ERR_CANCELLED). */
+typedef int32_t (SIAARA_CALL* siaara_progress_callback)(void* user, uint64_t done, uint64_t total);
+
+/* As siaara_volume_build, with a token and progress per file read (cancel, cb may be NULL).
+ * Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_build_ex(const char* const* utf8_paths, const size_t* path_lens,
+                                                            uint32_t count, const siaara_volume_options* options,
+                                                            siaara_cancel* cancel, siaara_progress_callback cb,
+                                                            void* user, siaara_volume** out);
+/* As siaara_store_verify, with a token and progress per instance checked. A cancelled verify
+ * repairs nothing. Thread safety: as siaara_store_verify. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_verify_ex(siaara_store* store, int32_t deep, int32_t repair,
+                                                            siaara_cancel* cancel, siaara_progress_callback cb,
+                                                            void* user, siaara_store_verify_report* out);
+/* As siaara_store_rebuild, with a token and progress per file (total unknown). A cancelled
+ * rebuild leaves the index unchanged. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_rebuild_ex(siaara_store* store, siaara_cancel* cancel,
+                                                             siaara_progress_callback cb, void* user);
+/* As siaara_dicomdir_write, with a token and progress (two steps per file: read, copy). When
+ * cancelled, files already copied stay in <root>/DICOM and no DICOMDIR is written. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write_ex(const char* utf8_root, size_t root_len,
+                                                              const char* const* files, const size_t* lens, size_t count,
+                                                              const siaara_dicomdir_write_options* options,
+                                                              siaara_cancel* cancel, siaara_progress_callback cb,
+                                                              void* user, uint32_t* warnings);
 
 /* ---------------------------------------------------------------- data set additions */
 /* Appends an empty item to sequence `tag` (created with VR SQ when absent) and returns it,

@@ -372,7 +372,10 @@ Result<DicomdirWriteSummary> write_dicomdir(const std::string& utf8_root, const 
     std::unordered_map<std::string, bool> seen_uids;
 
     // ---- pass 1: read and group
+    const std::uint64_t steps = std::uint64_t{files.size()} * 2;
+    std::uint64_t step = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
+        if (opt.progress && !opt.progress(step++, steps)) return Status(Errc::Cancelled, "DICOMDIR write cancelled");
         auto bytes = io::map_file(files[i]);
         if (!bytes) return Status(bytes.error().code, "cannot read input file " + std::to_string(i));
         auto f = read_part10(*bytes);
@@ -468,6 +471,7 @@ Result<DicomdirWriteSummary> write_dicomdir(const std::string& utf8_root, const 
                 std::size_t in = 0;
                 ++sum.series;
                 for (Leaf& leaf : eg.leaves) {
+                    if (opt.progress && !opt.progress(step++, steps)) return Status(Errc::Cancelled, "DICOMDIR write cancelled");
                     leaf.file_id = {"DICOM", pdir, sdir, edir, counter_name('I', ++in)};
                     fs::path dest = root;
                     for (const auto& c : leaf.file_id) dest /= u8path(c);

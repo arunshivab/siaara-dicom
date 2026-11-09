@@ -864,21 +864,33 @@ Result<Volume> build_volume_from_paths(std::span<const std::string> paths, const
     }
     ReadOptions ro;
     ro.lenient = opt.lenient;
+    std::atomic<bool> stop{false};
+    std::mutex progress_mu;
+    std::uint64_t done = 0;
     detail::parallel_for(paths.size(), opt.threads, [&](std::uint64_t i64, unsigned) noexcept {
         const auto i = static_cast<std::size_t>(i64);  // < paths.size()
         try {
+            if (stop.load()) {
+                errors[i] = Status(Errc::Cancelled, "volume: cancelled");
+                return;
+            }
             auto f = read_file(paths[i], ro);
             if (!f) {
                 errors[i] = f.take_error();
                 return;
             }
             files[i] = std::move(f).value();
+            if (opt.progress) {
+                std::lock_guard<std::mutex> l(progress_mu);
+                if (!stop.load() && !opt.progress(++done, paths.size())) stop.store(true);
+            }
         } catch (const std::bad_alloc&) {
             errors[i] = Status(Errc::OutOfMemory, "volume: out of memory");
         } catch (...) {
             errors[i] = Status(Errc::Internal, "volume: internal error");
         }
     });
+    if (stop.load()) return Status(Errc::Cancelled, "volume: cancelled");
     for (std::size_t i = 0; i < paths.size(); ++i) {
         if (!errors[i]) {
             Status s = errors[i];

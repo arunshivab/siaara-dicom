@@ -176,6 +176,11 @@ public:
     // Re-indexes every file under data/ and every referenced file still present; writes a fresh
     // snapshot and an empty journal.
     Status rebuild();
+    // As above with progress: called with (items done, items known so far; 0 = unknown) on the
+    // calling thread; returning false stops with Errc::Cancelled and leaves the store unchanged.
+    using Progress = std::function<bool(std::uint64_t done, std::uint64_t total)>;
+    Result<VerifyReport> verify(bool deep, bool repair, const Progress& progress);
+    Status rebuild(const Progress& progress);
     Status compact();
 
     void set_callback(EventCallback cb);

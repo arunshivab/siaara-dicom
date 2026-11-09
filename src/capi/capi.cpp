@@ -1906,10 +1906,6 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, co
 #include "volume/render3d.hpp"
 #include "volume/volume.hpp"
 
-struct siaara_volume {
-    std::shared_ptr<const siaara::volume::Volume> vol;
-    siaara::capi::LiveHandle live_{};
-};
 struct siaara_view {
     siaara::volume::View view;
     siaara::capi::LiveHandle live_{};

@@ -1147,16 +1147,21 @@ struct Store::Impl {
     }
 
     // Builds a state from every file under data/ plus the referenced files of `old`.
-    State scan_state(const State& old) {
+    State scan_state(const State& old, const Store::Progress* progress = nullptr, bool* stopped = nullptr) {
         State fresh;
         fresh.begin_bulk();
         std::error_code ec;
         const auto opts = fs::directory_options::skip_permission_denied;
+        std::uint64_t done = 0;
         for (fs::recursive_directory_iterator it(data_dir, opts, ec), end; !ec && it != end; it.increment(ec)) {
             std::error_code ec2;
             if (!it->is_regular_file(ec2)) continue;
             const fs::path& p = it->path();
             if (p.extension() != ".dcm") continue;
+            if (progress && *progress && !(*progress)(done++, 0)) {
+                *stopped = true;
+                return fresh;
+            }
             IndexRecord r;
             if (!extract_index_file(to_utf8(p), r) || r[Str::SopInstanceUid].empty()) continue;
             r[Str::FilePath] = rel_generic(p, root);
@@ -1549,7 +1554,9 @@ Result<std::size_t> Store::move_to(Store& dest, Level level, const std::string& 
     return n;
 }
 
-Result<VerifyReport> Store::verify(bool deep, bool repair) {
+Result<VerifyReport> Store::verify(bool deep, bool repair) { return verify(deep, repair, Progress()); }
+
+Result<VerifyReport> Store::verify(bool deep, bool repair, const Progress& progress) {
     VerifyReport rep;
     struct Item {
         std::string uid;
@@ -1572,6 +1579,7 @@ Result<VerifyReport> Store::verify(bool deep, bool repair) {
     std::vector<IndexRecord> reindex;  // size changed but the content is the same instance
     std::error_code ec;
     for (const auto& it : items) {
+        if (progress && !progress(rep.checked, items.size())) return Status(Errc::Cancelled, "store: verify cancelled");
         ++rep.checked;
         const auto sz = fs::file_size(it.path, ec);
         if (ec) {
@@ -1641,14 +1649,18 @@ Result<VerifyReport> Store::verify(bool deep, bool repair) {
     return rep;
 }
 
-Status Store::rebuild() {
+Status Store::rebuild() { return rebuild(Progress()); }
+
+Status Store::rebuild(const Progress& progress) {
     {
         std::lock_guard<std::mutex> w(impl_->writer);
         State fresh;
+        bool stopped = false;
         {
             std::shared_lock<std::shared_mutex> g(impl_->rw);
-            fresh = impl_->scan_state(impl_->st);
+            fresh = impl_->scan_state(impl_->st, &progress, &stopped);
         }
+        if (stopped) return Status(Errc::Cancelled, "store: rebuild cancelled");
         {
             std::unique_lock<std::shared_mutex> g(impl_->rw);
             impl_->st = std::move(fresh);

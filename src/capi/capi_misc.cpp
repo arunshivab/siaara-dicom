@@ -4,9 +4,15 @@
 #include <new>
 #include <string>
 
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 #include "capi/capi_internal.hpp"
 #include "charset/charset.hpp"
 #include "core/dataset.hpp"
+#include "store/dicomdir.hpp"
+#include "volume/volume.hpp"
 
 namespace {
 
@@ -14,6 +20,7 @@ using siaara::Errc;
 namespace capi = siaara::capi;
 
 siaara_status fail(Errc c, std::string_view m) noexcept { return capi::set_error(c, m); }
+siaara_status fail(const siaara::Status& s) noexcept { return capi::set_error(s); }
 siaara_status ok() noexcept { return capi::clear_error(); }
 
 template <class F>
@@ -102,6 +109,157 @@ SIAARA_API siaara_status SIAARA_CALL siaara_debug_live_handles(int64_t* out) {
     if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
     *out = capi::live_handle_counter().load(std::memory_order_relaxed);
     return ok();
+}
+
+}  // extern "C"
+
+// ---------------------------------------------------------------- cancellable long calls
+namespace {
+
+// A C++ progress function that honours the token and the C callback. Thread-unsafe by itself:
+// the C++ callers never call it concurrently.
+std::function<bool(std::uint64_t, std::uint64_t)> progress_fn(siaara_cancel* cancel, siaara_progress_callback cb, void* user,
+                                                              bool& stopped_by_callback) {
+    if (!cancel && !cb) return {};
+    return [cancel, cb, user, &stopped_by_callback](std::uint64_t done, std::uint64_t total) {
+        if (cancel && cancel->is_set()) return false;
+        if (cb && cb(user, done, total) != 0) {
+            stopped_by_callback = true;
+            return false;
+        }
+        return true;
+    };
+}
+
+siaara_status cancel_result(const siaara::Status& s, siaara_cancel* cancel, bool by_callback) {
+    if (s.code == Errc::Cancelled || (cancel && cancel->is_set()))
+        return fail(Errc::Cancelled, by_callback ? "stopped by the progress callback" : "cancelled");
+    return fail(s);
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_build_ex(const char* const* utf8_paths, const size_t* path_lens,
+                                                            uint32_t count, const siaara_volume_options* options,
+                                                            siaara_cancel* cancel, siaara_progress_callback cb,
+                                                            void* user, siaara_volume** out) {
+    return guarded([&]() -> siaara_status {
+        namespace vol = siaara::volume;
+        if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
+        *out = nullptr;
+        if (!utf8_paths || count == 0) return fail(Errc::InvalidArgument, "no input paths");
+        if (options && options->struct_size < sizeof(siaara_volume_options))
+            return fail(Errc::InvalidArgument, "options->struct_size is too small");
+        if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+        vol::VolumeOptions o;
+        if (options) {
+            switch (options->voxel_type) {
+                case SIAARA_VOXEL_AUTO: o.type = vol::VoxelTypeRequest::Auto; break;
+                case SIAARA_VOXEL_INT16: o.type = vol::VoxelTypeRequest::Int16; break;
+                case SIAARA_VOXEL_FLOAT32: o.type = vol::VoxelTypeRequest::Float32; break;
+                default: return fail(Errc::InvalidArgument, "unknown voxel_type");
+            }
+            o.phase = options->phase;
+            o.threads = options->threads;
+            o.deshear_tilt = options->deshear_tilt != 0;
+            o.strict = options->strict != 0;
+            if (options->memory_budget) o.memory_budget = options->memory_budget;
+            if (options->spacing_tolerance != 0.0) {
+                if (!std::isfinite(options->spacing_tolerance) || options->spacing_tolerance < 0.0)
+                    return fail(Errc::InvalidArgument, "bad spacing_tolerance");
+                o.spacing_tolerance = options->spacing_tolerance;
+            }
+        }
+        bool by_cb = false;
+        o.progress = progress_fn(cancel, cb, user, by_cb);
+        std::vector<std::string> paths;
+        paths.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!utf8_paths[i]) return fail(Errc::InvalidArgument, "path is NULL");
+            paths.emplace_back(utf8_paths[i], path_lens ? path_lens[i] : std::strlen(utf8_paths[i]));
+        }
+        auto v = vol::build_volume_from_paths(paths, o);
+        if (!v) return cancel_result(v.error(), cancel, by_cb);
+        if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+        auto h = std::make_unique<siaara_volume>();
+        h->vol = std::make_shared<const vol::Volume>(std::move(v).value());
+        *out = h.release();
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_verify_ex(siaara_store* store, int32_t deep, int32_t repair,
+                                                            siaara_cancel* cancel, siaara_progress_callback cb,
+                                                            void* user, siaara_store_verify_report* out) {
+    return guarded([&]() -> siaara_status {
+        if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
+        if (out && out->struct_size < sizeof(siaara_store_verify_report))
+            return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+        bool by_cb = false;
+        auto r = store->store->verify(deep != 0, repair != 0, progress_fn(cancel, cb, user, by_cb));
+        if (!r) return cancel_result(r.error(), cancel, by_cb);
+        if (out) {
+            auto c = [](std::size_t v) { return static_cast<uint32_t>(std::min<std::size_t>(v, UINT32_MAX)); };
+            out->checked = c(r->checked);
+            out->missing = c(r->missing);
+            out->size_mismatch = c(r->size_mismatch);
+            out->content_mismatch = c(r->content_mismatch);
+            out->orphans = c(r->orphans);
+            out->repaired = c(r->repaired);
+            out->reserved0 = 0;
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_rebuild_ex(siaara_store* store, siaara_cancel* cancel,
+                                                             siaara_progress_callback cb, void* user) {
+    return guarded([&]() -> siaara_status {
+        if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
+        if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+        bool by_cb = false;
+        if (siaara::Status s = store->store->rebuild(progress_fn(cancel, cb, user, by_cb)); !s)
+            return cancel_result(s, cancel, by_cb);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write_ex(const char* root, size_t root_len, const char* const* files,
+                                                              const size_t* lens, size_t count,
+                                                              const siaara_dicomdir_write_options* options,
+                                                              siaara_cancel* cancel, siaara_progress_callback cb,
+                                                              void* user, uint32_t* warnings) {
+    return guarded([&]() -> siaara_status {
+        namespace st = siaara::store;
+        if (!root || (count && (!files || !lens))) return fail(Errc::InvalidArgument, "root, files and lens must be set");
+        if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+        st::DicomdirWriteOptions o;
+        if (options) {
+            if (options->struct_size < sizeof(siaara_dicomdir_write_options))
+                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            if (options->profile != SIAARA_PROFILE_GENERAL_CD && options->profile != SIAARA_PROFILE_GENERAL_USB)
+                return fail(Errc::InvalidArgument, "unknown profile");
+            o.profile = options->profile == SIAARA_PROFILE_GENERAL_USB ? st::MediaProfile::GeneralUsb : st::MediaProfile::GeneralCd;
+            o.overwrite = options->overwrite != 0;
+            o.allow_any_transfer_syntax = options->allow_any_transfer_syntax != 0;
+            o.file_set_id = options->file_set_id ? std::string(options->file_set_id) : std::string();
+        }
+        bool by_cb = false;
+        o.progress = progress_fn(cancel, cb, user, by_cb);
+        std::vector<std::string> paths;
+        paths.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (!files[i]) return fail(Errc::InvalidArgument, "file path is NULL");
+            paths.emplace_back(files[i], lens[i]);
+        }
+        auto r = st::write_dicomdir(std::string(root, root_len), paths, o);
+        if (!r) return cancel_result(r.error(), cancel, by_cb);
+        if (warnings) *warnings = static_cast<uint32_t>(r->warnings.size());
+        return ok();
+    });
 }
 
 }  // extern "C"

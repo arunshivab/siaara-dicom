@@ -98,6 +98,11 @@ public:
     // STOW-RS: Part 10 streams. `study` empty posts to /studies.
     Result<StowResult> store(const std::vector<std::string>& part10, std::string_view study = {});
 
+    // Aborts a request running in another thread (its connection is shut down; the call fails).
+    void interrupt() noexcept {
+        if (http_) http_->interrupt();
+    }
+
     // A raw request below the base path (path starts with '/'); for anything not covered above.
     Result<http::Response> request(std::string_view method, std::string_view path_and_query,
                                    http::Headers headers = {}, std::string body = {});
