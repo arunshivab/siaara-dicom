@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "codec/codec.hpp"
+#include "codec/deflate.hpp"
 
 namespace siaara::image {
 
@@ -49,6 +50,7 @@ bool is_supported_codec(Codec c) noexcept {
     switch (c) {
         case Codec::None: case Codec::Rle: case Codec::JpegBaseline: case Codec::JpegExtended:
         case Codec::JpegLossless: case Codec::JpegLs: case Codec::Jpeg2000: case Codec::Htj2k:
+        case Codec::DeflateFrame:
             return true;
         default:
             return false;
@@ -267,6 +269,8 @@ Status FrameReader::index_fragments(const Dataset& ds) {
                                            " frames");
     if (codec_ == Codec::Rle)  // PS3.5 G.1: each frame is encoded in one and only one fragment
         return Status(Errc::Malformed, "frames: RLE requires exactly one fragment per frame");
+    if (codec_ == Codec::DeflateFrame)  // PS3.5 A.4.13: one and only one fragment per frame
+        return Status(Errc::Malformed, "frames: Deflated Image Frame Compression requires one fragment per frame");
     if (codec_ == Codec::None) {
         // Encapsulated Uncompressed: frames have a known size; accumulate fragments to that size.
         std::uint64_t acc = 0;
@@ -400,6 +404,22 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
             std::memcpy(out.data(), data.data(), out.size());
             return Status::ok();
         case Codec::Rle: st = codec::decode_rle(data, fi, out); break;
+        case Codec::DeflateFrame: {
+            // PS3.5 8.2.16 / A.4.13: the frame's native bytes as one raw DEFLATE stream (RFC 1951),
+            // frame starting on a byte boundary; a trailing NUL pads odd streams.
+            std::vector<std::uint8_t> plain;
+            try {
+                plain.reserve(out.size());
+            } catch (const std::bad_alloc&) {
+                return Status(Errc::OutOfMemory, "frames: cannot allocate the inflated frame");
+            }
+            // Allow a padding byte (even-length native frames) beyond the frame, nothing more.
+            st = codec::inflate_raw(data.data(), data.size(), out.size() + 1, plain);
+            if (st && plain.size() < out.size())
+                st = Status(Errc::Truncated, "deflated frame is too short");
+            if (st) std::memcpy(out.data(), plain.data(), out.size());
+            break;
+        }
         case Codec::JpegBaseline: case Codec::JpegExtended: case Codec::JpegLossless:
             st = codec::decode_jpeg(data, fi, out);
             break;

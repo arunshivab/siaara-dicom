@@ -25,8 +25,13 @@ verbose = "-v" in sys.argv[3:]
 lib = ctypes.CDLL(os.path.abspath(libpath))
 lib.siaara_file_open.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
 lib.siaara_file_open.restype = ctypes.c_int32
-lib.siaara_file_save_ex.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_void_p]
-lib.siaara_file_save_ex.restype = ctypes.c_int32
+if hasattr(lib, "siaara_file_save_ex"):
+    lib.siaara_file_save_ex.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_void_p]
+    lib.siaara_file_save_ex.restype = ctypes.c_int32
+    save = lambda f, p: lib.siaara_file_save_ex(f, p, len(p), None, None)
+else:  # older library: siaara_file_save (same defaults)
+    lib.siaara_file_save.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p]
+    save = lambda f, p: lib.siaara_file_save(f, p, len(p), None)
 lib.siaara_file_free.argtypes = [ctypes.c_void_p]
 lib.siaara_file_warning_count.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
 lib.siaara_file_transfer_syntax.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
@@ -57,7 +62,7 @@ for p in paths:
     need = ctypes.c_size_t()
     lib.siaara_file_transfer_syntax(f, tsbuf, 128, ctypes.byref(need))
     ts = tsbuf.value.decode()
-    rc = lib.siaara_file_save_ex(f, out_path, len(out_path), None, None)
+    rc = save(f, out_path)
     msg = lib.siaara_last_error_message().decode(errors="replace") if rc else ""
     lib.siaara_file_free(f)
     if rc != 0:

@@ -8,6 +8,7 @@ namespace siaara {
 enum class Codec {
     None,           // native (uncompressed) pixel data
     Deflate,        // whole data set deflated
+    DeflateFrame,   // Deflated Image Frame Compression: each frame deflated separately (PS3.5 A.4.13)
     Rle,
     JpegBaseline,   // process 1
     JpegExtended,   // processes 2 and 4
