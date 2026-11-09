@@ -16,9 +16,9 @@
 //
 // Identities: PKCS#12 files or a certificate in the "MY" store selected by thumbprint. A PKCS#12
 // key is imported as an ephemeral CNG key (PKCS12_NO_PERSIST_KEY | PKCS12_ALWAYS_CNG_KSP) that
-// is never written to the user's key store. Only if SChannel cannot use such a key for a server
-// credential is it imported persistently (with a logged warning) and deleted again when the
-// context is released. PEM private keys are not supported by this backend.
+// is never written to the user's key store. Only if SChannel cannot use such a key for the
+// credential (client credentials, and server credentials on some versions) is it imported
+// persistently (with a logged warning) and deleted again when the context is released. PEM private keys are not supported by this backend.
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -303,9 +303,13 @@ private:
 
 void SchContext::release_identity() noexcept {
     if (cert_) {
-        if (imported_key_) delete_imported_key(cert_);
         ::CertFreeCertificateContext(cert_);
         cert_ = nullptr;
+    }
+    if (imported_key_ && id_store_) {
+        // Every key a persistent PKCS#12 import wrote to the key store, not only the leaf's.
+        PCCERT_CONTEXT c = nullptr;
+        while ((c = ::CertEnumCertificatesInStore(id_store_, c)) != nullptr) delete_imported_key(c);
     }
     imported_key_ = false;
     if (id_store_) {
@@ -343,6 +347,7 @@ Status SchContext::load_identity(bool persist_key) {
         if (!id_store_)
             return Status(Errc::InvalidArgument, "cannot import the PKCS#12 file " + id.pkcs12_file +
                                                      " (wrong password?), error " + hex32(err));
+        imported_key_ = persist_key;  // from here on release_identity() deletes what was imported
         // The leaf: a certificate with a private key.
         PCCERT_CONTEXT c = nullptr;
         while ((c = ::CertEnumCertificatesInStore(id_store_, c)) != nullptr) {
@@ -357,7 +362,6 @@ Status SchContext::load_identity(bool persist_key) {
             }
         }
         if (!cert_) return Status(Errc::InvalidArgument, "the PKCS#12 file holds no certificate with a private key");
-        imported_key_ = persist_key;
         return Status::ok();
     }
     if (!id.windows_thumbprint.empty()) {
@@ -474,9 +478,10 @@ Status SchContext::init() {
     if (Status s = load_identity(false); !s) return s;
     if (Status s = load_trust(); !s) return s;
     Status a = acquire();
-    if (!a && role_ == Role::Server && !settings_.identity.pkcs12_file.empty()) {
-        // Some SChannel versions cannot use an ephemeral key for a server credential: import the
-        // key persistently instead (deleted again with the context) and say so.
+    if (!a && !settings_.identity.pkcs12_file.empty()) {
+        // SChannel cannot use an ephemeral key for a client credential (SEC_E_NO_CREDENTIALS), and
+        // some versions not for a server credential either: import the key persistently instead
+        // (deleted again with the context) and say so.
         release_identity();
         if (Status s = load_identity(true); !s) return s;
         tls_log(settings_, "WARNING: TLS: SChannel refused the ephemeral PKCS#12 key (" + a.message +

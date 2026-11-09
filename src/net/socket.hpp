@@ -36,6 +36,9 @@ public:
     virtual Result<bool> wait_readable(int timeout_ms) = 0;
     // Shuts down both directions; may be called from another thread to wake a blocked reader.
     virtual void shutdown() noexcept = 0;
+    // Ends the sending direction only (TCP FIN after queued data), so a peer that is still
+    // sending sees the end of the response before the handle is released. Default: no-op.
+    virtual void shutdown_send() noexcept {}
     // Releases the OS handle. Must not race with reads/writes on other threads.
     virtual void close() noexcept = 0;
     virtual bool is_open() const noexcept = 0;
