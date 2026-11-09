@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -42,9 +43,18 @@ public:
     virtual std::string peer_address() const = 0;
 };
 
-// Reads exactly `n` bytes; each underlying read waits at most `timeout_ms` for progress.
+// Reads exactly `n` bytes within `timeout_ms` in total: an absolute deadline for the whole read, so
+// a peer dripping bytes cannot stretch it (NET-03). Errc::Timeout when the deadline passes first.
 // Orderly close before `n` bytes yields Errc::NetworkError with message "connection closed".
 Status read_exact(Transport& t, std::uint8_t* buf, std::size_t n, int timeout_ms);
+
+using Deadline = std::chrono::steady_clock::time_point;
+// now + timeout_ms (a negative timeout counts as 0).
+Deadline deadline_after(int timeout_ms) noexcept;
+// Milliseconds left until `d`, clamped to [0, INT_MAX].
+int remaining_ms(Deadline d) noexcept;
+// read_exact against an absolute deadline shared with other reads.
+Status read_exact_until(Transport& t, std::uint8_t* buf, std::size_t n, Deadline deadline);
 
 // Opens a TCP connection to host:port (IPv4 or IPv6, numeric or name) within `timeout_ms`.
 // Name resolution uses the OS resolver, which has no portable timeout.
