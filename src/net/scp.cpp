@@ -451,9 +451,9 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         if (!cs) {
             log("C-MOVE sub-association to " + dest->ae_title + " failed: " + cs.message);
             Command rsp = make_response(m.command, total ? dimse_status::OutOfResourcesSubOps : dimse_status::Success);
-            rsp.completed = 0;
+            rsp.completed = std::uint16_t{0};
             rsp.failed = total;
-            rsp.warning = 0;
+            rsp.warning = std::uint16_t{0};
             return send_dimse(c.a, pcid, rsp);
         }
         if (!register_assoc(sub->association())) {
