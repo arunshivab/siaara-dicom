@@ -157,6 +157,10 @@ void expect_close(const char* what, const Pair& p, int tol, double max_mean, dou
     if (!p.gpu_used) return;
     const Diff d = compare(p.cpu, p.gpu, tol);
     report(what, d);
+    if (d.mean > max_mean || static_cast<double>(d.over) > outliers * static_cast<double>(d.channels) || d.max > tol_out)
+        std::printf("  OUT OF TOLERANCE: %s on %s: max %d (limit %d), mean %.4f (limit %.4f), over %d: %zu (limit %.0f)\n", what,
+                    gpu::acquire() ? gpu::acquire()->info().name.c_str() : "?", d.max, tol_out, d.mean, max_mean, tol, d.over,
+                    outliers * static_cast<double>(d.channels));
     CHECK(distinct(p.cpu) >= 16);
     CHECK(d.mean <= max_mean);
     CHECK(static_cast<double>(d.over) <= outliers * static_cast<double>(d.channels));
@@ -263,37 +267,32 @@ TEST_CASE("gpu/fallback: missing Vulkan loader falls back to the CPU renderer") 
         cpu.assign(64 * 48 * 4, 0);
         CHECK(v->render_rgba8(cpu));
     }
+    // No device of any API: a missing Vulkan loader, and Metal switched off (Apple).
     gpu::testing::set_vulkan_loader("libvulkan-siaara-missing.so.1");
+    gpu::testing::set_metal_enabled(false);
     gpu::testing::reset();
-#if !defined(__APPLE__)
     CHECK(gpu::devices().empty());
     CHECK(gpu::acquire() == nullptr);
     CHECK(!gpu::unavailable_reason().empty());
     std::printf("  reason: %s\n", gpu::unavailable_reason().c_str());
-#endif
     {
         auto v = View::create(vol, 64, 48);
         REQUIRE(v);
-#if !defined(__APPLE__)
         const Status s = v->set_backend(RenderBackend::Gpu);
         CHECK(!s);
         CHECK(s.code == Errc::Unsupported);
-#endif
         CHECK(v->set_backend(RenderBackend::Auto));
         other.assign(cpu.size(), 1);
         CHECK(v->render_rgba8(other));
-#if !defined(__APPLE__)
         CHECK(v->last_backend() == RenderBackend::Cpu);
-#endif
         CHECK(other == cpu);
     }
     // Names with a path are refused (never loaded from a directory).
     gpu::testing::set_vulkan_loader("./libvulkan.so.1");
     gpu::testing::reset();
-#if !defined(__APPLE__)
     CHECK(gpu::acquire() == nullptr);
-#endif
     gpu::testing::set_vulkan_loader(nullptr);
+    gpu::testing::set_metal_enabled(true);
     gpu::testing::reset();
 }
 
@@ -371,7 +370,7 @@ TEST_CASE("gpu/mpr: nearest is exact for int16 (grid planes and oblique), float3
     }
 }
 
-TEST_CASE("gpu/mpr: trilinear (hardware filter and 8-fetch path) within tolerance") {
+TEST_CASE("gpu/mpr: trilinear (exact 8-fetch path for MPR) within 1 level") {
     if (!gpu_present("mpr trilinear")) return;
     for (int t = 0; t < 2; ++t) {
         auto vol = ct_volume(t == 0 ? VoxelType::Int16 : VoxelType::Float32, true);
@@ -388,9 +387,10 @@ TEST_CASE("gpu/mpr: trilinear (hardware filter and 8-fetch path) within toleranc
             gpu::testing::force_manual_filtering(manual == 1);
             auto p = render_both(*v);
             char what[96];
-            std::snprintf(what, sizeof what, "trilinear %s %s", t == 0 ? "int16" : "float32", manual ? "8-fetch" : "hardware");
-            if (manual) expect_close(what, p, 1, 0.01, 0.002, 2);
-            else expect_close(what, p, 4, 0.5, 0.01, 12);
+            // MPR always samples through 8 fetches (gpu_view.cpp), whatever the texture's filter.
+            std::snprintf(what, sizeof what, "trilinear %s %s", t == 0 ? "int16" : "float32",
+                          manual ? "8-fetch forced" : "default (8-fetch for MPR)");
+            expect_close(what, p, 1, 0.01, 0.002, 2);
         }
         gpu::testing::force_manual_filtering(false);
     }
@@ -414,7 +414,7 @@ TEST_CASE("gpu/mpr: thick slab MIP, MinIP and average") {
             auto p = render_both(*v);
             char what[96];
             std::snprintf(what, sizeof what, "%s %s", names[m], interp ? "trilinear" : "nearest");
-            if (interp) expect_close(what, p, 4, 0.5, 0.01, 12);
+            if (interp) expect_close(what, p, 1, 0.05, 0.002, 2);
             else if (m == 2) expect_close(what, p, 1, 0.05, 0.002, 2);  // float sum order
             else expect_close(what, p, 0, 0.01, 0.001, 255);
         }
@@ -446,7 +446,7 @@ TEST_CASE("gpu/mpr: two-layer fusion (on the fly and pre-resampled)") {
         st.opacity = 0.45;
         CHECK(v->set_fusion_layer(pet, st, pre == 1));
         auto p = render_both(*v);
-        expect_close(pre ? "fusion PET over CT, pre-resampled" : "fusion PET over CT, on the fly", p, 6, 0.6, 0.02, 40);
+        expect_close(pre ? "fusion PET over CT, pre-resampled" : "fusion PET over CT, on the fly", p, 1, 0.05, 0.002, 3);
         CHECK(v->set_mode(ViewMode::Mpr, Interpolation::Nearest));
         p = render_both(*v);
         // Nearest: the int16 base is exact; the float overlay's window is evaluated in float.

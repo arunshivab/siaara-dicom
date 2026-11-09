@@ -61,6 +61,8 @@ private:
         std::vector<std::uint32_t>& p;
         std::vector<std::uint32_t>& d;
         bool finite = true;
+        // Trilinear from 8 texel fetches regardless of the texture's hardware filter (MPR family).
+        bool exact_filter = false;
         void u(std::uint32_t w, std::uint32_t x) { p[w] = x; }
         void f(std::uint32_t w, double x) {
             const auto fx = static_cast<float>(x);
@@ -114,7 +116,7 @@ Status GpuAccess::layer(const View& v, Packer& pk, std::uint32_t L, const Volume
     pk.f(L + P::LScale, tex.encoding.scale);
     pk.f(L + P::LBias, tex.encoding.bias);
     std::uint32_t fl = 0;
-    if (!tex.encoding.hardware_filter || gpu::testing::manual_filtering_forced()) fl |= P::kLayerManual;
+    if (!tex.encoding.hardware_filter || pk.exact_filter || gpu::testing::manual_filtering_forced()) fl |= P::kLayerManual;
     if (tex.encoding.integer) fl |= P::kLayerInteger;
     pk.u(L + P::LFlags, fl);
     double a = 0.0, b = 0.0;
@@ -213,6 +215,13 @@ Status GpuAccess::render(const View& v, gpu::ViewGpu& g, std::span<std::uint8_t>
     std::uint32_t flags = 0;
     P::Kernel kernel = P::KernelMpr;
     if (!vr) {
+        // MPR, slabs and fusion take one trilinear sample per pixel (per slab step), so they always
+        // use the exact 8-fetch path: hardware filters weight with reduced fixed-point precision
+        // (Apple GPUs measurably so), which can move a fused overlay value across the window
+        // bottom and flip a pixel between transparent and coloured. Ray casting keeps the
+        // hardware filter where the format supports it (many samples per pixel; differences stay
+        // within a few levels).
+        pk.exact_filter = true;
         if (v.interp_ == Interpolation::Linear) flags |= P::kFlagLinear;
         const Vec3 s0 = screen_point(0.0, 0.0), du = v.right_ * v.ps_, dv = v.down_ * v.ps_;
         if (Status s = layer(v, pk, P::L0, *v.base_, v.bt_, v.base_style_, *g.base_tex, g.lut[0], true, s0, du, dv); !s) return s;

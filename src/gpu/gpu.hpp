@@ -123,6 +123,9 @@ void set_vulkan_loader(const char* name);
 void reset();
 // Forces trilinear sampling through 8 texel fetches instead of the hardware filter.
 void force_manual_filtering(bool on);
+// Disables (false) or re-enables the Metal backend for the next probe (Apple; no effect elsewhere).
+// Takes effect after reset().
+void set_metal_enabled(bool on);
 bool manual_filtering_forced();
 // Vulkan / Metal objects currently alive (resource-leak checks).
 std::int64_t live_objects();
