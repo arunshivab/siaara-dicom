@@ -26,7 +26,7 @@ FrameInfo frame(std::uint32_t rows, std::uint32_t cols, std::uint16_t spp, std::
 }
 
 Buf pattern(const FrameInfo& fi, int kind, std::uint64_t seed) {
-    Buf b(static_cast<std::size_t>(fi.frame_bytes()));
+    Buf b(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
     std::mt19937_64 rng(seed);
     for (std::size_t i = 0; i < b.size(); ++i) {
         switch (kind) {
@@ -160,7 +160,7 @@ TEST_CASE("rle: header must agree with the frame") {
     const FrameInfo fi = frame(4, 4, 1, 16);
     Buf good;
     REQUIRE(encode_rle(pattern(fi, 2, 9), fi, EncodeParams{}, good).is_ok());
-    Buf out(static_cast<std::size_t>(fi.frame_bytes()));
+    Buf out(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
     REQUIRE(decode_rle(good, fi, out).is_ok());
 
     Buf z = good;
@@ -194,7 +194,7 @@ TEST_CASE("rle: short segments and short output fail") {
     const FrameInfo fi = frame(8, 8, 3, 8);
     Buf z;
     REQUIRE(encode_rle(pattern(fi, 0, 5), fi, EncodeParams{}, z).is_ok());
-    Buf out(static_cast<std::size_t>(fi.frame_bytes()));
+    Buf out(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
     int accepted = 0;
     for (std::size_t n = 64; n < z.size() - 1; ++n) {  // the last byte may be padding
         if (decode_rle(Buf(z.begin(), z.begin() + static_cast<std::ptrdiff_t>(n)), fi, out)) ++accepted;
@@ -236,14 +236,14 @@ TEST_CASE("rle: corrupted streams never crash or write outside the output") {
     for (int iter = 0; iter < 2000; ++iter) {
         const auto bits = static_cast<std::uint16_t>(iter % 3 == 0 ? 8 : iter % 3 == 1 ? 16 : 32);
         const auto spp = static_cast<std::uint16_t>((iter & 4) ? 3 : 1);
-        const FrameInfo fi = frame(1 + static_cast<std::uint32_t>(rng() % 9), 1 + static_cast<std::uint32_t>(rng() % 40),
+        const FrameInfo fi = frame(1 + static_cast<std::uint32_t>(static_cast<std::size_t>(rng()) % 9), 1 + static_cast<std::uint32_t>(static_cast<std::size_t>(rng()) % 40),
                                    spp, bits, (iter & 8) != 0);
         Buf z;
-        REQUIRE(encode_rle(pattern(fi, static_cast<int>(rng() % 4), rng()), fi, EncodeParams{}, z).is_ok());
-        const int flips = 1 + static_cast<int>(rng() % 6);
-        for (int f = 0; f < flips; ++f) z[rng() % z.size()] ^= static_cast<std::uint8_t>(1u << (rng() % 8));
-        if (rng() % 4 == 0) z.resize(rng() % (z.size() + 1));
-        const std::size_t n = static_cast<std::size_t>(fi.frame_bytes());
+        REQUIRE(encode_rle(pattern(fi, static_cast<int>(static_cast<std::size_t>(rng()) % 4), rng()), fi, EncodeParams{}, z).is_ok());
+        const int flips = 1 + static_cast<int>(static_cast<std::size_t>(rng()) % 6);
+        for (int f = 0; f < flips; ++f) z[static_cast<std::size_t>(static_cast<std::size_t>(rng()) % z.size())] ^= static_cast<std::uint8_t>(1u << (static_cast<std::size_t>(rng()) % 8));
+        if (static_cast<std::size_t>(rng()) % 4 == 0) z.resize(static_cast<std::size_t>(rng()) % (z.size() + 1));
+        const std::size_t n = static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes()));
         Buf guard(n + 64, 0xA5);
         (void)decode_rle(z, fi, std::span<std::uint8_t>(guard.data() + 32, n));
         for (std::size_t i = 0; i < 32; ++i)

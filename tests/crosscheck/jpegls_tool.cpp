@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
         if (Status s = jpegls::probe(in, si); !s) return fail(s);
         const bool is_signed = argc >= 5 && std::strcmp(argv[4], "--signed") == 0;
         const FrameInfo fi = info_from(si, is_signed);
-        std::vector<std::uint8_t> out(fi.frame_bytes());
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(fi.frame_bytes()));
         if (Status s = decode_jpegls(in, fi, out); !s) return fail(s);
         if (!write_file(argv[3], out)) return 2;
         std::printf("%u %u %d %d %d %d %d\n", si.width, si.height, si.components, si.precision, si.near,
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
         jpegls::StreamInfo si;
         if (Status s = jpegls::probe(in, si); !s) return fail(s);
         const FrameInfo fi = info_from(si, false);
-        std::vector<std::uint8_t> out(fi.frame_bytes());
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(fi.frame_bytes()));
         const int iters = std::max(1, std::atoi(argv[3]));
         std::vector<double> ms;
         for (int i = 0; i < iters; ++i) {

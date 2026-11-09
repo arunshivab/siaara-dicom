@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> in;
         if (!read_file(argv[2], in)) return 3;
         const FrameInfo fi = parse_info(argv + 4);
-        std::vector<std::uint8_t> out(static_cast<std::size_t>(fi.frame_bytes()));
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
         const siaara::Status st = decode_jpeg(in, fi, out);
         if (!st) {
             std::fprintf(stderr, "decode failed: %s (offset %llu)\n", st.message.c_str(),
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
         if (!read_file(argv[2], in)) return 3;
         const FrameInfo fi = parse_info(argv + 3);
         const long iters = num(argv[10]);
-        std::vector<std::uint8_t> out(static_cast<std::size_t>(fi.frame_bytes()));
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
         double best = 1e9;
         for (long i = 0; i < iters; ++i) {
             const auto t0 = std::chrono::steady_clock::now();

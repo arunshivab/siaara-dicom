@@ -12,6 +12,7 @@
 #include <cstring>
 #include <iterator>
 #include <new>
+#include <stdexcept>
 #include <string>
 
 #include "core/types.hpp"

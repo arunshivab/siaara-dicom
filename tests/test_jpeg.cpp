@@ -1,4 +1,5 @@
 // Tests for the JPEG codec family (src/codec/jpeg*).
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -34,7 +35,7 @@ FrameInfo frame(std::uint32_t rows, std::uint32_t cols, int spp, int alloc, int 
 
 // Smooth gradients plus noise; values fit bits_stored (sign-extended when signed).
 Buf make_image(const FrameInfo& f, unsigned seed, double noise = 3.0) {
-    Buf b(static_cast<std::size_t>(f.frame_bytes()));
+    Buf b(static_cast<std::size_t>(static_cast<std::size_t>(f.frame_bytes())));
     std::mt19937 rng(seed);
     std::normal_distribution<double> nd(0.0, noise);
     const double maxv = std::ldexp(1.0, f.bits_stored) - 1;
@@ -227,7 +228,7 @@ TEST_CASE("jpeg: lossless round trip, all predictors and precisions") {
 
 TEST_CASE("jpeg: lossless full-range 16-bit noise and the 32768 difference") {
     const FrameInfo f = frame(16, 33, 1, 16, 16);
-    Buf img(static_cast<std::size_t>(f.frame_bytes()));
+    Buf img(static_cast<std::size_t>(static_cast<std::size_t>(f.frame_bytes())));
     std::mt19937 rng(3);
     for (std::size_t i = 0; i < img.size(); i += 2) store_le16(img.data() + i, static_cast<std::uint16_t>(rng()));
     // Alternate 0 / 32768 in the first row: predictor 1 then sees differences of exactly 32768.
@@ -478,20 +479,20 @@ TEST_CASE("jpeg: SOF must agree with FrameInfo") {
     REQUIRE(decode_jpeg(enc, f, out).is_ok());
     FrameInfo g = f;
     g.rows = 21;
-    Buf o2(static_cast<std::size_t>(g.frame_bytes()));
+    Buf o2(static_cast<std::size_t>(static_cast<std::size_t>(g.frame_bytes())));
     CHECK(decode_jpeg(enc, g, o2).code == Errc::TypeMismatch);
     g = f;
     g.columns = 29;
-    o2.resize(static_cast<std::size_t>(g.frame_bytes()));
+    o2.resize(static_cast<std::size_t>(static_cast<std::size_t>(g.frame_bytes())));
     CHECK(decode_jpeg(enc, g, o2).code == Errc::TypeMismatch);
     g = f;
     g.samples_per_pixel = 3;
-    o2.resize(static_cast<std::size_t>(g.frame_bytes()));
+    o2.resize(static_cast<std::size_t>(static_cast<std::size_t>(g.frame_bytes())));
     CHECK(decode_jpeg(enc, g, o2).code == Errc::TypeMismatch);
     g = f;
     g.bits_allocated = 8;
     g.bits_stored = 8;
-    o2.resize(static_cast<std::size_t>(g.frame_bytes()));
+    o2.resize(static_cast<std::size_t>(static_cast<std::size_t>(g.frame_bytes())));
     CHECK(decode_jpeg(enc, g, o2).code == Errc::TypeMismatch);
     // Wrong output size.
     Buf small(img.size() - 1);
@@ -502,7 +503,7 @@ TEST_CASE("jpeg: SOF must agree with FrameInfo") {
     REQUIRE(encode_jpeg(img8, f8, lossless(2), enc).is_ok());
     FrameInfo w = f8;
     w.bits_allocated = 16;
-    Buf o16(static_cast<std::size_t>(w.frame_bytes()));
+    Buf o16(static_cast<std::size_t>(static_cast<std::size_t>(w.frame_bytes())));
     REQUIRE(decode_jpeg(enc, w, o16).is_ok());
     bool same = true;
     for (std::size_t i = 0; i < img8.size(); ++i) same &= load_le16(o16.data() + 2 * i) == img8[i];
@@ -862,7 +863,7 @@ TEST_CASE("jpeg: progressive (successive approximation) equals sequential, 8 and
         const CoefImage im = random_coefs(c.P, c.nc, c.X, c.Y, seed++);
         const Buf seq = sequential_stream(im, c.ri), prog = progressive_stream(im, c.ri);
         const FrameInfo f = frame(c.Y, c.X, c.nc, c.P == 8 ? 8 : 16, c.P);
-        Buf a(static_cast<std::size_t>(f.frame_bytes())), b(a.size());
+        Buf a(static_cast<std::size_t>(static_cast<std::size_t>(f.frame_bytes()))), b(a.size());
         const Status sa = decode_jpeg(seq, f, a), sb = decode_jpeg(prog, f, b);
         CHECK(sa.is_ok());
         CHECK(sb.is_ok());
@@ -904,7 +905,7 @@ std::vector<std::pair<Buf, FrameInfo>> robustness_corpus() {
 
 TEST_CASE("jpeg: every truncation fails cleanly") {
     for (auto& [stream, f] : robustness_corpus()) {
-        Buf out(static_cast<std::size_t>(f.frame_bytes()));
+        Buf out(static_cast<std::size_t>(static_cast<std::size_t>(f.frame_bytes())));
         REQUIRE(decode_jpeg(stream, f, out).is_ok());
         int accepted = 0;
         for (std::size_t n = 0; n < stream.size(); ++n) {
@@ -921,7 +922,7 @@ TEST_CASE("jpeg: random corruption never crashes") {
     auto R = [&] { return static_cast<std::uint32_t>(rng()); };
     int iterations = 0, rejected = 0;
     for (auto& [stream, f] : robustness_corpus()) {
-        Buf out(static_cast<std::size_t>(f.frame_bytes()));
+        Buf out(static_cast<std::size_t>(static_cast<std::size_t>(f.frame_bytes())));
         for (int it = 0; it < 400; ++it) {
             Buf s = stream;
             const int flips = 1 + static_cast<int>(R() % 4);
@@ -960,7 +961,7 @@ TEST_CASE("jpeg: EncodeParams subsampling and restart interval reach the encoder
     using namespace siaara::codec;
     FrameInfo fi;
     fi.rows = 32; fi.columns = 48; fi.samples_per_pixel = 3; fi.bits_allocated = 8; fi.bits_stored = 8;
-    std::vector<std::uint8_t> rgb(fi.frame_bytes());
+    std::vector<std::uint8_t> rgb(static_cast<std::size_t>(fi.frame_bytes()));
     for (std::size_t i = 0; i < rgb.size(); ++i) rgb[i] = static_cast<std::uint8_t>((i * 7) & 0xFF);
     EncodeParams p;
     p.lossless = false; p.quality = 90; p.ybr = true; p.chroma_subsampling = 2; p.restart_interval = 2;
@@ -969,7 +970,7 @@ TEST_CASE("jpeg: EncodeParams subsampling and restart interval reach the encoder
     bool has_dri = false;
     for (std::size_t i = 0; i + 1 < out.size(); ++i) if (out[i] == 0xFF && out[i + 1] == 0xDD) has_dri = true;
     CHECK(has_dri);
-    std::vector<std::uint8_t> back(fi.frame_bytes());
+    std::vector<std::uint8_t> back(static_cast<std::size_t>(fi.frame_bytes()));
     CHECK(decode_jpeg(out, fi, back).is_ok());
     p.chroma_subsampling = 9;
     CHECK(!encode_jpeg(rgb, fi, p, out).is_ok());

@@ -132,7 +132,7 @@ enum class Kind { Gradient, Noise, Flat, Edges, Smooth };
 std::vector<std::uint8_t> synthetic(const FrameInfo& fi, Kind kind, std::uint32_t seed) {
     std::mt19937 rng(seed);
     const int maxval = (1 << fi.bits_stored) - 1;
-    std::vector<std::uint8_t> buf(fi.frame_bytes());
+    std::vector<std::uint8_t> buf(static_cast<std::size_t>(fi.frame_bytes()));
     for (std::size_t y = 0; y < fi.rows; ++y) {
         for (std::size_t x = 0; x < fi.columns; ++x) {
             for (std::size_t c = 0; c < fi.samples_per_pixel; ++c) {
@@ -142,10 +142,10 @@ std::vector<std::uint8_t> synthetic(const FrameInfo& fi, Kind kind, std::uint32_
                         v = static_cast<long>((x * (c + 1) * 37 + y * 11) % static_cast<std::size_t>(maxval + 1));
                         break;
                     case Kind::Noise:
-                        v = static_cast<long>(rng() % static_cast<std::uint32_t>(maxval + 1));
+                        v = static_cast<long>(static_cast<std::size_t>(rng()) % static_cast<std::uint32_t>(maxval + 1));
                         break;
                     case Kind::Flat:
-                        v = (rng() % 50 == 0) ? static_cast<long>(rng() % static_cast<std::uint32_t>(maxval + 1))
+                        v = (static_cast<std::size_t>(rng()) % 50 == 0) ? static_cast<long>(static_cast<std::size_t>(rng()) % static_cast<std::uint32_t>(maxval + 1))
                                               : maxval / 3 + static_cast<long>(c);
                         break;
                     case Kind::Edges:
@@ -154,7 +154,7 @@ std::vector<std::uint8_t> synthetic(const FrameInfo& fi, Kind kind, std::uint32_
                     case Kind::Smooth:
                         v = maxval / 2 + static_cast<long>((static_cast<double>(maxval) / 3.0) *
                                                            std::sin(static_cast<double>(x) / 7.0 + static_cast<double>(y) / 11.0)) +
-                            static_cast<long>(rng() % 3) - 1;
+                            static_cast<long>(static_cast<std::size_t>(rng()) % 3) - 1;
                         break;
                 }
                 v = std::clamp(v, 0L, static_cast<long>(maxval));
@@ -166,7 +166,7 @@ std::vector<std::uint8_t> synthetic(const FrameInfo& fi, Kind kind, std::uint32_
 }
 
 int max_abs_error(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b, const FrameInfo& fi) {
-    const std::size_t n = fi.frame_bytes() / bytes_per_sample(fi);
+    const std::size_t n = static_cast<std::size_t>(fi.frame_bytes()) / bytes_per_sample(fi);
     int worst = 0;
     for (std::size_t i = 0; i < n; ++i) worst = std::max(worst, std::abs(get_sample(a, fi, i) - get_sample(b, fi, i)));
     return worst;
@@ -182,13 +182,13 @@ Status encode_with(const std::vector<std::uint8_t>& px, const FrameInfo& fi, int
 }
 
 Status decode_to(const std::vector<std::uint8_t>& stream, const FrameInfo& fi, std::vector<std::uint8_t>& out) {
-    out.assign(fi.frame_bytes(), 0xCD);
+    out.assign(static_cast<std::size_t>(fi.frame_bytes()), 0xCD);
     return decode_jpegls(stream, fi, out);
 }
 
 // Decodes into a buffer with guard bytes on both sides and checks they are untouched.
 bool decode_guarded(const std::vector<std::uint8_t>& stream, const FrameInfo& fi, Status* status = nullptr) {
-    const std::size_t n = fi.frame_bytes();
+    const std::size_t n = static_cast<std::size_t>(fi.frame_bytes());
     std::vector<std::uint8_t> buf(n + 64, 0x5A);
     const std::vector<std::uint8_t> in(stream.begin(), stream.end());  // exact size: ASan sees over-reads
     Status s = decode_jpegls(in, fi, std::span<std::uint8_t>(buf.data() + 32, n));
@@ -287,7 +287,7 @@ TEST_CASE("jpegls: planar layouts on input and output") {
 
 TEST_CASE("jpegls: flat images are coded in run mode") {
     const FrameInfo fi = make_info(256, 256, 1, 16);
-    std::vector<std::uint8_t> px(fi.frame_bytes());
+    std::vector<std::uint8_t> px(static_cast<std::size_t>(fi.frame_bytes()));
     for (std::size_t i = 0; i < px.size(); i += 2) store_le16(&px[i], 1234);
     std::vector<std::uint8_t> stream, back;
     REQUIRE(encode_with(px, fi, 0, 0, stream).is_ok());
@@ -434,7 +434,7 @@ TEST_CASE("jpegls: 8-bit samples in 16-bit containers and signed data") {
     // 12-bit signed values stored sign-extended in 16 bits come back sign-extended.
     FrameInfo sfi = make_info(5, 6, 1, 12);
     sfi.is_signed = true;
-    std::vector<std::uint8_t> spx(sfi.frame_bytes());
+    std::vector<std::uint8_t> spx(static_cast<std::size_t>(sfi.frame_bytes()));
     for (std::size_t i = 0; i < 30; ++i)
         store_le16(&spx[2 * i], static_cast<std::uint16_t>(static_cast<std::int16_t>(static_cast<int>(i) * 130 - 2048)));
     REQUIRE(encode_with(spx, sfi, 0, 0, stream).is_ok());
@@ -443,7 +443,7 @@ TEST_CASE("jpegls: 8-bit samples in 16-bit containers and signed data") {
 
     // Bits above BitsStored are ignored on input.
     FrameInfo ufi = make_info(3, 3, 1, 10);
-    std::vector<std::uint8_t> upx(ufi.frame_bytes());
+    std::vector<std::uint8_t> upx(static_cast<std::size_t>(ufi.frame_bytes()));
     for (std::size_t i = 0; i < 9; ++i) store_le16(&upx[2 * i], static_cast<std::uint16_t>(0xFC00 | (i * 100)));
     REQUIRE(encode_with(upx, ufi, 0, 0, stream).is_ok());
     REQUIRE(decode_to(stream, ufi, back).is_ok());
@@ -645,12 +645,12 @@ TEST_CASE("jpegls: random corruption never crashes or writes out of bounds") {
     for (std::size_t k = 0; k < streams.size(); ++k) {
         for (int it = 0; it < 1500; ++it) {
             auto s = streams[k];
-            const int flips = 1 + static_cast<int>(rng() % 4);
+            const int flips = 1 + static_cast<int>(static_cast<std::size_t>(rng()) % 4);
             for (int f = 0; f < flips; ++f) {
-                const std::size_t at = rng() % s.size();
-                switch (rng() % 3) {
+                const std::size_t at = static_cast<std::size_t>(rng()) % s.size();
+                switch (static_cast<std::size_t>(rng()) % 3) {
                     case 0: s[at] = static_cast<std::uint8_t>(rng()); break;
-                    case 1: s[at] ^= static_cast<std::uint8_t>(1u << (rng() % 8)); break;
+                    case 1: s[at] ^= static_cast<std::uint8_t>(1u << (static_cast<std::size_t>(rng()) % 8)); break;
                     default: s[at] = 0xFF; break;
                 }
             }
@@ -665,8 +665,8 @@ TEST_CASE("jpegls: random corruption never crashes or writes out of bounds") {
     // Garbage that looks like a header.
     for (int it = 0; it < 2000; ++it) {
         std::vector<std::uint8_t> s = {0xFF, 0xD8};
-        const std::size_t n = rng() % 200;
-        for (std::size_t i = 0; i < n; ++i) s.push_back(static_cast<std::uint8_t>(rng() % 4 == 0 ? 0xFF : rng()));
+        const std::size_t n = static_cast<std::size_t>(rng()) % 200;
+        for (std::size_t i = 0; i < n; ++i) s.push_back(static_cast<std::uint8_t>(static_cast<std::size_t>(rng()) % 4 == 0 ? 0xFF : rng()));
         CHECK(decode_guarded(s, make_info(5, 7, 1, 8)));
     }
 }

@@ -15,7 +15,7 @@ option(SIAARA_WERROR "Treat warnings as errors" ON)
 option(SIAARA_SANITIZE "Build with ASan+UBSan (GCC/Clang)" OFF)
 
 if(MSVC)
-  set(SIAARA_WARN /W4 /permissive- /utf-8)
+  set(SIAARA_WARN /W4 /permissive- /utf-8 /wd4100)
   set(SIAARA_WARN_C /W4 /WX)
   if(SIAARA_WERROR)
     list(APPEND SIAARA_WARN /WX)

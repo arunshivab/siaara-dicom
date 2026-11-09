@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
         const codec::FrameInfo fi = frame(argv + 2);
         if (!read_file(argv[7], in)) return 1;
         if (mode == "rle-decode") {
-            out.resize(static_cast<std::size_t>(fi.frame_bytes()));
+            out.resize(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
             if (Status s = codec::decode_rle(in, fi, out); !s) return fail(s);
         } else {
             if (Status s = codec::encode_rle(in, fi, codec::EncodeParams{}, out); !s) return fail(s);
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
         const codec::FrameInfo fi = frame(argv + 2);
         if (!read_file(argv[7], in)) return 1;
         const double budget = std::atof(argv[8]);
-        out.resize(static_cast<std::size_t>(fi.frame_bytes()));
+        out.resize(static_cast<std::size_t>(static_cast<std::size_t>(fi.frame_bytes())));
         double best = 1e30;
         const double start = now();
         int reps = 0;

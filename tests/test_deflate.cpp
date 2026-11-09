@@ -465,7 +465,7 @@ TEST_CASE("deflate: 4 MB buffers round trip") {
     // Mostly runs with short random bursts, typical of image data.
     Buf image(n, 0);
     std::mt19937 rng(5);
-    for (std::size_t i = 0; i < n; i += 1 + rng() % 4096)
+    for (std::size_t i = 0; i < n; i += 1 + static_cast<std::size_t>(rng()) % 4096)
         for (std::size_t k = 0; k < 64 && i + k < n; ++k) image[i + k] = static_cast<std::uint8_t>(rng());
     for (int level : {0, 1, 6, 9}) {
         CHECK(roundtrip(zeros, level));
@@ -779,15 +779,15 @@ TEST_CASE("inflate: corrupted and random inputs never crash") {
     int over_cap = 0;
     for (int iter = 0; iter < 3000; ++iter) {
         Buf z = seeds[static_cast<std::size_t>(iter) % seeds.size()];
-        const int flips = 1 + static_cast<int>(rng() % 8);
-        for (int f = 0; f < flips; ++f) z[rng() % z.size()] ^= static_cast<std::uint8_t>(1u << (rng() % 8));
+        const int flips = 1 + static_cast<int>(static_cast<std::size_t>(rng()) % 8);
+        for (int f = 0; f < flips; ++f) z[static_cast<std::size_t>(static_cast<std::size_t>(rng()) % z.size())] ^= static_cast<std::uint8_t>(1u << (static_cast<std::size_t>(rng()) % 8));
         const std::size_t cap = (iter & 1) ? 100000 : 5000;
         Buf out;
         Status s = inflate_raw(z.data(), z.size(), cap, out);
         if (s && out.size() > cap) ++over_cap;
     }
     for (int iter = 0; iter < 3000; ++iter) {
-        Buf z = random_bytes(1 + rng() % 600, rng());
+        Buf z = random_bytes(static_cast<std::size_t>(1 + static_cast<std::size_t>(rng()) % 600), rng());
         Buf out;
         Status s = inflate_raw(z.data(), z.size(), 1u << 16, out);
         if (s && out.size() > (1u << 16)) ++over_cap;
