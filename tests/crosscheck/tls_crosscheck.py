@@ -21,6 +21,7 @@ Usage: tls_crosscheck.py [--build BUILD_DIR]     exit status 0 when every check 
 """
 import argparse
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -87,6 +88,8 @@ def start(cmd, port, stdin=None):
 
 
 def stop(p):
+    if p.stdin is not None and p.stdin.closed:
+        p.stdin = None  # communicate() would flush it (ValueError on Python 3.12)
     if p.poll() is None:
         p.terminate()
     try:
@@ -104,8 +107,13 @@ def make_pki(d):
         if rc != 0:
             raise RuntimeError(" ".join(cmd) + "\n" + o)
     p = lambda n: os.path.join(d, n)
-    ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"]
-    ca_ext = ["-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]
+    # Private config: the system openssl.cnf (LibreSSL's adds v3_ca extensions) is not used.
+    with open(p("req.cnf"), "w") as f:
+        f.write("[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=placeholder\n"
+                "[ca_ext]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n"
+                "subjectKeyIdentifier=hash\n")
+    ec = ["-config", p("req.cnf"), "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-sha256"]
+    ca_ext = ["-extensions", "ca_ext"]
     sh(["openssl", "req", "-x509"] + ec + ["-keyout", p("ca.key"), "-out", p("ca.pem"), "-days", "2",
                                           "-subj", "/CN=SIAARA Crosscheck CA"] + ca_ext)
     sh(["openssl", "req", "-x509"] + ec + ["-keyout", p("other.key"), "-out", p("other.pem"), "-days", "2",
@@ -119,7 +127,7 @@ def make_pki(d):
     sh(["openssl", "req"] + ec + ["-keyout", p("server.key"), "-out", p("server.csr"), "-subj", "/CN=localhost"])
     sh(["openssl", "x509", "-req", "-in", p("server.csr"), "-CA", p("ca.pem"), "-CAkey", p("ca.key"),
         "-set_serial", "2", "-days", "2", "-out", p("server.pem"), "-extfile", p("server.ext")])
-    sh(["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", p("client.key"), "-out", p("client.csr"),
+    sh(["openssl", "req", "-config", p("req.cnf"), "-newkey", "rsa:2048", "-nodes", "-keyout", p("client.key"), "-out", p("client.csr"),
         "-subj", "/CN=SIAARA_SCU"])
     sh(["openssl", "x509", "-req", "-in", p("client.csr"), "-CA", p("ca.pem"), "-CAkey", p("ca.key"),
         "-set_serial", "3", "-days", "2", "-out", p("client.pem"), "-extfile", p("client.ext")])
@@ -277,15 +285,16 @@ def main():
             rc, o = run([echoscu, "-v", "-t", "1500"] + client_args + ["127.0.0.1", str(port)])
             out = head.decode("utf-8", "replace") + stop(srv_p)
             connected = "TLS: connected" in o
-            check(name, connected == expect_ok and (needle is None or needle in o + out), o + out)
+            found = needle is None or (re.search(needle, o + out) is not None)
+            check(name, connected == expect_ok and found, o + out)
             return o, out
 
         _, out = s_server(["-tls1_2"], our_client, "siaara-echoscu -> openssl s_server -tls1_2 (handshake)", True,
-                          "TLSv1.2")
-        s_server(["-tls1_3"], our_client, "siaara-echoscu -> openssl s_server -tls1_3 (handshake)", True, "TLSv1.3")
+                          r"TLSv1\.2")
+        s_server(["-tls1_3"], our_client, "siaara-echoscu -> openssl s_server -tls1_3 (handshake)", True, r"TLSv1\.3")
         # s_server prints DONE when SSL_read reports the peer's close_notify, ERROR / "unexpected eof"
         # when the TCP connection ends without one.
-        _, out = s_server([], our_client, "siaara-echoscu sends close_notify (s_server prints DONE)", True, "DONE\nshut")
+        _, out = s_server([], our_client, "siaara-echoscu sends close_notify (s_server prints DONE)", True, r"DONE\s*(\n|$)")
         check("no unexpected EOF at s_server", "unexpected eof" not in out and "ERROR" not in out, out)
         s_server(["-tls1_1", "-cipher", "DEFAULT@SECLEVEL=0"], our_client, "siaara-echoscu refuses a TLS 1.1 server",
                  False)

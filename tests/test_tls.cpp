@@ -86,8 +86,21 @@ struct Pki {
         ca = p("ca.pem");
         ca_key = p("ca.key");
         other_ca = p("other_ca.pem");
-        const std::string ec_key = " -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes";
-        const std::string ca_ext = " -addext \"basicConstraints=critical,CA:TRUE\" -addext \"keyUsage=critical,keyCertSign,cRLSign\"";
+        // A private request config: the system openssl.cnf is not used. (LibreSSL, the macOS
+        // `openssl`, adds its default v3_ca extensions and appends -addext ones, producing
+        // duplicate basicConstraints that macOS rejects as "not standards compliant".)
+        if (!write_text(p("req.cnf"), "[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=placeholder\n"
+                                      "[ca_ext]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n"
+                                      "subjectKeyIdentifier=hash\n"
+                                      "[self_ext]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                                      "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                                      "subjectKeyIdentifier=hash\n")) {
+            why = "cannot write the request config";
+            return;
+        }
+        const std::string ec_key =
+            " -config " + q(p("req.cnf")) + " -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -sha256";
+        const std::string ca_ext = " -extensions ca_ext";
         if (!run("openssl req -x509" + ec_key + " -keyout " + q(ca_key) + " -out " + q(ca) +
                  " -days 3 -subj \"/CN=SIAARA Test CA\"" + ca_ext) ||
             !run("openssl req -x509" + ec_key + " -keyout " + q(p("other_ca.key")) + " -out " + q(other_ca) +
@@ -95,10 +108,12 @@ struct Pki {
             why = "openssl req failed";
             return;
         }
-        if (!write_text(p("server.ext"), "basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n"
-                                         "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n") ||
-            !write_text(p("client.ext"), "basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n"
-                                         "extendedKeyUsage=clientAuth\nsubjectAltName=DNS:siaara-scu.test\n")) {
+        if (!write_text(p("server.ext"), "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                                         "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                                         "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n") ||
+            !write_text(p("client.ext"), "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                                         "extendedKeyUsage=clientAuth\nsubjectAltName=DNS:siaara-scu.test\n"
+                                         "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n")) {
             why = "cannot write extension files";
             return;
         }
@@ -109,7 +124,7 @@ struct Pki {
             p12 = dir / (std::string(name) + ".p12");
             const fs::path csr = dir / (std::string(name) + ".csr");
             return run("openssl req" + ec_key + " -keyout " + q(key) + " -out " + q(csr) + " -subj \"/CN=" + cn + "\"") &&
-                   run("openssl x509 -req -in " + q(csr) + " -CA " + q(ca) + " -CAkey " + q(ca_key) + " -set_serial " +
+                   run("openssl x509 -req -sha256 -in " + q(csr) + " -CA " + q(ca) + " -CAkey " + q(ca_key) + " -set_serial " +
                        std::to_string(serial) + " -days 3 -out " + q(cert) + " -extfile " + q(dir / ext)) &&
                    run("openssl pkcs12 -export -in " + q(cert) + " -inkey " + q(key) + " -certfile " + q(ca) +
                        " -out " + q(p12) + " -passout pass:" + kP12Password + kP12Algorithms);
@@ -127,7 +142,7 @@ struct Pki {
         self_signed_key = p("self.key");
         self_signed_p12 = p("self.p12");
         if (!run("openssl req -x509" + ec_key + " -keyout " + q(self_signed_key) + " -out " + q(self_signed) +
-                 " -days 3 -subj \"/CN=localhost\" -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1\"") ||
+                 " -days 3 -subj \"/CN=localhost\" -extensions self_ext") ||
             !run("openssl pkcs12 -export -in " + q(self_signed) + " -inkey " + q(self_signed_key) + " -out " +
                  q(self_signed_p12) + " -passout pass:" + kP12Password + kP12Algorithms)) {
             why = "making the self-signed certificate failed";
@@ -372,7 +387,15 @@ TEST_CASE("tls/dimse echo and store with server authentication") {
     TlsSettings ct = client_tls();
     ct.log = clog.fn();
     Status st = echo(scu(scp.port(), ct));
-    if (!st) std::printf("  echo: %s\n", st.message.c_str());
+    if (!st) {
+        std::printf("  echo: %s\n", st.message.c_str());
+        // Diagnostics for the next CI run: the oracle's version and the test CA as it was made.
+        std::fflush(stdout);
+        const int v = std::system("openssl version");
+        const int x = std::system(("openssl x509 -noout -text -in " + q(pki().ca)).c_str());
+        std::printf("  (diagnostic commands exited %d, %d)\n", v, x);
+        std::fflush(stdout);
+    }
     CHECK(st.is_ok());
     CHECK(clog.contains("TLSv1.3"));
     CHECK(clog.contains("server certificate verified"));
