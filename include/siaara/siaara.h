@@ -1661,9 +1661,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* 
 
 typedef struct siaara_get_options {
     uint32_t struct_size;            /* set to sizeof(siaara_get_options) */
-    int32_t duplicate_policy;        /* SIAARA_DUP_*, for the store */
+    int32_t duplicate_policy;        /* SIAARA_DUP_*, for the store and the folder: with KEEP an existing
+                                        <SOP Instance UID>.dcm is left unchanged (logged as a warning) */
     siaara_store* store;             /* received instances are added here (may be NULL) */
-    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL) */
+    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL),
+                                        owner-only (mode 0600 / owner-only DACL) */
     const char* const* sop_classes;  /* storage SOP classes to accept; NULL: the toolkit's list */
     uint32_t sop_class_count;
     int32_t native_only;             /* 0/1: propose only uncompressed transfer syntaxes */

@@ -224,8 +224,12 @@ std::string join_path(const std::string& dir, const std::string& name) {
 }
 
 // Adds a received instance to a store and / or folder. Returns the DIMSE status to answer.
+// The duplicate policy applies to the folder too (R-072): with Keep an existing <UID>.dcm is left
+// as it is (no check-then-write race) and `kept_existing` is set; the peer still gets Success.
 std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st::DuplicatePolicy policy,
-                            const std::string& folder, int32_t* outcome, std::string& error) {
+                            const std::string& folder, int32_t* outcome, std::string& error,
+                            bool* kept_existing = nullptr) {
+    if (kept_existing) *kept_existing = false;
     std::vector<std::uint8_t> bytes;
     if (Status s = net::encode_received_part10(rq, bytes); !s) {
         error = s.message;
@@ -237,9 +241,17 @@ std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st
             return 0xC000;
         }
         const std::string path = join_path(folder, rq.sop_instance_uid + ".dcm");
-        if (Status s = siaara::io::write_file_atomic(path, bytes.data(), bytes.size()); !s) {
-            error = s.message;
-            return 0xA700;  // out of resources
+        const auto mode = policy == st::DuplicatePolicy::Keep ? siaara::io::WriteMode::NoReplace
+                                                              : siaara::io::WriteMode::Replace;
+        if (Status s = siaara::io::write_file_atomic(path, bytes.data(), bytes.size(), mode); !s) {
+            if (s.code != Errc::Rejected) {
+                error = s.message;
+                return 0xA700;  // out of resources
+            }
+            if (kept_existing) *kept_existing = true;
+            if (outcome && !store) *outcome = SIAARA_ADD_KEPT_EXISTING;
+        } else if (outcome && !store) {
+            *outcome = SIAARA_ADD_ADDED;
         }
     }
     if (store) {
@@ -549,9 +561,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
                 [&](const net::StoreRequest& rq) -> std::uint16_t {
                     if (scope.cancelled()) return 0xA700;
                     std::string err;
-                    const std::uint16_t s = keep_instance(rq, options->store, policy, folder, nullptr, err);
+                    bool kept = false;
+                    const std::uint16_t s = keep_instance(rq, options->store, policy, folder, nullptr, err, &kept);
                     if (s != net::dimse_status::Success)
                         capi::log(SIAARA_LOG_WARNING, true, "C-GET: instance " + rq.sop_instance_uid + " not kept: " + err);
+                    else if (kept)
+                        capi::log(SIAARA_LOG_WARNING, true, "C-GET: " + rq.sop_instance_uid +
+                                                                ".dcm already exists in the folder; the existing file was kept "
+                                                                "(duplicate policy KEEP)");
                     return s;
                 },
                 [&](const net::RetrieveProgress& p) {

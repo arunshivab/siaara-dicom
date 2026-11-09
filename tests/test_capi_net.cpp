@@ -653,3 +653,81 @@ TEST_CASE("capi/long calls: volume build, store verify / rebuild, DICOMDIR write
     CHECK(calls == 8 && std::filesystem::exists(dir / "media2" / "DICOMDIR"));
     siaara_cancel_free(c);
 }
+
+namespace {
+struct LogText {
+    std::mutex mu;
+    std::vector<std::string> lines;
+};
+void SIAARA_CALL on_log_text(void* user, int32_t, int32_t, const char* m) {
+    auto* s = static_cast<LogText*>(user);
+    std::lock_guard<std::mutex> l(s->mu);
+    s->lines.emplace_back(m);
+}
+std::string file_text(const std::filesystem::path& p) {
+    std::string s;
+    if (FILE* f = std::fopen(p.string().c_str(), "rb")) {
+        char buf[4096];
+        std::size_t n = 0;
+        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+        std::fclose(f);
+    }
+    return s;
+}
+}  // namespace
+
+TEST_CASE("capi/net: R-072 C-GET into a folder honours SIAARA_DUP_KEEP") {
+    const auto dir = temp_dir("r072");
+    std::vector<std::shared_ptr<const DicomFile>> files;
+    for (int i = 0; i < 2; ++i) files.push_back(std::make_shared<const DicomFile>(make_ct(30 + i, "2.25.710", "2.25.711")));
+    net::ScpHandlers h;
+    h.on_get = [&](const net::QueryRequest&, std::vector<net::RetrieveItem>& items) -> std::uint16_t {
+        for (const auto& f : files) items.push_back({std::string(), f});
+        return net::dimse_status::Success;
+    };
+    net::ScpServer srv(qr_config(), h);
+    REQUIRE(srv.start().is_ok());
+    siaara_dimse_peer p = peer(srv.port(), "QR_SCP");
+    siaara_file* idf = nullptr;
+    REQUIRE(siaara_file_create(&idf) == SIAARA_OK);
+    siaara_dataset* id = nullptr;
+    REQUIRE(siaara_file_dataset(idf, &id) == SIAARA_OK);
+    REQUIRE(siaara_dataset_set_string(id, 0x00080052, "CS", "STUDY", 5) == SIAARA_OK);
+    REQUIRE(siaara_dataset_set_string(id, 0x0020000D, "UI", "2.25.710", 8) == SIAARA_OK);
+
+    const auto folder = dir / "folder";
+    std::filesystem::create_directories(folder);
+    const auto existing = folder / "2.25.60030.dcm";
+    {
+        FILE* f = std::fopen(existing.string().c_str(), "wb");
+        REQUIRE(f);
+        std::fputs("EXISTING", f);
+        std::fclose(f);
+    }
+    const std::string folder_s = folder.string();
+    siaara_get_options go;
+    std::memset(&go, 0, sizeof go);
+    go.struct_size = sizeof go;
+    go.folder = folder_s.c_str();
+    go.duplicate_policy = SIAARA_DUP_KEEP;
+    LogText logs;
+    REQUIRE(siaara_set_log_callback(on_log_text, &logs, SIAARA_LOG_DEBUG) == SIAARA_OK);
+    siaara_dimse_result r = result();
+    CHECK(siaara_dimse_get(&p, SIAARA_QR_STUDY_ROOT, id, &go, nullptr, nullptr, nullptr, &r) == SIAARA_OK);
+    CHECK(r.completed == 2 && r.failed == 0);
+    CHECK_EQ(file_text(existing), std::string("EXISTING"));            // kept
+    CHECK(file_text(folder / "2.25.60031.dcm").size() > 132);          // the new one written
+    REQUIRE(siaara_set_log_callback(nullptr, nullptr, SIAARA_LOG_DEBUG) == SIAARA_OK);
+    bool logged = false;
+    for (const auto& l : logs.lines)
+        if (l.find("already exists") != std::string::npos) logged = true;
+    CHECK(logged);
+    // REPLACE overwrites it.
+    go.duplicate_policy = SIAARA_DUP_REPLACE;
+    r = result();
+    CHECK(siaara_dimse_get(&p, SIAARA_QR_STUDY_ROOT, id, &go, nullptr, nullptr, nullptr, &r) == SIAARA_OK);
+    const std::string replaced = file_text(existing);
+    CHECK(replaced.size() > 132 && replaced.compare(128, 4, "DICM") == 0);
+    srv.stop();
+    siaara_file_free(idf);
+}
