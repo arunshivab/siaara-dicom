@@ -75,6 +75,7 @@ struct ScanResult {
     std::string declared_transfer_syntax;  // from the meta (padding removed), may be empty
     std::vector<GroupLengthInfo> group_lengths;  // every (gggg,0000) seen, with the actual length
     std::uint32_t duplicates = 0, out_of_order = 0, odd_lengths = 0, unterminated = 0;
+    std::uint64_t trailing_junk_bytes = 0;  // bytes after an unterminated pixel sequence that are no element (not written)
     bool fatal = false;                 // nothing could be parsed (not DICOM)
 };
 

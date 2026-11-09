@@ -504,3 +504,42 @@ TEST_CASE("repair: C API validate and repair") {
     CHECK(!fs::exists(out2));
     CHECK(hash_file(in) == before);
 }
+
+TEST_CASE("repair: junk after an unterminated pixel sequence is not turned into an element (testing2)") {
+    // gdcmData gdcm-JPEG-LossLess3a.dcm: 8 bytes after the last fragment, no Sequence Delimitation
+    // Item. They were read as an element (B00C,0EB6) and written to the output.
+    auto u16 = [](std::vector<std::uint8_t>& b, unsigned v) { b.push_back(static_cast<std::uint8_t>(v)); b.push_back(static_cast<std::uint8_t>(v >> 8)); };
+    auto u32 = [&](std::vector<std::uint8_t>& b, std::uint32_t v) { u16(b, v & 0xFFFFu); u16(b, v >> 16); };
+    auto el = [&](std::vector<std::uint8_t>& b, Tag t, const char* vr, std::string v) {
+        if (v.size() & 1u) v.push_back(' ');
+        u16(b, tag_group(t)); u16(b, t & 0xFFFFu);
+        b.push_back(static_cast<std::uint8_t>(vr[0])); b.push_back(static_cast<std::uint8_t>(vr[1]));
+        u16(b, static_cast<unsigned>(v.size()));
+        b.insert(b.end(), v.begin(), v.end());
+    };
+    std::vector<std::uint8_t> b(128, 0);
+    b.insert(b.end(), {'D', 'I', 'C', 'M'});
+    std::vector<std::uint8_t> meta;
+    el(meta, 0x00020010, "UI", std::string("1.2.840.10008.1.2.4.70") + '\0');
+    u16(b, 2); u16(b, 0); b.push_back('U'); b.push_back('L'); u16(b, 4); u32(b, static_cast<std::uint32_t>(meta.size()));
+    b.insert(b.end(), meta.begin(), meta.end());
+    el(b, 0x00080016, "UI", std::string("1.2.840.10008.5.1.4.1.1.7") + '\0');
+    el(b, 0x00080018, "UI", "2.25.31337");
+    el(b, 0x00100010, "PN", "DOE^JANE");
+    u16(b, 0x7FE0); u16(b, 0x0010); b.push_back('O'); b.push_back('B'); u16(b, 0); u32(b, 0xFFFFFFFFu);
+    u16(b, 0xFFFE); u16(b, 0xE000); u32(b, 0);
+    u16(b, 0xFFFE); u16(b, 0xE000); u32(b, 4);
+    b.insert(b.end(), {0xFF, 0xD8, 0xFF, 0xD9});
+    b.insert(b.end(), {0x0C, 0xB0, 0xB6, 0x0E, 0x50, 0xD1, 0x02, 0x0E});
+    Run run(b, kStructural | kRescue);
+    REQUIRE(run.ok);
+    bool reported = false;
+    for (const auto& f : run.file().findings)
+        if (f.code == "trailing-bytes") reported = true;
+    CHECK(reported);
+    auto out = read_file(run.out);
+    REQUIRE(out.is_ok());
+    CHECK(!out->dataset.contains(0xB00C0EB6));
+    CHECK(out->dataset.contains(tags::PixelData));
+    CHECK_EQ(out->dataset.get_string(tags::PatientName).value_or(""), std::string("DOE^JANE"));
+}

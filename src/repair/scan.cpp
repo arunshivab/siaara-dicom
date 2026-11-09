@@ -58,6 +58,32 @@ public:
         }
         return true;
     }
+    // After an unterminated pixel sequence at top level: does an element start at `at`? Its tag
+    // must follow `after` (ascending order), its header must parse in the syntax, and its value
+    // (defined length) must end within the data.
+    bool plausible_element_after(std::size_t at, Tag after, Syntax syn) const {
+        if (size_ - at < 8) return false;
+        const std::uint16_t g = syn.big_endian ? load_be16(p_ + at) : load_le16(p_ + at);
+        const std::uint16_t el = syn.big_endian ? load_be16(p_ + at + 2) : load_le16(p_ + at + 2);
+        const Tag t = make_tag(g, el);
+        if (t <= after) return false;
+        std::uint64_t len = 0, header = 8;
+        if (syn.explicit_vr) {
+            if (!looks_explicit(at, syn)) return false;
+            const VR vr = vr_from_chars(static_cast<char>(p_[at + 4]), static_cast<char>(p_[at + 5]));
+            if (vr_has_long_length(vr)) {
+                header = 12;
+                len = syn.big_endian ? load_be32(p_ + at + 8) : load_le32(p_ + at + 8);
+            } else {
+                len = syn.big_endian ? load_be16(p_ + at + 6) : load_le16(p_ + at + 6);
+            }
+        } else {
+            if (dict::lookup(t) == nullptr && !tag_is_private(t)) return false;
+            len = syn.big_endian ? load_be32(p_ + at + 4) : load_le32(p_ + at + 4);
+        }
+        if (len == kUndefinedLength) return true;
+        return header + len <= size_ - at;
+    }
     bool looks_implicit(std::size_t at, Syntax syn) const {
         if (size_ - at < 8) return false;
         const std::uint32_t len = syn.big_endian ? load_be32(p_ + at + 4) : load_le32(p_ + at + 4);
@@ -458,6 +484,19 @@ private:
                 add(Severity::Error, "pixel-sequence-unterminated", kRescue, path,
                     "encapsulated pixel data ends without a Sequence Delimitation Item", start);
                 pos_ = start;
+                // What follows is read as elements only when it looks like one: a header that
+                // parses, a tag after the pixel data, and a value that fits in the data. Junk after
+                // the last fragment (gdcmData gdcm-JPEG-LossLess3a.dcm: 8 bytes) was read as an
+                // element (B00C,0EB6) and written to the output, an element the input never had.
+                // It is now reported as trailing bytes and not written (testing-chat repair finding).
+                if (path.size() == 1 && !plausible_element_after(start, e.tag, syn)) {
+                    add(Severity::Error, "trailing-bytes", kRescue, path,
+                        std::to_string(size_ - start) +
+                            " byte(s) after the last fragment are not an element; they are not written",
+                        start);
+                    out_.trailing_junk_bytes += size_ - start;
+                    pos_ = size_;
+                }
                 return;
             }
             if (e.fragments.size() >= opt_.max_fragments) {
