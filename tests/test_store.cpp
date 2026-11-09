@@ -20,6 +20,7 @@
 #endif
 
 #include "core/reader.hpp"
+#include "core/writer.hpp"
 #include "core/types.hpp"
 #include "crosscheck/store_synth.hpp"
 #include "siaara/siaara.h"
@@ -1140,4 +1141,45 @@ TEST_CASE("store: C API extract, store, query, delete, verify, stats") {
     siaara_store_free(st);
     siaara_store_free(nullptr);
     siaara_store_result_free(nullptr);
+}
+
+// Found by fuzz/targets/store_journal.cpp (tests/regress/store_journal/): an instance whose Study
+// Instance UID already belongs to another patient rewrote that patient's identifying fields, so two
+// patients ended up with the same identity and the store could not be reopened after compaction.
+TEST_CASE("store: a study shared by two Patient IDs keeps the store loadable") {
+    auto make = [](const char* pid, const char* sop, const char* study) {
+        Dataset d;
+        (void)d.set_string(tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+        (void)d.set_string(tags::SOPInstanceUID, VR::UI, sop);
+        (void)d.set_string(tags::PatientID, VR::LO, pid);
+        (void)d.set_string(tags::PatientName, VR::PN, "Doe^Jane");
+        (void)d.set_string(tags::StudyInstanceUID, VR::UI, study);
+        (void)d.set_string(tags::SeriesInstanceUID, VR::UI, std::string(sop) + ".1");
+        DicomFile f;
+        f.dataset = d;
+        f.transfer_syntax = "1.2.840.10008.1.2.1";
+        std::vector<std::uint8_t> out;
+        (void)write_part10(f, out);
+        return Bytes::copy_of(out.data(), out.size());
+    };
+    TempDir td("siaara-shared-study");
+    {
+        auto st = open_store(td / "s");
+        REQUIRE(st != nullptr);
+        REQUIRE(st->add_buffer(make("PID2", "1.2.3.9.0", "1.2.3.100")).is_ok());
+        REQUIRE(st->add_buffer(make("PID1", "1.2.3.9.1", "1.2.3.200")).is_ok());
+        REQUIRE(st->add_buffer(make("PID2", "1.2.3.9.2", "1.2.3.200")).is_ok());
+        QueryFilter q;
+        q.level = Level::Patient;
+        auto r = st->query(q);
+        REQUIRE(r.is_ok());
+        std::set<std::string> ids;
+        for (const auto& row : r->rows) ids.insert(row[Str::PatientId]);
+        CHECK(ids == (std::set<std::string>{"PID1", "PID2"}));
+        REQUIRE(st->compact().is_ok());
+    }
+    auto st = open_store(td / "s");
+    REQUIRE(st != nullptr);
+    CHECK_EQ(st->stats().patients, 2u);
+    CHECK_EQ(st->stats().instances, 3u);
 }

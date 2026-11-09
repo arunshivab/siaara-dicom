@@ -4,3 +4,6 @@
 *.jpg binary
 *.j2k binary
 *.jls binary
+# Fuzz seeds and regression inputs are raw bytes: never convert line endings.
+fuzz/corpus/** binary
+tests/regress/** binary

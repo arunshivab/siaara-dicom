@@ -18,7 +18,10 @@ public:
     Writer(std::vector<std::uint8_t>& out, Enc enc, const WriteOptions& opt)
         : out_(out), enc_(enc), opt_(opt) {}
 
-    Status dataset(const Dataset& ds, bool is_meta = false) {
+    // `skip_meta_group`: the top level of a Part 10 body, where group 0002 must not appear
+    // (PS3.10 7.1); file meta elements left in the data set would otherwise follow the real file
+    // meta and override it when the file is read back.
+    Status dataset(const Dataset& ds, bool is_meta = false, bool skip_meta_group = false) {
         // Pixel samples wider than 16 bits stored as OW must be byte-reversed per sample, not per
         // 16-bit word, in big-endian syntaxes (PS3.5 A.3 / 8.1.1), so remember Bits Allocated.
         const std::uint16_t saved_bits = pixel_bits_;
@@ -26,6 +29,7 @@ public:
         struct Restore { std::uint16_t& ref; std::uint16_t v; ~Restore() { ref = v; } } restore{pixel_bits_, saved_bits};
         for (const Element& e : ds.elements()) {
             if (tag_element(e.tag) == 0 && !is_meta && !opt_.keep_group_lengths) continue;
+            if (skip_meta_group && tag_group(e.tag) == 0x0002) continue;
             if (Status s = element(e); !s) return s;
         }
         return Status::ok();
@@ -168,15 +172,16 @@ private:
 
 }  // namespace
 
-Status write_dataset(const Dataset& ds, std::string_view transfer_syntax_uid,
-                     std::vector<std::uint8_t>& out, const WriteOptions& opt) {
+namespace {
+Status write_body(const Dataset& ds, std::string_view transfer_syntax_uid, std::vector<std::uint8_t>& out,
+                  const WriteOptions& opt, bool part10_body) {
     const TransferSyntaxInfo* t = find_transfer_syntax(transfer_syntax_uid);
     if (!t) return Status(Errc::Unsupported, "unknown transfer syntax");
     const Enc enc{t->explicit_vr, t->big_endian};
     if (t->codec == Codec::Deflate) {
         std::vector<std::uint8_t> plain;
         Writer w(plain, enc, opt);
-        if (Status s = w.dataset(ds); !s) return s;
+        if (Status s = w.dataset(ds, false, part10_body); !s) return s;
         std::vector<std::uint8_t> packed;
         if (Status s = codec::deflate_raw(plain.data(), plain.size(), opt.deflate_level, packed); !s)
             return s;
@@ -185,7 +190,13 @@ Status write_dataset(const Dataset& ds, std::string_view transfer_syntax_uid,
         return Status::ok();
     }
     Writer w(out, enc, opt);
-    return w.dataset(ds);
+    return w.dataset(ds, false, part10_body);
+}
+}  // namespace
+
+Status write_dataset(const Dataset& ds, std::string_view transfer_syntax_uid,
+                     std::vector<std::uint8_t>& out, const WriteOptions& opt) {
+    return write_body(ds, transfer_syntax_uid, out, opt, false);
 }
 
 Status write_part10(const DicomFile& file, std::vector<std::uint8_t>& out, const WriteOptions& opt) {
@@ -227,7 +238,7 @@ Status write_part10(const DicomFile& file, std::vector<std::uint8_t>& out, const
     out.insert(out.end(), len, len + 4);
     out.insert(out.end(), meta_bytes.begin(), meta_bytes.end());
 
-    return write_dataset(file.dataset, ts_uid, out, opt);
+    return write_body(file.dataset, ts_uid, out, opt, true);
 }
 
 Status write_file(const DicomFile& file, const std::string& utf8_path, const WriteOptions& opt) {

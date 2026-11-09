@@ -1,0 +1,8 @@
+/* Linker version script for libsiaara.so: only the C API (siaara_*) is exported. Without it the
+   shared library would also export the vague-linkage C++ standard library instantiations it uses. */
+{
+  global:
+    siaara_*;
+  local:
+    *;
+};
