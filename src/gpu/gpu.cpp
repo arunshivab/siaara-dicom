@@ -11,6 +11,7 @@ namespace {
 
 std::atomic<std::int64_t> g_objects{0};
 std::atomic<bool> g_force_manual{false};
+std::atomic<bool> g_metal_enabled{true};
 std::atomic<std::uint64_t> g_upload_chunk{0};
 
 struct Source {
@@ -59,7 +60,9 @@ void ensure_probed(Registry& r) {
     try {
 #if defined(__APPLE__)
         {
-            detail::Probe p = metal::probe();
+            detail::Probe p;
+            if (g_metal_enabled.load()) p = metal::probe();
+            else p.reason = "metal: disabled";
             for (std::size_t i = 0; i < p.devices.size(); ++i) {
                 r.devices.push_back(p.devices[i]);
                 r.sources.push_back({Api::Metal, i});
@@ -166,6 +169,7 @@ void reset() {
 }
 
 void force_manual_filtering(bool on) { g_force_manual.store(on); }
+void set_metal_enabled(bool on) { g_metal_enabled.store(on); }
 bool manual_filtering_forced() { return g_force_manual.load(); }
 std::int64_t live_objects() { return g_objects.load(); }
 void set_upload_chunk_bytes(std::uint64_t bytes) { g_upload_chunk.store(bytes); }
