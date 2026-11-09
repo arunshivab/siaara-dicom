@@ -312,7 +312,7 @@ TEST_CASE("repair: missing attributes, never clinical values") {
         auto series = f->dataset.get_string(tags::SeriesInstanceUID);
         REQUIRE(series.has_value());
         CHECK(series->rfind("2.25.", 0) == 0);
-        CHECK(!f->dataset.contains(tags::Modality));  // Type 1 clinical value: not invented
+        CHECK(!f->dataset.contains(0x00080064));  // Type 1 clinical value: not invented
         CHECK(has_code(run.file().findings_after, "missing-type1"));
     }
 }

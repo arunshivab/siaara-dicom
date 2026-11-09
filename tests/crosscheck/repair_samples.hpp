@@ -407,7 +407,7 @@ inline std::vector<Sample> all_samples() {
         ds.remove(0x00080020);  // Study Date, Type 2
         ds.remove(0x00080090);  // Referring Physician's Name, Type 2
         ds.remove(0x0020000E);  // Series Instance UID, Type 1
-        ds.remove(0x00080060);  // Modality, Type 1 (not repairable)
+        ds.remove(0x00080064);  // Conversion Type, Type 1 in SC Equipment (a clinical value: not repairable)
         s.push_back({"attributes_missing", part10(ds), {"missing-type1", "missing-type2"}, "attributes", {"missing-type2"}});
     }
     {  // native multi-frame truncated inside frame 3 of 4
