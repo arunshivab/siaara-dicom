@@ -33,7 +33,9 @@ struct Segment {
     std::optional<Code> category, type;
     std::optional<std::array<std::uint16_t, 3>> cielab;  // Recommended Display CIELab Value
     std::optional<std::array<std::uint8_t, 3>> rgb;      // converted with cielab_to_rgb8
-    std::vector<std::uint32_t> frames;                   // 0-based SEG frames holding this segment
+    std::vector<std::uint32_t> frames;                   // 0-based SEG frames holding this segment;
+                                                         // empty for LABELMAP (every frame holds every
+                                                         // segment): use Segmentation::frame_count
 };
 
 struct SegFrame {
@@ -46,7 +48,11 @@ struct Segmentation {
     SegmentationType type = SegmentationType::Unknown;
     std::string fractional_type;            // PROBABILITY / OCCUPANCY
     std::uint32_t max_fractional = 1;       // Maximum Fractional Value (FRACTIONAL)
-    std::uint32_t rows = 0, columns = 0, number_of_frames = 0;
+    std::uint32_t rows = 0, columns = 0;
+    // Frames read: Number of Frames, limited in lenient mode (with a warning) to the Per-Frame
+    // Functional Groups items and to the frames the Pixel Data holds (R-054).
+    std::uint32_t number_of_frames = 0;
+    std::uint32_t declared_number_of_frames = 0;  // Number of Frames (0028,0008) as stored
     std::string frame_of_reference_uid;
     std::vector<Segment> segments;
     std::vector<SegFrame> frames;
@@ -54,6 +60,8 @@ struct Segmentation {
     std::vector<std::string> warnings;
 
     const Segment* segment(std::uint32_t number) const noexcept;
+    // SEG frames holding segment `s` (number_of_frames for LABELMAP).
+    std::uint32_t frame_count(const Segment& s) const noexcept;
     // SEG frames (0-based) of `segment_number` derived from the source instance (and 1-based
     // frame; 0 = any frame). LABELMAP frames carry every segment.
     std::vector<std::uint32_t> frames_for_source(std::uint32_t segment_number, std::string_view sop_instance,

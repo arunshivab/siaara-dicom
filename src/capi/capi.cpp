@@ -1863,7 +1863,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_seg_segment(const siaara_seg* seg, u
         std::memset(out, 0, sizeof(siaara_segment_info));
         out->struct_size = size;
         out->number = s.number;
-        out->frame_count = static_cast<uint32_t>(s.frames.size());
+        out->frame_count = seg->seg.frame_count(s);
         out->has_color = s.rgb ? 1 : 0;
         if (s.rgb) std::memcpy(out->rgb, s.rgb->data(), 3);
         if (s.cielab)
