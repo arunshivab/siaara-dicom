@@ -258,10 +258,11 @@ TEST_CASE("element offsets and header-only stop offset point at the encoded byte
     auto g = read_part10(Bytes::copy_of(buf.data(), buf.size()), opt);
     REQUIRE(g.is_ok());
     CHECK(g->offsets_are_file_offsets);
-    const std::uint64_t at = g->stopped_at_offset;
-    REQUIRE(at + 4 <= buf.size());
+    REQUIRE(g->stopped_at_offset + 4 <= buf.size());
+    const auto at = static_cast<std::size_t>(g->stopped_at_offset);
     CHECK(buf[at] == 0xE0 && buf[at + 1] == 0x7F && buf[at + 2] == 0x10 && buf[at + 3] == 0x00);
     const Element* rows = g->dataset.find(tags::Rows);
     REQUIRE(rows != nullptr);
-    CHECK(buf[rows->offset] == 0x28 && buf[rows->offset + 2] == 0x10);
+    const auto ro = static_cast<std::size_t>(rows->offset);
+    CHECK(buf[ro] == 0x28 && buf[ro + 2] == 0x10);
 }
