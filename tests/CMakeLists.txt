@@ -13,3 +13,7 @@ add_test(NAME siaara_capi_smoke COMMAND siaara_capi_smoke ${CMAKE_CURRENT_BINARY
 if(WIN32)
   set_tests_properties(siaara_capi_smoke PROPERTIES ENVIRONMENT "PATH=$<TARGET_FILE_DIR:siaara>;$ENV{PATH}")
 endif()
+# Test-only JPEG-LS conversion tool for tests/crosscheck/jpegls_crosscheck.py (not installed).
+add_executable(jpegls_tool crosscheck/jpegls_tool.cpp)
+target_link_libraries(jpegls_tool PRIVATE siaara_static)
+target_compile_options(jpegls_tool PRIVATE ${SIAARA_WARN})
