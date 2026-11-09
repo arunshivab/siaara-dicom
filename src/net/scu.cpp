@@ -107,6 +107,11 @@ Status Scu::add_contexts_for_files(const std::vector<std::string>& paths) {
 }
 
 Status Scu::connect(AssociateRj* rj) {
+    if (cfg_.tls.enabled) {
+        Result<std::unique_ptr<TlsTransport>> s = tls_connect(cfg_.tls, cfg_.host, cfg_.port, cfg_.timeouts.connect_ms);
+        if (!s) return s.take_error();
+        return connect_over(std::unique_ptr<Transport>(std::move(s).value()), rj);
+    }
     Result<std::unique_ptr<Transport>> t = tcp_connect(cfg_.host, cfg_.port, cfg_.timeouts.connect_ms);
     if (!t) return t.take_error();
     return connect_over(std::move(t.value()), rj);

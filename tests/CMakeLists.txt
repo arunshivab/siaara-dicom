@@ -77,3 +77,7 @@ if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART15}" AND EXISTS "${SIAARA_NEMA_PA
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/deid_table_check.py
                    ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART15} ${SIAARA_NEMA_PART16})
 endif()
+# Test-only TLS helper for tests/crosscheck/tls_crosscheck.py (not installed).
+add_executable(tls_tool crosscheck/tls_tool.cpp)
+target_link_libraries(tls_tool PRIVATE siaara_static)
+target_compile_options(tls_tool PRIVATE ${SIAARA_TEST_WARN})

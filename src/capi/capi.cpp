@@ -1312,3 +1312,80 @@ SIAARA_API siaara_status SIAARA_CALL siaara_deid_replacement_uid(const uint8_t* 
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- TLS (appended)
+#include "net/tls.hpp"
+
+namespace {
+siaara::net::TlsSettings tls_from_options(const siaara_tls_options* o) {
+    siaara::net::TlsSettings t;
+    t.enabled = true;
+    if (!o) return t;
+    auto str = [](const char* p) { return p ? std::string(p) : std::string(); };
+    t.ca_file = str(o->ca_file);
+    t.identity.certificate_file = str(o->certificate_file);
+    t.identity.private_key_file = str(o->private_key_file);
+    t.identity.pkcs12_file = str(o->pkcs12_file);
+    t.identity.password = str(o->password);
+#if defined(_WIN32)
+    t.identity.windows_thumbprint = str(o->os_identity);
+#elif defined(__APPLE__)
+    t.identity.keychain_identity = str(o->os_identity);
+#else
+    if (o->os_identity) t.identity.keychain_identity = str(o->os_identity);  // refused by the OpenSSL backend
+#endif
+    t.expected_identity = str(o->expected_identity);
+    t.insecure_skip_validation = o->insecure_skip_validation != 0;
+    if (o->tls13_only) t.min_version = siaara::net::TlsMinVersion::Tls13;
+    return t;
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API int32_t SIAARA_CALL siaara_tls_available(void) {
+    try {
+        std::string why;
+        if (siaara::net::tls_available(&why)) {
+            ok();
+            return 1;
+        }
+        (void)fail(Errc::Unsupported, "TLS is not available: " + why);
+        return 0;
+    } catch (...) {
+        (void)fail(Errc::Internal, "internal error");
+        return 0;
+    }
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* base_url, size_t len, int32_t timeout_ms,
+                                                                  const siaara_tls_options* options,
+                                                                  siaara_web_client** out) {
+    return guarded([&]() -> siaara_status {
+        if (!base_url || !out) return fail(Errc::InvalidArgument, "base_url and out must not be NULL");
+        *out = nullptr;
+        if (timeout_ms < 0) return fail(Errc::InvalidArgument, "timeout_ms must not be negative");
+        if (options && options->struct_size < sizeof(siaara_tls_options))
+            return fail(Errc::InvalidArgument, "options->struct_size is too small");
+        auto c = std::make_unique<siaara_web_client>();
+        siaara::web::DicomwebClientConfig cfg;
+        cfg.base_url.assign(base_url, len);
+        const int t = timeout_ms == 0 ? 30000 : timeout_ms;
+        cfg.limits.read_timeout_ms = t;
+        cfg.limits.write_timeout_ms = t;
+        cfg.limits.header_timeout_ms = t;
+        cfg.connect_timeout_ms = t;
+        cfg.tls = tls_from_options(options);
+        cfg.tls.handshake_timeout_ms = t;
+        siaara_web_client* raw = c.get();
+        cfg.authorization = [raw]() { return raw->authorization; };
+        c->client.emplace(cfg);
+        siaara::net::tls_wipe_secret(cfg.tls.identity.password);
+        if (Status s = c->client->status(); !s) return fail(s);
+        *out = c.release();
+        return ok();
+    });
+}
+
+}  // extern "C"

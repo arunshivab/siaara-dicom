@@ -55,9 +55,14 @@ if(NOT WIN32)
   target_link_libraries(siaara_static PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 if(WIN32)
-  # Winsock2 (OS library) for src/net.
-  target_link_libraries(siaara PRIVATE ws2_32)
-  target_link_libraries(siaara_static PUBLIC ws2_32)
+  # Winsock2 (OS library) for src/net; SChannel/SSPI and CryptoAPI (OS libraries) for TLS.
+  target_link_libraries(siaara PRIVATE ws2_32 secur32 crypt32)
+  target_link_libraries(siaara_static PUBLIC ws2_32 secur32 crypt32)
+endif()
+if(APPLE)
+  # Network.framework (TLS), Security.framework (identities, trust), CoreFoundation (OS frameworks).
+  target_link_libraries(siaara PRIVATE "-framework Network" "-framework Security" "-framework CoreFoundation")
+  target_link_libraries(siaara_static PUBLIC "-framework Network" "-framework Security" "-framework CoreFoundation")
 endif()
 
 if(SIAARA_BUILD_TESTS)

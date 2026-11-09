@@ -17,11 +17,86 @@
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "net/scp.hpp"
+#include "net/tls.hpp"
 
 using namespace siaara;
 using namespace siaara::net;
 
 namespace {
+
+// ---- TLS options (PS3.15 B.12/B.13; DIMSE over TLS uses its own port, 2762 is registered)
+std::string env_value(const char* name) {
+#if defined(_MSC_VER)
+    char* v = nullptr;
+    std::size_t n = 0;
+    if (_dupenv_s(&v, &n, name) != 0 || !v) return std::string();
+    std::string s(v);
+    std::free(v);
+    return s;
+#else
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+#endif
+}
+
+const char* const kTlsUsage =
+    "TLS options:\n"
+    "  --tls                 use TLS (default port for DIMSE over TLS: 2762)\n"
+    "  --tls-ca FILE         PEM trust anchors (default: the OS trust store)\n"
+    "  --tls-cert FILE       PEM certificate chain (Linux)\n"
+    "  --tls-key FILE        PEM private key (Linux)\n"
+    "  --tls-p12 FILE        PKCS#12 identity (all systems)\n"
+    "  --tls-password-env V  read the PKCS#12 / key password from environment variable V\n"
+    "  --tls-os-identity ID  Windows: certificate thumbprint in CurrentUser\\MY; macOS: keychain label\n"
+    "  --tls13               TLS 1.3 only (default: TLS 1.2 or 1.3)\n"
+    "  --tls-insecure        DANGEROUS: do not validate the peer certificate (warned per connection)\n";
+
+// Returns 1 when argv[i] was a TLS option (i advanced past its value), 0 when it is not one,
+// -1 when its value is missing or unusable.
+int parse_tls_option(int argc, char** argv, int& i, siaara::net::TlsSettings& t) {
+    const std::string a = argv[i];
+    const bool more = i + 1 < argc;
+    auto value = [&](std::string& dst) {
+        if (!more) return -1;
+        dst = argv[++i];
+        return 1;
+    };
+    if (a == "--tls") {
+        t.enabled = true;
+        return 1;
+    }
+    if (a == "--tls-ca") return value(t.ca_file);
+    if (a == "--tls-cert") return value(t.identity.certificate_file);
+    if (a == "--tls-key") return value(t.identity.private_key_file);
+    if (a == "--tls-p12") return value(t.identity.pkcs12_file);
+    if (a == "--tls-name") return value(t.expected_identity);
+    if (a == "--tls-os-identity") {
+#if defined(_WIN32)
+        return value(t.identity.windows_thumbprint);
+#else
+        return value(t.identity.keychain_identity);
+#endif
+    }
+    if (a == "--tls-password-env") {
+        std::string name;
+        if (value(name) < 0) return -1;
+        t.identity.password = env_value(name.c_str());
+        return t.identity.password.empty() ? -1 : 1;
+    }
+    if (a == "--tls13") {
+        t.min_version = siaara::net::TlsMinVersion::Tls13;
+        return 1;
+    }
+    if (a == "--tls-insecure") {
+        t.insecure_skip_validation = true;
+        return 1;
+    }
+    if (a == "--tls-require-client-cert") {
+        t.require_client_certificate = true;
+        return 1;
+    }
+    return 0;
+}
 
 volatile std::sig_atomic_t g_stop = 0;
 void on_signal(int) { g_stop = 1; }
@@ -40,7 +115,10 @@ void usage() {
                  "  --port-file PATH   write the listening port to PATH (useful with port 0)\n"
                  "  --qr-dir DIR       serve C-FIND/C-GET/C-MOVE from the DICOM files in DIR\n"
                  "  --move-dest AE=HOST:PORT  C-MOVE destination (repeatable)\n"
-                 "  -v                 log association events to stderr\n");
+                 "  -v                 log association and TLS events to stderr\n"
+                 "  --tls-require-client-cert  mutual TLS: refuse clients without a valid certificate\n");
+    std::fputs(kTlsUsage, stderr);
+    std::fputs("  (the server needs --tls-cert/--tls-key, --tls-p12 or --tls-os-identity)\n", stderr);
 }
 
 bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
@@ -157,6 +235,12 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         const bool more = i + 1 < argc;
+        const int tls_opt = std::strcmp(a, "--tls-name") ? parse_tls_option(argc, argv, i, cfg.tls) : -1;
+        if (tls_opt < 0) {
+            usage();
+            return 2;
+        }
+        if (tls_opt > 0) continue;
         if (!std::strcmp(a, "-aet") && more) cfg.ae_title = argv[++i];
         else if (!std::strcmp(a, "-od") && more) out_dir = argv[++i];
         else if (!std::strcmp(a, "--accept-any")) cfg.accept_any_sop_class = true;
@@ -208,6 +292,12 @@ int main(int argc, char** argv) {
     ScpHandlers h;
     if (verbose)
         h.log = [&](const std::string& s) {
+            std::lock_guard<std::mutex> l(log_mu);
+            std::fprintf(stderr, "siaara-storescp: %s\n", s.c_str());
+        };
+    else
+        cfg.tls.log = [&](const std::string& s) {  // TLS warnings are always shown
+            if (s.rfind("WARNING", 0) != 0) return;
             std::lock_guard<std::mutex> l(log_mu);
             std::fprintf(stderr, "siaara-storescp: %s\n", s.c_str());
         };

@@ -13,6 +13,7 @@
 #include "core/status.hpp"
 #include "net/association.hpp"
 #include "net/dimse.hpp"
+#include "net/tls.hpp"
 
 namespace siaara::net {
 
@@ -57,6 +58,8 @@ struct ScuConfig {
     Timeouts timeouts;
     AssociationLimits limits;
     std::optional<UserIdentityRq> identity;
+    // TLS (PS3.15 B.12/B.13) when tls.enabled: connect() then never falls back to plain TCP.
+    TlsSettings tls;
 };
 
 class Scu {

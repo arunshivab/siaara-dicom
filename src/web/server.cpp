@@ -39,15 +39,15 @@ std::string trimmed(const Dataset& ds, Tag t) {
     return v ? *v : std::string();
 }
 
-// Absolute origin ("http://host[:port]") from the Host header, when it is a plain host[:port].
-std::string origin_of(const http::Request& rq) {
+// Absolute origin ("http[s]://host[:port]") from the Host header, when it is a plain host[:port].
+std::string origin_of(const http::Request& rq, bool tls) {
     const std::string* host = http::find_header(rq.headers, "Host");
     if (!host || host->empty() || host->size() > 255) return std::string();
     for (char c : *host)
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-' ||
               c == ':' || c == '[' || c == ']'))
             return std::string();
-    return "http://" + *host;
+    return (tls ? "https://" : "http://") + *host;
 }
 
 // ---------------------------------------------------------------- transfer syntax handling
@@ -180,7 +180,7 @@ public:
             !std::equal(base.begin(), base.end(), target_.segments.begin()))
             return fail(rs_, 404, "not found");
         seg_.assign(target_.segments.begin() + static_cast<std::ptrdiff_t>(base.size()), target_.segments.end());
-        base_url_ = cfg_.public_base_url.empty() ? origin_of(rq_) + cfg_.base_path : cfg_.public_base_url;
+        base_url_ = cfg_.public_base_url.empty() ? origin_of(rq_, cfg_.http.tls.enabled) + cfg_.base_path : cfg_.public_base_url;
         route(get, post);
         add_cors(cfg_, rs_);
     }

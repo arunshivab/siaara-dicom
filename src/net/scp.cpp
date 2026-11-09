@@ -83,8 +83,19 @@ Status ScpServer::start() {
     std::lock_guard<std::mutex> lock(stop_mu_);
     if (running_.load()) return Status(Errc::InvalidArgument, "server already running");
     if (!is_valid_ae_title(cfg_.ae_title)) return Status(Errc::InvalidArgument, "invalid AE title");
-    if (Status s = listener_.listen(cfg_.bind_address, cfg_.port); !s) return s;
-    port_ = listener_.port();
+    if (cfg_.tls.enabled) {
+        TlsSettings ts = cfg_.tls;
+        if (!ts.log && h_.log) ts.log = h_.log;
+        Result<std::shared_ptr<TlsContext>> ctx = TlsContext::create(ts, TlsContext::Role::Server);
+        if (!ctx) return ctx.take_error();
+        tls_wipe_secret(ts.identity.password);
+        tls_wipe_secret(cfg_.tls.identity.password);  // the context keeps (and later wipes) its own copy
+        if (Status s = tls_listener_.listen(std::move(ctx).value(), cfg_.bind_address, cfg_.port); !s) return s;
+        port_ = tls_listener_.port();
+    } else {
+        if (Status s = listener_.listen(cfg_.bind_address, cfg_.port); !s) return s;
+        port_ = listener_.port();
+    }
     stopping_.store(false);
     running_.store(true);
     workers_.reserve(cfg_.max_associations);
@@ -100,6 +111,7 @@ void ScpServer::stop() {
         std::lock_guard<std::mutex> l(mu_);
         stopping_.store(true);
         for (Association* a : live_) a->interrupt();
+        for (Transport* t : handshaking_) t->shutdown();
     }
     cv_.notify_all();
     if (accept_thread_.joinable()) accept_thread_.join();
@@ -112,6 +124,7 @@ void ScpServer::stop() {
         queue_.clear();
     }
     listener_.close();
+    tls_listener_.close();
     running_.store(false);
 }
 
@@ -134,7 +147,14 @@ void ScpServer::unregister_assoc(Association* a) {
 
 void ScpServer::accept_loop() {
     while (!stopping_.load()) {
-        Result<std::unique_ptr<Transport>> t = listener_.accept(cfg_.accept_poll_ms);
+        Result<std::unique_ptr<Transport>> t = Status(Errc::Timeout, "");
+        if (cfg_.tls.enabled) {
+            Result<std::unique_ptr<TlsTransport>> s = tls_listener_.accept(cfg_.accept_poll_ms);
+            if (s) t = std::unique_ptr<Transport>(std::move(s).value());
+            else t = s.take_error();
+        } else {
+            t = listener_.accept(cfg_.accept_poll_ms);
+        }
         if (!t) {
             if (t.error().code == Errc::Timeout) continue;
             log("accept failed: " + t.error().message);
@@ -153,6 +173,11 @@ void ScpServer::accept_loop() {
 
 void ScpServer::quick_reject(std::unique_ptr<Transport> t) {
     rejected_.fetch_add(1);
+    if (cfg_.tls.enabled) {
+        // An A-ASSOCIATE-RJ would need a TLS handshake on the accept thread; just close.
+        log("connection from " + t->peer_address() + " closed: local limit exceeded");
+        return;
+    }
     Timeouts to = cfg_.timeouts;
     to.artim_ms = std::min(to.artim_ms, 2000);
     Result<std::unique_ptr<Association>> a = Association::receive_request(std::move(t), to, cfg_.limits);
@@ -180,6 +205,23 @@ void ScpServer::worker_loop() {
 
 void ScpServer::serve(std::unique_ptr<Transport> t) {
     const std::string peer = t->peer_address();
+    if (cfg_.tls.enabled) {
+        // The handshake runs here, on the pool thread; stop() shuts the socket down to end it early.
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            if (stopping_.load()) return;
+            handshaking_.insert(t.get());
+        }
+        Status hs = static_cast<TlsTransport*>(t.get())->handshake(cfg_.tls.handshake_timeout_ms);
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            handshaking_.erase(t.get());
+        }
+        if (!hs) {
+            log(hs.message);
+            return;
+        }
+    }
     Result<std::unique_ptr<Association>> ar = Association::receive_request(std::move(t), cfg_.timeouts, cfg_.limits);
     if (!ar) {
         log("association setup from " + peer + " failed: " + ar.error().message);
@@ -433,6 +475,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         sc.port = dest->port;
         sc.timeouts = cfg_.timeouts;
         sc.limits = cfg_.limits;
+        sc.tls = cfg_.move_tls;
         sub = std::make_unique<Scu>(sc);
         std::vector<std::pair<std::string, std::string>> seen;
         for (const Loaded& l : loaded) {

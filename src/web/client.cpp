@@ -46,6 +46,28 @@ DicomwebClient::DicomwebClient(DicomwebClientConfig cfg) : cfg_(std::move(cfg)) 
         wado_url_.path += "/wado";
     }
     http_.emplace(url_.host, url_.port, cfg_.limits, cfg_.connect_timeout_ms);
+    if (url_.scheme == "https") {
+        net::TlsSettings ts = cfg_.tls;
+        ts.enabled = true;
+        auto ctx = net::TlsContext::create(ts, net::TlsContext::Role::Client);
+        net::tls_wipe_secret(ts.identity.password);
+        net::tls_wipe_secret(cfg_.tls.identity.password);  // the context keeps (and later wipes) its own copy
+        if (!ctx) {
+            init_ = ctx.take_error();
+            return;
+        }
+        tls_ = std::move(ctx).value();
+        http_->default_port = 443;
+        std::shared_ptr<net::TlsContext> tls = tls_;
+        http_->connector = [tls](const std::string& host, std::uint16_t port,
+                                 int timeout_ms) -> Result<std::unique_ptr<net::Transport>> {
+            auto t = tls->connect(host, port, timeout_ms);
+            if (!t) return t.take_error();
+            return std::unique_ptr<net::Transport>(std::move(t).value());
+        };
+    } else if (cfg_.tls.enabled) {
+        init_ = Status(Errc::InvalidArgument, "TLS settings are enabled but the base URL is not https://");
+    }
 }
 
 Status DicomwebClient::check_status(const http::Response& rs) const {
@@ -249,12 +271,13 @@ Result<std::vector<BulkPart>> DicomwebClient::retrieve_frames(std::string_view s
 
 Result<std::vector<BulkPart>> DicomwebClient::retrieve_bulkdata(std::string_view uri) {
     std::string target;
-    if (uri.substr(0, 7) == "http://") {
+    const std::string origin_prefix = url_.scheme + "://";
+    if (uri.substr(0, origin_prefix.size()) == origin_prefix) {
         auto u = http::parse_url(uri);
         if (!u) return u.take_error();
         if (u->host != url_.host || u->port != url_.port)
             return Status(Errc::Unsupported, "bulk data on another server is not followed");
-        const auto after = uri.find('/', 7);
+        const auto after = uri.find('/', origin_prefix.size());
         target = after == std::string_view::npos ? std::string("/") : std::string(uri.substr(after));
     } else if (!uri.empty() && uri[0] == '/') {
         target = std::string(uri);

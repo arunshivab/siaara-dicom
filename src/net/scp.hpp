@@ -22,6 +22,7 @@
 #include "net/dimse.hpp"
 #include "net/scu.hpp"
 #include "net/socket.hpp"
+#include "net/tls.hpp"
 
 namespace siaara::net {
 
@@ -86,6 +87,11 @@ struct ScpConfig {
     AssociationLimits limits;
     // Pool threads: max_associations. The accept loop polls for stop() at this interval.
     int accept_poll_ms = 100;
+    // TLS (PS3.15 B.12/B.13) when tls.enabled: every connection on this port must use TLS
+    // (serve plain DIMSE from a second server on another port). tls.log defaults to handlers.log.
+    TlsSettings tls;
+    // TLS client settings for C-MOVE sub-associations (used when move_tls.enabled).
+    TlsSettings move_tls;
 };
 
 class ScpServer {
@@ -128,6 +134,8 @@ private:
     std::vector<AcceptedSyntax> policy_;
     std::optional<AcceptedSyntax> any_policy_;
     TcpListener listener_;
+    TlsListener tls_listener_;           // used instead of listener_ when cfg_.tls.enabled
+    std::set<Transport*> handshaking_;   // TLS handshakes in progress (stop() wakes them); under mu_
     std::uint16_t port_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
