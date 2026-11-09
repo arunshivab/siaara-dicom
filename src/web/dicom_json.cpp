@@ -204,19 +204,29 @@ public:
 
     Status dataset(const json::Value& obj, Dataset& ds, std::uint32_t depth) {
         if (!obj.is_object()) return Status(Errc::Malformed, "DICOM JSON: data set is not an object");
+        // Attributes are appended in document order and sorted once (R-002: no quadratic insertion
+        // for descending tags); a repeated attribute is still an error.
+        const std::size_t first = ds.size();
+        bool ordered = true;
         for (const auto& [key, attr] : obj.object) {
             const auto tag = detail::parse_tag_hex(key);
             if (!tag) return Status(Errc::Malformed, "DICOM JSON: attribute name is not 8 hex digits");
             if (++count_ > opt_.max_elements) return Status(Errc::LimitExceeded, "DICOM JSON: too many elements");
             if (tag_group(*tag) == 0xFFFE) return Status(Errc::Malformed, "DICOM JSON: item tags are not attributes", 0, *tag);
-            if (ds.contains(*tag)) return Status(Errc::Malformed, "DICOM JSON: duplicate attribute", 0, *tag);
+            if (ordered && first == 0 && ds.contains(*tag)) return Status(Errc::Malformed, "DICOM JSON: duplicate attribute", 0, *tag);
             Element e;
             e.tag = *tag;
             path_.push_back(*tag);
             Status st = element(attr, e, depth);
             path_.pop_back();
             if (!st) return st;
-            ds.append_sorted(std::move(e));
+            if (ordered && !ds.empty() && !(ds.elements().back().tag < e.tag)) ordered = false;
+            ds.append_unsorted(std::move(e));
+        }
+        if (!ordered || first != 0) {
+            std::vector<Tag> dups;
+            ds.sort_by_tag(&dups);
+            if (!dups.empty()) return Status(Errc::Malformed, "DICOM JSON: duplicate attribute", 0, dups.front());
         }
         return Status::ok();
     }

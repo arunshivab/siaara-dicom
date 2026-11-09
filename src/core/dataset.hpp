@@ -54,6 +54,12 @@ public:
     bool remove(Tag tag);
     // Fast path used by the parser when tags arrive in ascending order.
     void append_sorted(Element e);
+    // Bulk building (parsers): append in arrival order, then call sort_by_tag() once. Between the
+    // two calls the data set may be out of order and lookups are not valid.
+    void append_unsorted(Element e) { elements_.push_back(std::move(e)); }
+    // Stable sort by tag; of duplicate tags the last appended is kept (as put() would) and the
+    // duplicate tags are reported in `duplicates` when given. O(n log n).
+    void sort_by_tag(std::vector<Tag>* duplicates = nullptr);
 
     // ---- typed getters (value multiplicity index `vm`, 0-based)
     // Text value with trailing padding (spaces / NULs) removed; leading spaces kept except where

@@ -1,6 +1,8 @@
 #include "core/reader.hpp"
 
+#include <cassert>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "codec/deflate.hpp"
@@ -20,7 +22,7 @@ struct Syntax {
 class Parser {
 public:
     Parser(const Bytes& buf, const ReadOptions& opt, std::vector<std::string>* warnings)
-        : buf_(buf), p_(buf.data()), size_(buf.size()), opt_(opt), warnings_(warnings) {}
+        : buf_(buf), p_(buf.data()), size_(buf.size()), limit_(buf.size()), opt_(opt), warnings_(warnings) {}
 
     std::size_t pos() const noexcept { return pos_; }
     void seek(std::size_t p) noexcept { pos_ = p; }
@@ -29,17 +31,40 @@ public:
     // Reads elements into `ds` until `end` (absolute offset) or, when `end` is undefined,
     // until an Item Delimitation Item. `stop_group` > 0 stops before the first element whose
     // group differs (used for file meta).
+    // Nothing inside may extend past the end of the innermost enclosing defined-length item or
+    // sequence (`limit_`, R-001 / PARSE-10): strict mode fails with Malformed, lenient mode clamps
+    // to that end and warns. The cursor never moves backwards.
+    // Elements are appended in arrival order and sorted once at the end (R-002 / PARSE-21);
+    // duplicates are reported and the last occurrence kept, as before.
     Status parse(Dataset& ds, Syntax syn, std::uint64_t end, bool undefined, std::uint32_t depth,
                  std::uint16_t only_group = 0) {
+        const std::size_t saved_limit = limit_;
+        if (!undefined) {
+            assert(end <= limit_);
+            if (end < limit_) limit_ = static_cast<std::size_t>(end);
+        }
+        bool ordered = true;
+        Status s = parse_elements(ds, syn, end, undefined, depth, only_group, ordered);
+        if (!ordered) {
+            std::vector<Tag> dups;
+            ds.sort_by_tag(&dups);
+            for (std::size_t i = 0; i < dups.size() && i < 16; ++i) warn("duplicate tag " + tag_text(dups[i]) + "; last kept");
+        }
+        limit_ = saved_limit;
+        return s;
+    }
+
+    Status parse_elements(Dataset& ds, Syntax syn, std::uint64_t end, bool undefined, std::uint32_t depth,
+                          std::uint16_t only_group, bool& ordered) {
         if (depth > opt_.max_depth)
             return Status(Errc::LimitExceeded, "sequence nesting too deep", pos_);
         while (true) {
             if (!undefined && pos_ >= end) return Status::ok();
-            if (pos_ == size_) {
+            if (pos_ == limit_) {
                 if (undefined && depth > 0) return lenient_or(Errc::Truncated, "missing item delimiter");
                 return Status::ok();
             }
-            if (size_ - pos_ < 8) return lenient_or(Errc::Truncated, "truncated element header");
+            if (limit_ - pos_ < 8) return lenient_or(Errc::Truncated, "truncated element header");
 
             const std::size_t start = pos_;
             const Tag tag = read_tag(syn);
@@ -94,16 +119,20 @@ public:
                 }
             } else {
                 std::uint64_t vend = 0;
-                if (!checked_add(pos_, len, vend) || vend > size_) {
+                if (!checked_add(pos_, len, vend) || vend > limit_) {
+                    // Inside a defined-length item or sequence the parent's end is the bound
+                    // (Malformed); at top level it is the end of the data (Truncated).
+                    const bool in_parent = limit_ < size_;
                     if (!opt_.lenient)
-                        return Status(Errc::Truncated, "value runs past end of data", start, tag);
-                    warn("value truncated at end of data");
-                    len = static_cast<std::uint32_t>(size_ - pos_);
-                    vend = size_;
+                        return in_parent ? Status(Errc::Malformed, "value runs past end of parent item or sequence", start, tag)
+                                         : Status(Errc::Truncated, "value runs past end of data", start, tag);
+                    warn(in_parent ? "value runs past end of parent; clamped" : "value truncated at end of data");
+                    len = static_cast<std::uint32_t>(limit_ - pos_);
+                    vend = limit_;
                 }
                 if (e.vr == VR::SQ) {
                     if (Status s = parse_items(e, syn, vend, false, depth); !s) return s;
-                    pos_ = static_cast<std::size_t>(vend);
+                    advance_to(vend);
                 } else {
                     std::size_t unit = 0;
                     // Pixel samples wider than 16 bits stored as OW are big-endian per sample, not
@@ -115,13 +144,11 @@ public:
                     e.value = value_bytes(e.vr, pos_, len, syn, unit);
                     if (depth == 0 && tag == tags::BitsAllocated && e.value.size() >= 2)
                         bits_allocated_ = load_le16(e.value.data());
-                    pos_ = static_cast<std::size_t>(vend);
+                    advance_to(vend);
                 }
             }
-            if (e.vr == VR::UN && e.items.empty() && !syn.explicit_vr) {
-                // Leave as UN; the dictionary had no VR for it.
-            }
-            ds.append_sorted(std::move(e));
+            if (ordered && !ds.empty() && !(ds.elements().back().tag < e.tag)) ordered = false;
+            ds.append_unsorted(std::move(e));
         }
     }
 
@@ -129,6 +156,23 @@ public:
     std::uint64_t stop_offset() const noexcept { return stop_offset_; }
 
 private:
+    // Moves the cursor forward to `to`. Children are bounded by their parent (limit_), so the
+    // cursor can never be past `to` here; the max() keeps it monotonic regardless (R-001).
+    void advance_to(std::uint64_t to) noexcept {
+        assert(pos_ <= to);
+        if (to > pos_) pos_ = static_cast<std::size_t>(to);
+    }
+
+    static std::string tag_text(Tag t) {
+        static const char* hex = "0123456789ABCDEF";
+        std::string s = "(gggg,eeee)";
+        for (int i = 0; i < 4; ++i) {
+            s[static_cast<std::size_t>(1 + i)] = hex[(t >> (28 - 4 * i)) & 0xFu];
+            s[static_cast<std::size_t>(6 + i)] = hex[(t >> (12 - 4 * i)) & 0xFu];
+        }
+        return s;
+    }
+
     Tag read_tag(Syntax syn) {
         const std::uint8_t* q = p_ + pos_;
         const std::uint16_t g = syn.big_endian ? load_be16(q) : load_le16(q);
@@ -169,7 +213,7 @@ private:
         }
         pos_ += 2;
         if (vr_has_long_length(vr)) {
-            if (size_ - pos_ < 6) return Status(Errc::Truncated, "truncated element header", pos_, tag);
+            if (limit_ - pos_ < 6) return Status(Errc::Truncated, "truncated element header", pos_, tag);
             pos_ += 2;  // reserved
             len = read_u32(syn);
         } else {
@@ -180,9 +224,20 @@ private:
     }
 
     Status parse_items(Element& e, Syntax syn, std::uint64_t end, bool undefined, std::uint32_t depth) {
+        const std::size_t saved_limit = limit_;
+        if (!undefined) {
+            assert(end <= limit_);
+            limit_ = static_cast<std::size_t>(end);
+        }
+        Status s = parse_items_in(e, syn, end, undefined, depth);
+        limit_ = saved_limit;
+        return s;
+    }
+
+    Status parse_items_in(Element& e, Syntax syn, std::uint64_t end, bool undefined, std::uint32_t depth) {
         while (true) {
             if (!undefined && pos_ >= end) return Status::ok();
-            if (size_ - pos_ < 8) {
+            if (limit_ - pos_ < 8) {
                 if (undefined) return lenient_or(Errc::Truncated, "missing sequence delimiter");
                 return Status(Errc::Truncated, "truncated item header", pos_, e.tag);
             }
@@ -203,14 +258,16 @@ private:
                 if (Status s = parse(item, syn, 0, true, depth + 1); !s) return s;
             } else {
                 std::uint64_t iend = 0;
-                if (!checked_add(pos_, len, iend) || iend > size_) {
+                if (!checked_add(pos_, len, iend) || iend > limit_) {
+                    const bool in_parent = limit_ < size_;
                     if (!opt_.lenient)
-                        return Status(Errc::Truncated, "item runs past end of data", start, e.tag);
-                    warn("item truncated at end of data");
-                    iend = size_;
+                        return in_parent ? Status(Errc::Malformed, "item runs past end of parent sequence", start, e.tag)
+                                         : Status(Errc::Truncated, "item runs past end of data", start, e.tag);
+                    warn(in_parent ? "item runs past end of parent; clamped" : "item truncated at end of data");
+                    iend = limit_;
                 }
                 if (Status s = parse(item, syn, iend, false, depth + 1); !s) return s;
-                pos_ = static_cast<std::size_t>(iend);
+                advance_to(iend);
             }
             e.items.push_back(std::move(item));
         }
@@ -218,18 +275,25 @@ private:
 
     Status parse_fragments(Element& e, Syntax syn) {
         while (true) {
-            if (size_ - pos_ < 8) return lenient_or(Errc::Truncated, "missing pixel data sequence delimiter");
+            if (limit_ - pos_ < 8) return lenient_or(Errc::Truncated, "missing pixel data sequence delimiter");
             const std::size_t start = pos_;
             const Tag tag = read_tag(syn);
-            const std::uint32_t len = read_u32(syn);
+            std::uint32_t len = read_u32(syn);
             if (tag == tags::SequenceDelimitationItem) return Status::ok();
             if (tag != tags::Item)
                 return Status(Errc::Malformed, "expected fragment item", start, e.tag);
             if (e.fragments.size() >= opt_.max_fragments)
                 return Status(Errc::LimitExceeded, "too many pixel data fragments", start, e.tag);
             std::uint64_t fend = 0;
-            if (len == kUndefinedLength || !checked_add(pos_, len, fend) || fend > size_)
+            if (len == kUndefinedLength || !checked_add(pos_, len, fend) || (fend > limit_ && limit_ == size_))
                 return Status(Errc::Truncated, "fragment runs past end of data", start, e.tag);
+            if (fend > limit_) {
+                if (!opt_.lenient)
+                    return Status(Errc::Malformed, "fragment runs past end of parent item", start, e.tag);
+                warn("fragment runs past end of parent; clamped");
+                len = static_cast<std::uint32_t>(limit_ - pos_);
+                fend = limit_;
+            }
             e.fragments.push_back(buf_.sub(pos_, len));
             pos_ = static_cast<std::size_t>(fend);
         }
@@ -251,7 +315,7 @@ private:
     Status lenient_or(Errc code, const char* msg) {
         if (opt_.lenient) {
             warn(msg);
-            pos_ = size_;
+            pos_ = limit_;  // the end of the innermost container: forward, never past the parent
             return Status::ok();
         }
         return Status(code, msg, pos_);
@@ -265,6 +329,7 @@ private:
     Bytes buf_;
     const std::uint8_t* p_;
     std::size_t size_;
+    std::size_t limit_;  // end of the innermost enclosing defined-length container (R-001)
     std::size_t pos_ = 0;
     const ReadOptions& opt_;
     std::vector<std::string>* warnings_;

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 namespace siaara {
 
@@ -83,6 +85,26 @@ void Dataset::append_sorted(Element e) {
         elements_.push_back(std::move(e));
     else
         put(std::move(e));
+}
+
+void Dataset::sort_by_tag(std::vector<Tag>* duplicates) {
+    // Sort (tag, arrival index) keys, then move each element once; of equal tags the last
+    // arrival is kept. O(n log n) on the small keys, O(n) element moves.
+    const std::size_t n = elements_.size();
+    std::vector<std::pair<Tag, std::size_t>> keys(n);
+    for (std::size_t i = 0; i < n; ++i) keys[i] = {elements_[i].tag, i};
+    std::sort(keys.begin(), keys.end());
+    std::vector<Element> out;
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (i + 1 < n && keys[i + 1].first == keys[i].first) {
+            if (duplicates && (duplicates->empty() || duplicates->back() != keys[i].first))
+                duplicates->push_back(keys[i].first);
+            continue;
+        }
+        out.push_back(std::move(elements_[keys[i].second]));
+    }
+    elements_ = std::move(out);
 }
 
 bool Dataset::remove(Tag tag) {
