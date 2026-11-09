@@ -165,6 +165,26 @@ internal sealed class ViewHandle : SiaaraHandle
     }
 }
 
+/// <summary>siaara_frame (siaara_frame_free).</summary>
+internal sealed class FrameHandle : SiaaraHandle
+{
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_frame_free(handle);
+        return true;
+    }
+}
+
+/// <summary>siaara_pstate (siaara_pstate_free).</summary>
+internal sealed class PresentationStateHandle : SiaaraHandle
+{
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_pstate_free(handle);
+        return true;
+    }
+}
+
 /// <summary>
 /// Keeps a SafeHandle alive for the duration of a native call (DangerousAddRef / DangerousRelease).
 /// Throws ObjectDisposedException when the handle was already disposed.

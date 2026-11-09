@@ -16,10 +16,7 @@
 #include "dict/dictionary.hpp"
 #include "image/frames.hpp"
 #include "image/render.hpp"
-
-struct siaara_file {
-    siaara::DicomFile file;
-};
+#include "capi/capi_internal.hpp"  // struct siaara_file, siaara_web_client, siaara_store (wip-capi)
 
 namespace {
 
@@ -563,11 +560,6 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
 #include "web/client.hpp"
 #include "web/dicom_json.hpp"
 
-struct siaara_web_client {
-    std::optional<siaara::web::DicomwebClient> client;
-    std::string authorization;
-    std::string last_response;
-};
 
 namespace {
 
@@ -767,14 +759,11 @@ static_assert(SIAARA_INDEX_MAX_STRINGS >= SIAARA_IDX_COUNT, "string ids");
 static_assert(sizeof(siaara_store_stats) == 96, "siaara_store_stats layout");
 static_assert(sizeof(siaara_dicomdir_entry) == 32, "siaara_dicomdir_entry layout");
 
-struct siaara_store {
-    std::unique_ptr<siaara::store::Store> store;
-};
-
 struct siaara_store_result {
     std::vector<siaara::store::IndexRecord> rows;
     std::size_t total = 0;
     bool exact = true;
+    siaara::capi::LiveHandle live_{};
 };
 
 namespace {
@@ -1407,12 +1396,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* ba
 
 struct siaara_sr {
     siaara::clinical::SrDocument doc;
+    siaara::capi::LiveHandle live_{};
 };
 struct siaara_seg {
     siaara::clinical::Segmentation seg;
+    siaara::capi::LiveHandle live_{};
 };
 struct siaara_rtstruct {
     siaara::clinical::RtStructureSet rt;
+    siaara::capi::LiveHandle live_{};
 };
 
 namespace {
@@ -1916,9 +1908,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, co
 
 struct siaara_volume {
     std::shared_ptr<const siaara::volume::Volume> vol;
+    siaara::capi::LiveHandle live_{};
 };
 struct siaara_view {
     siaara::volume::View view;
+    siaara::capi::LiveHandle live_{};
 };
 
 namespace {
@@ -2265,3 +2259,41 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view*
 }
 
 }  // extern "C"
+
+// ================================================================ wip-capi: bridge for src/capi/capi_*.cpp
+// The additions for the viewer / PACS application live in their own translation units; they
+// share the thread's last error and the TLS option conversion through these functions.
+namespace siaara::capi {
+
+std::atomic<std::int64_t>& live_handle_counter() noexcept {
+    static std::atomic<std::int64_t> n{0};
+    return n;
+}
+
+siaara_status set_error(Errc code, std::string_view msg) noexcept {
+    try {
+        g_last_error.assign(msg.data(), msg.size());
+    } catch (...) {
+        g_last_error.clear();
+    }
+    return static_cast<siaara_status>(code);
+}
+
+siaara_status set_error(const Status& s) noexcept {
+    try {
+        g_last_error = s.message;
+        if (s.offset) g_last_error += " (offset " + std::to_string(s.offset) + ")";
+    } catch (...) {
+        g_last_error.clear();
+    }
+    return static_cast<siaara_status>(s.code);
+}
+
+siaara_status clear_error() noexcept {
+    g_last_error.clear();
+    return SIAARA_OK;
+}
+
+net::TlsSettings tls_settings(const siaara_tls_options* o) { return tls_from_options(o); }
+
+}  // namespace siaara::capi

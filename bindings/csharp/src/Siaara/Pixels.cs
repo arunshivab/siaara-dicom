@@ -86,6 +86,8 @@ public enum VoiMode
     Explicit = C.SIAARA_VOI_EXPLICIT,
     /// <summary>Minimum to maximum of the frame.</summary>
     FullRange = C.SIAARA_VOI_FULL_RANGE,
+    /// <summary>The whole possible modality range (only for <see cref="DicomFrame"/> rendering).</summary>
+    Identity = C.SIAARA_VOI_IDENTITY,
 }
 
 /// <summary>Options of the 2D presentation pipeline (siaara_render_options).</summary>

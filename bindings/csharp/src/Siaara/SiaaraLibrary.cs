@@ -26,6 +26,19 @@ public static class SiaaraLibrary
         }
     }
 
+    /// <summary>
+    /// Number of native handles currently allocated by the library (siaara_debug_live_handles):
+    /// files, frames, stores, results, clients, ... For leak tests; a snapshot.
+    /// </summary>
+    public static long LiveHandleCount
+    {
+        get
+        {
+            Status.Check(Native.siaara_debug_live_handles(out long n));
+            return n;
+        }
+    }
+
     /// <summary>The runtime identifier used to find the native library, e.g. linux-x64.</summary>
     public static string RuntimeIdentifier => NativeLibraryLoader.RuntimeIdentifier;
 

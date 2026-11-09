@@ -267,6 +267,41 @@ internal static class C
     public const int SIAARA_BACKEND_AUTO = 0;
     public const int SIAARA_BACKEND_CPU = 1;
     public const int SIAARA_BACKEND_GPU = 2;
+    public const int SIAARA_FRAMEF_MONOCHROME = 1 << 0;
+    public const int SIAARA_FRAMEF_INVERTED = 1 << 1;
+    public const int SIAARA_FRAMEF_PALETTE = 1 << 2;
+    public const int SIAARA_FRAMEF_SUPPLEMENTAL_PALETTE = 1 << 3;
+    public const int SIAARA_FRAMEF_MODALITY_LUT = 1 << 4;
+    public const int SIAARA_FRAMEF_PRESENTATION_LUT = 1 << 5;
+    public const int SIAARA_FRAMEF_SHUTTER_RECTANGULAR = 1 << 6;
+    public const int SIAARA_FRAMEF_SHUTTER_CIRCULAR = 1 << 7;
+    public const int SIAARA_FRAMEF_SHUTTER_POLYGONAL = 1 << 8;
+    public const int SIAARA_FRAMEF_SHUTTER_BITMAP = 1 << 9;
+    public const int SIAARA_FRAMEF_FLOAT = 1 << 10;
+    public const int SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11;
+    public const int SIAARA_VOI_IDENTITY = 3;
+    public const int SIAARA_VOI_LINEAR = 0;
+    public const int SIAARA_VOI_LINEAR_EXACT = 1;
+    public const int SIAARA_VOI_SIGMOID = 2;
+    public const int SIAARA_PIXELS_RGBA8 = 0;
+    public const int SIAARA_PIXELS_GRAY8 = 1;
+    public const int SIAARA_VOI_KIND_WINDOW = 0;
+    public const int SIAARA_VOI_KIND_LUT = 1;
+    public const int SIAARA_OVERLAY_LABEL = 0;
+    public const int SIAARA_OVERLAY_DESCRIPTION = 1;
+    public const int SIAARA_OVERLAY_SUBTYPE = 2;
+    public const int SIAARA_PSTATE_GRAYSCALE = 0;
+    public const int SIAARA_PSTATE_COLOR = 1;
+    public const int SIAARA_PSTATE_PSEUDO_COLOR = 2;
+    public const int SIAARA_PSTATE_BLENDING = 3;
+    public const int SIAARA_PSTATE_OTHER = 4;
+    public const int SIAARA_PSTATE_LABEL = 0;
+    public const int SIAARA_PSTATE_DESCRIPTION = 1;
+    public const int SIAARA_PSTATE_CREATOR = 2;
+    public const int SIAARA_PSTATE_CREATION_DATE = 3;
+    public const int SIAARA_PSTATE_CREATION_TIME = 4;
+    public const int SIAARA_PSTATE_SOP_INSTANCE_UID = 5;
+    public const int SIAARA_PSTATE_SOP_CLASS_UID = 6;
 }
 
 [InlineArray(3)]
@@ -865,6 +900,132 @@ internal struct siaara_gpu_device_info
     public FixedArray128OfByte driver;
 }
 
+/// <summary>siaara_frame_properties (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_frame_properties
+{
+    public uint struct_size;
+    public uint frame;
+    public uint number_of_frames;
+    public uint rows;
+    public uint columns;
+    public uint samples_per_pixel;
+    public uint bits_allocated;
+    public uint bits_stored;
+    public uint flags;
+    public uint voi_count;
+    public uint overlay_count;
+    public FixedArray3OfByte shutter_rgb;
+    public byte reserved0;
+    public double rescale_slope;
+    public double rescale_intercept;
+    public double min_value;
+    public double max_value;
+    public ulong decoded_bytes;
+    public FixedArray20OfByte photometric;
+}
+
+/// <summary>siaara_view2d_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_view2d_options
+{
+    public uint struct_size;
+    public uint viewport_width;
+    public uint viewport_height;
+    public int output_format;
+    public double zoom;
+    public double pan_x;
+    public double pan_y;
+    public double rotation;
+    public int flip_horizontal;
+    public int flip_vertical;
+    public int interpolation;
+    public int colormap;
+    public int voi_mode;
+    public uint voi_index;
+    public double window_center;
+    public double window_width;
+    public int voi_function;
+    public int invert;
+    public int no_overlays;
+    public int no_shutters;
+    public uint overlay_groups;
+    public FixedArray4OfByte overlay_rgba;
+    public FixedArray4OfByte background_rgba;
+    public uint reserved0;
+    public nint presentation_state;
+}
+
+/// <summary>siaara_voi_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_voi_info
+{
+    public uint struct_size;
+    public int kind;
+    public int function;
+    public int from_functional_groups;
+    public double center;
+    public double width;
+    public uint lut_entries;
+    public int lut_first_mapped;
+    public uint lut_bits;
+    public uint reserved0;
+}
+
+/// <summary>siaara_overlay_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_overlay_info
+{
+    public uint struct_size;
+    public uint group;
+    public uint rows;
+    public uint columns;
+    public int origin_row;
+    public int origin_column;
+    public int type;
+    public uint frames;
+    public uint image_frame_origin;
+    public int embedded;
+    public int covers_frame;
+    public uint reserved0;
+}
+
+/// <summary>siaara_palette_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_palette_info
+{
+    public uint struct_size;
+    public uint entries;
+    public int first_mapped;
+    public uint bits;
+    public int has_alpha;
+    public int segmented;
+    public int supplemental;
+    public uint reserved0;
+}
+
+/// <summary>siaara_pstate_properties (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_pstate_properties
+{
+    public uint struct_size;
+    public int kind;
+    public int has_spatial_transform;
+    public int rotation;
+    public int flip;
+    public uint reference_count;
+    public uint annotation_count;
+    public uint text_count;
+    public uint graphic_count;
+    public uint layer_count;
+    public uint voi_count;
+    public uint displayed_area_count;
+    public int has_shutters;
+    public int has_modality;
+    public uint warning_count;
+    public uint reserved0;
+}
+
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
 internal static unsafe partial class Raw
 {
@@ -1355,6 +1516,110 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_view_last_backend")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_view_last_backend(nint view, int* out_backend);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_open")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_open(nint file, uint frame, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_frame_free(nint frame);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_info")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_info(nint frame, siaara_frame_properties* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_pixels")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_pixels(nint frame, byte** out_data, ulong* out_bytes);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_frame_view")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_frame_view(nint file, uint frame, byte** out_data, ulong* out_bytes);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_render")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_render(nint frame, siaara_view2d_options* options, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_map_point")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_map_point(nint frame, siaara_view2d_options* options, int to_image, double x, double y, double* out_x, double* out_y);
+
+    [LibraryImport(Library, EntryPoint = "siaara_voi_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_voi_count(nint frame, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_voi_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_voi_get(nint frame, uint index, siaara_voi_info* @out, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_voi_lut_data")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_voi_lut_data(nint frame, uint index, ushort* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_overlay_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_overlay_get(nint frame, uint index, siaara_overlay_info* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_overlay_text")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_overlay_text(nint frame, uint index, int field, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_overlay_mask")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_overlay_mask(nint frame, uint index, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_shutter_mask")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_shutter_mask(nint frame, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_palette")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_palette(nint frame, siaara_palette_info* info, ushort* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_colormap_rgba8")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_colormap_rgba8(int colormap, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_pstate_open")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_pstate_open(nint file, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_pstate_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_pstate_free(nint ps);
+
+    [LibraryImport(Library, EntryPoint = "siaara_pstate_info")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_pstate_info(nint ps, siaara_pstate_properties* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_pstate_string")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_pstate_string(nint ps, int field, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_pstate_reference")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_pstate_reference(nint ps, uint index, byte* buf, nuint cap, nuint* needed, uint* frame_count);
+
+    [LibraryImport(Library, EntryPoint = "siaara_pstate_applies")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_pstate_applies(nint ps, byte* sop_instance_uid, nuint len, uint frame_1based, int* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dataset_append_item")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dataset_append_item(nint ds, uint tag, nint* @out, uint* index);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dataset_remove_item")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dataset_remove_item(nint ds, uint tag, uint index);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dataset_get_strings")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dataset_get_strings(nint ds, uint tag, int utf8, byte* buf, nuint cap, nuint* needed, uint* count);
+
+    [LibraryImport(Library, EntryPoint = "siaara_debug_live_handles")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_debug_live_handles(long* @out);
 
 }
 
@@ -2257,6 +2522,207 @@ internal static unsafe class Native
         out_backend = default;
         fixed (int* p_out_backend = &out_backend)
             return Raw.siaara_view_last_backend(view, p_out_backend);
+    }
+
+    internal static int siaara_frame_open(nint file, uint frame, out nint @out)
+    {
+        @out = 0;
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_frame_open(file, frame, p_out);
+    }
+
+    internal static void siaara_frame_free(nint frame)
+    {
+        Raw.siaara_frame_free(frame);
+    }
+
+    internal static int siaara_frame_info(nint frame, ref siaara_frame_properties @out)
+    {
+        fixed (siaara_frame_properties* p_out = &@out)
+            return Raw.siaara_frame_info(frame, p_out);
+    }
+
+    internal static int siaara_frame_pixels(nint frame, out nint out_data, out ulong out_bytes)
+    {
+        out_data = 0;
+        out_bytes = default;
+        fixed (nint* p_out_data = &out_data)
+        fixed (ulong* p_out_bytes = &out_bytes)
+            return Raw.siaara_frame_pixels(frame, (byte**)p_out_data, p_out_bytes);
+    }
+
+    internal static int siaara_file_frame_view(nint file, uint frame, out nint out_data, out ulong out_bytes)
+    {
+        out_data = 0;
+        out_bytes = default;
+        fixed (nint* p_out_data = &out_data)
+        fixed (ulong* p_out_bytes = &out_bytes)
+            return Raw.siaara_file_frame_view(file, frame, (byte**)p_out_data, p_out_bytes);
+    }
+
+    internal static int siaara_frame_render(nint frame, in siaara_view2d_options options, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (siaara_view2d_options* p_options = &options)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_frame_render(frame, p_options, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_frame_map_point(nint frame, in siaara_view2d_options options, int to_image, double x, double y, out double out_x, out double out_y)
+    {
+        out_x = default;
+        out_y = default;
+        fixed (siaara_view2d_options* p_options = &options)
+        fixed (double* p_out_x = &out_x)
+        fixed (double* p_out_y = &out_y)
+            return Raw.siaara_frame_map_point(frame, p_options, to_image, x, y, p_out_x, p_out_y);
+    }
+
+    internal static int siaara_voi_count(nint frame, out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_voi_count(frame, p_out);
+    }
+
+    internal static int siaara_voi_get(nint frame, uint index, ref siaara_voi_info @out, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (siaara_voi_info* p_out = &@out)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_voi_get(frame, index, p_out, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_voi_lut_data(nint frame, uint index, Span<ushort> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (ushort* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_voi_lut_data(frame, index, (ushort*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_overlay_get(nint frame, uint index, ref siaara_overlay_info @out)
+    {
+        fixed (siaara_overlay_info* p_out = &@out)
+            return Raw.siaara_overlay_get(frame, index, p_out);
+    }
+
+    internal static int siaara_overlay_text(nint frame, uint index, int field, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_overlay_text(frame, index, field, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_overlay_mask(nint frame, uint index, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_overlay_mask(frame, index, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_shutter_mask(nint frame, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_shutter_mask(frame, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_frame_palette(nint frame, ref siaara_palette_info info, Span<ushort> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (siaara_palette_info* p_info = &info)
+        fixed (ushort* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_frame_palette(frame, p_info, (ushort*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_colormap_rgba8(int colormap, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_colormap_rgba8(colormap, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_pstate_open(nint file, out nint @out)
+    {
+        @out = 0;
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_pstate_open(file, p_out);
+    }
+
+    internal static void siaara_pstate_free(nint ps)
+    {
+        Raw.siaara_pstate_free(ps);
+    }
+
+    internal static int siaara_pstate_info(nint ps, ref siaara_pstate_properties @out)
+    {
+        fixed (siaara_pstate_properties* p_out = &@out)
+            return Raw.siaara_pstate_info(ps, p_out);
+    }
+
+    internal static int siaara_pstate_string(nint ps, int field, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_pstate_string(ps, field, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_pstate_reference(nint ps, uint index, Span<byte> buf, out nuint needed, out uint frame_count)
+    {
+        needed = default;
+        frame_count = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+        fixed (uint* p_frame_count = &frame_count)
+            return Raw.siaara_pstate_reference(ps, index, (byte*)p_buf, (nuint)buf.Length, p_needed, p_frame_count);
+    }
+
+    internal static int siaara_pstate_applies(nint ps, ReadOnlySpan<byte> sop_instance_uid, uint frame_1based, out int @out)
+    {
+        @out = default;
+        fixed (byte* p_sop_instance_uid = sop_instance_uid)
+        fixed (int* p_out = &@out)
+            return Raw.siaara_pstate_applies(ps, (byte*)p_sop_instance_uid, (nuint)sop_instance_uid.Length, frame_1based, p_out);
+    }
+
+    internal static int siaara_dataset_append_item(nint ds, uint tag, out nint @out, out uint index)
+    {
+        @out = 0;
+        index = default;
+        fixed (nint* p_out = &@out)
+        fixed (uint* p_index = &index)
+            return Raw.siaara_dataset_append_item(ds, tag, p_out, p_index);
+    }
+
+    internal static int siaara_dataset_remove_item(nint ds, uint tag, uint index)
+    {
+        return Raw.siaara_dataset_remove_item(ds, tag, index);
+    }
+
+    internal static int siaara_dataset_get_strings(nint ds, uint tag, int utf8, Span<byte> buf, out nuint needed, out uint count)
+    {
+        needed = default;
+        count = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+        fixed (uint* p_count = &count)
+            return Raw.siaara_dataset_get_strings(ds, tag, utf8, (byte*)p_buf, (nuint)buf.Length, p_needed, p_count);
+    }
+
+    internal static int siaara_debug_live_handles(out long @out)
+    {
+        @out = default;
+        fixed (long* p_out = &@out)
+            return Raw.siaara_debug_live_handles(p_out);
     }
 
 }

@@ -1231,6 +1231,274 @@ SIAARA_API siaara_status SIAARA_CALL siaara_view_set_backend(siaara_view* view, 
 /* SIAARA_BACKEND_CPU or SIAARA_BACKEND_GPU: the renderer of the last siaara_view_render_rgba8. */
 SIAARA_API siaara_status SIAARA_CALL siaara_view_last_backend(const siaara_view* view, int32_t* out_backend);
 
+/* ================================================================ viewer / PACS additions (wip-capi)
+ * Everything below was added for the PACS application. The general rules at the top apply: every
+ * new options / result struct starts with struct_size (set it to sizeof the struct), buffers
+ * follow buf / cap / needed, strings are UTF-8, and each function states its thread safety. */
+
+/* ---------------------------------------------------------------- decoded frames and 2D viewing */
+/* A frame decoded once, for repeated rendering (window / level, colour maps, zoom, pan) without
+ * decoding again. It holds its own copy of the data set: the file may be freed afterwards. A
+ * siaara_frame is immutable: it may be used from many threads at once. */
+typedef struct siaara_frame siaara_frame;
+/* A softcopy presentation state (GSPS, colour / pseudo-colour / blending) read from a file. */
+typedef struct siaara_pstate siaara_pstate;
+
+/* Opens frame `frame` (0-based) of the file and decodes it. Caller owns *out: free with
+ * siaara_frame_free. Thread safety: the file may be read by other threads meanwhile. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_open(const siaara_file* file, uint32_t frame, siaara_frame** out);
+SIAARA_API void SIAARA_CALL siaara_frame_free(siaara_frame* frame);
+
+enum {
+    SIAARA_FRAMEF_MONOCHROME = 1 << 0,       /* MONOCHROME1 or MONOCHROME2 */
+    SIAARA_FRAMEF_INVERTED = 1 << 1,         /* MONOCHROME1 / Presentation LUT Shape INVERSE */
+    SIAARA_FRAMEF_PALETTE = 1 << 2,          /* PALETTE COLOR palette present */
+    SIAARA_FRAMEF_SUPPLEMENTAL_PALETTE = 1 << 3, /* Supplemental Palette Color LUT (C.7.6.19) */
+    SIAARA_FRAMEF_MODALITY_LUT = 1 << 4,     /* Modality LUT Sequence instead of rescale */
+    SIAARA_FRAMEF_PRESENTATION_LUT = 1 << 5, /* Presentation LUT Sequence */
+    SIAARA_FRAMEF_SHUTTER_RECTANGULAR = 1 << 6,
+    SIAARA_FRAMEF_SHUTTER_CIRCULAR = 1 << 7,
+    SIAARA_FRAMEF_SHUTTER_POLYGONAL = 1 << 8,
+    SIAARA_FRAMEF_SHUTTER_BITMAP = 1 << 9,
+    SIAARA_FRAMEF_FLOAT = 1 << 10,           /* Float / Double Float Pixel Data */
+    SIAARA_FRAMEF_VOI_FROM_FUNCTIONAL_GROUPS = 1 << 11
+};
+
+typedef struct siaara_frame_properties {
+    uint32_t struct_size;            /* set to sizeof(siaara_frame_properties) */
+    uint32_t frame;                  /* 0-based frame index */
+    uint32_t number_of_frames;
+    uint32_t rows;
+    uint32_t columns;
+    uint32_t samples_per_pixel;
+    uint32_t bits_allocated;
+    uint32_t bits_stored;
+    uint32_t flags;                  /* SIAARA_FRAMEF_* */
+    uint32_t voi_count;              /* windows + VOI LUTs (siaara_voi_get) */
+    uint32_t overlay_count;          /* siaara_overlay_get */
+    uint8_t shutter_rgb[3];          /* colour shown where shuttered */
+    uint8_t reserved0;
+    double rescale_slope;            /* 1 / 0 with a Modality LUT or without rescale */
+    double rescale_intercept;
+    double min_value;                /* minimum / maximum modality value present in the frame */
+    double max_value;
+    uint64_t decoded_bytes;          /* size of siaara_frame_pixels (DICOM native layout) */
+    char photometric[20];            /* NUL-terminated (truncated if longer) */
+} siaara_frame_properties;
+
+/* Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_info(const siaara_frame* frame, siaara_frame_properties* out);
+/* Borrowed: the decoded frame in the DICOM native layout of siaara_frame_decode with
+ * SIAARA_FRAME_NATIVE, valid until the frame is freed. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_pixels(const siaara_frame* frame, const uint8_t** out_data,
+                                                         uint64_t* out_bytes);
+/* Zero-copy access to frame `frame` of the file's native (uncompressed, little-endian, not
+ * 1-bit) Pixel Data: *out_data points into the file's own value (borrowed, valid until the file
+ * is freed or its Pixel Data changes). SIAARA_ERR_UNSUPPORTED when the frame cannot be viewed in
+ * place (encapsulated, big endian, 1-bit): use siaara_frame_decode. Thread safety: as reading. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_frame_view(const siaara_file* file, uint32_t frame,
+                                                            const uint8_t** out_data, uint64_t* out_bytes);
+
+enum { SIAARA_VOI_IDENTITY = 3 };    /* siaara_view2d_options.voi_mode: the whole possible range */
+enum { SIAARA_VOI_LINEAR = 0, SIAARA_VOI_LINEAR_EXACT = 1, SIAARA_VOI_SIGMOID = 2 }; /* VOI LUT Function */
+enum { SIAARA_PIXELS_RGBA8 = 0, SIAARA_PIXELS_GRAY8 = 1 };
+
+typedef struct siaara_view2d_options {
+    uint32_t struct_size;            /* set to sizeof(siaara_view2d_options) */
+    uint32_t viewport_width;         /* output size; 0 / 0 = the image size (zoom 0 then means 1) */
+    uint32_t viewport_height;
+    int32_t output_format;           /* SIAARA_PIXELS_*: 4 or 1 bytes per pixel */
+    double zoom;                     /* output pixels per image pixel; 0 = fit the viewport */
+    double pan_x;                    /* image centre offset from the viewport centre, output pixels */
+    double pan_y;
+    double rotation;                 /* clockwise degrees, after the flips */
+    int32_t flip_horizontal;         /* 0/1 */
+    int32_t flip_vertical;           /* 0/1 */
+    int32_t interpolation;           /* SIAARA_INTERP_NEAREST or SIAARA_INTERP_LINEAR */
+    int32_t colormap;                /* SIAARA_COLORMAP_* for grayscale images (GRAY = none) */
+    int32_t voi_mode;                /* SIAARA_VOI_FILE (voi_index), _EXPLICIT, _FULL_RANGE, _IDENTITY */
+    uint32_t voi_index;              /* SIAARA_VOI_FILE: n-th of siaara_voi_get */
+    double window_center;            /* SIAARA_VOI_EXPLICIT */
+    double window_width;
+    int32_t voi_function;            /* SIAARA_VOI_LINEAR etc., SIAARA_VOI_EXPLICIT */
+    int32_t invert;                  /* 0/1: on top of MONOCHROME1 / Presentation LUT Shape */
+    int32_t no_overlays;             /* 0/1 */
+    int32_t no_shutters;             /* 0/1 */
+    uint32_t overlay_groups;         /* bit k shows group 0x6000 + 2k; 0 = all */
+    uint8_t overlay_rgba[4];         /* all zero = opaque white */
+    uint8_t background_rgba[4];      /* outside the image; written as given (all zero: transparent) */
+    uint32_t reserved0;
+    const siaara_pstate* presentation_state; /* NULL, or a state applied before the viewport (M3) */
+} siaara_view2d_options;
+
+/* Renders the frame into a viewport: VOI / colour pipeline at image resolution, then flips,
+ * rotation, zoom and pan. Output viewport_width x viewport_height pixels of 4 (RGBA8) or 1
+ * (GRAY8) bytes. options may be NULL (whole image, file VOI, RGBA8). Buffer rules as for
+ * siaara_frame_decode. Thread safety: any thread, also concurrently on one frame. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_render(const siaara_frame* frame, const siaara_view2d_options* options,
+                                                         uint8_t* buf, size_t cap, size_t* needed);
+/* Maps a point between viewport and image PIXEL coordinates ((0,0) = top left corner of the
+ * first pixel) for the given options: to_image nonzero maps viewport -> image, 0 image ->
+ * viewport. With a presentation state, image coordinates are those of the source image.
+ * Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_map_point(const siaara_frame* frame, const siaara_view2d_options* options,
+                                                            int32_t to_image, double x, double y, double* out_x,
+                                                            double* out_y);
+
+/* ---- VOI (window centre / width and VOI LUTs) of a frame */
+enum { SIAARA_VOI_KIND_WINDOW = 0, SIAARA_VOI_KIND_LUT = 1 };
+
+typedef struct siaara_voi_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_voi_info) */
+    int32_t kind;                    /* SIAARA_VOI_KIND_* */
+    int32_t function;                /* SIAARA_VOI_LINEAR etc. (windows) */
+    int32_t from_functional_groups;  /* 0/1: Frame VOI LUT functional group */
+    double center;                   /* windows */
+    double width;
+    uint32_t lut_entries;            /* VOI LUTs */
+    int32_t lut_first_mapped;
+    uint32_t lut_bits;
+    uint32_t reserved0;
+} siaara_voi_info;
+
+/* Windows first (file order), then VOI LUT Sequence items; index is the voi_index for
+ * SIAARA_VOI_FILE. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_voi_count(const siaara_frame* frame, uint32_t* out);
+/* Fills *out and writes the explanation (Window Center & Width Explanation / LUT Explanation)
+ * to buf (string buffer rules; buf may be NULL with cap 0). */
+SIAARA_API siaara_status SIAARA_CALL siaara_voi_get(const siaara_frame* frame, uint32_t index, siaara_voi_info* out,
+                                                    char* buf, size_t cap, size_t* needed);
+/* LUT Data of a VOI LUT (lut_entries values; array buffer rules as for siaara_series_sort). */
+SIAARA_API siaara_status SIAARA_CALL siaara_voi_lut_data(const siaara_frame* frame, uint32_t index, uint16_t* buf,
+                                                         size_t cap, size_t* needed);
+
+/* ---- overlays (PS3.3 C.9.2) and display shutters (C.7.6.11, C.7.6.15) as masks */
+typedef struct siaara_overlay_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_overlay_info) */
+    uint32_t group;                  /* 0x6000 .. 0x601E */
+    uint32_t rows;
+    uint32_t columns;
+    int32_t origin_row;              /* 1-based, may be < 1 */
+    int32_t origin_column;
+    int32_t type;                    /* 'G' graphics or 'R' ROI */
+    uint32_t frames;                 /* Number of Frames in Overlay */
+    uint32_t image_frame_origin;     /* 1-based */
+    int32_t embedded;                /* 0/1: retired overlay in unused Pixel Data bits */
+    int32_t covers_frame;            /* 0/1: the overlay has a plane for this frame */
+    uint32_t reserved0;
+} siaara_overlay_info;
+
+enum { SIAARA_OVERLAY_LABEL = 0, SIAARA_OVERLAY_DESCRIPTION = 1, SIAARA_OVERLAY_SUBTYPE = 2 };
+
+/* Thread safety for all overlay / shutter calls: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_overlay_get(const siaara_frame* frame, uint32_t index, siaara_overlay_info* out);
+/* SIAARA_OVERLAY_* text of an overlay (string buffer rules). */
+SIAARA_API siaara_status SIAARA_CALL siaara_overlay_text(const siaara_frame* frame, uint32_t index, int32_t field,
+                                                         char* buf, size_t cap, size_t* needed);
+/* rows x columns bytes of the image: 1 where overlay `index` is set for this frame, else 0
+ * (all 0 when it does not cover the frame). Buffer rules as for siaara_frame_decode. */
+SIAARA_API siaara_status SIAARA_CALL siaara_overlay_mask(const siaara_frame* frame, uint32_t index, uint8_t* buf,
+                                                         size_t cap, size_t* needed);
+/* rows x columns bytes: 1 = visible, 0 = covered by the display shutters (all 1 without shutters). */
+SIAARA_API siaara_status SIAARA_CALL siaara_shutter_mask(const siaara_frame* frame, uint8_t* buf, size_t cap,
+                                                         size_t* needed);
+
+/* ---- palettes (PS3.3 C.7.6.3.1.5, C.7.6.19, PS3.6 Annex B) */
+typedef struct siaara_palette_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_palette_info) */
+    uint32_t entries;
+    int32_t first_mapped;            /* first stored value mapped */
+    uint32_t bits;                   /* 8 or 16: entry range */
+    int32_t has_alpha;               /* 0/1: Alpha Palette Color LUT Data */
+    int32_t segmented;               /* 0/1: read from segmented data */
+    int32_t supplemental;            /* 0/1: Supplemental Palette (grayscale image) */
+    uint32_t reserved0;
+} siaara_palette_info;
+
+/* The frame's palette: *info and entries * 4 values R, G, B, A in the palette's own precision
+ * (A = 2^bits - 1 without alpha data). buf may be NULL with cap 0 to get *info and *needed only
+ * (array buffer rules, count in uint16_t). SIAARA_ERR_NOT_FOUND without a palette.
+ * Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_palette(const siaara_frame* frame, siaara_palette_info* info,
+                                                          uint16_t* buf, size_t cap, size_t* needed);
+/* A standard colour map (SIAARA_COLORMAP_*) as 256 RGBA8 entries (1024 bytes; buffer rules as
+ * for siaara_frame_decode). Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_colormap_rgba8(int32_t colormap, uint8_t* buf, size_t cap, size_t* needed);
+
+/* ---------------------------------------------------------------- presentation states (PS3.3 A.33) */
+/* Grayscale, colour, pseudo-colour and blending softcopy presentation states. A siaara_pstate
+ * is immutable: many threads may use it at once. Apply one by setting
+ * siaara_view2d_options.presentation_state: its modality / VOI / presentation LUT, shutters,
+ * activated overlays, graphic annotations (text is not drawn), spatial transformation and
+ * displayed area replace the image's own. */
+enum {
+    SIAARA_PSTATE_GRAYSCALE = 0, SIAARA_PSTATE_COLOR = 1, SIAARA_PSTATE_PSEUDO_COLOR = 2,
+    SIAARA_PSTATE_BLENDING = 3, SIAARA_PSTATE_OTHER = 4
+};
+
+typedef struct siaara_pstate_properties {
+    uint32_t struct_size;            /* set to sizeof(siaara_pstate_properties) */
+    int32_t kind;                    /* SIAARA_PSTATE_* */
+    int32_t has_spatial_transform;   /* 0/1 */
+    int32_t rotation;                /* clockwise: 0, 90, 180, 270 */
+    int32_t flip;                    /* 0/1: horizontal flip after rotation */
+    uint32_t reference_count;        /* referenced images (siaara_pstate_reference) */
+    uint32_t annotation_count;       /* Graphic Annotation Sequence items */
+    uint32_t text_count;             /* text objects in all annotations */
+    uint32_t graphic_count;          /* graphic objects in all annotations */
+    uint32_t layer_count;
+    uint32_t voi_count;              /* Softcopy VOI LUT items */
+    uint32_t displayed_area_count;
+    int32_t has_shutters;            /* 0/1 */
+    int32_t has_modality;            /* 0/1: its own Modality LUT / rescale */
+    uint32_t warning_count;
+    uint32_t reserved0;
+} siaara_pstate_properties;
+
+enum {
+    SIAARA_PSTATE_LABEL = 0, SIAARA_PSTATE_DESCRIPTION = 1, SIAARA_PSTATE_CREATOR = 2,
+    SIAARA_PSTATE_CREATION_DATE = 3, SIAARA_PSTATE_CREATION_TIME = 4, SIAARA_PSTATE_SOP_INSTANCE_UID = 5,
+    SIAARA_PSTATE_SOP_CLASS_UID = 6
+};
+
+/* Reads a presentation state. SIAARA_ERR_UNSUPPORTED for other SOP classes. Caller owns *out:
+ * free with siaara_pstate_free. Thread safety: the file may be read by other threads meanwhile. */
+SIAARA_API siaara_status SIAARA_CALL siaara_pstate_open(const siaara_file* file, siaara_pstate** out);
+SIAARA_API void SIAARA_CALL siaara_pstate_free(siaara_pstate* ps);
+/* Thread safety for the calls below: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_pstate_info(const siaara_pstate* ps, siaara_pstate_properties* out);
+/* SIAARA_PSTATE_LABEL etc. (string buffer rules). */
+SIAARA_API siaara_status SIAARA_CALL siaara_pstate_string(const siaara_pstate* ps, int32_t field, char* buf, size_t cap,
+                                                          size_t* needed);
+/* SOP Instance UID of referenced image `index` (string buffer rules); *frame_count (may be NULL)
+ * receives the number of Referenced Frame Numbers (0 = all frames). */
+SIAARA_API siaara_status SIAARA_CALL siaara_pstate_reference(const siaara_pstate* ps, uint32_t index, char* buf, size_t cap,
+                                                             size_t* needed, uint32_t* frame_count);
+/* *out = 1 when the state applies to frame frame_1based (1-based) of that instance. */
+SIAARA_API siaara_status SIAARA_CALL siaara_pstate_applies(const siaara_pstate* ps, const char* sop_instance_uid,
+                                                           size_t len, uint32_t frame_1based, int32_t* out);
+
+/* ---------------------------------------------------------------- data set additions */
+/* Appends an empty item to sequence `tag` (created with VR SQ when absent) and returns it,
+ * borrowed and writable: valid until that sequence or its owner changes (re-fetch items with
+ * siaara_dataset_item after adding more). *index (may be NULL) receives its 0-based position.
+ * Thread safety: needs exclusive access to the data set. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_append_item(siaara_dataset* ds, uint32_t tag, siaara_dataset** out,
+                                                                uint32_t* index);
+/* Removes item `index` of sequence `tag`. Thread safety: exclusive access. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_remove_item(siaara_dataset* ds, uint32_t tag, uint32_t index);
+/* All values of a string element at once: each value NUL-terminated, one after the other, in
+ * buf (padding removed); *needed is the total size including every NUL and *count (may be NULL)
+ * the number of values. utf8 nonzero decodes text with the Specific Character Set as
+ * siaara_dataset_get_utf8 does. buf may be NULL with cap 0 to query. Thread safety: as reading. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_strings(const siaara_dataset* ds, uint32_t tag, int32_t utf8,
+                                                                char* buf, size_t cap, size_t* needed, uint32_t* count);
+
+/* ---------------------------------------------------------------- diagnostics */
+/* Number of handles of any type currently allocated by this library (files, frames, stores,
+ * results, clients, ...), for leak tests. Thread safety: any thread (a snapshot). */
+SIAARA_API siaara_status SIAARA_CALL siaara_debug_live_handles(int64_t* out);
+
 #ifdef __cplusplus
 }
 #endif
