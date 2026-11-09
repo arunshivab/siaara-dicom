@@ -1,6 +1,8 @@
 // SIAARA DICOM Toolkit - ROI statistics and measurements (see roi.hpp).
 #include "clinical/roi.hpp"
 
+#include "image/raster.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -184,8 +186,10 @@ Status for_each_weight(std::uint32_t rows, std::uint32_t cols, const Roi& roi, c
         }
         std::sort(xs.begin(), xs.end());
         for (std::size_t k = 0; k + 1 < xs.size(); k += 2) {
-            std::int64_t ca = static_cast<std::int64_t>(std::ceil(xs[k] - 0.5));
-            std::int64_t cb = static_cast<std::int64_t>(std::ceil(xs[k + 1] - 0.5)) - 1;
+            // Clamped in double first: a far-away vertex must not overflow the cast (R-083).
+            const double lim = static_cast<double>(cols) + 1.0;
+            std::int64_t ca = image::raster::clamp_to_i64(std::ceil(xs[k] - 0.5), -1.0, lim);
+            std::int64_t cb = image::raster::clamp_to_i64(std::ceil(xs[k + 1] - 0.5), -1.0, lim) - 1;
             ca = std::max(ca, b.c0);
             cb = std::min(cb, b.c1);
             for (std::int64_t c = ca; c <= cb; ++c)
@@ -205,8 +209,8 @@ Status for_each_weight(std::uint32_t rows, std::uint32_t cols, const Roi& roi, c
         const Point2& p = poly[j];
         const Point2& q = poly[i];
         const double ya = std::min(p.y, q.y), yb = std::max(p.y, q.y);
-        std::int64_t ra = std::max<std::int64_t>(b.r0, static_cast<std::int64_t>(std::floor(ya)));
-        std::int64_t rb = std::min<std::int64_t>(b.r1, static_cast<std::int64_t>(std::floor(yb)));
+        std::int64_t ra = std::max<std::int64_t>(b.r0, image::raster::clamp_to_i64(std::floor(ya), -1.0, rows + 1.0));
+        std::int64_t rb = std::min<std::int64_t>(b.r1, image::raster::clamp_to_i64(std::floor(yb), -1.0, rows + 1.0));
         for (std::int64_t r = ra; r <= rb; ++r) {
             double s0 = std::max(ya, static_cast<double>(r)), s1 = std::min(yb, static_cast<double>(r + 1));
             double xa, xb;
@@ -219,8 +223,8 @@ Status for_each_weight(std::uint32_t rows, std::uint32_t cols, const Roi& roi, c
                 xb = p.x + t1 * (q.x - p.x);
                 if (xa > xb) std::swap(xa, xb);
             }
-            std::int64_t ca = std::max<std::int64_t>(b.c0, static_cast<std::int64_t>(std::floor(xa)));
-            std::int64_t cb = std::min<std::int64_t>(b.c1, static_cast<std::int64_t>(std::floor(xb)));
+            std::int64_t ca = std::max<std::int64_t>(b.c0, image::raster::clamp_to_i64(std::floor(xa), -1.0, cols + 1.0));
+            std::int64_t cb = std::min<std::int64_t>(b.c1, image::raster::clamp_to_i64(std::floor(xb), -1.0, cols + 1.0));
             for (std::int64_t c = ca; c <= cb; ++c)
                 edge[static_cast<std::size_t>(r - b.r0) * bw + static_cast<std::size_t>(c - b.c0)] = 1;
         }
