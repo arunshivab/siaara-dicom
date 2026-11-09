@@ -71,10 +71,12 @@ float sample_linear(const VoxelAccess<T>& a, double x, double y, double z) noexc
     const float c010 = static_cast<float>(p[z0 + y1 + x0]), c110 = static_cast<float>(p[z0 + y1 + x1]);
     const float c001 = static_cast<float>(p[z1 + y0 + x0]), c101 = static_cast<float>(p[z1 + y0 + x1]);
     const float c011 = static_cast<float>(p[z1 + y1 + x0]), c111 = static_cast<float>(p[z1 + y1 + x1]);
-    const float c00 = c000 + (c100 - c000) * tx, c10 = c010 + (c110 - c010) * tx;
-    const float c01 = c001 + (c101 - c001) * tx, c11 = c011 + (c111 - c011) * tx;
-    const float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
-    return c0 + (c1 - c0) * tz;
+    // u * (1 - t) + v * t is exact at both t = 0 and t = 1 (u + (v - u) * t is not at t = 1).
+    const float sx = 1.0f - tx, sy = 1.0f - ty, sz = 1.0f - tz;
+    const float c00 = c000 * sx + c100 * tx, c10 = c010 * sx + c110 * tx;
+    const float c01 = c001 * sx + c101 * tx, c11 = c011 * sx + c111 * tx;
+    const float c0 = c00 * sy + c10 * ty, c1 = c01 * sy + c11 * ty;
+    return c0 * sz + c1 * tz;
 }
 
 inline void catmull_rom_weights(double t, double w[4]) noexcept {

@@ -61,7 +61,8 @@ void linear4(const VoxelAccess<T>& a, const double* xs, const double* ys, const 
         c[7][q] = static_cast<float>(p[b + a.sz + a.sy + 1]);
     }
 #if defined(SIAARA_VOLUME_SSE2)
-    auto lerp = [](__m128 u, __m128 v, __m128 t) { return _mm_add_ps(u, _mm_mul_ps(_mm_sub_ps(v, u), t)); };
+    const __m128 one = _mm_set1_ps(1.0f);
+    auto lerp = [one](__m128 u, __m128 v, __m128 t) { return _mm_add_ps(_mm_mul_ps(u, _mm_sub_ps(one, t)), _mm_mul_ps(v, t)); };
     const __m128 vx = _mm_load_ps(tx), vy = _mm_load_ps(ty), vz = _mm_load_ps(tz);
     const __m128 c00 = lerp(_mm_load_ps(c[0]), _mm_load_ps(c[1]), vx);
     const __m128 c10 = lerp(_mm_load_ps(c[2]), _mm_load_ps(c[3]), vx);
@@ -69,7 +70,10 @@ void linear4(const VoxelAccess<T>& a, const double* xs, const double* ys, const 
     const __m128 c11 = lerp(_mm_load_ps(c[6]), _mm_load_ps(c[7]), vx);
     _mm_storeu_ps(out, lerp(lerp(c00, c10, vy), lerp(c01, c11, vy), vz));
 #else
-    auto lerp = [](float32x4_t u, float32x4_t v, float32x4_t t) { return vaddq_f32(u, vmulq_f32(vsubq_f32(v, u), t)); };
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    auto lerp = [one](float32x4_t u, float32x4_t v, float32x4_t t) {
+        return vaddq_f32(vmulq_f32(u, vsubq_f32(one, t)), vmulq_f32(v, t));
+    };
     const float32x4_t vx = vld1q_f32(tx), vy = vld1q_f32(ty), vz = vld1q_f32(tz);
     const float32x4_t c00 = lerp(vld1q_f32(c[0]), vld1q_f32(c[1]), vx);
     const float32x4_t c10 = lerp(vld1q_f32(c[2]), vld1q_f32(c[3]), vx);
