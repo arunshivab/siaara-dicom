@@ -34,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include "core/system_library.hpp"
 #include "gpu/gpu_backends.hpp"
 #include "gpu/spirv_kernels.hpp"
 #include "gpu/vulkan_api.hpp"
@@ -123,32 +124,31 @@ Library open_library(const std::string& name) {
     return L;
 }
 #else
+// Same hardening as the OpenSSL loader (R-063, R-021, core/system_library.hpp): the loader is
+// opened only by absolute path from the fixed system folders, after checking that the file and
+// its folder are owned by root or the user and not group/world writable; LD_LIBRARY_PATH,
+// RUNPATH and the current directory play no part, and a refused library is closed again.
+// The Vulkan loader itself then reads its ICD and layer lists from the environment
+// (VK_ICD_FILENAMES / VK_DRIVER_FILES, VK_LAYER_PATH, VK_ADD_LAYER_PATH, VK_INSTANCE_LAYERS):
+// whoever controls the process environment chooses the GPU driver code that runs. See SECURITY.md.
 Library open_library(const std::string& name) {
     Library L;
-    std::vector<std::string> candidates;
-#if defined(__APPLE__)
-    // dlopen of a bare name would search the current directory on macOS: absolute paths only.
-    candidates = {"/usr/local/lib/" + name, "/opt/homebrew/lib/" + name};
-#else
-    candidates = {name};
-#endif
-    void* h = nullptr;
-    for (const auto& c : candidates) {
-        h = ::dlopen(c.c_str(), RTLD_NOW | RTLD_LOCAL);
-        if (h) break;
-    }
+    std::string path;
+    void* h = siaara::sys::open_system_library(name.c_str(), path);
     if (!h) {
-        L.reason = "the Vulkan loader (" + name + ") was not found";
+        L.reason = "the Vulkan loader (" + name + ") was not found in a trusted system library folder";
         return L;
     }
     void* sym = ::dlsym(h, "vkGetInstanceProcAddr");
     if (!sym) {
+        ::dlclose(h);
         L.reason = name + " lacks vkGetInstanceProcAddr";
         return L;
     }
     Dl_info info{};
-    if (::dladdr(sym, &info) == 0 || !info.dli_fname || info.dli_fname[0] != '/') {
-        L.reason = "refusing a Vulkan loader that was not loaded from an absolute system path";
+    if (::dladdr(sym, &info) == 0 || !info.dli_fname || path != info.dli_fname) {
+        ::dlclose(h);
+        L.reason = "refusing a Vulkan loader whose entry point is not in the library opened from the system path";
         return L;
     }
     static_assert(sizeof(V::PFN_GetInstanceProcAddr) == sizeof(void*), "function and object pointers differ in size");
