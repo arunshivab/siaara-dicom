@@ -223,7 +223,7 @@ Result<ModalityTransform> modality_for_frame(const Dataset& ds, const PixelInfo&
 RtDoseInfo read_rt_dose_info(const Dataset& ds) {
     RtDoseInfo r;
     r.is_rt_dose = is_rt_dose(ds);
-    if (auto g = ds.get_double(kDoseGridScaling); g && std::isfinite(*g) && *g > 0.0) r.dose_grid_scaling = *g;
+    if (auto g = ds.get_double(kDoseGridScaling); g && std::isfinite(*g) && *g > 0.0) r.dose_grid_scaling = g;
     r.dose_units = ds.get_string(kDoseUnits).value_or(std::string());
     r.dose_type = ds.get_string(0x30040004).value_or(std::string());
     r.dose_summation_type = ds.get_string(0x3004000A).value_or(std::string());

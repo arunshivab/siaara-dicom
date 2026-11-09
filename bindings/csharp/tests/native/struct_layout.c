@@ -247,6 +247,13 @@ int main(void) {
     printf("F siaara_suv ibw %u\n", (unsigned)offsetof(siaara_suv, ibw));
     printf("F siaara_suv decay_seconds %u\n", (unsigned)offsetof(siaara_suv, decay_seconds));
     printf("F siaara_suv decayed_dose_bq %u\n", (unsigned)offsetof(siaara_suv, decayed_dose_bq));
+    printf("F siaara_suv scan_time_source %u\n", (unsigned)offsetof(siaara_suv, scan_time_source));
+    printf("F siaara_suv injection_time_source %u\n", (unsigned)offsetof(siaara_suv, injection_time_source));
+    printf("F siaara_suv decay_correction %u\n", (unsigned)offsetof(siaara_suv, decay_correction));
+    printf("F siaara_suv reserved1 %u\n", (unsigned)offsetof(siaara_suv, reserved1));
+    printf("F siaara_suv weight_kg %u\n", (unsigned)offsetof(siaara_suv, weight_kg));
+    printf("F siaara_suv injected_dose_bq %u\n", (unsigned)offsetof(siaara_suv, injected_dose_bq));
+    printf("F siaara_suv half_life_s %u\n", (unsigned)offsetof(siaara_suv, half_life_s));
     printf("S siaara_roi_stats %u\n", (unsigned)sizeof(siaara_roi_stats));
     printf("F siaara_roi_stats struct_size %u\n", (unsigned)offsetof(siaara_roi_stats, struct_size));
     printf("F siaara_roi_stats has_area_mm2 %u\n", (unsigned)offsetof(siaara_roi_stats, has_area_mm2));

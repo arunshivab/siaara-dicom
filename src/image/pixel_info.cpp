@@ -3,6 +3,7 @@
 
 #include <array>
 #include <string>
+#include <utility>
 
 namespace siaara::image {
 
@@ -128,6 +129,17 @@ Result<PixelInfo> read_pixel_info(const Dataset& ds, const PixelInfoOptions& opt
         return bad("Rows and Columns must be 1..65535", Rows);
     pi.rows = static_cast<std::uint32_t>(*rows);
     pi.columns = static_cast<std::uint32_t>(*cols);
+    // LibIDO (ACR-NEMA, Recognition Code ACRNEMA_LIBIDO_1.x; "CANRME_AILIBOD1_1." when byte
+    // swapped) wrote Rows and Columns the wrong way round; GDCM swaps them back. Lenient only,
+    // flagged; the data set is unchanged (testing-chat P2: LIBIDO-24-ACR_NEMA-Rectangle.dcm).
+    if (opt.lenient && pi.rows != pi.columns) {
+        const std::string rc = ds.get_string(0x00080010).value_or(std::string());
+        if (rc.rfind("ACRNEMA_LIBIDO", 0) == 0 || rc.rfind("CANRME_AILIBOD", 0) == 0) {
+            std::swap(pi.rows, pi.columns);
+            warn("LibIDO ACR-NEMA file (Recognition Code " + rc + "): Rows and Columns are swapped, read as " +
+                 std::to_string(pi.rows) + " rows x " + std::to_string(pi.columns) + " columns");
+        }
+    }
 
     // ---- photometric interpretation
     bool photometric_missing = false;

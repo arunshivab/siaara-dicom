@@ -112,6 +112,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file, uint32_t index, char* buf,
                                                          size_t cap, size_t* needed);
 
+/* Code of file warning `index`: SIAARA_FILE_WARNING_* (the text says more). */
+enum {
+    SIAARA_FILE_WARNING_GENERAL = 0,          /* a lenient-mode finding (repair, stray item, ...) */
+    SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1, /* input bytes were skipped (SIAARA_READ_BYTES_SKIPPED) */
+    SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2   /* the input ended early (SIAARA_READ_INPUT_TRUNCATED) */
+};
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file* file, uint32_t index, int32_t* out);
+
 /* Whether the data set holds everything the input held (bit mask). */
 enum {
     SIAARA_READ_BYTES_SKIPPED = 1u << 0,   /* lenient parse skipped input bytes that are in no element */
@@ -893,7 +901,27 @@ typedef struct siaara_suv {
     double ibw;
     double decay_seconds;            /* 0 when unknown */
     double decayed_dose_bq;          /* 0 when unknown */
+    /* Appended (F11): which inputs were used and where they came from. A caller built against
+     * the shorter struct (struct_size up to decayed_dose_bq) gets the fields above only. */
+    int32_t scan_time_source;        /* SIAARA_SUV_SRC_*: decay reference time */
+    int32_t injection_time_source;   /* SIAARA_SUV_SRC_* */
+    int32_t decay_correction;        /* SIAARA_SUV_DECAY_*: (0054,1102) as found */
+    int32_t reserved1;
+    double weight_kg;                /* as used; 0 when missing (see warnings) */
+    double injected_dose_bq;
+    double half_life_s;
 } siaara_suv;
+enum {
+    SIAARA_SUV_SRC_NONE = 0,                 /* missing: see SIAARA_SUV_MISSING_* */
+    SIAARA_SUV_SRC_SERIES = 1,               /* Series Date/Time */
+    SIAARA_SUV_SRC_ACQUISITION = 2,          /* this image's Acquisition Date/Time (SIAARA_SUV_PER_IMAGE_SCAN_TIME) */
+    SIAARA_SUV_SRC_EARLIEST_ACQUISITION = 3, /* earliest acquisition of the series (caller option) */
+    SIAARA_SUV_SRC_CALLER = 4,               /* given by the caller */
+    SIAARA_SUV_SRC_ADMINISTRATION = 5,       /* Decay Correction ADMIN: no decay */
+    SIAARA_SUV_SRC_START_DATETIME = 6,       /* Radiopharmaceutical Start DateTime */
+    SIAARA_SUV_SRC_START_TIME_SCAN_DATE = 7  /* Radiopharmaceutical Start Time + the scan date (SIAARA_SUV_INJECTION_DATE_ASSUMED) */
+};
+enum { SIAARA_SUV_DECAY_UNKNOWN = 0, SIAARA_SUV_DECAY_START = 1, SIAARA_SUV_DECAY_ADMIN = 2, SIAARA_SUV_DECAY_NONE = 3 };
 
 /* SUV factors for a PET frame. Returns SIAARA_OK even when no factor can be computed: check
  * has_bw and warnings. */

@@ -14,6 +14,7 @@
 
 #include "core/reader.hpp"
 #include "core/writer.hpp"
+#include "net/services.hpp"
 #include "volume/volume.hpp"
 #include "web/dicom_json.hpp"
 #include "clinical/roi.hpp"
@@ -263,6 +264,14 @@ TEST_CASE("testing2 P0-1: C API read report, warning text and allow_incomplete")
     size_t need = 0;
     REQUIRE(siaara_file_warning(f, 0, text, sizeof text, &need) == SIAARA_OK);
     CHECK(starts_with(text, "PARSE_INCOMPLETE"));
+    int32_t code = -1;
+    REQUIRE(siaara_file_warning_code(f, 0, &code) == SIAARA_OK);
+    CHECK(code == SIAARA_FILE_WARNING_PARSE_INCOMPLETE);
+    if (r.warning_count > 1) {
+        REQUIRE(siaara_file_warning_code(f, 1, &code) == SIAARA_OK);
+        CHECK(code == SIAARA_FILE_WARNING_GENERAL);
+    }
+    CHECK(siaara_file_warning_code(f, r.warning_count, &code) == SIAARA_ERR_INVALID_ARGUMENT);
     CHECK(siaara_file_warning(f, r.warning_count, text, sizeof text, &need) == SIAARA_ERR_INVALID_ARGUMENT);
     r.struct_size = 0;
     CHECK(siaara_file_read_report(f, &r) == SIAARA_ERR_INVALID_ARGUMENT);
@@ -672,4 +681,114 @@ TEST_CASE("testing2 F8: an implicit VR LUT descriptor takes its sign from the ca
     REQUIRE(s.is_ok() && u.is_ok());
     CHECK_EQ(s->first_mapped, -1024);
     CHECK_EQ(u->first_mapped, 64512);
+}
+
+TEST_CASE("testing2 RT Dose P2: text elements stored as UN are read with their dictionary VR") {
+    // pydicom rtdose_rle.dcm stores IPP, IOP, Pixel Spacing, SOP Class, Modality, the Grid Frame
+    // Offset Vector and Dose Grid Scaling as UN in explicit VR. Before, the volume build failed
+    // with "Image Orientation (Patient) is not a pair of orthogonal unit vectors".
+    DicomFile f = rt_dose("0\\5\\10\\15", 4);
+    for (Tag t : {Tag{0x00080016}, Tag{0x00080060}, Tag{0x00200032}, Tag{0x00200037}, Tag{0x00280030},
+                  Tag{0x00280008}, Tag{0x30040002}, Tag{0x3004000C}, Tag{0x3004000E}})
+        f.dataset.find(t)->vr = VR::UN;
+    auto v = dose_volume(f);
+    REQUIRE(v.is_ok());
+    CHECK(near(v->grid().spacing[2], 5.0));
+    CHECK(near(v->grid().spacing[0], 2.5));
+    CHECK(near(v->value_max, 85.13049589, 1e-4));
+    CHECK_EQ(f.dataset.value_multiplicity(0x3004000C), 4u);
+    CHECK_EQ(f.dataset.get_double(0x3004000E).value_or(0), kDgs);
+    CHECK_EQ(f.dataset.get_int(0x00280008).value_or(0), 4);
+    CHECK(f.dataset.find(0x3004000E)->vr == VR::UN);  // the element itself is unchanged
+    // A private UN element keeps the byte reading.
+    (void)f.dataset.set_bytes(0x00091001, VR::UN, Bytes::copy_of(reinterpret_cast<const std::uint8_t*>("12"), 2));
+    CHECK_EQ(f.dataset.get_int(0x00091001).value_or(0), '1');
+}
+
+TEST_CASE("testing2: the worklist query asks for Specific Character Set") {
+    const Dataset q = net::make_worklist_query("CT1", "CT", "");
+    const Element* cs = q.find(0x00080005);
+    REQUIRE(cs != nullptr);
+    CHECK(cs->value.empty());
+    // A Latin-1 entry matches and its response says ISO_IR 100.
+    Dataset item;
+    (void)item.set_string(0x00080005, VR::CS, "ISO_IR 100");
+    const std::string name = "M\xFCLLER^J\xD6RG";  // ISO 8859-1 bytes
+    (void)item.set_bytes(tags::PatientName, VR::PN, Bytes::copy_of(reinterpret_cast<const std::uint8_t*>(name.data()), name.size()));
+    Dataset sps;
+    (void)sps.set_string(0x00400001, VR::AE, "CT1");
+    (void)sps.set_string(tags::Modality, VR::CS, "CT");
+    Element seq;
+    seq.tag = 0x00400100;
+    seq.vr = VR::SQ;
+    seq.items.push_back(std::move(sps));
+    item.put(std::move(seq));
+    REQUIRE(net::query_matches(q, item));
+    const Dataset r = net::query_response(q, item);
+    CHECK_EQ(r.get_string(0x00080005).value_or(""), "ISO_IR 100");
+}
+
+TEST_CASE("testing2: a private UN sequence is written as SQ in Explicit VR Big Endian") {
+    // Implicit VR: (0029,1140) private, undefined length -> read as a UN sequence.
+    Buf inner;
+    iel(inner, 0x00290010, str("SIEMENS MEDCOM HEADER"));
+    iel(inner, 0x00291041, str("SOM 5"));
+    Buf body;
+    iel(body, 0x00080016, str("1.2.840.10008.5.1.4.1.1.2"));
+    iel(body, 0x00290010, str("SIEMENS MEDCOM HEADER"));
+    u16(body, 0x0029);
+    u16(body, 0x1140);
+    u32(body, 0xFFFFFFFFu);
+    item(body, 0xE000, 0xFFFFFFFFu);
+    body.insert(body.end(), inner.begin(), inner.end());
+    item(body, 0xE00D, 0);
+    item(body, 0xE0DD, 0);
+    auto ds = read_dataset(Bytes::copy_of(body.data(), body.size()), kImplicitTs);
+    REQUIRE(ds.is_ok());
+    REQUIRE(ds->find(0x00291140) && ds->find(0x00291140)->read.un_sequence);
+    std::vector<std::uint8_t> le, be;
+    REQUIRE(write_dataset(*ds, "1.2.840.10008.1.2.1", le).is_ok());
+    REQUIRE(write_dataset(*ds, "1.2.840.10008.1.2.2", be).is_ok());
+    auto find_vr = [](const std::vector<std::uint8_t>& b, std::uint8_t g0, std::uint8_t g1, std::uint8_t e0, std::uint8_t e1) {
+        for (std::size_t i = 0; i + 6 <= b.size(); ++i)
+            if (b[i] == g0 && b[i + 1] == g1 && b[i + 2] == e0 && b[i + 3] == e1) return std::string{char(b[i + 4]), char(b[i + 5])};
+        return std::string();
+    };
+    CHECK_EQ(find_vr(le, 0x29, 0x00, 0x40, 0x11), "UN");  // little endian: kept as read (PS3.5 6.2.2)
+    CHECK_EQ(find_vr(be, 0x00, 0x29, 0x11, 0x40), "SQ");  // big endian: a normal SQ
+    auto back = read_dataset(Bytes::copy_of(be.data(), be.size()), "1.2.840.10008.1.2.2");
+    REQUIRE(back.is_ok());
+    const Element* sq = back->find(0x00291140);
+    REQUIRE(sq != nullptr && sq->items.size() == 1u);
+    CHECK_EQ(sq->items[0].get_string(0x00291041).value_or(""), "SOM 5");
+}
+
+TEST_CASE("testing2 P2: LibIDO ACR-NEMA Rows and Columns are swapped back (lenient, flagged)") {
+    Dataset d;
+    (void)d.set_string(0x00080010, VR::SH, "ACRNEMA_LIBIDO_1.1");
+    (void)d.set_uint16(0x00280002, 1);
+    (void)d.set_string(0x00280004, VR::CS, "MONOCHROME2");
+    (void)d.set_uint16(0x00280010, 4);  // as LibIDO wrote it: really the number of columns
+    (void)d.set_uint16(0x00280011, 2);
+    (void)d.set_uint16(0x00280100, 8);
+    (void)d.set_uint16(0x00280101, 8);
+    (void)d.set_uint16(0x00280102, 7);
+    (void)d.set_uint16(0x00280103, 0);
+    const Buf px = {1, 2, 3, 4, 5, 6, 7, 8};
+    (void)d.set_bytes(0x7FE00010, VR::OW, Bytes::copy_of(px.data(), px.size()));
+    auto pi = image::read_pixel_info(d);
+    REQUIRE(pi.is_ok());
+    CHECK_EQ(pi->rows, 2u);
+    CHECK_EQ(pi->columns, 4u);
+    CHECK(has_warning(pi->warnings, "LibIDO"));
+    CHECK_EQ(d.get_int(0x00280010).value_or(0), 4);  // the data set is unchanged
+    image::PixelInfoOptions strict;
+    strict.lenient = false;
+    auto ps = image::read_pixel_info(d, strict);
+    REQUIRE(ps.is_ok());
+    CHECK_EQ(ps->rows, 4u);
+    (void)d.set_string(0x00080010, VR::SH, "ACR-NEMA 2.0");
+    auto other = image::read_pixel_info(d);
+    REQUIRE(other.is_ok());
+    CHECK_EQ(other->rows, 4u);
 }

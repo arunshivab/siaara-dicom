@@ -264,6 +264,19 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file
     });
 }
 
+SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file* file, uint32_t index, int32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        if (index >= file->file.warnings.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        const std::string& w = file->file.warnings[index];
+        const auto starts = [&](std::string_view p) { return w.compare(0, p.size(), p) == 0; };
+        *out = starts(siaara::kWarnParseIncomplete)  ? SIAARA_FILE_WARNING_PARSE_INCOMPLETE
+               : starts(siaara::kWarnInputTruncated) ? SIAARA_FILE_WARNING_INPUT_TRUNCATED
+                                                     : SIAARA_FILE_WARNING_GENERAL;
+        return ok();
+    });
+}
+
 SIAARA_API siaara_status SIAARA_CALL siaara_file_read_report(const siaara_file* file, siaara_read_report* out) {
     return guarded([&]() -> siaara_status {
         if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
@@ -1651,13 +1664,39 @@ SIAARA_API siaara_status SIAARA_CALL siaara_series_sort(const siaara_file* const
 
 SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, uint32_t frame, siaara_suv* out) {
     return guarded([&]() -> siaara_status {
-        if (!file || !out || out->struct_size < sizeof(siaara_suv))
+        constexpr uint32_t kV1 = offsetof(siaara_suv, scan_time_source);  // struct before F11
+        if (!file || !out || out->struct_size < kV1)
             return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
         const cl::SuvResult r = cl::compute_suv(file->file.dataset, frame);
-        const uint32_t size = out->struct_size;
-        std::memset(out, 0, sizeof(siaara_suv));
-        out->struct_size = size;
+        const uint32_t size = out->struct_size < sizeof(siaara_suv) ? out->struct_size : static_cast<uint32_t>(sizeof(siaara_suv));
+        siaara_suv full{};
+        siaara_suv* const dst = out;
+        out = &full;
+        struct CopyBack {
+            siaara_suv* to; const siaara_suv* from; uint32_t n;
+            ~CopyBack() { std::memcpy(to, from, n); }
+        } copy_back{dst, &full, size};
+        out->struct_size = dst->struct_size;
         out->warnings = r.warnings;
+        const auto src = [](const std::string& s) -> int32_t {
+            if (s == "Series Date/Time") return SIAARA_SUV_SRC_SERIES;
+            if (s == "Acquisition Date/Time") return SIAARA_SUV_SRC_ACQUISITION;
+            if (s == "earliest acquisition") return SIAARA_SUV_SRC_EARLIEST_ACQUISITION;
+            if (s == "caller") return SIAARA_SUV_SRC_CALLER;
+            if (s == "administration (ADMIN)") return SIAARA_SUV_SRC_ADMINISTRATION;
+            if (s == "Radiopharmaceutical Start DateTime") return SIAARA_SUV_SRC_START_DATETIME;
+            if (s == "Radiopharmaceutical Start Time + scan date") return SIAARA_SUV_SRC_START_TIME_SCAN_DATE;
+            return SIAARA_SUV_SRC_NONE;
+        };
+        out->scan_time_source = src(r.scan_time_source);
+        out->injection_time_source = src(r.injection_time_source);
+        out->decay_correction = r.decay_correction == "START"   ? SIAARA_SUV_DECAY_START
+                                : r.decay_correction == "ADMIN" ? SIAARA_SUV_DECAY_ADMIN
+                                : r.decay_correction == "NONE"  ? SIAARA_SUV_DECAY_NONE
+                                                                : SIAARA_SUV_DECAY_UNKNOWN;
+        out->weight_kg = r.weight_kg.value_or(0.0);
+        out->injected_dose_bq = r.injected_dose_bq.value_or(0.0);
+        out->half_life_s = r.half_life_s.value_or(0.0);
         auto put = [](const std::optional<double>& v, int32_t& has, double& d) {
             has = v ? 1 : 0;
             d = v.value_or(0.0);

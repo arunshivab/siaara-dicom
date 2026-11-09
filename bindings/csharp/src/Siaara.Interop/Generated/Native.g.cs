@@ -36,6 +36,9 @@ internal static class C
     public const int SIAARA_ERR_CANCELLED = 14;
     public const int SIAARA_ERR_BUFFER_TOO_SMALL = 15;
     public const int SIAARA_ERR_INTERNAL = 99;
+    public const int SIAARA_FILE_WARNING_GENERAL = 0;
+    public const int SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1;
+    public const int SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2;
     public const uint SIAARA_READ_BYTES_SKIPPED = 1u << 0;
     public const uint SIAARA_READ_INPUT_TRUNCATED = 1u << 1;
     public const uint SIAARA_READ_HEADER_ONLY = 1u << 2;
@@ -171,6 +174,18 @@ internal static class C
     public const int SIAARA_SUV_TIMEZONE_MISMATCH = 1 << 20;
     public const int SIAARA_SUV_VENDOR_FACTOR_USED = 1 << 21;
     public const int SIAARA_SUV_PER_IMAGE_SCAN_TIME = 1 << 22;
+    public const int SIAARA_SUV_SRC_NONE = 0;
+    public const int SIAARA_SUV_SRC_SERIES = 1;
+    public const int SIAARA_SUV_SRC_ACQUISITION = 2;
+    public const int SIAARA_SUV_SRC_EARLIEST_ACQUISITION = 3;
+    public const int SIAARA_SUV_SRC_CALLER = 4;
+    public const int SIAARA_SUV_SRC_ADMINISTRATION = 5;
+    public const int SIAARA_SUV_SRC_START_DATETIME = 6;
+    public const int SIAARA_SUV_SRC_START_TIME_SCAN_DATE = 7;
+    public const int SIAARA_SUV_DECAY_UNKNOWN = 0;
+    public const int SIAARA_SUV_DECAY_START = 1;
+    public const int SIAARA_SUV_DECAY_ADMIN = 2;
+    public const int SIAARA_SUV_DECAY_NONE = 3;
     public const int SIAARA_ROI_RECTANGLE = 0;
     public const int SIAARA_ROI_ELLIPSE = 1;
     public const int SIAARA_ROI_CIRCLE = 2;
@@ -776,6 +791,13 @@ internal struct siaara_suv
     public double ibw;
     public double decay_seconds;
     public double decayed_dose_bq;
+    public int scan_time_source;
+    public int injection_time_source;
+    public int decay_correction;
+    public int reserved1;
+    public double weight_kg;
+    public double injected_dose_bq;
+    public double half_life_s;
 }
 
 /// <summary>siaara_roi_stats (blittable, C layout).</summary>
@@ -1279,6 +1301,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_file_warning")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_file_warning(nint file, uint index, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_warning_code")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_warning_code(nint file, uint index, int* @out);
 
     [LibraryImport(Library, EntryPoint = "siaara_file_read_report")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -2100,6 +2126,13 @@ internal static unsafe class Native
         fixed (byte* p_buf = buf)
         fixed (nuint* p_needed = &needed)
             return Raw.siaara_file_warning(file, index, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_file_warning_code(nint file, uint index, out int @out)
+    {
+        @out = default;
+        fixed (int* p_out = &@out)
+            return Raw.siaara_file_warning_code(file, index, p_out);
     }
 
     internal static int siaara_file_read_report(nint file, ref siaara_read_report @out)

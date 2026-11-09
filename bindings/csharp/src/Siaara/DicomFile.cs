@@ -47,6 +47,17 @@ public enum DicomReadLoss
     HeaderOnly = 4,
 }
 
+/// <summary>Code of a file parse warning (siaara_file_warning_code).</summary>
+public enum DicomFileWarningCode
+{
+    /// <summary>A lenient-mode finding.</summary>
+    General = 0,
+    /// <summary>Input bytes were skipped (PARSE_INCOMPLETE).</summary>
+    ParseIncomplete = 1,
+    /// <summary>The input ended early (INPUT_TRUNCATED).</summary>
+    InputTruncated = 2,
+}
+
 /// <summary>Whether a read was complete (siaara_read_report).</summary>
 public sealed record DicomReadReport
 {
@@ -220,6 +231,23 @@ public sealed class DicomFile : IDisposable
             for (int i = 0; i < list.Length; i++)
             {
                 list[i] = Status.ReadString((F: l.Pointer, I: (uint)i), static (s, b, out nn) => Native.siaara_file_warning(s.F, s.I, b, out nn));
+            }
+            return list;
+        }
+    }
+
+    /// <summary>Code of each parse warning, in the order of <see cref="Warnings"/>.</summary>
+    public IReadOnlyList<DicomFileWarningCode> WarningCodes
+    {
+        get
+        {
+            using var l = new HandleLease(_handle);
+            Status.Check(Native.siaara_file_warning_count(l.Pointer, out uint n));
+            var list = new DicomFileWarningCode[n];
+            for (int i = 0; i < list.Length; i++)
+            {
+                Status.Check(Native.siaara_file_warning_code(l.Pointer, (uint)i, out int c));
+                list[i] = (DicomFileWarningCode)c;
             }
             return list;
         }

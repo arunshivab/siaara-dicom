@@ -42,6 +42,10 @@ internal static class ClinicalTests
             Check(Rel(s.BodySurfaceArea!.Value, 7.66797035188891e-5));
             Check(Rel(s.IdealBodyWeight!.Value, 2.96043932134852e-4));
             CheckNear(s.DecaySeconds, 3600, 1e-9);
+            CheckEq(s.DecayCorrection, SuvDecayCorrection.Start);
+            Check(s.ScanTimeSource != SuvTimeSource.None);
+            Check(s.InjectionTimeSource != SuvTimeSource.None);
+            Check(s.WeightKg is not null && s.InjectedDoseBq is not null && s.HalfLifeSeconds is not null);
             Check(Rel(s.DecayedDoseBq, 253314180.241641));
             f.Dataset.Remove(DicomTags.PatientWeight);
             SuvFactors none = SuvFactors.Compute(f);

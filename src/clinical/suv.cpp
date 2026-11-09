@@ -211,10 +211,14 @@ SuvResult compute_suv(const Dataset& ds, std::uint32_t frame, const SuvOptions& 
     std::optional<Moment> inj;
     if (opt.injection_time) {
         inj = Moment{*opt.injection_time, std::nullopt, false};
+        r.injection_time_source = "caller";
     } else if (rpi) {
         if (auto dt = get_text(*rpi, tags::RadiopharmaceuticalStartDateTime)) {
             std::optional<int> off;
-            if (auto v = parse_dt(*dt, &off)) inj = Moment{*v, off, false};
+            if (auto v = parse_dt(*dt, &off)) {
+                inj = Moment{*v, off, false};
+                r.injection_time_source = "Radiopharmaceutical Start DateTime";
+            }
         }
         if (!inj)
             if (auto tm = get_text(*rpi, tags::RadiopharmaceuticalStartTime)) {
@@ -226,6 +230,7 @@ SuvResult compute_suv(const Dataset& ds, std::uint32_t frame, const SuvOptions& 
                     if (auto d = parse_da(*series_da)) day = static_cast<double>(*d) * 86400.0;
                 if (t && day) {
                     inj = Moment{*day + *t, std::nullopt, true};
+                    r.injection_time_source = "Radiopharmaceutical Start Time + scan date";
                     warn(r, kSuvInjectionDateAssumed, "Radiopharmaceutical Start Time without date: scan date used");
                 }
             }

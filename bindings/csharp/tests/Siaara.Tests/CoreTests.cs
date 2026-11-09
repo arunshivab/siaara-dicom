@@ -44,6 +44,7 @@ internal static class CoreTests
                 Check(r.Loss.HasFlag(DicomReadLoss.InputTruncated));
                 Check(r.WarningCount >= 1);
                 Check(f.Warnings[0].StartsWith("INPUT_TRUNCATED", StringComparison.Ordinal));
+                CheckEq(f.WarningCodes[0], DicomFileWarningCode.InputTruncated);
                 string outPath = Path.Combine(dir, "b.dcm");
                 var ex = Throws<SiaaraException>(() => f.Save(outPath));
                 CheckEq(ex?.ErrorCode, SiaaraErrorCode.Rejected);

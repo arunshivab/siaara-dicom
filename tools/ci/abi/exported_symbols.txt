@@ -68,6 +68,7 @@ siaara_file_save_ex
 siaara_file_transcode
 siaara_file_transfer_syntax
 siaara_file_warning
+siaara_file_warning_code
 siaara_file_warning_count
 siaara_folder_scan
 siaara_frame_count

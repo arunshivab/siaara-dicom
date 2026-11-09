@@ -323,6 +323,13 @@ internal static class StructLayouts
             r.Add("F siaara_suv ibw " + Offset(ref s, ref s.ibw).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_suv decay_seconds " + Offset(ref s, ref s.decay_seconds).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_suv decayed_dose_bq " + Offset(ref s, ref s.decayed_dose_bq).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv scan_time_source " + Offset(ref s, ref s.scan_time_source).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv injection_time_source " + Offset(ref s, ref s.injection_time_source).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv decay_correction " + Offset(ref s, ref s.decay_correction).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv reserved1 " + Offset(ref s, ref s.reserved1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv weight_kg " + Offset(ref s, ref s.weight_kg).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv injected_dose_bq " + Offset(ref s, ref s.injected_dose_bq).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_suv half_life_s " + Offset(ref s, ref s.half_life_s).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_roi_stats);

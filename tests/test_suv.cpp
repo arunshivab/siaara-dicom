@@ -18,6 +18,7 @@
 //     SUVbsa factor = 19 424.0562380594 cm2 / 253 314 180.241641 = 7.66797035188891e-5
 //   IBW Devine (male) = 50 + 2.3 x (180 / 2.54 - 60) = 74.992125984252 kg; factor 2.96043932134852e-4
 #include <cmath>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -329,6 +330,36 @@ TEST_CASE("suv: C API") {
     CHECK(s.has_bsa == 1 && rel(s.bsa, 7.66797035188891e-5));
     CHECK(s.decay_seconds == 3600.0);
     CHECK_EQ(s.warnings, 0u);
+    // F11: which inputs were used and where they came from.
+    CHECK_EQ(s.decay_correction, SIAARA_SUV_DECAY_START);
+    CHECK_EQ(s.scan_time_source, SIAARA_SUV_SRC_SERIES);
+    CHECK(s.injection_time_source == SIAARA_SUV_SRC_START_DATETIME || s.injection_time_source == SIAARA_SUV_SRC_START_TIME_SCAN_DATE);
+    CHECK_EQ(s.weight_kg, 75.0);
+    CHECK(s.injected_dose_bq > 0.0 && s.half_life_s > 0.0);
+    // An older caller (struct up to decayed_dose_bq) is still served, without the new fields.
+    siaara_suv old{};
+    old.struct_size = static_cast<uint32_t>(offsetof(siaara_suv, scan_time_source));
+    old.scan_time_source = 77;
+    CHECK_EQ(siaara_suv_factor(file, 0, &old), SIAARA_OK);
+    CHECK(old.has_bw == 1 && old.scan_time_source == 77);
+    // Missing Series Date/Time: the image's acquisition time, flagged and reported as the source.
+    {
+        Dataset d = pet();
+        d.remove(ct::SeriesTime);
+        DicomFile g;
+        g.dataset = d;
+        g.transfer_syntax = "1.2.840.10008.1.2.1";
+        std::vector<std::uint8_t> b2;
+        REQUIRE(write_part10(g, b2).is_ok());
+        siaara_file* f2 = nullptr;
+        REQUIRE(siaara_file_open_memory(b2.data(), b2.size(), nullptr, &f2) == SIAARA_OK);
+        siaara_suv s2{};
+        s2.struct_size = sizeof s2;
+        CHECK_EQ(siaara_suv_factor(f2, 0, &s2), SIAARA_OK);
+        CHECK((s2.warnings & SIAARA_SUV_PER_IMAGE_SCAN_TIME) != 0);
+        CHECK_EQ(s2.scan_time_source, SIAARA_SUV_SRC_ACQUISITION);
+        siaara_file_free(f2);
+    }
     siaara_suv bad{};
     CHECK_EQ(siaara_suv_factor(file, 0, &bad), SIAARA_ERR_INVALID_ARGUMENT);
     siaara_file_free(file);
