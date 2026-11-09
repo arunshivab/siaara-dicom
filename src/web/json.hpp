@@ -16,12 +16,14 @@ namespace siaara::web::json {
 
 enum class Type : std::uint8_t { Null, Bool, Number, String, Array, Object };
 
+struct Member;
+
 struct Value {
     Type type = Type::Null;
     bool boolean = false;
     std::string text;  // Number: the token exactly as written; String: decoded UTF-8
     std::vector<Value> array;
-    std::vector<std::pair<std::string, Value>> object;  // members in document order
+    std::vector<Member> object;  // members in document order (vector of an incomplete type: C++17)
 
     bool is_null() const noexcept { return type == Type::Null; }
     bool is_string() const noexcept { return type == Type::String; }
@@ -30,6 +32,11 @@ struct Value {
     bool is_object() const noexcept { return type == Type::Object; }
     // First member with this key, or nullptr.
     const Value* get(std::string_view key) const noexcept;
+};
+
+struct Member {
+    std::string first;  // name
+    Value second;       // value
 };
 
 struct ParseLimits {

@@ -374,10 +374,11 @@ TEST_CASE("web/dicom json non-finite floats and integer edge cases") {
     // Subnormal doubles survive.
     auto sub = dataset_from_json(R"({"00189328":{"vr":"FD","Value":[5e-324, 2.2250738585072014e-308]}})");
     REQUIRE(sub.is_ok());
-    double s2[2];
-    std::memcpy(s2, sub->find(0x00189328)->value.data(), 16);
-    CHECK_EQ(s2[0], 4.9406564584124654e-324);
-    CHECK_EQ(s2[1], 2.2250738585072014e-308);
+    // Compare bit patterns: on x87 targets a double literal may be evaluated in excess precision.
+    std::uint64_t bits[2];
+    std::memcpy(bits, sub->find(0x00189328)->value.data(), 16);
+    CHECK_EQ(bits[0], 1u);                        // smallest subnormal
+    CHECK_EQ(bits[1], 0x0010000000000000ull);     // DBL_MIN
 }
 
 TEST_CASE("web/dicom json character sets") {
