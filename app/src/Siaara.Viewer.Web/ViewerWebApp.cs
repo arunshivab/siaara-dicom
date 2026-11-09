@@ -1,6 +1,7 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Siaara.Viewer.Web.Security;
@@ -19,6 +20,9 @@ public static class ViewerWebApp
     public static IServiceCollection AddSiaaraViewer(this IServiceCollection services, ViewerRuntime runtime, LaunchSecurity security)
     {
         ArgumentNullException.ThrowIfNull(runtime);
+        // Keys only protect Blazor circuit state of this run (the session cookie changes every start):
+        // keep them in memory instead of writing unencrypted key files to the user profile.
+        services.AddDataProtection().UseEphemeralDataProtectionProvider();
         services.AddSingleton(runtime);
         services.AddSingleton(security);
         services.AddSingleton(runtime.Sessions);
@@ -58,5 +62,17 @@ public static class ViewerWebApp
             return png is null ? Results.NotFound() : Results.Bytes(png, "image/png");
         });
         app.MapGet("/api/health", () => Results.Text("ok"));
+        // Opens a study for a viewer that is not the Blazor page (scripts, a future native shell). Same
+        // rules as the page: cookie, and as a POST the exact Origin; audited as study.open.
+        app.MapPost("/api/sessions", async (HttpContext ctx, ViewerRuntime rt) =>
+        {
+            string? study = ctx.Request.Query["study"];
+            if (string.IsNullOrEmpty(study))
+            {
+                return Results.BadRequest();
+            }
+            Core.Viewing.ViewerSession s = await rt.OpenStudyAsync(study).ConfigureAwait(false);
+            return Results.Text("{\"id\":\"" + s.Id + "\"}", "application/json");
+        });
     }
 }

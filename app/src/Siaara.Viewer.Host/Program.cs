@@ -10,14 +10,14 @@ using Siaara.Viewer.Core.Toolkit;
 namespace Siaara.Viewer.Host;
 
 /// <summary>
-/// siaara-viewer [--data-dir DIR] [--store DIR] [--no-browser] [--print-url] [--no-idle-exit] [--verbose]
+/// siaara-viewer [--data-dir DIR] [--store DIR] [--import DIR] [--no-browser] [--print-url] [--no-idle-exit] [--verbose]
 /// siaara-viewer --generate-samples DIR [--full]
 /// </summary>
 internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
-        string? dataDir = null, store = null, samples = null;
+        string? dataDir = null, store = null, samples = null, import = null;
         bool noBrowser = false, printUrl = false, noIdle = false, verbose = false, full = false;
         for (int i = 0; i < args.Length; i++)
         {
@@ -26,6 +26,7 @@ internal static class Program
                 case "--data-dir" when i + 1 < args.Length: dataDir = args[++i]; break;
                 case "--store" when i + 1 < args.Length: store = args[++i]; break;
                 case "--generate-samples" when i + 1 < args.Length: samples = args[++i]; break;
+                case "--import" when i + 1 < args.Length: import = args[++i]; break;
                 case "--full": full = true; break;
                 case "--no-browser": noBrowser = true; break;
                 case "--print-url": printUrl = true; break;
@@ -61,6 +62,13 @@ internal static class Program
             return 0;
         }
 
+        if (Environment.GetEnvironmentVariable("DOTNET_DbgEnableMiniDump") == "1")
+        {
+            // Crash dumps would hold patient data from memory: the app never enables them.
+            await Console.Error.WriteLineAsync("SIAARA Viewer: crash dumps are enabled in the environment (DOTNET_DbgEnableMiniDump); unset it.").ConfigureAwait(false);
+            return 2;
+        }
+
         AppPaths paths = dataDir is null ? AppPaths.ForCurrentUser() : new AppPaths(dataDir);
         paths.EnsureCreated();
 
@@ -85,6 +93,15 @@ internal static class Program
         await using (viewer.ConfigureAwait(false))
         {
             instance.PublishUrl(viewer.Security.LaunchUrl);
+            if (import is not null)
+            {
+                // Same path as the import sheet (scan or DICOMDIR, copy into the store, audited).
+                Core.Import.ImportJob job = viewer.Runtime.Import.Start(new Core.Import.ImportRequest(import));
+                await job.Completion.ConfigureAwait(false);
+                Core.Import.ImportProgress p = job.Progress;
+                await Console.Out.WriteLineAsync(string.Create(CultureInfo.InvariantCulture,
+                    $"import: {p.Added} added, {p.Duplicates} duplicates, {p.Skipped} skipped, {p.Errors} errors")).ConfigureAwait(false);
+            }
             if (printUrl)
             {
                 await Console.Out.WriteLineAsync(viewer.Security.LaunchUrl.AbsoluteUri).ConfigureAwait(false);
