@@ -463,7 +463,8 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
     fo.lenient = opt.lenient;
     fo.threads = 1;
     fo.memory_budget = opt.memory_budget;
-    detail::parallel_for(files.size(), threads, [&](std::uint64_t fi, unsigned) noexcept {
+    detail::parallel_for(files.size(), threads, [&](std::uint64_t fi64, unsigned) noexcept {
+        const auto fi = static_cast<std::size_t>(fi64);  // < files.size()
         try {
             Source& s = sources[fi];
             s.file = files[fi];
@@ -725,7 +726,7 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
     for (std::size_t i : sel) max_frame_bytes = std::max(max_frame_bytes, sources[frames[i].src].fr->frame_bytes());
     if (max_frame_bytes > SIZE_MAX / 4) return Status(Errc::LimitExceeded, "volume: frame too large");
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    for (int attempt = 0;; ++attempt) {  // at most two: int16, then float32 when values did not fit
         auto vr = Volume::allocate(grid, type, opt.memory_budget);
         if (!vr) return vr.take_error();
         Volume& vol = *vr;
@@ -846,7 +847,6 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
         vol.source_frames = nz;
         return vr;
     }
-    return Status(Errc::Internal, "volume: unreachable");
 }
 
 Result<Volume> build_volume_from_paths(std::span<const std::string> paths, const VolumeOptions& opt) {
@@ -864,7 +864,8 @@ Result<Volume> build_volume_from_paths(std::span<const std::string> paths, const
     }
     ReadOptions ro;
     ro.lenient = opt.lenient;
-    detail::parallel_for(paths.size(), opt.threads, [&](std::uint64_t i, unsigned) noexcept {
+    detail::parallel_for(paths.size(), opt.threads, [&](std::uint64_t i64, unsigned) noexcept {
+        const auto i = static_cast<std::size_t>(i64);  // < paths.size()
         try {
             auto f = read_file(paths[i], ro);
             if (!f) {
