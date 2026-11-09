@@ -105,7 +105,16 @@ public:
                     if (Status s = parse_items(e, syn, vend, false, depth); !s) return s;
                     pos_ = static_cast<std::size_t>(vend);
                 } else {
-                    e.value = value_bytes(e.vr, pos_, len, syn);
+                    std::size_t unit = 0;
+                    // Pixel samples wider than 16 bits stored as OW are big-endian per sample, not
+                    // per 16-bit word: swap by Bits Allocated so memory holds true little endian
+                    // (the writer does the inverse).
+                    if (syn.big_endian && depth == 0 && tag == tags::PixelData && e.vr == VR::OW &&
+                        (bits_allocated_ == 32 || bits_allocated_ == 64))
+                        unit = bits_allocated_ / 8u;
+                    e.value = value_bytes(e.vr, pos_, len, syn, unit);
+                    if (depth == 0 && tag == tags::BitsAllocated && e.value.size() >= 2)
+                        bits_allocated_ = load_le16(e.value.data());
                     pos_ = static_cast<std::size_t>(vend);
                 }
             }
@@ -226,10 +235,10 @@ private:
         }
     }
 
-    Bytes value_bytes(VR vr, std::size_t at, std::uint32_t len, Syntax syn) {
+    Bytes value_bytes(VR vr, std::size_t at, std::uint32_t len, Syntax syn, std::size_t unit = 0) {
         if (!syn.big_endian) return buf_.sub(at, len);
         // AT is a pair of 16-bit values (group, element), so it swaps in 16-bit units (PS3.5 6.2).
-        const std::size_t w = vr == VR::AT ? 2 : vr_value_size(vr);
+        const std::size_t w = unit ? unit : (vr == VR::AT ? 2 : vr_value_size(vr));
         if (w <= 1) return buf_.sub(at, len);
         // Big endian: swap to little endian in a private copy.
         Bytes copy = Bytes::copy_of(p_ + at, len);
@@ -262,6 +271,7 @@ private:
     std::uint64_t element_count_ = 0;
     bool stopped_at_pixels_ = false;
     std::uint64_t stop_offset_ = 0;
+    std::uint16_t bits_allocated_ = 0;
 };
 
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {

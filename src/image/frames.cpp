@@ -146,6 +146,8 @@ Result<FrameReader> FrameReader::open(const Dataset& ds, std::string_view ts_uid
     if (r.ts_ && r.ts_->big_endian && w >= 2) {
         unsigned ru = static_cast<unsigned>(vr_value_size(e->vr));
         if (ru == 0) ru = 1;
+        // The core reader already swaps 32/64-bit samples in OW Pixel Data per sample.
+        if (e->vr == VR::OW && e->tag == siaara::tags::PixelData && (w == 4 || w == 8)) ru = w;
         if (ru != w && w % ru == 0) {
             // reader layout: buf[j] = orig[g(j)], g(i) = (i/ru)*ru + ru-1 - i%ru (an involution);
             // wanted: out[k] = orig[w-1-k] = buf[g(w-1-k)].

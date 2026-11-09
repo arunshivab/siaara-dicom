@@ -342,7 +342,7 @@ TEST_CASE("image: big-endian 32-bit samples in OW are put in little-endian order
     REQUIRE(ds.is_ok());
     auto r = FrameReader::open(*ds, ts::ExplicitVRBigEndian);
     REQUIRE(r.is_ok());
-    CHECK(!r->native_view(0).has_value());
+    CHECK(r->native_view(0).has_value());  // the reader already produced little-endian samples
     CHECK(r->decode_range(0, 2).value() == le);
 }
 
