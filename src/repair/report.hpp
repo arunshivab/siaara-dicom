@@ -77,7 +77,8 @@ struct FileReport {
     std::string output_sha256;
     std::vector<Finding> findings;        // validation of the input
     std::vector<Change> changes;          // applied (or, in a dry run, planned)
-    std::vector<Finding> findings_after;  // validation of the written output
+    bool after_computed = false;          // findings_after holds the validation of the (planned) output
+    std::vector<Finding> findings_after;  // validation of the written (or, in a dry run, planned) output
     std::vector<std::uint32_t> frames_recovered;  // pixel rescue: 0-based frame indices kept
     std::vector<std::uint32_t> frames_lost;
     std::uint32_t frames_declared = 0;

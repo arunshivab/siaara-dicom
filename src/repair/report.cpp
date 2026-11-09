@@ -318,7 +318,7 @@ std::string to_json(const Report& r) {
             u32_array(o, f.frames_lost);
             o += "}";
         }
-        if (f.written) {
+        if (f.after_computed) {
             o += ",\"summary_after\":";
             counts_json(o, f.findings_after);
             o += ",\"findings_after\":";
@@ -370,12 +370,12 @@ std::string to_text(const Report& r, Severity min_severity) {
             }
             o += "\n";
         }
-        if (f.written) {
-            o += "  written";
-            if (r.detailed) o += " to " + f.output_path;
+        if (f.after_computed) {
+            o += f.written ? "  written" : "  not written (dry run)";
+            if (r.detailed && f.written) o += " to " + f.output_path;
             o += "; input unchanged: ";
             o += f.input_unchanged ? "yes" : "NO";
-            o += "; after repair: " + std::to_string(count(f.findings_after, Severity::Error)) + " error(s), " +
+            o += f.written ? "; after repair: " : "; output would have: " + std::to_string(count(f.findings_after, Severity::Error)) + " error(s), " +
                  std::to_string(count(f.findings_after, Severity::Warning)) + " warning(s)\n";
         }
     }
