@@ -580,6 +580,9 @@ void encode_iso2022(Encoder& e, std::string_view s) {
         if (bad) { e.fail(kReplacement, start); continue; }
         if (cp < 0x20 || cp == 0x7F || cp == 0x20) {
             if (cp != 0x20 && is_line_delimiter(static_cast<std::uint8_t>(cp))) restore();
+            // SPACE is never part of a G0 set, but writers return to the value 1 G0 set before
+            // it rather than leave a double-byte set designated; do the same.
+            if (cp == 0x20 && info(g0).shape == Shape::S94x94) { put_escape(out, init.g0, 0); g0 = init.g0; }
             if (cp == ESC) { e.fail(cp, start); continue; }  // would be read as an escape
             out.push_back(static_cast<char>(cp));
             continue;

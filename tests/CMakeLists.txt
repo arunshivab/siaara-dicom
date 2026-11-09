@@ -24,3 +24,7 @@ target_compile_options(siaara_codec_tool PRIVATE ${SIAARA_WARN})
 add_executable(jpeg_tool crosscheck/jpeg_tool.cpp)  # test-only helper for crosscheck/jpeg_crosscheck.py
 target_link_libraries(jpeg_tool PRIVATE siaara_static)
 target_compile_options(jpeg_tool PRIVATE ${SIAARA_WARN})
+# Test-only helper for tests/crosscheck/charset_crosscheck.py (not installed).
+add_executable(charset_tool crosscheck/charset_tool.cpp)
+target_link_libraries(charset_tool PRIVATE siaara_static)
+target_compile_options(charset_tool PRIVATE ${SIAARA_WARN})
