@@ -298,12 +298,13 @@ public:
         sop_class_ = std::move(sop_class);
         offset_ = offset_from_digest(hmac_.mac(kDatePrefix, patient_id), opt_.max_shift_days);
         patient_pseudonym_ = "ID";
-        const Digest d = hmac_.mac(kPatientIdPrefix, patient_id);
+        Digest d = hmac_.mac(kPatientIdPrefix, patient_id);
         static constexpr char kHex[] = "0123456789ABCDEF";
         for (int i = 0; i < 8; ++i) {
             patient_pseudonym_.push_back(kHex[d[static_cast<std::size_t>(i)] >> 4]);
             patient_pseudonym_.push_back(kHex[d[static_cast<std::size_t>(i)] & 15]);
         }
+        secure_wipe(d.data(), d.size());
     }
 
     std::string map_uid(std::string_view uid) const { return uid_from_digest(hmac_.mac(uid)); }
