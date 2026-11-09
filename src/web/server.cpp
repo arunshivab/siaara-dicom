@@ -350,13 +350,20 @@ private:
             return fail(rs_, 406, "acceptable media type: multipart/related; type=\"application/dicom\"");
         std::vector<Bytes> raw;
         if (!load(key, raw)) return;
+        // R-052: the reply is built in memory, so it is capped like the frames response.
+        std::uint64_t stored_total = 0;
+        for (const auto& r : raw) stored_total += r.size();
+        if (stored_total > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
         for (const auto& want : candidates) {
             multipart::Writer w;
             bool all = true;
+            std::uint64_t total = 0;
             for (const auto& r : raw) {
                 std::string ts_out;
                 auto conv = convert_instance(r, want, ts_out);
                 if (!conv) { all = false; break; }
+                total += conv->size();
+                if (total > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
                 w.add(std::string(media::Dicom) + "; transfer-syntax=" + ts_out, conv->as_chars());
             }
             if (!all) continue;
@@ -389,6 +396,7 @@ private:
         }
         std::string json;
         multipart::Writer w;
+        std::uint64_t xml_total = 0;
         if (fmt == MetaFormat::Json) json.push_back('[');
         for (std::size_t i = 0; i < files.size(); ++i) {
             const std::string url = instance_url(files[i].dataset);
@@ -405,9 +413,12 @@ private:
             if (fmt == MetaFormat::Json) {
                 if (i) json.push_back(',');
                 if (Status st = dataset_to_json(files[i].dataset, json, opt); !st) return fail(rs_, 500, "cannot encode metadata");
+                if (json.size() > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
             } else {
                 std::string x;
                 if (Status st = dataset_to_xml(files[i].dataset, x, opt); !st) return fail(rs_, 500, "cannot encode metadata");
+                xml_total += x.size();
+                if (xml_total > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
                 w.add(media::DicomXml, x);
             }
         }
@@ -569,13 +580,17 @@ private:
             auto fr = image::FrameReader::open(*ds, f->transfer_syntax);
             if (!fr) return fail(rs_, 500, "pixel data cannot be read");
             part_type = std::string(media_type_for_transfer_syntax(f->transfer_syntax));
+            std::uint64_t total = 0;
             for (std::uint32_t n = 0; n < fr->frame_count(); ++n) {
                 std::vector<std::uint8_t> enc;
                 if (Status st = fr->encoded_frame(n, enc); !st) return fail(rs_, 500, "frame cannot be read");
+                total += enc.size();
+                if (total > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");  // R-052
                 w.add(part_type + "; transfer-syntax=" + f->transfer_syntax,
                       std::string_view(reinterpret_cast<const char*>(enc.data()), enc.size()));
             }
         } else {
+            if (el->value.size() > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");  // R-052
             w.add(media::OctetStream, el->value.as_chars());
         }
         rs_.body = w.finish();

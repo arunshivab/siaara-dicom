@@ -433,3 +433,31 @@ TEST_CASE("R-039: CORS \"*\" is refused together with authorize") {
         s.stop();
     }
 }
+
+// ------------------------------------------------------------------ R-052 (2026-11-10 review)
+
+TEST_CASE("R-052: study/series/instance retrieve, metadata and bulk data responses are capped") {
+    siaara_test_web::MemoryStore mem;
+    const std::string inst = two_frame_instance();
+    REQUIRE(mem.add_part10(Bytes::copy_of(reinterpret_cast<const std::uint8_t*>(inst.data()), inst.size())).is_ok());
+    const std::string i = "/dicomweb/studies/2.25.10/series/2.25.20/instances/2.25.31";
+    const std::vector<std::string> targets = {"/dicomweb/studies/2.25.10", "/dicomweb/studies/2.25.10/series/2.25.20", i,
+                                              i + "/bulkdata/7FE00010"};
+    for (std::uint64_t cap : {std::uint64_t{1} << 30, std::uint64_t{200}}) {
+        DicomwebServerConfig cfg;
+        cfg.max_response_bytes = cap;
+        DicomwebServer s;
+        REQUIRE(s.start(cfg, mem.make_store()).is_ok());
+        for (const auto& t : targets) {
+            http::Response rs;
+            s.handle(get(t), rs);
+            CHECK_EQ(rs.status, cap == 200 ? 413 : 200);
+            if (cap == 200) CHECK(rs.body.size() < 1000);
+        }
+        http::Response rs;
+        http::Request rq = get("/dicomweb/studies/2.25.10/metadata");
+        s.handle(rq, rs);
+        CHECK_EQ(rs.status, cap == 200 ? 413 : 200);
+        s.stop();
+    }
+}

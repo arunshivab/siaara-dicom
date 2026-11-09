@@ -74,6 +74,9 @@ struct DicomwebServerConfig {
     std::size_t max_qido_results = 10000;  // hard cap; more matches are cut with a Warning header
     // WADO-RS frames: largest multipart response built in memory (413 above it; PARSE-31).
     std::uint64_t max_frames_response_bytes = 256ull << 20;
+    // Every other response built in memory (study / series / instance retrieve, metadata, bulk
+    // data): 413 above it (R-052).
+    std::uint64_t max_response_bytes = 1ull << 30;
     multipart::Limits multipart;
     // Access control: return false to answer 401. Default: everything allowed.
     // Off loopback, start() requires TLS plus authorize or client certificates
