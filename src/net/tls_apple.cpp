@@ -10,8 +10,14 @@
 //
 // Policy (as on the other backends): TLS 1.2 minimum, 1.3 preferred; only the cipher suites of
 // detail::allowed_cipher_suites() are offered; peer certificates are evaluated by the toolkit's
-// verify block (SecPolicyCreateSSL with the expected name, the configured anchors only when
-// ca_file is set, dates, key sizes). Identities: PKCS#12 files or a keychain identity by label.
+// verify block (SecPolicyCreateSSL with the expected name, revocation per TlsSettings::revocation
+// through SecPolicyCreateRevocation, the configured anchors only when ca_file is set, dates, and
+// the PS3.15 key algorithms and sizes of every chain certificate; signature hashes are left to
+// the platform's TLS trust policy, which refuses SHA-1). Ed25519 certificates are not usable
+// here (Security.framework has no Ed25519 SecKey), so they are refused under both profiles.
+// Identities: PKCS#12 files or a keychain identity by label. PKCS#12 keys never go into the
+// user's keychains: macOS 15 and later import them in memory only (kSecImportToMemoryOnly);
+// earlier versions import them into a private temporary keychain that is deleted with the context.
 #if defined(__APPLE__)
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -19,6 +25,9 @@
 #include <Security/Security.h>
 #include <dispatch/dispatch.h>
 
+#include <unistd.h>
+
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -110,9 +119,9 @@ private:
     dispatch_queue_t queue_;
     TlsSessionInfo info_;
     std::string peer_;
-    bool started_ = false;
-    bool done_ = false;
-    bool closed_ = false;
+    std::atomic<bool> started_{false};
+    std::atomic<bool> done_{false};
+    std::atomic<bool> closed_{false};
 
     void start_receive_locked();
     void read_session();
@@ -124,6 +133,7 @@ public:
     ~AppleContext() override {
         if (identity_) CFRelease(identity_);
         if (anchors_) CFRelease(anchors_);
+        delete_temp_keychain();
     }
     Status init();
 
@@ -135,12 +145,31 @@ public:
 private:
     SecIdentityRef identity_ = nullptr;
     CFArrayRef anchors_ = nullptr;
+    // macOS before 15: the private keychain holding an imported PKCS#12 key, and its folder.
+    SecKeychainRef temp_keychain_ = nullptr;
+    std::string temp_keychain_dir_;
+
+    Status create_temp_keychain();
+    void delete_temp_keychain() noexcept;
 
     Status load_identity();
     Status load_anchors();
     Result<std::unique_ptr<detail::TlsListenerImpl>> make_listener(const std::string& bind_address,
                                                                    std::uint16_t port, int backlog) override;
 };
+
+// The evaluated chain of a trust object (leaf first, anchor last).
+CFArrayRef copy_chain(SecTrustRef t) {
+    if (__builtin_available(macOS 12.0, *)) return SecTrustCopyCertificateChain(t);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    const CFIndex n = SecTrustGetCertificateCount(t);
+    CFMutableArrayRef a = CFArrayCreateMutable(nullptr, n, &kCFTypeArrayCallBacks);
+    for (CFIndex i = 0; a && i < n; ++i)
+        if (SecCertificateRef c = SecTrustGetCertificateAtIndex(t, i)) CFArrayAppendValue(a, c);
+#pragma clang diagnostic pop
+    return a;
+}
 
 // ---------------------------------------------------------------- context
 Status AppleContext::load_identity() {
@@ -165,14 +194,30 @@ Status AppleContext::load_identity() {
         const void* keys[2] = {kSecImportExportPassphrase, nullptr};
         const void* values[2] = {pw, nullptr};
         CFIndex n = 1;
+        bool in_memory = false;
 #if defined(__MAC_15_0)
-        // Keep the imported key in memory instead of adding it to the default keychain.
+        // Keep the imported key in memory instead of adding it to a keychain.
         if (__builtin_available(macOS 15.0, *)) {
             keys[1] = kSecImportToMemoryOnly;
             values[1] = kCFBooleanTrue;
             n = 2;
+            in_memory = true;
         }
 #endif
+        if (!in_memory) {
+            // Older systems: into a private temporary keychain (never the default keychain).
+            if (Status k = create_temp_keychain(); !k) {
+                CFRelease(pw);
+                CFRelease(data);
+                return k;
+            }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            keys[1] = kSecImportExportKeychain;
+#pragma clang diagnostic pop
+            values[1] = temp_keychain_;
+            n = 2;
+        }
         CFDictionaryRef opts = CFDictionaryCreate(nullptr, keys, values, n, &kCFTypeDictionaryKeyCallBacks,
                                                   &kCFTypeDictionaryValueCallBacks);
         CFArrayRef items = nullptr;
@@ -209,6 +254,53 @@ Status AppleContext::load_identity() {
     }
     return Status::ok();
 }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+Status AppleContext::create_temp_keychain() {
+    char base[1024] = {0};
+    const std::size_t len = ::confstr(_CS_DARWIN_USER_TEMP_DIR, base, sizeof base);  // per-user, mode 0700
+    std::string dir = (len > 0 && len < sizeof base) ? std::string(base) : std::string("/tmp/");
+    if (dir.back() != '/') dir.push_back('/');
+    dir += "siaara-tls-XXXXXX";
+    std::vector<char> tmpl(dir.begin(), dir.end());
+    tmpl.push_back('\0');
+    if (!::mkdtemp(tmpl.data())) return Status(Errc::IoError, "cannot create a temporary folder for the PKCS#12 import");
+    temp_keychain_dir_ = tmpl.data();
+    const std::string path = temp_keychain_dir_ + "/import.keychain-db";
+    unsigned char raw[32];
+    ::arc4random_buf(raw, sizeof raw);
+    std::string pw;
+    static const char* hex = "0123456789abcdef";
+    for (unsigned char b : raw) {
+        pw.push_back(hex[b >> 4]);
+        pw.push_back(hex[b & 15]);
+    }
+    secure_wipe(raw, sizeof raw);
+    const OSStatus st = SecKeychainCreate(path.c_str(), static_cast<UInt32>(pw.size()), pw.data(), false, nullptr,
+                                          &temp_keychain_);
+    secure_wipe(pw);
+    if (st != errSecSuccess || !temp_keychain_) {
+        temp_keychain_ = nullptr;
+        delete_temp_keychain();
+        return Status(Errc::IoError, "cannot create a temporary keychain: " + os_status_text(st));
+    }
+    return Status::ok();
+}
+
+void AppleContext::delete_temp_keychain() noexcept {
+    if (temp_keychain_) {
+        (void)SecKeychainDelete(temp_keychain_);  // also removes the file
+        CFRelease(temp_keychain_);
+        temp_keychain_ = nullptr;
+    }
+    if (!temp_keychain_dir_.empty()) {
+        (void)::unlink((temp_keychain_dir_ + "/import.keychain-db").c_str());
+        (void)::rmdir(temp_keychain_dir_.c_str());
+        temp_keychain_dir_.clear();
+    }
+}
+#pragma clang diagnostic pop
 
 Status AppleContext::load_anchors() {
     if (settings_.ca_file.empty()) return Status::ok();
@@ -279,10 +371,23 @@ nw_parameters_t AppleContext::make_parameters(const std::string& peer_name, std:
                         host = CFStringCreateWithCString(nullptr, name.c_str(), kCFStringEncodingUTF8);
                     SecPolicyRef policy = SecPolicyCreateSSL(!server, host);
                     if (host) CFRelease(host);
+                    // Revocation (OCSP, CRL, stapled responses as available).
+                    SecPolicyRef revocation = nullptr;
+                    if (vs.revocation != TlsRevocation::Off) {
+                        CFOptionFlags flags = kSecRevocationUseAnyAvailableMethod;
+                        if (vs.revocation == TlsRevocation::HardFail) flags |= kSecRevocationRequirePositiveResponse;
+                        revocation = SecPolicyCreateRevocation(flags);
+                    }
                     if (policy) {
-                        (void)SecTrustSetPolicies(trust, policy);
+                        const void* pols[2] = {policy, revocation};
+                        CFArrayRef arr = CFArrayCreate(nullptr, pols, revocation ? 2 : 1, &kCFTypeArrayCallBacks);
+                        if (arr) {
+                            (void)SecTrustSetPolicies(trust, arr);
+                            CFRelease(arr);
+                        }
                         CFRelease(policy);
                     }
+                    if (revocation) CFRelease(revocation);
                     if (self->anchors_) {
                         (void)SecTrustSetAnchorCertificates(trust, self->anchors_);
                         (void)SecTrustSetAnchorCertificatesOnly(trust, true);
@@ -299,24 +404,40 @@ nw_parameters_t AppleContext::make_parameters(const std::string& peer_name, std:
                     }
                     if (err) CFRelease(err);
                     if (ok) {
-                        // PS3.15 key sizes: RSA >= 2048 bits, ECC >= 256 bits.
-                        if (SecKeyRef key = SecTrustCopyKey(trust)) {
-                            if (CFDictionaryRef a = SecKeyCopyAttributes(key)) {
-                                CFTypeRef type = CFDictionaryGetValue(a, kSecAttrKeyType);
-                                CFNumberRef bits_ref = static_cast<CFNumberRef>(CFDictionaryGetValue(a, kSecAttrKeySizeInBits));
-                                int bits = 0;
-                                if (bits_ref) (void)CFNumberGetValue(bits_ref, kCFNumberIntType, &bits);
-                                if (type && CFEqual(type, kSecAttrKeyTypeRSA) && bits < 2048) {
-                                    ok = false;
-                                    why = "peer RSA key shorter than 2048 bits";
-                                } else if (type && CFEqual(type, kSecAttrKeyTypeECSECPrimeRandom) && bits < 256) {
-                                    ok = false;
-                                    why = "peer EC key shorter than 256 bits";
-                                }
-                                CFRelease(a);
-                            }
-                            CFRelease(key);
+                        // PS3.15 key algorithms and sizes for every certificate of the evaluated
+                        // chain (leaf first, anchor last).
+                        CFArrayRef chain = copy_chain(trust);
+                        const CFIndex n = chain ? CFArrayGetCount(chain) : 0;
+                        if (n <= 0) {
+                            ok = false;
+                            why = "no evaluated certificate chain";
                         }
+                        for (CFIndex i = 0; ok && i < n; ++i) {
+                            SecCertificateRef cert = static_cast<SecCertificateRef>(
+                                const_cast<void*>(CFArrayGetValueAtIndex(chain, i)));
+                            CertKey kind = CertKey::Other;
+                            int bits = 0;
+                            if (SecKeyRef key = cert ? SecCertificateCopyKey(cert) : nullptr) {
+                                if (CFDictionaryRef a = SecKeyCopyAttributes(key)) {
+                                    CFTypeRef type = CFDictionaryGetValue(a, kSecAttrKeyType);
+                                    CFNumberRef bits_ref =
+                                        static_cast<CFNumberRef>(CFDictionaryGetValue(a, kSecAttrKeySizeInBits));
+                                    if (bits_ref) (void)CFNumberGetValue(bits_ref, kCFNumberIntType, &bits);
+                                    if (type && CFEqual(type, kSecAttrKeyTypeRSA)) kind = CertKey::Rsa;
+                                    else if (type && CFEqual(type, kSecAttrKeyTypeECSECPrimeRandom)) kind = CertKey::Ec;
+                                    CFRelease(a);
+                                }
+                                CFRelease(key);
+                            }
+                            // Signature hashes: the platform TLS policy above already refuses SHA-1.
+                            if (Status bad = check_chain_cert(vs, static_cast<std::size_t>(i), i == n - 1, kind, bits,
+                                                              CertSig::Sha256Plus);
+                                !bad) {
+                                ok = false;
+                                why = bad.message;
+                            }
+                        }
+                        if (chain) CFRelease(chain);
                     }
                     CFRelease(trust);
                 } else {
@@ -537,8 +658,13 @@ Status AppleTransport::write_all(const std::uint8_t* data, std::size_t n, int ti
         dispatch_release(d);
         const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
         std::unique_lock<std::mutex> l(st_->mu);
-        if (!st_->cv.wait_until(l, deadline, [&] { return st_->sends_pending == 0 || st_->cancelled; }))
+        if (!st_->cv.wait_until(l, deadline, [&] { return st_->sends_pending == 0 || st_->cancelled; })) {
+            // Part of a record may have been sent: the connection cannot be used any more.
+            if (st_->tx_error.empty()) st_->tx_error = "write timed out";
+            l.unlock();
+            nw_connection_cancel(conn_);
             return Status(Errc::Timeout, "write timed out");
+        }
         if (!st_->tx_error.empty()) return Status(Errc::NetworkError, st_->tx_error);
         off += k;
     }

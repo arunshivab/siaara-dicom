@@ -63,6 +63,30 @@ enum class TlsMinVersion : std::uint8_t {
     Tls13 = 1,  // TLS 1.3 only
 };
 
+// The PS3.15 TLS Secure Transport Connection Profile a connection follows. Both negotiate the
+// same protocol versions and cipher suites: TLS 1.2 and 1.3 with ECDHE key exchange and AES-GCM
+// or ChaCha20-Poly1305 (the suites B.13 requires that every backend supports, which are also the
+// BCP 195 / RFC 9325 recommendations). They differ in the certificates accepted from the peer,
+// checked for every certificate of its chain:
+//   B.13 (default): keys RSA or RSA-PSS >= 2048 bits or ECDSA >= 256 bits only; signatures with
+//                   SHA-256 or stronger (the trust anchor's self-signature is not checked).
+//   B.12:           as B.13, and Ed25519 / Ed448 keys and signatures are also accepted.
+// MD5, SHA-1 and SHA-224 signatures, DSA and other key types are refused by both.
+enum class TlsProfile : std::uint8_t {
+    Bcp195Rfc8996 = 12,          // PS3.15 B.12 "BCP 195 RFC 8996 TLS Secure Transport Connection Profile"
+    ModifiedBcp195Rfc8996 = 13,  // PS3.15 B.13 "Modified BCP 195 RFC 8996 TLS ..." (default)
+};
+
+// Certificate revocation checking of the peer's chain.
+//   Off:      not checked.
+//   SoftFail: (default) a certificate known to be revoked is refused; when revocation status
+//             cannot be determined (no CRL, OCSP responder unreachable) the certificate is accepted.
+//   HardFail: the status of every certificate in the chain must be known and good.
+// Sources: Windows and macOS use the OS (CRL distribution points, OCSP, stapling). OpenSSL does
+// no network fetching: CRLs come from TlsSettings::crl_file and from CRL blocks in ca_file;
+// HardFail with OpenSSL therefore needs a crl_file (TlsContext::create fails without one).
+enum class TlsRevocation : std::uint8_t { Off = 0, SoftFail = 1, HardFail = 2 };
+
 struct TlsSettings {
     // When false, the owner of these settings uses plain TCP (the separate, unsecured port).
     bool enabled = false;
@@ -79,6 +103,11 @@ struct TlsSettings {
     // closed lab networks only; a warning is logged on every connection.
     bool insecure_skip_validation = false;
     TlsMinVersion min_version = TlsMinVersion::Tls12;
+    TlsProfile profile = TlsProfile::ModifiedBcp195Rfc8996;
+    TlsRevocation revocation = TlsRevocation::SoftFail;
+    // OpenSSL backend: PEM file of CRLs (X509 CRL blocks) for the revocation check. Ignored by
+    // the Windows and macOS backends, which use the OS revocation sources.
+    std::string crl_file;
     int handshake_timeout_ms = 15000;
     // Warnings and a one-line summary per connection (protocol, cipher suite, peer address).
     // Never key material, passwords or application data.

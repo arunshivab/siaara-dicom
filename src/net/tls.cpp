@@ -1,5 +1,8 @@
 // SIAARA DICOM Toolkit - TLS transport: backend-independent parts (policy, PEM, listener, the
 // engine-driven transport used by the OpenSSL and SChannel backends).
+#if defined(__APPLE__) && !defined(__STDC_WANT_LIB_EXT1__)
+#define __STDC_WANT_LIB_EXT1__ 1  // memset_s
+#endif
 #include "net/tls.hpp"
 
 #include <algorithm>
@@ -28,9 +31,19 @@ namespace detail {
 
 // ---------------------------------------------------------------- secrets
 void secure_wipe(void* p, std::size_t n) noexcept {
-    if (!p) return;
+    if (!p || n == 0) return;
+    // The platform's guaranteed-not-elided clear.
+#if defined(_WIN32)
+    ::SecureZeroMemory(p, n);
+#elif defined(__APPLE__)
+    (void)::memset_s(p, n, 0, n);
+#elif defined(__GLIBC__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || \
+    (defined(__linux__) && !defined(__GLIBC__))
+    ::explicit_bzero(p, n);
+#else
     volatile unsigned char* v = static_cast<volatile unsigned char*>(p);
     for (std::size_t i = 0; i < n; ++i) v[i] = 0;
+#endif
 }
 
 void secure_wipe(std::string& s) noexcept {
@@ -128,6 +141,40 @@ Status check_session(const TlsSettings& s, TlsContext::Role role, const TlsSessi
                               who + " " + peer + " is not authenticated";
         if (s.log) s.log(w);
         else default_warning_sink(w);
+    }
+    return Status::ok();
+}
+
+Status check_chain_cert(const TlsSettings& s, std::size_t index, bool anchor, CertKey key, int bits, CertSig sig) {
+    const bool b12 = s.profile == TlsProfile::Bcp195Rfc8996;
+    const std::string which = index == 0 ? std::string("peer certificate")
+                                         : "certificate " + std::to_string(index) + " of the peer chain";
+    switch (key) {
+        case CertKey::Rsa:
+        case CertKey::RsaPss:
+            if (bits < 2048) return Status(Errc::NetworkError, which + ": RSA key shorter than 2048 bits");
+            break;
+        case CertKey::Ec:
+            if (bits < 256) return Status(Errc::NetworkError, which + ": EC key shorter than 256 bits");
+            break;
+        case CertKey::Ed25519:
+        case CertKey::Ed448:
+            if (!b12) return Status(Errc::NetworkError, which + ": EdDSA keys are not allowed by the PS3.15 B.13 profile");
+            break;
+        case CertKey::Other:
+            return Status(Errc::NetworkError, which + ": key algorithm not allowed by PS3.15");
+    }
+    if (anchor) return Status::ok();
+    switch (sig) {
+        case CertSig::Sha256Plus:
+            break;
+        case CertSig::Weak:
+            return Status(Errc::NetworkError, which + ": signed with MD5, SHA-1 or SHA-224");
+        case CertSig::EdDsa:
+            if (!b12) return Status(Errc::NetworkError, which + ": EdDSA signatures are not allowed by the PS3.15 B.13 profile");
+            break;
+        case CertSig::Other:
+            return Status(Errc::NetworkError, which + ": signature algorithm not allowed by PS3.15");
     }
     return Status::ok();
 }

@@ -39,6 +39,18 @@ const CipherSuite* find_allowed_cipher_suite(std::uint16_t id) noexcept;
 Status check_session(const TlsSettings& s, TlsContext::Role role, const TlsSessionInfo& info, const std::string& peer);
 void tls_log(const TlsSettings& s, const std::string& msg);
 
+// PS3.15 certificate rules (TlsSettings::profile) for one certificate of the peer's chain.
+enum class CertKey : std::uint8_t { Rsa, RsaPss, Ec, Ed25519, Ed448, Other };
+enum class CertSig : std::uint8_t {
+    Sha256Plus,  // RSA PKCS#1 v1.5, RSA-PSS or ECDSA with SHA-256, SHA-384 or SHA-512
+    Weak,        // MD5, SHA-1, SHA-224
+    EdDsa,       // Ed25519 / Ed448
+    Other,       // anything else (unknown, DSA, GOST, ...)
+};
+// `index` 0 is the leaf. `anchor`: the trust anchor that ends the chain (its self-signature
+// is not checked; its key is). NetworkError naming the problem when the certificate fails.
+Status check_chain_cert(const TlsSettings& s, std::size_t index, bool anchor, CertKey key, int bits, CertSig sig);
+
 // The name the client checks in the server certificate.
 std::string expected_name(const TlsSettings& s, const std::string& host);
 // Client side, before any handshake: InvalidArgument when `name` (the result of expected_name)
