@@ -10,6 +10,12 @@ if(MSVC)
 endif()
 
 file(GLOB SIAARA_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(SIAARA_TSAN)
+  # The TSan runtime defines operator new/delete itself, so the allocation guard (which replaces
+  # them) and the codec amplification tests that rely on it are left out of TSan builds.
+  list(REMOVE_ITEM SIAARA_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test_alloc_guard.cpp
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/test_codec_limits.cpp)
+endif()
 add_executable(siaara_tests ${SIAARA_TEST_SOURCES})
 target_link_libraries(siaara_tests PRIVATE siaara_static)
 target_compile_options(siaara_tests PRIVATE ${SIAARA_TEST_WARN})

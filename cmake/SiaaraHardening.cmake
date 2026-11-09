@@ -51,8 +51,12 @@ if(MSVC)
     target_link_options(siaara_hardening INTERFACE /HIGHENTROPYVA)
   endif()
 else()
+  # -Werror: Apple clang accepts some flags (e.g. -fstack-clash-protection) but warns that they are
+  # unused, which the project's warnings-as-errors then turns into a build failure.
+  set(_siaara_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+  set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -Werror")
   foreach(flag -fstack-protector-strong -fstack-clash-protection)
-    string(MAKE_C_IDENTIFIER "SIAARA_HAS${flag}" var)
+    string(MAKE_C_IDENTIFIER "SIAARA_HAS_W${flag}" var)
     check_cxx_compiler_flag(${flag} ${var})
     if(${var})
       target_compile_options(siaara_hardening INTERFACE ${flag})
@@ -70,6 +74,7 @@ else()
       target_compile_options(siaara_hardening INTERFACE -mbranch-protection=standard)
     endif()
   endif()
+  set(CMAKE_REQUIRED_FLAGS "${_siaara_saved_required_flags}")
   # _FORTIFY_SOURCE needs optimisation; distributions often predefine it, so undefine first.
   # It is left out of sanitizer builds (ASan intercepts the same functions).
   if(NOT SIAARA_SANITIZE AND NOT SIAARA_TSAN)
