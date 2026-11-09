@@ -25,3 +25,6 @@ endforeach()
 install(TARGETS siaara-dump siaara-echoscu siaara-storescp siaara-webcli siaara-deid
         siaara-findscu siaara-movescu siaara-getscu siaara-storescu
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+add_executable(siaara-repair siaara_repair.cpp)
+target_link_libraries(siaara-repair PRIVATE siaara_static)
+target_compile_options(siaara-repair PRIVATE ${SIAARA_WARN})

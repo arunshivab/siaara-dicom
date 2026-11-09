@@ -207,6 +207,10 @@ struct DictChecker {
                     if (u < 0x20 && !(vr == VR::ST || vr == VR::LT || vr == VR::UT) && u != 0x1B) c = ValueCheck::BadCharacter;
                 }
             }
+            if (c == ValueCheck::Ok && vr == VR::UI && !t.empty() &&
+                std::all_of(t.begin(), t.end(), [](char ch) { return ch == '0' || ch == '.'; }))
+                sink.add(Severity::Warning, "uid-zero", kUids, here,
+                         "value " + std::to_string(i + 1) + ": UID has only zero components (no registered root)");
             if (c == ValueCheck::Ok) continue;
             const bool can_fix = normalise_value(vr, std::string(part)).has_value();
             std::uint32_t cat = can_fix ? std::uint32_t{kValues} : 0u;
@@ -378,6 +382,32 @@ struct IodChecker {
             const Path here = child(path, n.mask == 0xFFFFFFFFu ? n.tag : (e ? e->tag : n.tag));
             bool required = false;
             bool value_required = false;
+            // Conditional includes: every guard must hold.
+            bool guard_unknown = n.guard_unevaluated;
+            bool guard_false = false;
+            for (const Condition* g : n.guards) {
+                ReqNode probe;
+                probe.condition = g;
+                const auto r = evaluate(ds, probe);
+                if (!r.has_value()) guard_unknown = true;
+                else if (!*r) guard_false = true;
+            }
+            if (guard_false) continue;  // the macro does not apply here
+            if (guard_unknown) {
+                if (!e && (n.type == AttrType::T1 || n.type == AttrType::T2 || n.type == AttrType::T1C ||
+                           n.type == AttrType::T2C))
+                    ++not_evaluated;
+                if (e && (n.type == AttrType::T1 || n.type == AttrType::T1C) && element_empty(*e))
+                    sink.add(Severity::Error, "empty-type1", 0, here,
+                             "Type " + std::string(attr_type_name(n.type)) + " attribute has no value", module_name);
+                if (e && e->is_sequence() && !n.children.empty())
+                    for (std::size_t i = 0; i < e->items.size(); ++i) {
+                        Path ip = here;
+                        ip.back().item = static_cast<std::int32_t>(i);
+                        check_list(e->items[i], n.children, ip);
+                    }
+                continue;
+            }
             switch (n.type) {
                 case AttrType::T1: required = value_required = true; break;
                 case AttrType::T2: required = true; break;
@@ -438,8 +468,9 @@ struct IodChecker {
 
 bool module_present(const Dataset& ds, const ModuleReq& m, const std::set<Tag>& mandatory_tags) {
     if (!m.attributes) return false;
+    // A module is present when any of its own attributes (of any Type) is, apart from attributes
+    // that also belong to a mandatory module.
     for (const ReqNode& n : *m.attributes) {
-        if (n.type == AttrType::T3) continue;
         if (mandatory_tags.count(n.tag)) continue;
         if (n.mask == 0xFFFFFFFFu) {
             if (ds.contains(n.tag)) return true;

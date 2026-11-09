@@ -85,9 +85,11 @@ Cache& cache() {
 struct FlatRow {
     int depth;
     const AttrRow* row;
+    std::vector<int> guards;  // condition indices of enclosing conditional includes (-1 = not parsed)
 };
 
-void flatten(int table, int depth_offset, int nesting, std::vector<int>& stack, std::vector<FlatRow>& out) {
+void flatten(int table, int depth_offset, int nesting, std::vector<int>& stack, std::vector<int>& guards,
+             std::vector<FlatRow>& out) {
     if (table < 0 || static_cast<std::size_t>(table) >= kTableCount || nesting > kMaxIncludeDepth) return;
     for (int s : stack)
         if (s == table) return;  // recursive include (e.g. content items): stop at one level
@@ -96,16 +98,24 @@ void flatten(int table, int depth_offset, int nesting, std::vector<int>& stack, 
     for (std::uint32_t i = 0; i < t.count; ++i) {
         const AttrRow& r = kAttrRows[t.first + i];
         if (r.include >= 0) {
-            flatten(r.include, depth_offset + r.depth, nesting + 1, stack, out);
+            const bool conditional = r.type == 6;
+            if (conditional) guards.push_back(r.cond);
+            flatten(r.include, depth_offset + r.depth, nesting + 1, stack, guards, out);
+            if (conditional) guards.pop_back();
             continue;
         }
-        out.push_back({depth_offset + r.depth, &r});
+        out.push_back({depth_offset + r.depth, &r, guards});
     }
     stack.pop_back();
 }
 
-ReqNode node_of(const AttrRow& r, Cache& c) {
+ReqNode node_of(const FlatRow& fr, Cache& c) {
+    const AttrRow& r = *fr.row;
     ReqNode n;
+    for (int g : fr.guards) {
+        if (g < 0 || static_cast<std::size_t>(g) >= c.conditions.size()) n.guard_unevaluated = true;
+        else n.guards.push_back(&c.conditions[static_cast<std::size_t>(g)]);
+    }
     n.tag = r.tag;
     n.mask = r.mask;
     n.type = static_cast<AttrType>(r.type);
@@ -121,6 +131,16 @@ ReqNode node_of(const AttrRow& r, Cache& c) {
 ReqNode* merge_into(std::vector<ReqNode>& list, ReqNode n) {
     for (ReqNode& x : list)
         if (x.tag == n.tag && x.mask == n.mask) {
+            // Guards: an unguarded copy wins; two different guard sets cannot be combined here.
+            const bool xg = !x.guards.empty() || x.guard_unevaluated;
+            const bool ng = !n.guards.empty() || n.guard_unevaluated;
+            if (!ng) {
+                x.guards.clear();
+                x.guard_unevaluated = false;
+            } else if (xg && x.guards != n.guards) {
+                x.guards.clear();
+                x.guard_unevaluated = true;
+            }
             if (static_cast<int>(n.type) < static_cast<int>(x.type)) {
                 x.type = n.type;
                 x.condition = n.condition;
@@ -134,8 +154,8 @@ ReqNode* merge_into(std::vector<ReqNode>& list, ReqNode n) {
 
 std::unique_ptr<std::vector<ReqNode>> build(int table, Cache& c) {
     std::vector<FlatRow> flat;
-    std::vector<int> stack;
-    flatten(table, 0, 0, stack, flat);
+    std::vector<int> stack, guards;
+    flatten(table, 0, 0, stack, guards, flat);
     auto root = std::make_unique<std::vector<ReqNode>>();
     // Build with index paths, since vectors may reallocate while children are added.
     std::vector<std::vector<std::size_t>> path_stack;  // path to the last node at each depth
@@ -150,7 +170,7 @@ std::unique_ptr<std::vector<ReqNode>> build(int table, Cache& c) {
             path = path_stack[static_cast<std::size_t>(d - 1)];
             for (std::size_t idx : path) list = &(*list)[idx].children;
         }
-        ReqNode* placed = merge_into(*list, node_of(*fr.row, c));
+        ReqNode* placed = merge_into(*list, node_of(fr, c));
         path.push_back(static_cast<std::size_t>(placed - list->data()));
         path_stack.resize(static_cast<std::size_t>(d));
         path_stack.push_back(std::move(path));

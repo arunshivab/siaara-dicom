@@ -255,6 +255,10 @@ bool uid_is_valid(std::string_view uid) noexcept {
             const std::string_view comp = uid.substr(start, i - start);
             if (comp.empty() || !all_digits(comp)) return false;
             if (comp.size() > 1 && comp[0] == '0') return false;
+            // UIDs are ISO/IEC 8824 object identifiers (PS3.5 9.1): the first arc is 0, 1 or 2, and
+            // under 0 and 1 the second arc is at most 39.
+            if (start == 0 && !(comp == "0" || comp == "1" || comp == "2")) return false;
+            if (start == 2 && uid[0] != '2' && (comp.size() > 2 || (comp.size() == 2 && comp > "39"))) return false;
             start = i + 1;
         }
     }

@@ -33,6 +33,11 @@ struct ReqNode {
     AttrType type = AttrType::T3;
     const Condition* condition = nullptr;          // 1C/2C with a parsed condition, else nullptr
     std::span<const std::string_view> enumerated;  // "Enumerated Values:" of the description
+    // Conditions of enclosing conditional Include rows ("Include ... if ..."): all must hold for the
+    // attribute to be required. guard_unevaluated: a guard whose condition was not parsed (or two
+    // differently guarded copies were merged), so the requirement cannot be evaluated.
+    std::vector<const Condition*> guards;
+    bool guard_unevaluated = false;
     std::vector<ReqNode> children;                 // attributes of each item, when a sequence
     bool matches(Tag t) const noexcept { return (t & mask) == tag; }
 };

@@ -217,7 +217,7 @@ class Gen:
         self.iods = []
         self.module_rows = []
         self.sop = []
-        self.stats = {"unresolved_includes": 0, "unparsed_conditions": 0, "parsed_conditions": 0}
+        self.stats = {"conditional_includes": 0, "unresolved_includes": 0, "unparsed_conditions": 0, "parsed_conditions": 0}
 
     # ---- attribute tables
     def attr_table(self, tid):
@@ -282,7 +282,14 @@ class Gen:
                 if inc < 0:
                     self.stats["unresolved_includes"] += 1
                     continue
-                out.append((depth, 0, 0, 0, inc, -1, -1))
+                # "Include ... if [and only if] <condition>": a conditional include (type 6).
+                m = re.search(r"\b(?:if and only if|only if|if)\b (.*)$", rest)
+                if m:
+                    pc = parse_condition("Required if " + m.group(1))
+                    self.stats["conditional_includes"] += 1
+                    out.append((depth, 0, 0, 6, inc, self.cond(pc), -1))
+                else:
+                    out.append((depth, 0, 0, 0, inc, -1, -1))
                 continue
             if len(tds) < 3:
                 continue
@@ -426,7 +433,9 @@ class Gen:
         L.append("// %d conditions (%d 1C/2C rows parsed, %d not evaluated), %d enumerated value lists, %d strings." % (
             len(self.conditions), self.stats["parsed_conditions"], self.stats["unparsed_conditions"],
             len(self.enum_lists), len(self.enum_values)))
-        L.append("// Row fields: depth, tag, mask, type (1=1, 2=1C, 3=2, 4=2C, 5=3; 0 = Include row),")
+        L.append("// %d conditional Include rows (\"Include ... if ...\")." % self.stats["conditional_includes"])
+        L.append("// Row fields: depth, tag, mask, type (1=1, 2=1C, 3=2, 4=2C, 5=3; 0 = Include row, 6 = conditional")
+        L.append("// Include row whose condition is the row's condition, -1 when not evaluated),")
         L.append("// included table (-1), condition (-1), enumerated value list (-1).")
         L.append("")
         L.append("constexpr AttrRow kAttrRows[] = {")
@@ -489,9 +498,9 @@ def main():
     g.run()
     st = g.write(sys.argv[3])
     print("attribute tables %d, rows %d, IODs %d, module rows %d, SOP classes %d, conditions %d, "
-          "enum lists %d, unresolved includes %d, 1C/2C parsed %d, not evaluated %d" % (
+          "enum lists %d, conditional includes %d, unresolved includes %d, 1C/2C parsed %d, not evaluated %d" % (
               len(g.attr_tables), len(g.rows), len(g.iods), len(g.module_rows), len(g.sop),
-              len(g.conditions), len(g.enum_lists), st["unresolved_includes"],
+              len(g.conditions), len(g.enum_lists), st["conditional_includes"], st["unresolved_includes"],
               st["parsed_conditions"], st["unparsed_conditions"]))
 
 
