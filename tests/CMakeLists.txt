@@ -81,3 +81,7 @@ endif()
 add_executable(tls_tool crosscheck/tls_tool.cpp)
 target_link_libraries(tls_tool PRIVATE siaara_static)
 target_compile_options(tls_tool PRIVATE ${SIAARA_TEST_WARN})
+# Test-only helper for tests/crosscheck/clinical_crosscheck.py (not installed).
+add_executable(clinical_tool crosscheck/clinical_tool.cpp)
+target_link_libraries(clinical_tool PRIVATE siaara_static)
+target_compile_options(clinical_tool PRIVATE ${SIAARA_TEST_WARN})
