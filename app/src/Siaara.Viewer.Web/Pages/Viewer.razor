@@ -1,0 +1,110 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. The 2D viewer: patient bar, toolbar, series strip, viewport grid, cine bar, status bar. *@
+@page "/viewer/{StudyUid}"
+@implements IAsyncDisposable
+@inject ViewerRuntime Rt
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<PageTitle>SIAARA Viewer</PageTitle>
+
+<div class="app viewer">
+    <div class="patientbar">
+        <a class="btn" href="/">Studies</a>
+        @if (_session?.Privacy == true)
+        {
+            <span class="privacy">Privacy mode (F8): patient details hidden</span>
+        }
+        else if (_session?.Study is StudyRow s)
+        {
+            <strong>@s.DisplayName</strong>
+            <span>ID @s.PatientId</span>
+            <span>@s.PatientSex</span>
+            <span>@DisplayFormat.Age(null, s.PatientBirthDate, s.StudyDate)</span>
+            <span>@s.DisplayDate</span>
+            <span class="desc">@s.Description</span>
+        }
+        else
+        {
+            <span class="muted">Loading study...</span>
+        }
+    </div>
+    @if (_session is not null)
+    {
+        <Toolbar Session="_session" />
+        <div class="viewer-body">
+            <SeriesStrip Session="_session" OnDragSeries="i => _dragSeries = i" />
+            <ViewportGrid Session="_session" DragSeries="_dragSeries" OnDropped="() => _dragSeries = -1" />
+            <MeasurementPanel Session="_session" />
+        </div>
+        <CineBar Session="_session" />
+    }
+    <StatusBar Left="@StatusLeft" />
+</div>
+
+@code {
+    [Parameter] public string StudyUid { get; set; } = "";
+    private ViewerSession? _session;
+    private int _dragSeries = -1;
+    private bool _connected;
+    private readonly System.Diagnostics.Stopwatch _openClock = System.Diagnostics.Stopwatch.StartNew();
+
+    private string StatusLeft => _session is null ? "" : _session.LoadError ?? (_session.Loaded ? $"{_session.Series.Count} series" : "Reading headers...");
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Prerendering shows the shell only; the session (and the study.open audit) belongs to the live circuit.
+        if (!RendererInfo.IsInteractive)
+        {
+            return;
+        }
+        _session = await Rt.OpenStudyAsync(Uri.UnescapeDataString(StudyUid)).ConfigureAwait(true);
+        _session.UiChanged += OnUi;
+    }
+
+    private void OnUi(object? sender, EventArgs e) => _ = InvokeAsync(StateHasChanged);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_session is null)
+        {
+            return;
+        }
+        try
+        {
+            if (!_connected)
+            {
+                _connected = true;
+                await JS.InvokeVoidAsync("siaaraView.connect", _session.Id).ConfigureAwait(true);
+            }
+            await JS.InvokeVoidAsync("siaaraView.bind").ConfigureAwait(true);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_session is not null)
+        {
+            _session.UiChanged -= OnUi;
+            try
+            {
+                await JS.InvokeVoidAsync("siaaraView.disconnect").ConfigureAwait(true);
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+            catch (JSException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            Rt.Sessions.Close(_session.Id);
+        }
+    }
+}

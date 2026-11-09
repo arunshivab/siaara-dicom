@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/bindings/">
+    <Project Path="../bindings/csharp/src/Siaara.Interop/Siaara.Interop.csproj" />
+    <Project Path="../bindings/csharp/src/Siaara/Siaara.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Siaara.Viewer.Core/Siaara.Viewer.Core.csproj" />
+    <Project Path="src/Siaara.Viewer.Web/Siaara.Viewer.Web.csproj" />
+    <Project Path="src/Siaara.Viewer.Host/Siaara.Viewer.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Siaara.Viewer.Tests/Siaara.Viewer.Tests.csproj" />
+  </Folder>
+</Solution>

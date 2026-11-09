@@ -1,0 +1,64 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Study list; names are formatted for display only. *@
+<div class="grid-wrap" tabindex="0" @onkeydown="OnKey">
+    <table class="grid">
+        <thead>
+            <tr><th>Patient name</th><th>ID</th><th>Sex/Age</th><th>Study date</th><th>Modality</th><th>Description</th><th>Accession</th><th class="num">Images</th></tr>
+        </thead>
+        <tbody>
+            @if (Rows is null)
+            {
+                <tr><td colspan="8" class="muted">Loading...</td></tr>
+            }
+            else if (Rows.Count == 0)
+            {
+                <tr><td colspan="8" class="muted">No studies. Use Import to add a folder or a DICOMDIR.</td></tr>
+            }
+            else
+            {
+                @foreach (var r in Rows)
+                {
+                    <tr class="@(Selected?.StudyInstanceUid == r.StudyInstanceUid ? "sel" : "") @(NewRows?.Contains(r.StudyInstanceUid) == true ? "new" : "")"
+                        @onclick="() => OnSelect.InvokeAsync(r)" @ondblclick="() => OnOpen.InvokeAsync(r)">
+                        <td>@r.DisplayName</td>
+                        <td>@r.PatientId</td>
+                        <td>@r.DisplaySexAge</td>
+                        <td>@r.DisplayDate</td>
+                        <td>@r.DisplayModalities</td>
+                        <td>@r.Description</td>
+                        <td>@r.AccessionNumber</td>
+                        <td class="num">@r.Images</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<StudyRow>? Rows { get; set; }
+    [Parameter] public StudyRow? Selected { get; set; }
+    [Parameter] public IReadOnlySet<string>? NewRows { get; set; }
+    [Parameter] public EventCallback<StudyRow> OnSelect { get; set; }
+    [Parameter] public EventCallback<StudyRow> OnOpen { get; set; }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (Rows is null || Rows.Count == 0)
+        {
+            return;
+        }
+        int i = Selected is null ? -1 : Rows.ToList().FindIndex(r => r.StudyInstanceUid == Selected.StudyInstanceUid);
+        switch (e.Key)
+        {
+            case "Enter" when Selected is not null:
+                await OnOpen.InvokeAsync(Selected);
+                break;
+            case "ArrowDown":
+                await OnSelect.InvokeAsync(Rows[Math.Min(Rows.Count - 1, i + 1)]);
+                break;
+            case "ArrowUp":
+                await OnSelect.InvokeAsync(Rows[Math.Max(0, i - 1)]);
+                break;
+        }
+    }
+}

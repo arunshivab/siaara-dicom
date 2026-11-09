@@ -1,0 +1,57 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Settings (settings.json; no secrets). *@
+@inject ViewerRuntime Rt
+<div class="modal-back">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Settings">
+        <h2>Settings</h2>
+        <label class="field">Theme
+            <select @bind="_theme"><option value="dark">Dark</option><option value="light">Light</option></select>
+        </label>
+        <label class="field">Store folder (used at next start)
+            <input type="text" @bind="_store" placeholder="@Rt.Paths.DefaultStoreRoot" />
+        </label>
+        <label class="field">Screen calibration (true mm per displayed mm)
+            <input type="number" step="0.01" min="0.1" max="10" @bind="_calibration" />
+        </label>
+        <label class="field">Cine rate for stacks (fps)
+            <input type="number" step="1" min="1" max="120" @bind="_stackFps" />
+        </label>
+        <label><input type="checkbox" @bind="_linear" /> Smooth (bilinear) interpolation when zoomed</label>
+        <p class="muted small">Settings file: @Rt.Settings.FilePath<br />Window presets and overlay templates per modality are edited in that file.</p>
+        <div class="row end">
+            <button class="btn" @onclick="OnClose">Cancel</button>
+            <button class="btn primary" @onclick="Save">Save</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    private string _theme = "dark";
+    private string? _store;
+    private double _calibration = 1;
+    private double _stackFps = 10;
+    private bool _linear = true;
+
+    protected override void OnInitialized()
+    {
+        var p = Rt.Settings.Current;
+        _theme = p.Theme;
+        _store = p.StoreRoot;
+        _calibration = p.DisplayCalibration;
+        _stackFps = p.StackCineFps;
+        _linear = p.LinearInterpolation;
+    }
+
+    private async Task Save()
+    {
+        Rt.Settings.Update(p =>
+        {
+            p.Theme = _theme == "light" ? "light" : "dark";
+            p.StoreRoot = string.IsNullOrWhiteSpace(_store) ? null : _store.Trim();
+            p.DisplayCalibration = Math.Clamp(_calibration, 0.1, 10);
+            p.StackCineFps = Math.Clamp(_stackFps, 1, 120);
+            p.LinearInterpolation = _linear;
+        });
+        await OnClose.InvokeAsync().ConfigureAwait(true);
+    }
+}

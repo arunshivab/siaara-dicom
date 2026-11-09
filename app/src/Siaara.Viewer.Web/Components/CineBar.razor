@@ -1,0 +1,23 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Cine controls of the active viewport. *@
+@{ var vp = Session.GetViewport(Session.ActiveViewport); }
+<div class="cinebar">
+    <button class="tool" title="First" @onclick='() => Session.RunAction("cineFirst")'>|&lt;</button>
+    <button class="tool" title="Play / pause (Space)" @onclick='() => Session.RunAction("cineToggle")'>@(vp.Cine.IsPlaying ? "Pause" : "Play")</button>
+    <button class="tool" title="Last" @onclick='() => Session.RunAction("cineLast")'>&gt;|</button>
+    <label>fps <input type="range" min="1" max="60" step="1" value="@Math.Round(vp.Cine.Fps)" @onchange="OnFps" /> @vp.Cine.Fps.ToString("0.#", CultureInfo.InvariantCulture)</label>
+    <button class="tool @(vp.Cine.Mode == CineMode.Loop ? "on" : "")" @onclick='() => Session.RunAction("cineLoop")'>Loop</button>
+    <button class="tool @(vp.Cine.Mode == CineMode.Bounce ? "on" : "")" @onclick='() => Session.RunAction("cineBounce")'>Bounce</button>
+    <span class="muted small">@(vp.Series is { } s ? $"{s.Images.Count} images" : "")</span>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ViewerSession Session { get; set; } = default!;
+
+    private void OnFps(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out double f))
+        {
+            Session.SetCineFps(f);
+        }
+    }
+}

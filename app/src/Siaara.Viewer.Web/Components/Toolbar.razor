@@ -1,0 +1,64 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Tools, actions, presets and layout. *@
+@inject ViewerRuntime Rt
+<nav class="toolbar" aria-label="Tools">
+    <div class="group">
+        @foreach (var (tool, label, key) in Tools)
+        {
+            <button class="tool @(Session.Tool == tool ? "on" : "")" title="@label @key" @onclick="() => Session.SetTool(tool)">@label</button>
+        }
+    </div>
+    <div class="group">
+        @foreach (var (action, label, key) in Actions)
+        {
+            <button class="tool" title="@label @key" @onclick="() => Session.RunAction(action)">@label</button>
+        }
+    </div>
+    <div class="group">
+        <select aria-label="Window preset" @onchange="OnPreset">
+            <option value="">Presets</option>
+            @{ int i = 0; }
+            @foreach (var p in Presets)
+            {
+                int n = i++;
+                <option value="@n">@(n + 1) @p.Name (@p.Width/@p.Center)</option>
+            }
+        </select>
+        <LayoutPicker Session="Session" />
+    </div>
+</nav>
+
+@code {
+    [Parameter, EditorRequired] public ViewerSession Session { get; set; } = default!;
+
+    private static readonly (ViewerTool, string, string)[] Tools =
+    [
+        (ViewerTool.WindowLevel, "W/L", "(W)"), (ViewerTool.Zoom, "Zoom", "(Z)"), (ViewerTool.Pan, "Pan", "(P)"), (ViewerTool.Scroll, "Scroll", ""),
+        (ViewerTool.Length, "Length", "(L)"), (ViewerTool.Polyline, "Polyline", ""), (ViewerTool.Angle, "Angle", "(A)"), (ViewerTool.Cobb, "Cobb", ""),
+        (ViewerTool.Ellipse, "Ellipse", "(E)"), (ViewerTool.Circle, "Circle", ""), (ViewerTool.Rectangle, "Rect", ""), (ViewerTool.Polygon, "Polygon", ""),
+        (ViewerTool.Freehand, "Freehand", ""), (ViewerTool.Probe, "Probe", ""), (ViewerTool.Calibrate, "Calibrate", ""),
+    ];
+
+    private static readonly (string, string, string)[] Actions =
+    [
+        ("invert", "Invert", "(I)"), ("rotate", "Rotate", "(R)"), ("flipH", "Flip H", "(H)"), ("flipV", "Flip V", "(V)"), ("fit", "Fit", "(F)"),
+        ("oneToOne", "1:1", ""), ("trueSize", "True size", ""), ("reset", "Reset", "(Esc)"), ("overlays", "Overlays", ""),
+        ("privacy", "Privacy", "(F8)"), ("undo", "Undo", "(Ctrl+Z)"), ("redo", "Redo", "(Ctrl+Y)"), ("clearAnnotations", "Clear", ""),
+    ];
+
+    private IReadOnlyList<Siaara.Viewer.Core.Settings.WindowPresetSetting> Presets
+    {
+        get
+        {
+            string mod = Session.GetViewport(Session.ActiveViewport).Series?.Modality ?? "CT";
+            return WindowPresets.For(Rt.Settings.Current, mod);
+        }
+    }
+
+    private void OnPreset(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n))
+        {
+            Session.ApplyPreset(n);
+        }
+    }
+}

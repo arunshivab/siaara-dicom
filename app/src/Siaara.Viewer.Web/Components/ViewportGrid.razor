@@ -1,0 +1,23 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. The grid of viewports (canvases are driven by siaara-view.js). *@
+<section class="vpgrid" id="vpgrid" style="grid-template-rows: repeat(@Session.Layout.Rows, 1fr); grid-template-columns: repeat(@Session.Layout.Columns, 1fr);">
+    @for (int i = 0; i < Session.Layout.Count; i++)
+    {
+        int idx = i;
+        <ViewportHost Index="idx" Active="Session.ActiveViewport == idx" OnDrop="() => Drop(idx)" />
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ViewerSession Session { get; set; } = default!;
+    [Parameter] public int DragSeries { get; set; } = -1;
+    [Parameter] public EventCallback OnDropped { get; set; }
+
+    private async Task Drop(int viewport)
+    {
+        if (DragSeries >= 0)
+        {
+            Session.AssignSeries(viewport, DragSeries);
+        }
+        await OnDropped.InvokeAsync().ConfigureAwait(true);
+    }
+}

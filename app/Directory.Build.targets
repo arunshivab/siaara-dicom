@@ -1,0 +1,8 @@
+<Project>
+  <!-- Zero third-party dependencies: the build fails as soon as any app project references a NuGet
+       package (same rule as bindings/csharp/Directory.Build.targets). -->
+  <Target Name="SiaaraViewerNoPackageReferences" BeforeTargets="CollectPackageReferences;Restore;Build">
+    <Error Condition="'@(PackageReference)' != ''"
+           Text="The SIAARA Viewer takes no NuGet dependencies, found: @(PackageReference)" />
+  </Target>
+</Project>

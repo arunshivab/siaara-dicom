@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Console test runner, no test framework packages. Usage: dotnet run -c Release (then name prefixes, or the quick switch). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Siaara.Viewer.Tests</AssemblyName>
+    <RootNamespace>Siaara.Viewer.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Siaara.Viewer.Host/Siaara.Viewer.Host.csproj" />
+  </ItemGroup>
+</Project>

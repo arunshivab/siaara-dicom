@@ -1,0 +1,19 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. *@
+<div class="modal-back">
+    <div class="modal small" role="dialog" aria-modal="true">
+        <h2>@Title</h2>
+        <p>@Text</p>
+        <div class="row end">
+            <button class="btn" @onclick="OnCancel">Cancel</button>
+            <button class="btn danger" @onclick="OnConfirm">@ConfirmLabel</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Text { get; set; } = "";
+    [Parameter] public string ConfirmLabel { get; set; } = "OK";
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+}
