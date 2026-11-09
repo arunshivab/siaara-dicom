@@ -2,8 +2,10 @@
 // C.11.6 and the enhanced functional groups C.7.6.16.2.9 / C.7.6.16.2.10.
 #include "image/lut.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <new>
+#include <string>
 
 #include "image/samples.hpp"
 

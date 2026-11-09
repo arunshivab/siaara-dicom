@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <string>
 
 #include "image/samples.hpp"
 
@@ -73,19 +74,19 @@ void apply_value_lut(const PixelInfo& pi, const std::uint8_t* src, const std::ui
     // Two's complement to offset binary: index = value - min_stored.
     const std::uint32_t flip = pi.is_signed ? 1u << (pi.bits_stored - 1u) : 0u;
     if (pi.bits_allocated == 16) {
-        for (std::uint64_t i = 0; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i) {
             const std::uint32_t raw = static_cast<std::uint32_t>(src[2 * i]) | (static_cast<std::uint32_t>(src[2 * i + 1]) << 8);
             const std::uint32_t idx = ((raw >> shift) & mask) ^ flip;
             std::memcpy(dst + 4 * i, &lut[idx], 4);
         }
     } else if (pi.bits_allocated == 8) {
-        for (std::uint64_t i = 0; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i) {
             const std::uint32_t idx = ((static_cast<std::uint32_t>(src[i]) >> shift) & mask) ^ flip;
             std::memcpy(dst + 4 * i, &lut[idx], 4);
         }
     } else {
         const SampleReader rd(pi);
-        for (std::uint64_t i = 0; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i) {
             const auto idx = static_cast<std::uint32_t>((rd.raw(src, i) >> shift) & mask) ^ flip;
             std::memcpy(dst + 4 * i, &lut[idx], 4);
         }
@@ -194,7 +195,7 @@ Result<VoiWindow> full_range_window(const Image& img, std::uint32_t, std::span<c
     VoiWindow w;
     if (pi.kind != SampleKind::Integer) {
         double lo = std::numeric_limits<double>::infinity(), hi = -lo;
-        for (std::uint64_t i = 0; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i) {
             const double v = pi.kind == SampleKind::Float32 ? static_cast<double>(detail::load_f32(decoded.data() + 4 * i))
                                                             : detail::load_f64(decoded.data() + 8 * i);
             if (!std::isfinite(v)) continue;
@@ -210,7 +211,7 @@ Result<VoiWindow> full_range_window(const Image& img, std::uint32_t, std::span<c
     }
     const SampleReader rd(pi);
     std::int64_t vmin = INT64_MAX, vmax = INT64_MIN;
-    for (std::uint64_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
         const std::int64_t v = rd.value(decoded.data(), i);
         vmin = std::min(vmin, v);
         vmax = std::max(vmax, v);
@@ -291,7 +292,7 @@ Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t
                 }
                 apply_value_lut(pi, frame.data(), lut.data(), dst);
             } else {
-                for (std::uint64_t i = 0; i < n; ++i) {
+                for (std::size_t i = 0; i < n; ++i) {
                     std::uint32_t c;
                     if (pi.kind == SampleKind::Float32) {
                         c = fin(voi(static_cast<double>(detail::load_f32(frame.data() + 4 * i))));
@@ -317,7 +318,7 @@ Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t
                 }
                 apply_value_lut(pi, frame.data(), lut.data(), dst);
             } else {
-                for (std::uint64_t i = 0; i < n; ++i) {
+                for (std::size_t i = 0; i < n; ++i) {
                     std::uint32_t c = palette_rgba(pal, rd.value(frame.data(), i));
                     if (p.invert) c = ~c | pack(0, 0, 0, 255);
                     std::memcpy(dst + 4 * i, &c, 4);
@@ -336,14 +337,14 @@ Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t
             const std::uint64_t maxv = (std::uint64_t{1} << bs) - 1u;
             const std::uint8_t x = p.invert ? 255 : 0;
             if (bps == 1 && bs == 8) {
-                for (std::uint64_t i = 0; i < n; ++i) {
+                for (std::size_t i = 0; i < n; ++i) {
                     dst[4 * i] = static_cast<std::uint8_t>(rgb[3 * i] ^ x);
                     dst[4 * i + 1] = static_cast<std::uint8_t>(rgb[3 * i + 1] ^ x);
                     dst[4 * i + 2] = static_cast<std::uint8_t>(rgb[3 * i + 2] ^ x);
                     dst[4 * i + 3] = 255;
                 }
             } else {
-                for (std::uint64_t i = 0; i < n; ++i) {
+                for (std::size_t i = 0; i < n; ++i) {
                     for (unsigned s = 0; s < 3; ++s) {
                         std::uint64_t v = 0;
                         const std::uint8_t* q = rgb.data() + (3 * i + s) * bps;
@@ -362,7 +363,7 @@ Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t
             if (Status s = shutter_mask(img.shutters(), pi, p.frame, img.overlays(), vis); !s) return s;
             const auto c = shutter_rgb(img.shutters());
             const std::uint32_t px = pack(c[0], c[1], c[2]);
-            for (std::uint64_t i = 0; i < n; ++i)
+            for (std::size_t i = 0; i < n; ++i)
                 if (!vis[i]) std::memcpy(dst + 4 * i, &px, 4);
         }
         if (p.overlays && !img.overlays().empty()) {
@@ -377,7 +378,7 @@ Status render_2d(const Image& img, const RenderParams& p, std::span<std::uint8_t
             }
             if (anyov) {
                 const unsigned a = p.overlay_rgba[3];
-                for (std::uint64_t i = 0; i < n; ++i) {
+                for (std::size_t i = 0; i < n; ++i) {
                     if (!mask[i]) continue;
                     for (unsigned s = 0; s < 3; ++s)
                         dst[4 * i + s] = static_cast<std::uint8_t>((p.overlay_rgba[s] * a + dst[4 * i + s] * (255u - a) + 127u) / 255u);
@@ -418,11 +419,11 @@ Status decode_modality_f32(const Image& img, std::uint32_t frame, std::span<floa
         const std::vector<std::uint8_t>& f = *bytes;
         const std::uint64_t n = pi.pixels();
         if (pi.kind == SampleKind::Float32) {
-            for (std::uint64_t i = 0; i < n; ++i) out[i] = detail::load_f32(f.data() + 4 * i);
+            for (std::size_t i = 0; i < n; ++i) out[i] = detail::load_f32(f.data() + 4 * i);
             return Status::ok();
         }
         if (pi.kind == SampleKind::Float64) {
-            for (std::uint64_t i = 0; i < n; ++i) out[i] = static_cast<float>(detail::load_f64(f.data() + 8 * i));
+            for (std::size_t i = 0; i < n; ++i) out[i] = static_cast<float>(detail::load_f64(f.data() + 8 * i));
             return Status::ok();
         }
         const SampleReader rd(pi);
@@ -430,9 +431,9 @@ Status decode_modality_f32(const Image& img, std::uint32_t frame, std::span<floa
             auto m = img.modality(frame);
             if (!m) return m.take_error();
             if (m->is_identity()) {
-                for (std::uint64_t i = 0; i < n; ++i) out[i] = static_cast<float>(rd.value(f.data(), i));
+                for (std::size_t i = 0; i < n; ++i) out[i] = static_cast<float>(rd.value(f.data(), i));
             } else {
-                for (std::uint64_t i = 0; i < n; ++i) out[i] = static_cast<float>(m->apply(rd.value(f.data(), i)));
+                for (std::size_t i = 0; i < n; ++i) out[i] = static_cast<float>(m->apply(rd.value(f.data(), i)));
             }
             return Status::ok();
         }
@@ -451,7 +452,7 @@ Status decode_modality_f32(const Image& img, std::uint32_t frame, std::span<floa
             return s;
         }
         const unsigned bps = pi.bits_allocated / 8u;
-        for (std::uint64_t i = 0; i < count; ++i) {
+        for (std::size_t i = 0; i < count; ++i) {
             std::uint64_t v = 0;
             for (unsigned k = bps; k-- > 0;) v = (v << 8) | full[i * bps + k];
             v = (v >> pi.low_bit()) & rd.mask;

@@ -2,6 +2,7 @@
 #include "image/pixel_info.hpp"
 
 #include <array>
+#include <string>
 
 namespace siaara::image {
 

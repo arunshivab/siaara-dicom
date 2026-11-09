@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <new>
+#include <string>
 
 #include "image/samples.hpp"
 
@@ -121,7 +123,7 @@ Status overlay_mask(const Overlay& ov, const PixelInfo& pi, std::uint32_t frame,
     if (ov.embedded) {
         if (frame_pixels.size() < pi.native_frame_bytes()) return Status(Errc::Truncated, "overlay: frame too short");
         const unsigned bytes = pi.bits_allocated / 8u;
-        for (std::uint64_t i = 0; i < pi.pixels(); ++i) {
+        for (std::size_t i = 0; i < pi.pixels(); ++i) {
             const std::uint8_t* p = frame_pixels.data() + i * bytes;
             const unsigned byte = ov.bit_position / 8u, bit = ov.bit_position % 8u;
             if ((static_cast<unsigned>(p[byte]) >> bit) & 1u) mask[i] = 1;
@@ -280,7 +282,7 @@ void polygon_inside(const std::vector<std::pair<double, double>>& v, std::uint32
             const double c_lo = std::max(1.0, std::ceil(xs[k]));
             const double c_hi = std::min(static_cast<double>(cols), std::floor(xs[k + 1]));
             for (double c = c_lo; c <= c_hi; c += 1.0)
-                in[std::uint64_t{r} * cols + static_cast<std::uint64_t>(c) - 1] = 1;
+                in[std::size_t{r} * cols + static_cast<std::size_t>(c) - 1] = 1;
         }
     }
     // Boundary pixels count as inside: mark them by stepping along each (clipped) edge.
@@ -292,7 +294,7 @@ void polygon_inside(const std::vector<std::pair<double, double>>& v, std::uint32
             const double t = steps > 0 ? s / steps : 0;
             const double rr = std::floor(r0 + (r1 - r0) * t + 0.5), cc = std::floor(c0 + (c1 - c0) * t + 0.5);
             if (rr >= 1 && rr <= rows && cc >= 1 && cc <= cols)
-                in[static_cast<std::uint64_t>(rr - 1) * cols + static_cast<std::uint64_t>(cc - 1)] = 1;
+                in[static_cast<std::size_t>(rr - 1) * cols + static_cast<std::size_t>(cc - 1)] = 1;
         }
     }
 }
@@ -310,7 +312,7 @@ Status shutter_mask(const Shutters& sh, const PixelInfo& pi, std::uint32_t frame
             const std::int64_t row = r + 1;
             for (std::uint32_t c = 0; c < cols; ++c) {
                 const std::int64_t col = c + 1;
-                if (col < sh.left || col > sh.right || row < sh.upper || row > sh.lower) visible[std::uint64_t{r} * cols + c] = 0;
+                if (col < sh.left || col > sh.right || row < sh.upper || row > sh.lower) visible[std::size_t{r} * cols + c] = 0;
             }
         }
     }
@@ -320,7 +322,7 @@ Status shutter_mask(const Shutters& sh, const PixelInfo& pi, std::uint32_t frame
             const double dr = (r + 1.0) - sh.center_row;
             for (std::uint32_t c = 0; c < cols; ++c) {
                 const double dc = (c + 1.0) - sh.center_column;
-                if (dr * dr + dc * dc > r2) visible[std::uint64_t{r} * cols + c] = 0;
+                if (dr * dr + dc * dc > r2) visible[std::size_t{r} * cols + c] = 0;
             }
         }
     }
@@ -330,7 +332,7 @@ Status shutter_mask(const Shutters& sh, const PixelInfo& pi, std::uint32_t frame
             std::vector<double> xs;
             xs.reserve(sh.vertices.size());
             polygon_inside(sh.vertices, rows, cols, inside, xs);
-            for (std::uint64_t i = 0; i < n; ++i)
+            for (std::size_t i = 0; i < n; ++i)
                 if (!inside[i]) visible[i] = 0;
         }
         if (sh.bitmap) {
@@ -338,7 +340,7 @@ Status shutter_mask(const Shutters& sh, const PixelInfo& pi, std::uint32_t frame
                 if (ov.group != sh.overlay_group) continue;
                 std::vector<std::uint8_t> m(static_cast<std::size_t>(n), 0);
                 if (Status s = overlay_mask(ov, pi, frame, {}, m); !s) return s;
-                for (std::uint64_t i = 0; i < n; ++i)
+                for (std::size_t i = 0; i < n; ++i)
                     if (m[i]) visible[i] = 0;
             }
         }

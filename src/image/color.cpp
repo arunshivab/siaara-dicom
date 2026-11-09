@@ -2,10 +2,12 @@
 // C.7.6.3.1.5, C.7.6.3.1.6, C.7.9.2 and PS3.6 Annex B.
 #include "image/color.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <new>
+#include <string>
 
 #include "image/samples.hpp"
 
@@ -427,7 +429,7 @@ Status apply_palette(const PixelInfo& pi, std::span<const std::uint8_t> frame, c
     if (out.size() < n * 3) return Status(Errc::BufferTooSmall, "palette: output too small");
     if (frame.size() < pi.native_frame_bytes()) return Status(Errc::Truncated, "palette: frame too short");
     detail::SampleReader rd(pi);
-    for (std::uint64_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < n; ++i) {
         const std::uint32_t k = lut.index(rd.value(frame.data(), i));
         out[3 * i] = lut.red[k];
         out[3 * i + 1] = lut.green[k];

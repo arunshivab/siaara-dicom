@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <new>
+#include <string>
 #include <system_error>
 #include <thread>
 
