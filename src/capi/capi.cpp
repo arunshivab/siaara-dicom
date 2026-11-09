@@ -1228,3 +1228,87 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write(const char* root, siz
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- de-identification (appended)
+#include <cstddef>
+
+#include "deid/deid.hpp"
+#include "deid/sha256.hpp"
+
+namespace {
+
+// Key bytes copied for the duration of a call and wiped afterwards.
+struct WipedKey {
+    std::vector<std::uint8_t> bytes;
+    ~WipedKey() {
+        if (!bytes.empty()) siaara::deid::secure_wipe(bytes.data(), bytes.size());
+    }
+};
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_deidentify(siaara_file* file, const siaara_deid_options* options,
+                                                       uint32_t* out_flags) {
+    return guarded([&]() -> siaara_status {
+        if (out_flags) *out_flags = 0;
+        if (!file || !options) return fail(Errc::InvalidArgument, "file and options must not be NULL");
+        constexpr std::size_t kMin = offsetof(siaara_deid_options, key_len) + sizeof(size_t);
+        if (options->struct_size < kMin) return fail(Errc::InvalidArgument, "struct_size too small");
+        auto has = [&](std::size_t end) { return options->struct_size >= end; };
+        if (!options->key && options->key_len) return fail(Errc::InvalidArgument, "key is NULL");
+        WipedKey key;
+        key.bytes.assign(options->key, options->key + options->key_len);
+        siaara::deid::Options o;
+        o.options = options->flags;
+        o.key = key.bytes;
+        if (has(offsetof(siaara_deid_options, combined_policy) + sizeof(int32_t))) {
+            if (options->combined_policy == SIAARA_DEID_COMBINED_REMOVE) o.combined = siaara::deid::CombinedPolicy::Remove;
+            else if (options->combined_policy != SIAARA_DEID_COMBINED_CONFORMANT)
+                return fail(Errc::InvalidArgument, "unknown combined_policy");
+        }
+        if (has(offsetof(siaara_deid_options, pixel_data_clean) + sizeof(int32_t)))
+            o.pixel_data_clean = options->pixel_data_clean != 0;
+        if (has(offsetof(siaara_deid_options, region_count) + sizeof(size_t)) && options->region_count) {
+            if (!options->regions) return fail(Errc::InvalidArgument, "regions is NULL");
+            for (size_t i = 0; i < options->region_count; ++i) {
+                const siaara_deid_region& r = options->regions[i];
+                o.pixel_regions.push_back({r.frame, r.x, r.y, r.width, r.height});
+            }
+        }
+        if (has(offsetof(siaara_deid_options, safe_words_len) + sizeof(size_t)) && options->safe_words_len) {
+            if (!options->safe_words) return fail(Errc::InvalidArgument, "safe_words is NULL");
+            std::string word;
+            for (size_t i = 0; i <= options->safe_words_len; ++i) {
+                const char c = i < options->safe_words_len ? options->safe_words[i] : ' ';
+                if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+                    if (!word.empty()) o.safe_words.push_back(std::move(word));
+                    word.clear();
+                } else {
+                    word.push_back(c);
+                }
+            }
+        }
+        if (has(offsetof(siaara_deid_options, max_shift_days) + sizeof(uint32_t)) && options->max_shift_days)
+            o.max_shift_days = options->max_shift_days;
+        siaara::deid::Report rep;
+        if (Status s = siaara::deid::deidentify(file->file, o, &rep); !s) return fail(s);
+        if (out_flags) *out_flags = rep.flags;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_deid_replacement_uid(const uint8_t* key, size_t key_len, const char* uid,
+                                                                 size_t uid_len, char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!key || key_len < 16) return fail(Errc::InvalidArgument, "key must be at least 16 bytes");
+        if (!uid && uid_len) return fail(Errc::InvalidArgument, "uid is NULL");
+        WipedKey k;
+        k.bytes.assign(key, key + key_len);
+        const std::string r = siaara::deid::replacement_uid(k.bytes, std::string_view(uid ? uid : "", uid_len));
+        return copy_out(r, buf, cap, needed);
+    });
+}
+
+}  // extern "C"

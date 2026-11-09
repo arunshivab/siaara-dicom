@@ -62,3 +62,18 @@ target_compile_options(store_perf PRIVATE ${SIAARA_WARN})
 add_executable(dicomdir_tool crosscheck/dicomdir_tool.cpp)
 target_link_libraries(dicomdir_tool PRIVATE siaara_static)
 target_compile_options(dicomdir_tool PRIVATE ${SIAARA_WARN})
+# De-identification: the table hash test reads the committed generated table.
+target_compile_definitions(siaara_tests PRIVATE SIAARA_DEID_TABLE_PATH="${PROJECT_SOURCE_DIR}/src/deid/deid_table.inc")
+# Test-only helper for tests/crosscheck/deid_crosscheck.py (not installed).
+add_executable(deid_tool crosscheck/deid_tool.cpp)
+target_link_libraries(deid_tool PRIVATE siaara_static)
+target_compile_options(deid_tool PRIVATE ${SIAARA_WARN})
+# Regenerates src/deid/deid_table.inc from the standard's XML when it is available and compares.
+set(SIAARA_NEMA_PART15 "" CACHE FILEPATH "PS3.15 DocBook XML (part15.xml) for the de-identification table check")
+set(SIAARA_NEMA_PART16 "" CACHE FILEPATH "PS3.16 DocBook XML (part16.xml) for the de-identification table check")
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART15}" AND EXISTS "${SIAARA_NEMA_PART16}")
+  add_test(NAME deid_table_matches_generator
+           COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/deid_table_check.py
+                   ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART15} ${SIAARA_NEMA_PART16})
+endif()
