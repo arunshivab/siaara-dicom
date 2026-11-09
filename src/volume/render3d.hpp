@@ -32,7 +32,9 @@
 // blended over the base layer with its opacity (values at or below the window bottom are left
 // transparent when transparent_below_window). The overlay is sampled at exactly the base layer's
 // sample points, i.e. resampled into the base geometry - on the fly by default, or once up front
-// (set_fusion_layer(..., preresample = true), which costs a base-sized float volume). Fusion
+// (set_fusion_layer(..., preresample = true), which costs a base-sized float volume; points
+// outside the overlay then take the overlay's minimum value, so they are transparent with
+// transparent_below_window, and pick reports them as inside the overlay). Fusion
 // applies to MPR, slab and curved modes; the volume rendering modes show the base layer only.
 #pragma once
 

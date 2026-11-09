@@ -114,7 +114,7 @@ struct Layer {
         return af.inside(p.x, p.y, p.z) ? detail::sample(af, m, p.x, p.y, p.z) : kNaN;
     }
     float linear(Vec3 p) const noexcept {
-        return i16 ? detail::sample_linear(ai, p.x, p.y, p.z) : detail::sample_linear(af, p.x, p.y, p.z);
+        return i16 ? detail::sample_linear_fast(ai, p.x, p.y, p.z) : detail::sample_linear_fast(af, p.x, p.y, p.z);
     }
     bool inside(Vec3 p) const noexcept { return ai.inside(p.x, p.y, p.z); }
 };
@@ -363,10 +363,11 @@ Status View::set_fusion_layer(std::shared_ptr<const Volume> overlay, const Layer
         ro.interpolation = Interpolation::Linear;
         ro.type = VoxelTypeRequest::Float32;
         ro.threads = rs_.threads;
-        ro.outside_value = std::numeric_limits<double>::quiet_NaN();
+        // Outside the overlay: its minimum (NaN would leak into neighbouring trilinear samples
+        // through zero weights). Statistics come from the source.
+        ro.outside_value = overlay->value_min;
         auto r = resample(*overlay, base_->grid(), ro);
         if (!r) return r.take_error();
-        // NaN marks "outside the overlay"; statistics come from the source.
         auto res = std::make_shared<Volume>(std::move(r).value());
         res->value_min = overlay->value_min;
         res->value_max = overlay->value_max;
@@ -734,11 +735,12 @@ RenderAccess::RayResult RenderAccess::cast(double u, double vv, Quality q, bool 
     const View::Bricks* br = v.bricks_.get();
     const bool skip = v.rs_.empty_space_skipping && br != nullptr;
     const double B = br ? static_cast<double>(br->size) : 8.0;
+    const double invB = 1.0 / B;
     auto brick_of = [&](Vec3 p, std::uint32_t idx[3]) {
         for (int a = 0; a < 3; ++a) {
-            const double f = std::floor(p[a] / B);
-            const double nb = br->nb[static_cast<std::size_t>(a)];
-            idx[a] = static_cast<std::uint32_t>(std::clamp(f, 0.0, nb - 1.0));
+            const double f = p[a] * invB;  // truncation == floor for f >= 0; negatives clamp to 0
+            const std::uint32_t last = br->nb[static_cast<std::size_t>(a)] - 1u;
+            idx[a] = f <= 0.0 ? 0u : (f >= last ? last : static_cast<std::uint32_t>(f));
         }
     };
     // Parameter where the ray leaves brick idx (edge bricks extend to infinity outwards).

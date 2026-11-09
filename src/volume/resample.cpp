@@ -173,7 +173,9 @@ Result<Volume> resample(const Volume& src, const Grid& target, const ResampleOpt
             }
         }
     });
-    if (opt.statistics) out.update_statistics(opt.threads);
+    if (opt.statistics) {
+        if (Status s = out.update_statistics(opt.threads); !s) return s;
+    }
     out.phase_count = src.phase_count;
     out.phase_index = src.phase_index;
     out.phase_key = src.phase_key;

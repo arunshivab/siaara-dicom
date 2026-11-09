@@ -89,8 +89,12 @@ public:
     }
     void set(std::uint32_t i, std::uint32_t j, std::uint32_t k, float v) noexcept;
 
-    // Recomputes value_min / value_max and the histogram (256 bins by default), in parallel.
-    void update_statistics(unsigned threads = 0, std::uint32_t bins = 256);
+    // Recomputes value_min / value_max (finite voxels) and the histogram (256 bins by default), in
+    // parallel. Fails only when memory runs out.
+    Status update_statistics(unsigned threads = 0, std::uint32_t bins = 256);
+    // Statistics from exact int16 value counts (4 x 65536 tables each, see volume.cpp). histogram.bins
+    // must already be sized and zeroed. May throw std::bad_alloc (callers catch it).
+    void set_int16_statistics(const std::vector<const std::vector<std::uint64_t>*>& parts, std::uint32_t bins);
 
     double value_min = 0.0;
     double value_max = 0.0;

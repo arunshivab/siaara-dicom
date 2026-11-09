@@ -38,7 +38,7 @@ std::shared_ptr<Volume> make_volume(std::array<std::uint32_t, 3> dims, std::arra
     for (std::uint32_t k = 0; k < dims[2]; ++k)
         for (std::uint32_t j = 0; j < dims[1]; ++j)
             for (std::uint32_t i = 0; i < dims[0]; ++i) v->set(i, j, k, f(i, j, k));
-    v->update_statistics(2);
+    (void)v->update_statistics(2);
     return v;
 }
 

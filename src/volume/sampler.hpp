@@ -79,6 +79,25 @@ float sample_linear(const VoxelAccess<T>& a, double x, double y, double z) noexc
     return c0 * sz + c1 * tz;
 }
 
+// Trilinear with a no-clamp fast path for points whose 8 neighbours are all inside the grid.
+template <class T>
+inline float sample_linear_fast(const VoxelAccess<T>& a, double x, double y, double z) noexcept {
+    if (x >= 0.0 && y >= 0.0 && z >= 0.0 && x < a.ex - 0.5 && y < a.ey - 0.5 && z < a.ez - 0.5) {
+        const auto ix = static_cast<std::int64_t>(x), iy = static_cast<std::int64_t>(y), iz = static_cast<std::int64_t>(z);
+        const float tx = static_cast<float>(x - static_cast<double>(ix)), ty = static_cast<float>(y - static_cast<double>(iy)),
+                    tz = static_cast<float>(z - static_cast<double>(iz));
+        const T* p = a.p + iz * a.sz + iy * a.sy + ix;
+        const std::int64_t sy = a.sy, sz = a.sz;
+        const float sx1 = 1.0f - tx, sy1 = 1.0f - ty, sz1 = 1.0f - tz;
+        const float c00 = static_cast<float>(p[0]) * sx1 + static_cast<float>(p[1]) * tx;
+        const float c10 = static_cast<float>(p[sy]) * sx1 + static_cast<float>(p[sy + 1]) * tx;
+        const float c01 = static_cast<float>(p[sz]) * sx1 + static_cast<float>(p[sz + 1]) * tx;
+        const float c11 = static_cast<float>(p[sz + sy]) * sx1 + static_cast<float>(p[sz + sy + 1]) * tx;
+        return (c00 * sy1 + c10 * ty) * sz1 + (c01 * sy1 + c11 * ty) * tz;
+    }
+    return sample_linear(a, x, y, z);
+}
+
 inline void catmull_rom_weights(double t, double w[4]) noexcept {
     const double t2 = t * t, t3 = t2 * t;
     w[0] = 0.5 * (-t3 + 2.0 * t2 - t);

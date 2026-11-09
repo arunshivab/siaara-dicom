@@ -87,7 +87,7 @@ std::shared_ptr<Volume> load(const char* raw, const char* txt) {
     const bool ok = std::fread(v->f32(), sizeof(float), n, f) == n;
     std::fclose(f);
     if (!ok) return nullptr;
-    v->update_statistics();
+    (void)v->update_statistics();
     return v;
 }
 

@@ -95,60 +95,123 @@ std::size_t hist_bin(double v, double lo, double hi, std::uint32_t bins) noexcep
 
 }  // namespace
 
-void Volume::update_statistics(unsigned threads, std::uint32_t bins) {
+namespace detail {
+
+// Exact counts of int16 values. Four interleaved tables break the store-to-load dependency of
+// long runs of one value (air in CT), which otherwise serialises the increments.
+struct Int16Counts {
+    std::vector<std::uint64_t> c;  // 4 x 65536
+    bool init() noexcept {
+        try {
+            c.assign(4u * 65536u, 0);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    void add(const std::int16_t* p, std::size_t n) noexcept {
+        std::uint64_t* t0 = c.data() + 32768;
+        std::uint64_t* t1 = t0 + 65536;
+        std::uint64_t* t2 = t1 + 65536;
+        std::uint64_t* t3 = t2 + 65536;
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            ++t0[p[i]];
+            ++t1[p[i + 1]];
+            ++t2[p[i + 2]];
+            ++t3[p[i + 3]];
+        }
+        for (; i < n; ++i) ++t0[p[i]];
+    }
+};
+
+}  // namespace detail
+
+void Volume::set_int16_statistics(const std::vector<const std::vector<std::uint64_t>*>& parts, std::uint32_t bins) {
+    std::vector<std::uint64_t> total(65536, 0);  // may throw std::bad_alloc: callers catch it
+    for (const auto* part : parts)
+        for (std::size_t q = 0; q < 4; ++q)
+            for (std::size_t v = 0; v < 65536; ++v) total[v] += (*part)[q * 65536 + v];
+    std::size_t lo = 0, hi = 65535;
+    while (lo < 65535 && total[lo] == 0) ++lo;
+    while (hi > 0 && total[hi] == 0) --hi;
+    if (lo > hi) lo = hi = 32768;
+    value_min = static_cast<double>(static_cast<std::int64_t>(lo) - 32768);
+    value_max = static_cast<double>(static_cast<std::int64_t>(hi) - 32768);
+    histogram.min = value_min;
+    histogram.max = value_max;
+    for (std::size_t v = lo; v <= hi; ++v)
+        if (total[v])
+            histogram.bins[hist_bin(static_cast<double>(static_cast<std::int64_t>(v) - 32768), value_min, value_max, bins)] += total[v];
+}
+
+Status Volume::update_statistics(unsigned threads, std::uint32_t bins) {
     if (bins == 0) bins = 1;
+    if (bins > (1u << 20)) return Status(Errc::LimitExceeded, "volume: too many histogram bins");
     histogram = Histogram{};
     value_min = value_max = 0.0;
-    if (count_ == 0) return;
     const unsigned workers = detail::resolve_threads(threads);
-    const std::size_t slice = static_cast<std::size_t>(grid_.dims[0]) * grid_.dims[1];
-    const std::uint32_t nz = grid_.dims[2];
-    std::vector<double> lo(workers, std::numeric_limits<double>::infinity()), hi(workers, -std::numeric_limits<double>::infinity());
-    detail::parallel_for(nz, workers, [&](std::uint64_t k, unsigned w) noexcept {
-        const std::size_t base = static_cast<std::size_t>(k) * slice;
-        double a = lo[w], b = hi[w];
+    try {
+        histogram.bins.assign(bins, 0);
+        if (count_ == 0) return Status::ok();
+        const std::size_t slice = static_cast<std::size_t>(grid_.dims[0]) * grid_.dims[1];
+        const std::uint32_t nz = grid_.dims[2];
         if (type_ == VoxelType::Int16) {
-            std::int16_t mn = i16_[base], mx = i16_[base];
-            for (std::size_t i = 0; i < slice; ++i) {
-                mn = std::min(mn, i16_[base + i]);
-                mx = std::max(mx, i16_[base + i]);
-            }
-            a = std::min(a, static_cast<double>(mn));
-            b = std::max(b, static_cast<double>(mx));
-        } else {
-            for (std::size_t i = 0; i < slice; ++i) {
-                const float v = f32_[base + i];
-                if (!std::isfinite(v)) continue;
-                a = std::min(a, static_cast<double>(v));
-                b = std::max(b, static_cast<double>(v));
-            }
+            std::vector<detail::Int16Counts> counts(workers);
+            for (auto& c : counts)
+                if (!c.init()) return Status(Errc::OutOfMemory, "volume: out of memory");
+            detail::parallel_for(nz, workers, [&](std::uint64_t k, unsigned w) noexcept {
+                counts[w].add(i16_.get() + static_cast<std::size_t>(k) * slice, slice);
+            });
+            std::vector<const std::vector<std::uint64_t>*> parts;
+            for (auto& c : counts) parts.push_back(&c.c);
+            set_int16_statistics(parts, bins);
+            return Status::ok();
         }
-        lo[w] = a;
-        hi[w] = b;
-    });
-    double mn = std::numeric_limits<double>::infinity(), mx = -mn;
-    for (unsigned w = 0; w < workers; ++w) {
-        mn = std::min(mn, lo[w]);
-        mx = std::max(mx, hi[w]);
+        std::vector<float> lo(workers, std::numeric_limits<float>::infinity()), hi(workers, -std::numeric_limits<float>::infinity());
+        detail::parallel_for(nz, workers, [&](std::uint64_t k, unsigned w) noexcept {
+            const float* p = f32_.get() + static_cast<std::size_t>(k) * slice;
+            float a = lo[w], b = hi[w];
+            for (std::size_t i = 0; i < slice; ++i) {
+                const float v = p[i];
+                // NaN fails the comparison; infinities are excluded too.
+                if (std::fabs(v) <= std::numeric_limits<float>::max()) {
+                    a = v < a ? v : a;
+                    b = v > b ? v : b;
+                }
+            }
+            lo[w] = a;
+            hi[w] = b;
+        });
+        double mn = std::numeric_limits<double>::infinity(), mx = -mn;
+        for (unsigned w = 0; w < workers; ++w) {
+            mn = std::min(mn, static_cast<double>(lo[w]));
+            mx = std::max(mx, static_cast<double>(hi[w]));
+        }
+        if (!std::isfinite(mn)) mn = mx = 0.0;  // no finite voxel
+        value_min = mn;
+        value_max = mx;
+        histogram.min = mn;
+        histogram.max = mx;
+        const double scale = mx > mn ? bins / (mx - mn) : 0.0;
+        std::vector<std::vector<std::uint64_t>> parts(workers, std::vector<std::uint64_t>(bins, 0));
+        detail::parallel_for(nz, workers, [&](std::uint64_t k, unsigned w) noexcept {
+            auto& h = parts[w];
+            const float* p = f32_.get() + static_cast<std::size_t>(k) * slice;
+            const double top = static_cast<double>(bins - 1u);
+            for (std::size_t i = 0; i < slice; ++i) {
+                const double v = p[i];
+                if (!(std::fabs(v) <= std::numeric_limits<double>::max())) continue;
+                const double t = (v - mn) * scale;
+                ++h[static_cast<std::size_t>(t > 0.0 ? (t < top ? t : top) : 0.0)];
+            }
+        });
+        for (auto& p : parts)
+            for (std::uint32_t b = 0; b < bins; ++b) histogram.bins[b] += p[b];
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "volume: out of memory");
     }
-    if (!std::isfinite(mn)) mn = mx = 0.0;  // all non-finite
-    value_min = mn;
-    value_max = mx;
-    histogram.min = mn;
-    histogram.max = mx;
-    std::vector<std::vector<std::uint64_t>> parts(workers, std::vector<std::uint64_t>(bins, 0));
-    detail::parallel_for(nz, workers, [&](std::uint64_t k, unsigned w) noexcept {
-        const std::size_t base = static_cast<std::size_t>(k) * slice;
-        auto& h = parts[w];
-        for (std::size_t i = 0; i < slice; ++i) {
-            const double v = type_ == VoxelType::Int16 ? static_cast<double>(i16_[base + i]) : static_cast<double>(f32_[base + i]);
-            if (!std::isfinite(v)) continue;
-            ++h[hist_bin(v, mn, mx, bins)];
-        }
-    });
-    histogram.bins.assign(bins, 0);
-    for (auto& p : parts)
-        for (std::uint32_t b = 0; b < bins; ++b) histogram.bins[b] += p[b];
+    return Status::ok();
 }
 
 // ---------------------------------------------------------------- building
@@ -669,6 +732,16 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
         const unsigned workers = threads;
         std::vector<std::vector<std::uint8_t>> raw(workers);
         std::vector<std::vector<float>> fbuf(workers), fbuf2(workers);
+        std::vector<detail::Int16Counts> counts;
+        if (type == VoxelType::Int16) {
+            try {
+                counts.resize(workers);
+            } catch (const std::bad_alloc&) {
+                return Status(Errc::OutOfMemory, "volume: out of memory");
+            }
+            for (auto& c : counts)
+                if (!c.init()) return Status(Errc::OutOfMemory, "volume: out of memory");
+        }
         std::vector<Status> slice_err;
         std::vector<char> slice_clamped;
         try {
@@ -733,6 +806,7 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
                 } else {
                     frame_to_float(fr.info(), src, m, vol.f32() + base, slice);
                 }
+                if (type == VoxelType::Int16) counts[w].add(vol.i16() + base, slice);  // while the slice is in cache
             } catch (const std::bad_alloc&) {
                 slice_err[k] = Status(Errc::OutOfMemory, "volume: out of memory");
             }
@@ -750,7 +824,19 @@ Result<Volume> build_volume(std::span<const DicomFile* const> files, const Volum
         }
         for (const auto& s : sources)
             for (const auto& w : s.fr->warnings()) add_warning(warnings, w);
-        vol.update_statistics(threads, opt.histogram_bins);
+        if (type == VoxelType::Int16) {
+            const std::uint32_t bins = opt.histogram_bins ? std::min(opt.histogram_bins, 1u << 20) : 1u;
+            try {
+                vol.histogram.bins.assign(bins, 0);
+                std::vector<const std::vector<std::uint64_t>*> parts;
+                for (auto& c : counts) parts.push_back(&c.c);
+                vol.set_int16_statistics(parts, bins);
+            } catch (const std::bad_alloc&) {
+                return Status(Errc::OutOfMemory, "volume: out of memory");
+            }
+        } else if (Status st = vol.update_statistics(threads, opt.histogram_bins); !st) {
+            return st;
+        }
         vol.flags = flags;
         vol.warnings = std::move(warnings);
         vol.phase_count = phase_count;
