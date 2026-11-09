@@ -1,6 +1,7 @@
 // SIAARA DICOM Toolkit - JPEG-LS decoder (ITU-T T.87), written from the Recommendation.
 #include <algorithm>
 #include <cstring>
+#include <new>
 #include <string>
 
 #include "codec/jpegls_internal.hpp"
@@ -309,10 +310,25 @@ Status validate_frame_info(const FrameInfo& info) {
 
 }  // namespace jpegls::detail
 
+namespace {
+Status decode_jpegls_impl(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out);
+}  // namespace
+
 Status decode_jpegls(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
+    // Allocation failure is reported, never thrown (decision 13.1).
+    try {
+        return decode_jpegls_impl(in, info, out);
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "JPEG-LS: out of memory");
+    }
+}
+
+namespace {
+Status decode_jpegls_impl(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
     if (Status s = jpegls::detail::validate_frame_info(info); !s) return s;
     if (out.size() != info.frame_bytes())
-        return Status(Errc::BufferTooSmall, "JPEG-LS: output size does not match the frame");
+        return Status(out.size() < info.frame_bytes() ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                      "JPEG-LS: output size does not match the frame");
     if (in.size() < 2 || in[0] != 0xFF || in[1] != kSOI) return malformed("missing SOI", 0);
 
     DecodeState st;
@@ -381,6 +397,7 @@ Status decode_jpegls(std::span<const std::uint8_t> in, const FrameInfo& info, st
     if (info.is_signed && info.bits_stored < info.bits_allocated) sign_extend(out, info);
     return Status::ok();
 }
+}  // namespace
 
 Status jpegls::probe(std::span<const std::uint8_t> in, StreamInfo& out) {
     if (in.size() < 2 || in[0] != 0xFF || in[1] != kSOI) return malformed("missing SOI", 0);

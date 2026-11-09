@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -1354,7 +1355,9 @@ public:
             if (c.depth > info_.bits_allocated) return malformed("component precision exceeds BitsAllocated");
             if (c.sgn != info_.is_signed) return malformed("component signedness differs from PixelRepresentation");
         }
-        if (info_.frame_bytes() != out_.size()) return Status(Errc::BufferTooSmall, "JPEG 2000: output buffer size");
+        if (info_.frame_bytes() != out_.size())
+            return Status(out_.size() < info_.frame_bytes() ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                          "JPEG 2000: output buffer size");
         max_samples = static_cast<std::uint64_t>(info_.rows) * info_.columns * info_.samples_per_pixel;
         return Status::ok();
     }
@@ -1434,26 +1437,51 @@ private:
 
 Status decode_j2k(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
     if (info.frame_bytes() == 0) return Status(Errc::InvalidArgument, "JPEG 2000: invalid frame parameters");
-    if (out.size() != info.frame_bytes()) return Status(Errc::BufferTooSmall, "JPEG 2000: output buffer size");
+    if (out.size() != info.frame_bytes())
+        return Status(out.size() < info.frame_bytes() ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                      "JPEG 2000: output buffer size");
     std::memset(out.data(), 0, out.size());
-    FrameSink sink(info, out);
-    return run_decoder(in, sink);
+    // Allocation failure is reported, never thrown (decision 13.1).
+    try {
+        FrameSink sink(info, out);
+        return run_decoder(in, sink);
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    }
 }
 
 Status j2k::decode_components(std::span<const std::uint8_t> in, std::vector<Component>& out, std::uint64_t max_samples) {
-    ComponentSink sink(out);
-    sink.max_samples = max_samples;
-    return run_decoder(in, sink);
+    try {
+        ComponentSink sink(out);
+        sink.max_samples = max_samples;
+        return run_decoder(in, sink);
+    } catch (const std::bad_alloc&) {
+        out.clear();
+        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    }
 }
 
+namespace {
+Status probe_impl(std::span<const std::uint8_t> in, j2k::StreamInfo& out);
+}  // namespace
+
 Status j2k::probe(std::span<const std::uint8_t> in, StreamInfo& out) {
+    try {
+        return probe_impl(in, out);
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    }
+}
+
+namespace {
+Status probe_impl(std::span<const std::uint8_t> in, j2k::StreamInfo& out) {
     std::span<const std::uint8_t> stream;
     bool wrapped = false;
     if (Status s = locate_codestream(in, stream, wrapped); !s) return s;
     Codestream cs;
     if (Status s = parse_codestream(stream, cs); !s) return s;
     const Siz& z = cs.siz;
-    out = StreamInfo{};
+    out = j2k::StreamInfo{};
     out.width = z.xsiz - z.xo;
     out.height = z.ysiz - z.yo;
     out.x_offset = z.xo;
@@ -1478,5 +1506,6 @@ Status j2k::probe(std::span<const std::uint8_t> in, StreamInfo& out) {
     out.jp2_wrapper = wrapped;
     return Status::ok();
 }
+}  // namespace
 
 }  // namespace siaara::codec

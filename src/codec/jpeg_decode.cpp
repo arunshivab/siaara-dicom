@@ -852,7 +852,9 @@ Status Decoder::run() {
     const std::uint64_t need = info_.frame_bytes();
     if (need == 0 || (info_.bits_allocated != 8 && info_.bits_allocated != 16))
         return Status(Errc::InvalidArgument, "JPEG: unsupported frame description");
-    if (out_.size() != need) return Status(Errc::BufferTooSmall, "JPEG: output size differs from frame size");
+    if (out_.size() != need)
+        return Status(out_.size() < need ? Errc::BufferTooSmall : Errc::InvalidArgument,
+                      "JPEG: output size differs from frame size");
     if (n_ < 4 || d_[0] != 0xFF || d_[1] != 0xD8) return malformed("JPEG: missing SOI", 0);
     pos_ = 2;
     for (;;) {
@@ -911,10 +913,15 @@ Status Decoder::run() {
 }  // namespace
 
 Status decode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, std::span<std::uint8_t> out) {
-    // The decoder carries ~55 KB of Huffman lookup tables: keep it off the stack.
-    std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
-    if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
-    return dec->run();
+    // Allocation failure is reported, never thrown (decision 13.1).
+    try {
+        // The decoder carries ~55 KB of Huffman lookup tables: keep it off the stack.
+        std::unique_ptr<Decoder> dec(new (std::nothrow) Decoder(in, info, out));
+        if (!dec) return Status(Errc::OutOfMemory, "JPEG: out of memory");
+        return dec->run();
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "JPEG: out of memory");
+    }
 }
 
 Status jpeg_read_header(std::span<const std::uint8_t> in, JpegHeaderInfo& hdr) {
