@@ -749,9 +749,11 @@ std::uint64_t tag_tree_bytes(std::int64_t w, std::int64_t h) {
 // component may not have more code-blocks or precincts than about one per 16 samples (plus the
 // partial blocks along the edges): a few bytes of COD asking for 1 x 1 code-blocks would
 // otherwise cost ~100 bytes of state per image sample.
+// `layout_only` (a tile without tile-parts, see decode_empty_tile): the same checks and budget
+// charges, but the code-block and precinct state is not allocated, since no packet is read.
 Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::vector<TileComp>& comps,
                   std::int64_t& tx0, std::int64_t& ty0, std::int64_t& tx1, std::int64_t& ty1, Budget& budget,
-                  std::uint64_t& charged) {
+                  std::uint64_t& charged, bool layout_only = false) {
     auto charge = [&](std::uint64_t bytes, const char* what) {
         Status st = budget.charge(bytes, what);
         if (st) charged += bytes;
@@ -909,6 +911,7 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
                     blocks += n;
                     if (blocks > max_blocks) return too_small();
                     if (Status ch = charge(n * sizeof(CodeBlock), "code-blocks"); !ch) return ch;
+                    if (layout_only) continue;
                     bd.cbs.resize(static_cast<std::size_t>(n));
                     for (std::int64_t j = 0; j < bd.ncby; ++j) {
                         for (std::int64_t i = 0; i < bd.ncbx; ++i) {
@@ -928,26 +931,34 @@ Status setup_tile(const Codestream& cs, const TileIn* tin, std::size_t t, std::v
             if (Status ch = charge(np64 * (static_cast<std::uint64_t>(rs.nbands) * sizeof(PrecBand) + sizeof(int)), "precincts"); !ch)
                 return ch;
             const std::size_t np = static_cast<std::size_t>(np64);
-            rs.prec.resize(np * static_cast<std::size_t>(rs.nbands));
-            rs.next_layer.assign(np, 0);
+            if (!layout_only) {
+                rs.prec.resize(np * static_cast<std::size_t>(rs.nbands));
+                rs.next_layer.assign(np, 0);
+            }
             for (std::int64_t ky = 0; ky < rs.npy; ++ky) {
                 for (std::int64_t kx = 0; kx < rs.npx; ++kx) {
                     const std::int64_t px = (rs.x0 >> rs.ppx) + kx;
                     const std::int64_t py = (rs.y0 >> rs.ppy) + ky;
                     for (int b = 0; b < rs.nbands; ++b) {
                         const Band& bd = rs.bands[b];
-                        PrecBand& pb = rs.prec[static_cast<std::size_t>((ky * rs.npx + kx) * rs.nbands + b)];
-                        if (bd.cbs.empty()) continue;
+                        // The band has code-blocks (bd.cbs is left empty when layout_only).
+                        if (!(bd.x1 > bd.x0 && bd.y1 > bd.y0)) continue;
                         const int sx = pbx - bd.cbw, sy = pby - bd.cbh;
-                        pb.cx0 = std::max<std::int64_t>(px << sx, bd.cbx0) - bd.cbx0;
-                        pb.cx1 = std::min<std::int64_t>((px + 1) << sx, bd.cbx0 + bd.ncbx) - bd.cbx0;
-                        pb.cy0 = std::max<std::int64_t>(py << sy, bd.cby0) - bd.cby0;
-                        pb.cy1 = std::min<std::int64_t>((py + 1) << sy, bd.cby0 + bd.ncby) - bd.cby0;
-                        if (pb.cx1 < pb.cx0) pb.cx1 = pb.cx0;
-                        if (pb.cy1 < pb.cy0) pb.cy1 = pb.cy0;
-                        if (Status ch = charge(2 * tag_tree_bytes(pb.cx1 - pb.cx0, pb.cy1 - pb.cy0), "tag trees"); !ch) return ch;
-                        pb.incl.init(pb.cx1 - pb.cx0, pb.cy1 - pb.cy0);
-                        pb.zbp.init(pb.cx1 - pb.cx0, pb.cy1 - pb.cy0);
+                        std::int64_t cx0 = std::max<std::int64_t>(px << sx, bd.cbx0) - bd.cbx0;
+                        std::int64_t cx1 = std::min<std::int64_t>((px + 1) << sx, bd.cbx0 + bd.ncbx) - bd.cbx0;
+                        std::int64_t cy0 = std::max<std::int64_t>(py << sy, bd.cby0) - bd.cby0;
+                        std::int64_t cy1 = std::min<std::int64_t>((py + 1) << sy, bd.cby0 + bd.ncby) - bd.cby0;
+                        if (cx1 < cx0) cx1 = cx0;
+                        if (cy1 < cy0) cy1 = cy0;
+                        if (Status ch = charge(2 * tag_tree_bytes(cx1 - cx0, cy1 - cy0), "tag trees"); !ch) return ch;
+                        if (layout_only) continue;
+                        PrecBand& pb = rs.prec[static_cast<std::size_t>((ky * rs.npx + kx) * rs.nbands + b)];
+                        pb.cx0 = cx0;
+                        pb.cx1 = cx1;
+                        pb.cy0 = cy0;
+                        pb.cy1 = cy1;
+                        pb.incl.init(cx1 - cx0, cy1 - cy0);
+                        pb.zbp.init(cx1 - cx0, cy1 - cy0);
                     }
                 }
             }
@@ -1231,6 +1242,50 @@ Status Decoder::decode_tile(std::size_t t) {
     const TileIn* tin = cs.tiles[t].get();
     std::vector<TileComp> comps;
     std::int64_t tx0 = 0, ty0 = 0, tx1 = 0, ty1 = 0;
+    if (!tin) {
+        // A tile without tile-parts decodes as all coefficients zero (see run_decoder). Every
+        // stage maps zero to zero (inverse wavelets, colour transforms), so each sample is the
+        // DC level shift, clamped. Computed directly, with the checks and budget charges of the
+        // full path: a few bytes of SIZ can ask for 65535 such tiles, and setting up code-blocks
+        // and precincts for each would cost seconds of CPU for no data.
+        if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1, budget, charged, true); !s) return s;
+        for (const TileComp& tc : comps) {
+            const std::uint64_t bytes = std::uint64_t{static_cast<std::size_t>(tc.x1 - tc.x0)} *
+                                        static_cast<std::size_t>(tc.y1 - tc.y0) * 4u;
+            if (Status s = budget.charge(bytes, "tile buffers"); !s) return s;
+            charged += bytes;
+        }
+        if (cs.main.mct && comps.size() >= 3) {
+            const TileComp &c0 = comps[0], &c1 = comps[1], &c2 = comps[2];
+            if (c0.x0 != c1.x0 || c0.x0 != c2.x0 || c0.x1 != c1.x1 || c0.x1 != c2.x1 || c0.y0 != c1.y0 ||
+                c0.y0 != c2.y0 || c0.y1 != c1.y1 || c0.y1 != c2.y1)
+                return malformed("colour transform on components of different sizes");
+            const int t0 = c0.cs.transform;
+            if (c1.cs.transform != t0 || c2.cs.transform != t0) return malformed("colour transform with mixed wavelets");
+        }
+        std::vector<std::int32_t> flat;
+        for (std::size_t c = 0; c < comps.size(); ++c) {
+            const TileComp& tc = comps[c];
+            const CompSiz& sc = cs.siz.comp[c];
+            const std::size_t w = static_cast<std::size_t>(tc.x1 - tc.x0);
+            const std::size_t h = static_cast<std::size_t>(tc.y1 - tc.y0);
+            if (w == 0 || h == 0) continue;
+            const int depth = std::min(sc.depth, 31);
+            const std::int64_t lo = sc.sgn ? -(std::int64_t{1} << (depth - 1)) : 0;
+            const std::int64_t hi = sc.sgn ? (std::int64_t{1} << (depth - 1)) - 1 : (std::int64_t{1} << depth) - 1;
+            const std::int64_t shift = sc.sgn ? 0 : (std::int64_t{1} << (depth - 1));
+            const std::uint64_t buffers = std::uint64_t{w} * h * 4u * (tc.cs.transform == 1 ? 1u : 2u);
+            if (tc.cs.transform != 1) {
+                if (Status s = budget.charge(std::uint64_t{w} * h * 4u, "tile buffers"); !s) return s;
+                charged += std::uint64_t{w} * h * 4u;
+            }
+            flat.assign(w * h, static_cast<std::int32_t>(std::clamp<std::int64_t>(shift, lo, hi)));
+            sink.put(c, tx0, ty0, tx1, ty1, tc.x0, tc.y0, tc.x1, tc.y1, flat.data(), w);
+            budget.release(buffers);
+            charged -= buffers;
+        }
+        return Status::ok();
+    }
     if (Status s = setup_tile(cs, tin, t, comps, tx0, ty0, tx1, ty1, budget, charged); !s) return s;
     const Params* tp = tin ? &tin->params : nullptr;
 
