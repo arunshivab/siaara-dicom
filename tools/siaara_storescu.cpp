@@ -13,6 +13,7 @@
 #include "core/transfer_syntax.hpp"
 #include "net/scu.hpp"
 #include "net/services.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 using namespace siaara::net;
@@ -20,7 +21,7 @@ using namespace siaara::net;
 namespace {
 
 void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-storescu [options] host port file...\n"
                  "  -aet AE          calling AE title (default SIAARA_STORE)\n"
                  "  -aec AE          called AE title (default ANY-SCP)\n"
@@ -47,6 +48,10 @@ bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
 }  // namespace
 
 int main(int argc, char** argv) try {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     ScuConfig cfg;
     cfg.calling_ae = "SIAARA_STORE";
     unsigned long timeout = 30000, quality = 90, async = 0, max_pdu = 65536;

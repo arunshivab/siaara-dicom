@@ -6,6 +6,7 @@
 
 #include "net/scu.hpp"
 #include "net/tls.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 using namespace siaara::net;
@@ -87,7 +88,7 @@ int parse_tls_option(int argc, char** argv, int& i, siaara::net::TlsSettings& t)
 }
 
 void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-echoscu [options] host port\n"
                  "  -aet AE        calling AE title (default SIAARA_ECHO)\n"
                  "  -aec AE        called AE title (default ANY-SCP)\n"
@@ -96,8 +97,8 @@ void usage() {
                  "  --max-pdu N    maximum PDU length to receive (default 65536)\n"
                  "  -q             quiet\n"
                  "  --tls-name N   name or IP the server certificate must carry (default: host)\n"
-                 "  -v             log TLS details to stderr\n");
-    std::fputs(kTlsUsage, stderr);
+                 "  -v             log TLS details to siaara_tools::usage_stream()\n");
+    std::fputs(kTlsUsage, siaara_tools::usage_stream());
 }
 
 bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
@@ -111,6 +112,10 @@ bool parse_uint(const char* s, unsigned long max, unsigned long& out) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     ScuConfig cfg;
     cfg.calling_ae = "SIAARA_ECHO";
     unsigned long repeat = 1, timeout = 15000, max_pdu = 65536;

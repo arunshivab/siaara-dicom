@@ -14,6 +14,7 @@
 #include "dict/dictionary.hpp"
 #include "net/scu.hpp"
 #include "net/services.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 using namespace siaara::net;
@@ -67,7 +68,7 @@ void print_progress(const char* what, const RetrieveProgress& p) {
 }  // namespace
 
 static void usage() {
-    std::fprintf(stderr,
+    std::fprintf(siaara_tools::usage_stream(),
                  "usage: siaara-getscu [options] host port\n"
                  "  -aet AE          calling AE title (default SIAARA_GET)\n"
                  "  -aec AE          called AE title (default ANY-SCP)\n"
@@ -91,6 +92,10 @@ static bool safe_uid(const std::string& s) {
 }
 
 int main(int argc, char** argv) try {
+    if (siaara_tools::wants_help(argc, argv)) {
+        usage();
+        return 0;
+    }
     ScuConfig cfg;
     cfg.calling_ae = "SIAARA_GET";
     unsigned long timeout = 60000, spool = 0;

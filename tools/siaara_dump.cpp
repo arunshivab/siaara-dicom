@@ -4,6 +4,7 @@
 
 #include "core/reader.hpp"
 #include "dict/dictionary.hpp"
+#include "tool_help.hpp"
 
 using namespace siaara;
 
@@ -52,9 +53,9 @@ void dump(const Dataset& ds, int depth) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: siaara-dump <file.dcm> [--headers-only]\n");
-        return 2;
+    if (siaara_tools::wants_help(argc, argv) || argc < 2) {
+        std::fprintf(siaara_tools::usage_stream(), "usage: siaara-dump <file.dcm> [--headers-only]\n");
+        return argc < 2 && siaara_tools::usage_stream() == stderr ? 2 : 0;
     }
     ReadOptions opt;
     if (argc > 2 && std::string(argv[2]) == "--headers-only") opt.stop_before_pixel_data = true;
