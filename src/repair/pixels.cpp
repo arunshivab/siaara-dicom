@@ -254,6 +254,11 @@ PixelAnalysis analyse_pixels(const Dataset& ds, std::string_view ts_uid, const P
         r.findings.push_back(make(Severity::Error, "pixel-representation", 0, tags::PixelRepresentation,
                                   "Pixel Representation is not 0 or 1"));
 
+    if (const Element* pf = ds.find(0x52009230); pf && pf->is_sequence() && a.has_frames &&
+                                                  pf->items.size() != static_cast<std::uint64_t>(a.frames))
+        r.findings.push_back(make(Severity::Error, "per-frame-count", 0, 0x52009230,
+                                  "Per-frame Functional Groups Sequence has " + std::to_string(pf->items.size()) +
+                                      " item(s) but Number of Frames is " + std::to_string(a.frames)));
     if (px->tag != tags::PixelData) return r;  // float pixel data: no codestreams, sizes only below
     if (r.encapsulated != ts_encapsulated && ts) {
         r.findings.push_back(make(Severity::Error, "pixel-encoding", 0, tags::PixelData,

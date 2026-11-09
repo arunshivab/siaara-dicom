@@ -38,6 +38,9 @@ struct ReqNode {
     // differently guarded copies were merged), so the requirement cannot be evaluated.
     std::vector<const Condition*> guards;
     bool guard_unevaluated = false;
+    // This row's Type replaces the Type other modules of the IOD give the attribute (PS3.3 wording
+    // "This type definition shall override the definition in the ... Module").
+    bool overrides = false;
     std::vector<ReqNode> children;                 // attributes of each item, when a sequence
     bool matches(Tag t) const noexcept { return (t & mask) == tag; }
 };

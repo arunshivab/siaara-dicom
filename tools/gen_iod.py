@@ -299,9 +299,9 @@ class Gen:
                 if m:
                     pc = parse_condition("Required if " + m.group(1))
                     self.stats["conditional_includes"] += 1
-                    out.append((depth, 0, 0, 6, inc, self.cond(pc), -1))
+                    out.append((depth, 0, 0, 6, inc, self.cond(pc), -1, 0))
                 else:
-                    out.append((depth, 0, 0, 0, inc, -1, -1))
+                    out.append((depth, 0, 0, 0, inc, -1, -1, 0))
                 continue
             if len(tds) < 3:
                 continue
@@ -322,7 +322,10 @@ class Gen:
                     self.stats["parsed_conditions"] += 1
                 c = self.cond(pc)
             e = self.enum(enumerated_values(desc_td)) if desc_td is not None else -1
-            out.append((depth, pt[0], pt[1], ty, -1, c, e))
+            # "This type definition shall override the definition in the <other> Module" (e.g. SC
+            # Equipment Modality): recorded so the other module's Type is replaced in this IOD.
+            ov = 1 if re.search(r"type definition shall override the definition", desc) else 0
+            out.append((depth, pt[0], pt[1], ty, -1, c, e, ov))
         return out
 
     # ---- IODs
@@ -448,11 +451,12 @@ class Gen:
         L.append("// %d conditional Include rows (\"Include ... if ...\")." % self.stats["conditional_includes"])
         L.append("// Row fields: depth, tag, mask, type (1=1, 2=1C, 3=2, 4=2C, 5=3; 0 = Include row, 6 = conditional")
         L.append("// Include row whose condition is the row's condition, -1 when not evaluated),")
-        L.append("// included table (-1), condition (-1), enumerated value list (-1).")
+        L.append("// included table (-1), condition (-1), enumerated value list (-1), overrides the Type given")
+        L.append("// by another module of the IOD (\"This type definition shall override ...\").")
         L.append("")
         L.append("constexpr AttrRow kAttrRows[] = {")
         for r in self.rows:
-            L.append("    {%d, 0x%08Xu, 0x%08Xu, %d, %d, %d, %d}," % r)
+            L.append("    {%d, 0x%08Xu, 0x%08Xu, %d, %d, %d, %d, %d}," % r)
         L.append("};")
         L.append("")
         L.append("constexpr AttrTable kAttrTables[] = {")

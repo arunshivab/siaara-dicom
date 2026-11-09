@@ -699,8 +699,11 @@ Result<ScanResult> scan(const Bytes& data, const ScanOptions& opt) {
         Scanner probe(data, opt, scratch, true);
         Syntax g{true, false};
         if (n - pos >= 8) {
-            if (probe.looks_explicit(pos, {true, false})) g = {true, false};
-            else if (probe.looks_explicit(pos, {true, true}) && load_le16(p + pos) > 0x00FF) g = {true, true};
+            // A plausible first group is small: 0x0002..0x00FF read in the right byte order.
+            const std::uint16_t g_le = load_le16(p + pos), g_be = load_be16(p + pos);
+            const bool be_plausible = g_le > 0x00FF && g_be <= 0x00FF;
+            if (be_plausible && probe.looks_explicit(pos, {true, true})) g = {true, true};
+            else if (probe.looks_explicit(pos, {true, false})) g = {true, false};
             else g = {false, false};
         }
         if (out.declared_transfer_syntax.empty() || !out.meta_present)

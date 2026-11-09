@@ -16,6 +16,7 @@ struct AttrRow {
     std::int16_t include;
     std::int16_t cond;
     std::int16_t enum_list;
+    std::uint8_t overrides;
 };
 struct AttrTable {
     std::string_view id;
@@ -123,6 +124,7 @@ ReqNode node_of(const FlatRow& fr, Cache& c) {
     n.tag = r.tag;
     n.mask = r.mask;
     n.type = static_cast<AttrType>(r.type);
+    n.overrides = r.overrides != 0;
     if (r.cond >= 0 && static_cast<std::size_t>(r.cond) < c.conditions.size()) n.condition = &c.conditions[static_cast<std::size_t>(r.cond)];
     if (r.enum_list >= 0) {
         const EnumList& e = kEnumLists[r.enum_list];

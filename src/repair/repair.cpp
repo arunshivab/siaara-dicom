@@ -419,6 +419,15 @@ public:
                              "", "");
             }
             if (!vr_is_string(e.vr) || e.is_sequence()) continue;
+            if (e.vr != VR::UI && !e.value.empty() && e.value.as_chars().back() == '\0') {
+                // NUL padding of a string VR: the padding character is a space (PS3.5 6.2).
+                const Element old = e;
+                std::string v(e.value.as_chars());
+                for (std::size_t k = v.size(); k > 0 && v[k - 1] == '\0'; --k) v[k - 1] = ' ';
+                e.value = Bytes::from_string(v);
+                e.read = {};
+                log(w, kValues, "pad", here, "NUL padding replaced by a space", &old, &e);
+            }
             const std::string_view raw = e.value.as_chars();
             const bool mv = e.vr != VR::LT && e.vr != VR::ST && e.vr != VR::UT && e.vr != VR::UR;
             if (!mv) continue;

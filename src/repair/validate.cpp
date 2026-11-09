@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <map>
 #include <set>
 #include <string>
 
@@ -164,6 +165,9 @@ struct DictChecker {
         }
         if (!vr_is_string(vr)) return;
         std::string_view raw = e.value.as_chars();
+        if (vr != VR::UI && !raw.empty() && raw.back() == '\0')
+            sink.add(Severity::Error, "nul-padding", kValues, here,
+                     "string value padded with NUL instead of a space (PS3.5 6.2: only UI uses NUL)");
         if (vr == VR::UI && !raw.empty() && raw.back() == ' ')
             sink.add(Severity::Error, "ui-padding", kValues, here, "UID value padded with a space instead of NUL (PS3.5 9.1)");
         std::string text;
@@ -268,6 +272,7 @@ struct IodChecker {
     const Dataset& top;
     std::string module_name;
     std::size_t not_evaluated = 0;
+    const std::map<Tag, AttrType>* overrides = nullptr;  // top-level Type overrides from other modules
 
     const Element* find(const Dataset& ds, const ReqNode& n) const {
         if (n.mask == 0xFFFFFFFFu) return ds.find(n.tag);
@@ -377,7 +382,18 @@ struct IodChecker {
     }
 
     void check_list(const Dataset& ds, const std::vector<ReqNode>& nodes, const Path& path) {
-        for (const ReqNode& n : nodes) {
+        for (const ReqNode& base : nodes) {
+            ReqNode overridden;
+            const ReqNode* np = &base;
+            if (path.empty() && overrides && !base.overrides) {
+                auto it = overrides->find(base.tag);
+                if (it != overrides->end()) {
+                    overridden = base;
+                    overridden.type = it->second;
+                    np = &overridden;
+                }
+            }
+            const ReqNode& n = *np;
             const Element* e = find(ds, n);
             const Path here = child(path, n.mask == 0xFFFFFFFFu ? n.tag : (e ? e->tag : n.tag));
             bool required = false;
@@ -498,13 +514,18 @@ void check_iod_into(const DicomFile& f, Sink& sink) {
         return;
     }
     std::set<Tag> mandatory_tags;
-    for (const ModuleReq& m : iod->modules)
-        if (m.usage == ModuleUsage::M && m.attributes)
-            for (const ReqNode& n : *m.attributes) mandatory_tags.insert(n.tag);
+    std::map<Tag, AttrType> overrides;
+    for (const ModuleReq& m : iod->modules) {
+        if (!m.attributes) continue;
+        for (const ReqNode& n : *m.attributes) {
+            if (m.usage == ModuleUsage::M) mandatory_tags.insert(n.tag);
+            if (n.overrides) overrides[n.tag] = n.type;
+        }
+    }
     for (const ModuleReq& m : iod->modules) {
         if (!m.attributes) continue;
         if (m.usage != ModuleUsage::M && !module_present(ds, m, mandatory_tags)) continue;
-        IodChecker c{sink, ds, std::string(m.name) + " Module", 0};
+        IodChecker c{sink, ds, std::string(m.name) + " Module", 0, &overrides};
         c.check_list(ds, *m.attributes, {});
         if (c.not_evaluated)
             sink.add(Severity::Info, "condition-not-evaluated", 0, {},
