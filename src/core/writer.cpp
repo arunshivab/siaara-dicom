@@ -93,7 +93,9 @@ private:
         return Status::ok();
     }
 
-    void swap_values(VR vr, std::size_t at, std::size_t len) { swap_width(vr_value_size(vr), at, len); }
+    void swap_values(VR vr, std::size_t at, std::size_t len) {
+        swap_width(vr == VR::AT ? 2 : vr_value_size(vr), at, len);
+    }
 
     void swap_width(std::size_t w, std::size_t at, std::size_t len) {
         if (w <= 1) return;

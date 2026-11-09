@@ -549,3 +549,196 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- DICOM JSON and DICOMweb client
+#include <optional>
+
+#include "web/client.hpp"
+#include "web/dicom_json.hpp"
+
+struct siaara_web_client {
+    std::optional<siaara::web::DicomwebClient> client;
+    std::string authorization;
+    std::string last_response;
+};
+
+namespace {
+
+bool optional_uid(const char* s, std::string& out) {
+    out.clear();
+    if (!s) return true;
+    out = s;
+    return out.empty() || siaara::web::is_uid(out);
+}
+
+siaara_status http_fail(const siaara::Status& s) {
+    return fail(s);
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_to_json(const siaara_dataset* ds, uint32_t flags, char* buf,
+                                                            size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!ds) return fail(Errc::InvalidArgument, "ds must not be NULL");
+        if (flags & ~static_cast<uint32_t>(SIAARA_JSON_NUMBERS_AS_STRINGS | SIAARA_JSON_STRICT_CHARSET))
+            return fail(Errc::InvalidArgument, "unknown flags");
+        siaara::web::ModelWriteOptions opt;
+        opt.numbers_as_strings = (flags & SIAARA_JSON_NUMBERS_AS_STRINGS) != 0;
+        opt.strict_charset = (flags & SIAARA_JSON_STRICT_CHARSET) != 0;
+        std::string out;
+        if (Status s = siaara::web::dataset_to_json(*ds_cast(ds), out, opt); !s) return fail(s);
+        return copy_out(out, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_from_json(const char* utf8, size_t len, siaara_file** out) {
+    return guarded([&]() -> siaara_status {
+        if ((!utf8 && len) || !out) return fail(Errc::InvalidArgument, "utf8 and out must not be NULL");
+        *out = nullptr;
+        auto r = siaara::web::dataset_from_json(std::string_view(utf8 ? utf8 : "", len));
+        if (!r) return fail(r.error());
+        auto f = std::make_unique<siaara_file>();
+        for (auto& e : r->elements()) {
+            if (siaara::tag_group(e.tag) == 0x0002) f->file.meta.put(std::move(e));
+            else f->file.dataset.append_sorted(std::move(e));
+        }
+        f->file.transfer_syntax = f->file.meta.get_string(siaara::tags::TransferSyntaxUID)
+                                      .value_or(std::string(siaara::ts::ExplicitVRLittleEndian));
+        if (!siaara::find_transfer_syntax(f->file.transfer_syntax))
+            return fail(Errc::Unsupported, "unknown transfer syntax in the JSON file meta");
+        *out = f.release();
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create(const char* base_url, size_t len, int32_t timeout_ms,
+                                                              siaara_web_client** out) {
+    return guarded([&]() -> siaara_status {
+        if (!base_url || !out) return fail(Errc::InvalidArgument, "base_url and out must not be NULL");
+        *out = nullptr;
+        if (timeout_ms < 0) return fail(Errc::InvalidArgument, "timeout_ms must not be negative");
+        auto c = std::make_unique<siaara_web_client>();
+        siaara::web::DicomwebClientConfig cfg;
+        cfg.base_url.assign(base_url, len);
+        const int t = timeout_ms == 0 ? 30000 : timeout_ms;
+        cfg.limits.read_timeout_ms = t;
+        cfg.limits.write_timeout_ms = t;
+        cfg.limits.header_timeout_ms = t;
+        cfg.connect_timeout_ms = t;
+        siaara_web_client* raw = c.get();
+        cfg.authorization = [raw]() { return raw->authorization; };
+        c->client.emplace(std::move(cfg));
+        if (Status s = c->client->status(); !s) return fail(s);
+        *out = c.release();
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client) { delete client; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_authorization(siaara_web_client* client, const char* value,
+                                                                         size_t len) {
+    return guarded([&]() -> siaara_status {
+        if (!client) return fail(Errc::InvalidArgument, "client must not be NULL");
+        if (!value || len == 0) {
+            client->authorization.clear();
+            return ok();
+        }
+        std::string v(value, len);
+        if (v.find_first_of("\r\n", 0) != std::string::npos || v.find('\0') != std::string::npos)
+            return fail(Errc::InvalidArgument, "authorization value contains a line break or NUL");
+        client->authorization = std::move(v);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_qido(siaara_web_client* client, int32_t level, const char* study_uid,
+                                                     const char* series_uid, const char* query, size_t query_len,
+                                                     char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!client || (!query && query_len)) return fail(Errc::InvalidArgument, "bad argument");
+        std::string study, series;
+        if (!optional_uid(study_uid, study) || !optional_uid(series_uid, series))
+            return fail(Errc::InvalidArgument, "invalid UID");
+        std::string path;
+        if (!study.empty()) path = "/studies/" + study;
+        switch (level) {
+            case SIAARA_QIDO_STUDIES:
+                if (!study.empty() || !series.empty()) return fail(Errc::InvalidArgument, "study search takes no UIDs");
+                path = "/studies";
+                break;
+            case SIAARA_QIDO_SERIES:
+                if (!series.empty()) return fail(Errc::InvalidArgument, "series search takes no series UID");
+                path += "/series";
+                break;
+            case SIAARA_QIDO_INSTANCES:
+                if (!series.empty()) {
+                    if (study.empty()) return fail(Errc::InvalidArgument, "a series needs its study");
+                    path += "/series/" + series;
+                }
+                path += "/instances";
+                break;
+            default: return fail(Errc::InvalidArgument, "unknown level");
+        }
+        const std::string q(query ? query : "", query_len);
+        for (char c : q)
+            if (static_cast<unsigned char>(c) <= 0x20 || c == 0x7F || c == '#')
+                return fail(Errc::InvalidArgument, "query must be percent-encoded");
+        if (!q.empty()) path += "?" + q;
+        auto rs = client->client->request("GET", path, {{"Accept", "application/dicom+json"}});
+        if (!rs) return http_fail(rs.error());
+        if (rs->status == 404) return fail(Errc::NotFound, "HTTP 404 Not Found");
+        if (rs->status < 200 || rs->status >= 300) return fail(Errc::Rejected, "HTTP " + std::to_string(rs->status));
+        client->last_response = rs->status == 204 || rs->body.empty() ? std::string("[]") : std::move(rs->body);
+        return copy_out(client->last_response, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_last_response(const siaara_web_client* client, char* buf, size_t cap,
+                                                              size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!client) return fail(Errc::InvalidArgument, "client must not be NULL");
+        return copy_out(client->last_response, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_instance(siaara_web_client* client, const char* study_uid,
+                                                              const char* series_uid, const char* instance_uid,
+                                                              siaara_file** out) {
+    return guarded([&]() -> siaara_status {
+        if (!client || !out) return fail(Errc::InvalidArgument, "client and out must not be NULL");
+        *out = nullptr;
+        std::string st, se, in;
+        if (!optional_uid(study_uid, st) || !optional_uid(series_uid, se) || !optional_uid(instance_uid, in) ||
+            st.empty() || se.empty() || in.empty())
+            return fail(Errc::InvalidArgument, "study, series and instance UIDs are required");
+        auto r = client->client->retrieve(st, se, in, {"*"});
+        if (!r) return fail(r.error());
+        if (r->size() != 1) return fail(Errc::Malformed, "server returned " + std::to_string(r->size()) + " instances");
+        *out = new siaara_file{std::move(r->front())};
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_stow(siaara_web_client* client, const siaara_file* file,
+                                                     const char* study_uid) {
+    return guarded([&]() -> siaara_status {
+        if (!client || !file) return fail(Errc::InvalidArgument, "client and file must not be NULL");
+        std::string study;
+        if (!optional_uid(study_uid, study)) return fail(Errc::InvalidArgument, "invalid study UID");
+        std::vector<std::uint8_t> bytes;
+        if (Status s = siaara::write_part10(file->file, bytes); !s) return fail(s);
+        std::vector<std::string> parts(1, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+        auto r = client->client->store(parts, study);
+        if (!r) return fail(r.error());
+        if (r->http_status == 200 && r->failed.empty()) return ok();
+        std::string why = "HTTP " + std::to_string(r->http_status);
+        if (!r->failed.empty()) why += ", failure reason " + std::to_string(r->failed.front().second);
+        return fail(Errc::Rejected, why);
+    });
+}
+
+}  // extern "C"

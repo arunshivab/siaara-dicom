@@ -246,6 +246,62 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
                                                                 size_t len, const char* inherited,
                                                                 size_t inherited_len);
 
+/* ---------------------------------------------------------------- DICOM JSON (PS3.18 Annex F) */
+enum {
+    SIAARA_JSON_DEFAULT = 0,
+    SIAARA_JSON_NUMBERS_AS_STRINGS = 1, /* DS and IS values as JSON strings */
+    SIAARA_JSON_STRICT_CHARSET = 2      /* fail instead of writing U+FFFD for unconvertible text */
+};
+
+/* Encodes a data set as one DICOM JSON object (UTF-8, compact). Buffer rules as for strings:
+ * *needed receives the length without the NUL terminator. Binary values are written inline
+ * (InlineBinary); encapsulated pixel data as its encapsulated byte stream. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_to_json(const siaara_dataset* ds, uint32_t flags, char* buf,
+                                                            size_t cap, size_t* needed);
+/* Parses one DICOM JSON object into a new file (explicit VR little endian unless the JSON carries
+ * a Transfer Syntax UID (0002,0010); group 0002 elements go to the file meta). BulkDataURI
+ * values are left empty. Caller owns *out: free with siaara_file_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_from_json(const char* utf8, size_t len, siaara_file** out);
+
+/* ---------------------------------------------------------------- DICOMweb client (PS3.18) */
+/* A synchronous client with one persistent HTTP connection. Not thread safe: use one per thread. */
+typedef struct siaara_web_client siaara_web_client;
+
+/* base_url: "http://host:port/path" (https is not available yet). timeout_ms applies to the
+ * connect and to every network wait; 0 = default (30 s). Caller owns *out. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create(const char* base_url, size_t len, int32_t timeout_ms,
+                                                              siaara_web_client** out);
+SIAARA_API void SIAARA_CALL siaara_web_client_free(siaara_web_client* client);
+/* Authorization header value sent with every request, e.g. "Bearer abc" or "Basic dXNlcjpwdw==".
+ * value NULL (or len 0) removes it. The value is copied. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_authorization(siaara_web_client* client, const char* value,
+                                                                         size_t len);
+
+enum {
+    SIAARA_QIDO_STUDIES = 0,
+    SIAARA_QIDO_SERIES = 1,
+    SIAARA_QIDO_INSTANCES = 2
+};
+/* QIDO-RS search. study_uid / series_uid (NUL-terminated, may be NULL) narrow the search path.
+ * query: the URL query string without '?', already percent-encoded, e.g. "PatientID=X&limit=10"
+ * (may be NULL). Writes the application/dicom+json result array to buf. The response stays in
+ * the client, so after SIAARA_ERR_BUFFER_TOO_SMALL siaara_web_last_response() returns it
+ * without a new request. HTTP failures return SIAARA_ERR_REJECTED (404: SIAARA_ERR_NOT_FOUND). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_qido(siaara_web_client* client, int32_t level, const char* study_uid,
+                                                     const char* series_uid, const char* query, size_t query_len,
+                                                     char* buf, size_t cap, size_t* needed);
+/* Body of the last successful QIDO response (string buffer rules). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_last_response(const siaara_web_client* client, char* buf, size_t cap,
+                                                              size_t* needed);
+/* WADO-RS retrieve of one instance (as stored by the server). Caller owns *out. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_instance(siaara_web_client* client, const char* study_uid,
+                                                              const char* series_uid, const char* instance_uid,
+                                                              siaara_file** out);
+/* STOW-RS of one file (written in its current transfer syntax). study_uid may be NULL.
+ * Returns SIAARA_OK when stored, SIAARA_ERR_REJECTED when the server refused the instance. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_stow(siaara_web_client* client, const siaara_file* file,
+                                                     const char* study_uid);
+
 #ifdef __cplusplus
 }
 #endif

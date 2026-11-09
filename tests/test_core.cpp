@@ -233,3 +233,18 @@ TEST_CASE("decimal string parsing is exact and locale independent") {
         CHECK(!ds.get_double(tags::RescaleIntercept).has_value());
     }
 }
+
+TEST_CASE("AT values keep (group, element) order in every byte order") {
+    for (auto ts_uid : {ts::ExplicitVRLittleEndian, ts::ImplicitVRLittleEndian, ts::ExplicitVRBigEndian}) {
+        DicomFile f;
+        f.transfer_syntax = std::string(ts_uid);
+        const std::uint8_t at[8] = {0x28, 0x00, 0x10, 0x00, 0x20, 0x00, 0x32, 0x00};  // (0028,0010) (0020,0032)
+        (void)f.dataset.set_bytes(0x00209165, VR::AT, Bytes::copy_of(at, 8));  // DimensionIndexPointer
+        std::vector<std::uint8_t> buf;
+        REQUIRE(write_part10(f, buf).is_ok());
+        auto g = read_part10(Bytes::copy_of(buf.data(), buf.size()));
+        REQUIRE(g.is_ok());
+        CHECK_EQ(g->dataset.get_int(0x00209165, 0).value_or(0), 0x00280010);
+        CHECK_EQ(g->dataset.get_int(0x00209165, 1).value_or(0), 0x00200032);
+    }
+}

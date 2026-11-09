@@ -193,7 +193,11 @@ std::optional<std::int64_t> Dataset::get_int(Tag tag, std::size_t vm) const {
     switch (e->vr) {
         case VR::US: case VR::OW: { auto q = at(2); if (!q) return std::nullopt; return load_le16(q); }
         case VR::SS: { auto q = at(2); if (!q) return std::nullopt; return static_cast<std::int16_t>(load_le16(q)); }
-        case VR::UL: case VR::OL: case VR::AT: { auto q = at(4); if (!q) return std::nullopt; return load_le32(q); }
+        case VR::UL: case VR::OL: { auto q = at(4); if (!q) return std::nullopt; return load_le32(q); }
+        case VR::AT: {  // (group, element) pair: returned as the tag value (group << 16) | element
+            auto q = at(4); if (!q) return std::nullopt;
+            return (static_cast<std::int64_t>(load_le16(q)) << 16) | load_le16(q + 2);
+        }
         case VR::SL: { auto q = at(4); if (!q) return std::nullopt; return static_cast<std::int32_t>(load_le32(q)); }
         case VR::SV: { auto q = at(8); if (!q) return std::nullopt; return static_cast<std::int64_t>(load_le64(q)); }
         case VR::UV: case VR::OV: {

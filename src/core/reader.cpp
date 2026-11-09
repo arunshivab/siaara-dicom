@@ -225,7 +225,8 @@ private:
 
     Bytes value_bytes(VR vr, std::size_t at, std::uint32_t len, Syntax syn) {
         if (!syn.big_endian) return buf_.sub(at, len);
-        const std::size_t w = vr_value_size(vr);
+        // AT is a pair of 16-bit values (group, element), so it swaps in 16-bit units (PS3.5 6.2).
+        const std::size_t w = vr == VR::AT ? 2 : vr_value_size(vr);
         if (w <= 1) return buf_.sub(at, len);
         // Big endian: swap to little endian in a private copy.
         Bytes copy = Bytes::copy_of(p_ + at, len);
