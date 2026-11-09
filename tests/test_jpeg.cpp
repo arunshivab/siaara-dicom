@@ -955,3 +955,22 @@ TEST_CASE("jpeg: hostile headers") {
     CHECK(decode_jpeg(Buf{0xFF, 0xD8, 0xFF, 0xC3, 0x00, 0x0B, 16, 0xFF, 0xFF, 0xFF, 0xFF, 1, 1, 0x11, 0, 0xFF, 0xD9}, f,
                       out).code == Errc::TypeMismatch);
 }
+
+TEST_CASE("jpeg: EncodeParams subsampling and restart interval reach the encoder") {
+    using namespace siaara::codec;
+    FrameInfo fi;
+    fi.rows = 32; fi.columns = 48; fi.samples_per_pixel = 3; fi.bits_allocated = 8; fi.bits_stored = 8;
+    std::vector<std::uint8_t> rgb(fi.frame_bytes());
+    for (std::size_t i = 0; i < rgb.size(); ++i) rgb[i] = static_cast<std::uint8_t>((i * 7) & 0xFF);
+    EncodeParams p;
+    p.lossless = false; p.quality = 90; p.ybr = true; p.chroma_subsampling = 2; p.restart_interval = 2;
+    std::vector<std::uint8_t> out;
+    REQUIRE(encode_jpeg(rgb, fi, p, out).is_ok());
+    bool has_dri = false;
+    for (std::size_t i = 0; i + 1 < out.size(); ++i) if (out[i] == 0xFF && out[i + 1] == 0xDD) has_dri = true;
+    CHECK(has_dri);
+    std::vector<std::uint8_t> back(fi.frame_bytes());
+    CHECK(decode_jpeg(out, fi, back).is_ok());
+    p.chroma_subsampling = 9;
+    CHECK(!encode_jpeg(rgb, fi, p, out).is_ok());
+}

@@ -43,6 +43,10 @@ struct EncodeParams {
     int predictor = 1;         // JPEG lossless selection value 1..7
     bool lossless = true;      // codecs that offer both
     bool ybr = false;          // colour: convert RGB to YBR before encoding where the codec allows it
+    // Chroma subsampling for lossy colour (JPEG): 0 = 4:4:4, 1 = 4:2:2, 2 = 4:2:0, 3 = 4:1:1.
+    int chroma_subsampling = 0;
+    // Restart interval in MCUs (JPEG) / lines (JPEG-LS); 0 = none.
+    std::uint16_t restart_interval = 0;
 };
 
 // Each codec implements a pair of functions with these exact shapes:

@@ -553,7 +553,16 @@ Status encode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, c
 
 Status encode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,
                    std::vector<std::uint8_t>& out) {
-    return encode_jpeg_ex(in, info, p, JpegEncodeOptions{}, out);
+    JpegEncodeOptions opt;
+    switch (p.chroma_subsampling) {
+        case 0: break;
+        case 1: opt.luma_h = 2; break;
+        case 2: opt.luma_h = 2; opt.luma_v = 2; break;
+        case 3: opt.luma_h = 4; break;
+        default: return Status(Errc::InvalidArgument, "unknown chroma subsampling");
+    }
+    opt.restart_interval = p.restart_interval;
+    return encode_jpeg_ex(in, info, p, opt, out);
 }
 
 }  // namespace siaara::codec
