@@ -525,3 +525,41 @@ TEST_CASE("transcode: files, unknown syntaxes, data sets without pixel data") {
     p.predictor = 9;
     CHECK(!codec::transcode_dataset(im.ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.57", p).is_ok());
 }
+
+#include "siaara/siaara.h"
+
+TEST_CASE("transcode: C API siaara_file_transcode") {
+    const Image im = make_image(Kind::Rgb8, 2);
+    DicomFile f;
+    f.dataset = im.ds;
+    f.transfer_syntax = "1.2.840.10008.1.2.1";
+    std::vector<std::uint8_t> buf;
+    REQUIRE(write_part10(f, buf).is_ok());
+    siaara_file* h = nullptr;
+    REQUIRE(siaara_file_open_memory(buf.data(), buf.size(), nullptr, &h) == SIAARA_OK);
+    CHECK(siaara_file_transcode(h, "1.2.840.10008.1.2.4.90", nullptr) == SIAARA_OK);
+    char ts[80];
+    size_t need = 0;
+    CHECK(siaara_file_transcode(nullptr, "1.2.840.10008.1.2.4.90", nullptr) == SIAARA_ERR_INVALID_ARGUMENT);
+    REQUIRE(siaara_file_transfer_syntax(h, ts, sizeof ts, &need) == SIAARA_OK);
+    CHECK_EQ(std::string(ts), std::string("1.2.840.10008.1.2.4.90"));
+    siaara_transcode_params p{};
+    p.struct_size = sizeof p;
+    p.allow_lossy = 0;
+    CHECK(siaara_file_transcode(h, "1.2.840.10008.1.2.4.50", &p) == SIAARA_ERR_REJECTED);
+    p.allow_lossy = 1;
+    p.quality = 85;
+    p.chroma_subsampling = 0;
+    CHECK(siaara_file_transcode(h, "1.2.840.10008.1.2.4.50", &p) == SIAARA_OK);
+    siaara_dataset* ds = nullptr;
+    REQUIRE(siaara_file_dataset(h, &ds) == SIAARA_OK);
+    char pi[32];
+    REQUIRE(siaara_dataset_get_string(ds, 0x00280004, 0, pi, sizeof pi, &need) == SIAARA_OK);
+    CHECK_EQ(std::string(pi), std::string("YBR_FULL"));
+    p.offset_table = 7;
+    CHECK(siaara_file_transcode(h, "1.2.840.10008.1.2.1", &p) == SIAARA_ERR_INVALID_ARGUMENT);
+    p.offset_table = 0;
+    CHECK(siaara_file_transcode(h, "1.2.840.10008.1.2.4.100", &p) == SIAARA_ERR_UNSUPPORTED);
+    CHECK(siaara_file_transcode(h, "1.2.840.10008.1.2.2", &p) == SIAARA_OK);
+    siaara_file_free(h);
+}

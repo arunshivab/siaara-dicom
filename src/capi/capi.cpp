@@ -1312,3 +1312,37 @@ SIAARA_API siaara_status SIAARA_CALL siaara_deid_replacement_uid(const uint8_t* 
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- transcoding (codec/transcode.hpp)
+#include "codec/transcode.hpp"
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, const char* ts_uid,
+                                                           const siaara_transcode_params* params) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !ts_uid) return fail(Errc::InvalidArgument, "file and ts_uid must not be NULL");
+        siaara::codec::TranscodeParams p;
+        if (params) {
+            if (params->struct_size < sizeof(uint32_t) + 7 * sizeof(int32_t))
+                return fail(Errc::InvalidArgument, "struct_size too small");
+            if (params->quality) p.quality = params->quality;
+            p.lossy = params->lossy != 0;
+            if (params->near_lossless) p.near_lossless = params->near_lossless;
+            p.allow_lossy = params->allow_lossy != 0;
+            if (params->predictor) p.predictor = params->predictor;
+            p.chroma_subsampling = params->chroma_subsampling;
+            switch (params->offset_table) {
+                case SIAARA_OFFSET_TABLE_AUTO: p.offset_table = siaara::codec::OffsetTableMode::Auto; break;
+                case SIAARA_OFFSET_TABLE_BASIC: p.offset_table = siaara::codec::OffsetTableMode::Basic; break;
+                case SIAARA_OFFSET_TABLE_EXTENDED: p.offset_table = siaara::codec::OffsetTableMode::Extended; break;
+                case SIAARA_OFFSET_TABLE_EMPTY: p.offset_table = siaara::codec::OffsetTableMode::Empty; break;
+                default: return fail(Errc::InvalidArgument, "unknown offset_table");
+            }
+        }
+        if (Status s = siaara::codec::transcode_file(file->file, ts_uid, p); !s) return fail(s);
+        return ok();
+    });
+}
+
+}  // extern "C"
