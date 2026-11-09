@@ -169,8 +169,8 @@ internal static class ImagingTests
             {
                 f.SetUInt16(OverlayRows, 32);
                 f.SetUInt16(OverlayColumns, 32);
-                f.SetString(OverlayType, "G");
-                f.SetString(OverlayOrigin, "1\\1");
+                f.SetRawString(OverlayType, "CS", "G");
+                f.SetBytes(OverlayOrigin, "SS", [1, 0, 1, 0]);
                 f.SetUInt16(OverlayBitsAllocated, 1);
                 f.SetUInt16(OverlayBitPosition, 0);
                 var bits = new byte[32 * 32 / 8];

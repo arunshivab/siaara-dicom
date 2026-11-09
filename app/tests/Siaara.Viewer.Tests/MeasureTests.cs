@@ -66,6 +66,10 @@ internal static class MeasureTests
                 T.Require(a.Count == 2);
                 T.Eq(a[1].Label, "90°");
                 SeriesImage img = s.GetViewport(0).CurrentImage!;
+                for (int i = 0; i < 100 && env.Annotations.Load(img.Instance.SopInstanceUid, img.Frame).Annotations.Count != 2; i++)
+                {
+                    await Task.Delay(20).ConfigureAwait(false); // the atomic save runs on the store pool
+                }
                 T.Eq(env.Annotations.Load(img.Instance.SopInstanceUid, img.Frame).Annotations.Count, 2);
                 s.Undo();
                 a = await WaitAnnotationsAsync(s, 1).ConfigureAwait(false);

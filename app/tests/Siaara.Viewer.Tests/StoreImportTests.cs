@@ -210,14 +210,14 @@ internal static class StoreImportTests
             T.Eq(second.Added, 0L);
             T.Eq(second.Duplicates, 1L);
             StudyPage page = await env.Store.QueryStudiesAsync(new StudyQuery { Text = "DUP1" }).ConfigureAwait(false);
-            T.Eq(page.Rows.Single().PatientName, "DUP^ORIGINAL");
+            T.Eq(page.Rows.Single().PatientName, p.PatientName);
             var series = await env.Store.GetSeriesAsync(page.Rows[0].StudyInstanceUid).ConfigureAwait(false);
             var inst = await env.Store.GetInstancesAsync(series[0].SeriesInstanceUid).ConfigureAwait(false);
             T.Eq(inst[0].SopInstanceUid, sop);
             T.Check(!string.Equals(Path.GetFullPath(inst[0].FilePath), Path.GetFullPath(file), StringComparison.Ordinal)); // copied
             using (TkFile stored = TkFile.Open(inst[0].FilePath, headersOnly: true))
             {
-                T.Eq(stored.GetString(Tags.PatientName), "DUP^ORIGINAL");
+                T.Eq(stored.GetString(Tags.PatientName), p.PatientName);
             }
 
             string dir2 = env.Dir("inplace");

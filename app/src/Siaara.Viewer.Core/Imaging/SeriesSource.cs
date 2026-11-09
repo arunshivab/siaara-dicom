@@ -147,16 +147,31 @@ public sealed class SeriesSource
         {
             warnings.Add(unreadable.ToString(CultureInfo.InvariantCulture) + " file(s) of this series could not be read and are not shown.");
         }
-        IEnumerable<SeriesImage> ordered = sorted.Slices.Select(s => new SeriesImage(instances[s.FileIndex], s.Frame));
-        if (sorted.Slices.Count == 0 && instances.Count > 0)
+        // The toolkit expands enhanced multi-frame objects (per-frame functional groups); a classic
+        // multi-frame object (US, XA, NM cine) comes back as one entry: show each of its frames.
+        var slices = new List<(int Group, SeriesImage Image)>();
+        if (sorted.Slices.Count == 0)
         {
-            // The sort returns nothing for objects without geometry it cannot order; keep the store order.
-            ordered = instances.SelectMany(i => Enumerable.Range(0, i.FrameCount).Select(f => new SeriesImage(i, f)));
+            slices.AddRange(instances.SelectMany(i => Enumerable.Range(0, i.FrameCount).Select(f => (0, new SeriesImage(i, f)))));
         }
-        var groups = sorted.Slices.Count == 0
-            ? [ordered.ToArray()]
-            : sorted.Slices.Select((s, k) => (s.Group, Image: new SeriesImage(instances[s.FileIndex], s.Frame), k))
-                .GroupBy(t => t.Group).OrderBy(g => g.Key).Select(g => g.OrderBy(t => t.k).Select(t => t.Image).ToArray()).ToArray();
+        else
+        {
+            var expanded = sorted.Slices.GroupBy(x => x.FileIndex).ToDictionary(g => g.Key, g => g.Count());
+            foreach (TkSlice x in sorted.Slices)
+            {
+                ImageInstance inst = instances[x.FileIndex];
+                if (expanded[x.FileIndex] == 1 && inst.FrameCount > 1)
+                {
+                    slices.AddRange(Enumerable.Range(0, inst.FrameCount).Select(f => (x.Group, new SeriesImage(inst, f))));
+                }
+                else
+                {
+                    slices.Add((x.Group, new SeriesImage(inst, x.Frame)));
+                }
+            }
+        }
+        SeriesImage[][] groups = [.. slices.Select((t, k) => (t.Group, t.Image, k)).GroupBy(t => t.Group).OrderBy(g => g.Key)
+            .Select(g => g.OrderBy(t => t.k).Select(t => t.Image).ToArray())];
         string modality = series.Modality.Length > 0 ? series.Modality : instances.FirstOrDefault()?.Modality ?? "";
         var result = new List<SeriesSource>(groups.Length);
         for (int g = 0; g < groups.Length; g++)
