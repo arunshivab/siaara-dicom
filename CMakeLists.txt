@@ -55,9 +55,10 @@ if(NOT WIN32)
   target_link_libraries(siaara_static PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 if(WIN32)
-  # Winsock2 (OS library) for src/net; SChannel/SSPI and CryptoAPI (OS libraries) for TLS.
-  target_link_libraries(siaara PRIVATE ws2_32 secur32 crypt32)
-  target_link_libraries(siaara_static PUBLIC ws2_32 secur32 crypt32)
+  # Winsock2 (OS library) for src/net; SChannel/SSPI and CryptoAPI (OS libraries) for TLS;
+  # advapi32 (OS library) for the owner-only ACLs of spool files.
+  target_link_libraries(siaara PRIVATE ws2_32 secur32 crypt32 advapi32)
+  target_link_libraries(siaara_static PUBLIC ws2_32 secur32 crypt32 advapi32)
 endif()
 if(APPLE)
   # Network.framework (TLS), Security.framework (identities, trust), CoreFoundation (OS frameworks).
