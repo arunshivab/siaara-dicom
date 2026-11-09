@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- NativeAOT / trimming proof: dotnet publish -c Release -r linux-x64 -p:PublishAot=true -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>siaara-aot-sample</AssemblyName>
+    <RootNamespace>Siaara.AotSample</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Siaara/Siaara.csproj" />
+  </ItemGroup>
+</Project>

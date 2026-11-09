@@ -100,3 +100,38 @@ jobs:
         run: build/tests/siaara_tests tls/
       - name: TLS interop with DCMTK (+tls), openssl s_client/s_server and curl
         run: python3 tests/crosscheck/tls_crosscheck.py --build build
+
+  csharp:
+    name: csharp-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build the native library and the struct-layout printer (Release)
+        run: |
+          cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rel --config Release --parallel --target siaara siaara_csharp_struct_layout
+      - name: Generated interop is up to date
+        shell: bash
+        run: |
+          py=python3; command -v python3 >/dev/null || py=python
+          $py tools/gen_csharp_interop.py --check
+      - name: Build (warnings are errors) and run the C# test runner
+        shell: bash
+        run: |
+          exe=build-rel/tests/siaara_csharp_struct_layout
+          if [ -f build-rel/tests/Release/siaara_csharp_struct_layout.exe ]; then exe=build-rel/tests/Release/siaara_csharp_struct_layout.exe; fi
+          dotnet run -c Release --project bindings/csharp/tests/Siaara.Tests -- --layout-exe "$exe"
+      - name: NativeAOT publish of the sample, then run it
+        if: runner.os == 'Linux'
+        run: |
+          dotnet publish bindings/csharp/samples/Siaara.AotSample -c Release -r linux-x64 -p:PublishAot=true -o aot-out
+          ./aot-out/siaara-aot-sample
+      - name: Pack (local package with this OS's native library)
+        run: dotnet pack bindings/csharp/src/Siaara -c Release

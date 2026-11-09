@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Siaara.AotSample/Siaara.AotSample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Siaara.Interop/Siaara.Interop.csproj" />
+    <Project Path="src/Siaara/Siaara.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Siaara.Tests/Siaara.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,58 @@
+# SIAARA C# bindings. Rules from the project's standards are raised to errors here; everything
+# else follows AnalysisLevel latest-recommended (warnings, which TreatWarningsAsErrors fails on).
+root = false
+
+[*.cs]
+charset = utf-8
+indent_style = space
+indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+
+# --- resource ownership / dispose pattern
+dotnet_diagnostic.CA2000.severity = error   # dispose objects before losing scope
+dotnet_diagnostic.CA2213.severity = error   # disposable fields should be disposed
+dotnet_diagnostic.CA1063.severity = error   # implement IDisposable correctly
+dotnet_diagnostic.CA1816.severity = error   # call GC.SuppressFinalize correctly
+# --- interop
+dotnet_diagnostic.CA2101.severity = error   # specify marshalling for P/Invoke string arguments
+dotnet_diagnostic.SYSLIB1054.severity = error # use LibraryImport instead of DllImport
+dotnet_diagnostic.SYSLIB1055.severity = error # invalid CustomTypeMarshallerAttribute usage
+dotnet_diagnostic.SYSLIB1056.severity = error # specified marshaller type is invalid
+dotnet_diagnostic.SYSLIB1057.severity = error # marshaller type does not have the required shape
+dotnet_diagnostic.CA1416.severity = error   # platform compatibility
+# --- correctness
+dotnet_diagnostic.CA1806.severity = error   # do not ignore method results
+dotnet_diagnostic.CA2007.severity = error   # ConfigureAwait on awaited tasks
+dotnet_diagnostic.CA2016.severity = error   # forward the CancellationToken
+dotnet_diagnostic.CA1849.severity = error   # call async methods when in an async method
+dotnet_diagnostic.CA2012.severity = error   # use ValueTasks correctly
+# --- culture / string comparison
+dotnet_diagnostic.CA1305.severity = error   # specify IFormatProvider
+dotnet_diagnostic.CA1307.severity = error   # specify StringComparison for clarity
+dotnet_diagnostic.CA1309.severity = error   # use ordinal StringComparison
+dotnet_diagnostic.CA1310.severity = error   # specify StringComparison for correctness
+
+# --- code style enforced in the build (EnforceCodeStyleInBuild)
+dotnet_diagnostic.IDE0005.severity = warning  # unnecessary using directive
+dotnet_diagnostic.IDE0036.severity = warning  # modifier order
+dotnet_diagnostic.IDE0040.severity = warning  # accessibility modifiers required
+dotnet_diagnostic.IDE0044.severity = warning  # make field readonly
+dotnet_style_require_accessibility_modifiers = for_non_interface_members
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_prefer_braces = true:warning
+dotnet_diagnostic.IDE0011.severity = warning  # braces
+dotnet_diagnostic.IDE0161.severity = warning  # file-scoped namespace
+
+[*.g.cs]
+generated_code = true
+
+[tests/**.cs]
+# The test runner is a console app: no public API, ConfigureAwait is irrelevant there.
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1861.severity = none
+
+[samples/**.cs]
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1515.severity = none
