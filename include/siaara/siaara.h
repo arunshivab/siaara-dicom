@@ -734,6 +734,172 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* ba
                                                                   const siaara_tls_options* options,
                                                                   siaara_web_client** out);
 
+/* ---------------------------------------------------------------- volumes and 3D views */
+/* A volume is a dense voxel grid built from the instances of one series (or one enhanced
+ * multi-frame object), sorted along the slice normal, with the Modality LUT / Rescale applied per
+ * frame. Voxel (i, j, k) - i fastest in memory - is at origin + i*spacing[0]*axis_i +
+ * j*spacing[1]*axis_j + k*spacing[2]*axis_k (patient LPS coordinates, mm). A volume is immutable:
+ * it may be used from many threads, and by several views at once. */
+typedef struct siaara_volume siaara_volume;
+typedef struct siaara_view siaara_view;
+
+enum {
+    SIAARA_VOXEL_AUTO = 0,    /* int16 when every modality value is an integer that fits, else float32 */
+    SIAARA_VOXEL_INT16 = 1,
+    SIAARA_VOXEL_FLOAT32 = 2
+};
+
+/* Volume flags (siaara_volume_properties.flags). */
+enum {
+    SIAARA_VOLUME_NON_UNIFORM_SPACING = 1 << 0,
+    SIAARA_VOLUME_MISSING_SLICES = 1 << 1,
+    SIAARA_VOLUME_DUPLICATE_POSITIONS = 1 << 2,
+    SIAARA_VOLUME_GANTRY_TILT = 1 << 3,
+    SIAARA_VOLUME_DESHEARED = 1 << 4,
+    SIAARA_VOLUME_MULTI_PHASE = 1 << 5,
+    SIAARA_VOLUME_SYNTHETIC_GEOMETRY = 1 << 6,
+    SIAARA_VOLUME_SINGLE_SLICE = 1 << 7,
+    SIAARA_VOLUME_VALUES_CLAMPED = 1 << 8,
+    SIAARA_VOLUME_SPACING_FROM_HEADER = 1 << 9
+};
+
+typedef struct siaara_volume_options {
+    uint32_t struct_size;        /* sizeof(siaara_volume_options) */
+    int32_t voxel_type;          /* SIAARA_VOXEL_* */
+    uint32_t phase;              /* phase of a 4D series, 0-based */
+    uint32_t threads;            /* 0 = hardware concurrency */
+    int32_t deshear_tilt;        /* nonzero: resample a gantry-tilted stack onto an orthogonal grid */
+    int32_t strict;              /* nonzero: fail on non-uniform spacing, missing slices, duplicates */
+    uint64_t memory_budget;      /* voxel buffer limit in bytes; 0 = 4 GiB */
+    double spacing_tolerance;    /* relative; 0 = 0.01 */
+} siaara_volume_options;
+
+typedef struct siaara_volume_properties {
+    uint32_t struct_size;        /* sizeof(siaara_volume_properties) */
+    uint32_t dims[3];
+    double spacing[3];           /* mm */
+    double origin[3];            /* centre of voxel (0,0,0) */
+    double direction[9];         /* row-major 3x3; column c is the unit patient direction of index axis c */
+    int32_t voxel_type;          /* SIAARA_VOXEL_INT16 or SIAARA_VOXEL_FLOAT32 */
+    uint32_t flags;              /* SIAARA_VOLUME_* */
+    double value_min, value_max;
+    uint32_t phase_count, phase_index;
+    double tilt_degrees;
+    uint32_t warning_count;
+    uint32_t histogram_bins;     /* 256 */
+    double histogram_min, histogram_max;
+    uint64_t histogram[256];     /* equal-width bins over [histogram_min, histogram_max] */
+    uint64_t data_bytes;
+} siaara_volume_properties;
+
+/* Builds a volume from `count` files of one series. path_lens may be NULL (paths NUL-terminated).
+ * options may be NULL. Caller owns *out: free with siaara_volume_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_build(const char* const* utf8_paths, const size_t* path_lens,
+                                                         uint32_t count, const siaara_volume_options* options,
+                                                         siaara_volume** out);
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_info(const siaara_volume* volume, siaara_volume_properties* out);
+/* Warning `index` (< warning_count) as text (string buffer rules). */
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_warning(const siaara_volume* volume, uint32_t index, char* buf,
+                                                           size_t cap, size_t* needed);
+/* Borrowed voxel buffer (int16_t or float, as voxel_type says); valid until the volume is freed. */
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_data(const siaara_volume* volume, const void** out_data,
+                                                        uint64_t* out_bytes);
+SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume);
+
+enum {
+    SIAARA_VIEW_MPR = 0,
+    SIAARA_VIEW_CURVED_STRAIGHTENED = 1,
+    SIAARA_VIEW_CURVED_STRETCHED = 2,
+    SIAARA_VIEW_VOLUME_RENDER = 3,
+    SIAARA_VIEW_VOLUME_MIP = 4,
+    SIAARA_VIEW_VOLUME_MINIP = 5
+};
+enum {
+    SIAARA_INTERP_NEAREST = 0,
+    SIAARA_INTERP_LINEAR = 1,
+    SIAARA_INTERP_CUBIC = 2,          /* Catmull-Rom (interpolating) */
+    SIAARA_INTERP_CUBIC_BSPLINE = 3   /* cubic B-spline without prefilter (smoothing) */
+};
+enum { SIAARA_SLAB_NONE = 0, SIAARA_SLAB_MIP = 1, SIAARA_SLAB_MINIP = 2, SIAARA_SLAB_AVERAGE = 3 };
+enum { SIAARA_QUALITY_INTERACTIVE = 0, SIAARA_QUALITY_FINAL = 1 };
+enum {
+    SIAARA_COLORMAP_GRAY = 0,
+    SIAARA_COLORMAP_INVERSE_GRAY = 1,
+    SIAARA_COLORMAP_HOT_IRON = 2,      /* PS3.6 Annex B standard palettes */
+    SIAARA_COLORMAP_PET = 3,
+    SIAARA_COLORMAP_HOT_METAL_BLUE = 4,
+    SIAARA_COLORMAP_PET_20_STEP = 5
+};
+
+/* Creates a view of `volume` (which the view keeps alive) with an output of width x height
+ * pixels: an MPR through the middle slice, full-range window, fitted. Caller owns *out. A view
+ * must not be changed while it renders; one view may render from one thread at a time. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_create(const siaara_volume* volume, uint32_t width, uint32_t height,
+                                                        siaara_view** out);
+SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view);
+/* Plane: centre point, viewing direction (into the screen) and up vector (patient mm, LPS);
+ * screen right = normal x up. pixel_spacing in mm per pixel, 0 = fit the volume. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_plane(siaara_view* view, const double point[3],
+                                                           const double normal[3], const double up[3],
+                                                           double pixel_spacing);
+/* mode: SIAARA_VIEW_*; interpolation: SIAARA_INTERP_*; slab: SIAARA_SLAB_* with slab_thickness mm
+ * (MPR only); quality: SIAARA_QUALITY_* (volume rendering). */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_mode(siaara_view* view, int32_t mode, int32_t interpolation,
+                                                          int32_t slab, double slab_thickness, int32_t quality);
+/* layer 0 = base, 1 = fusion overlay. width 0 = the layer's full value range. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_window(siaara_view* view, int32_t layer, double center,
+                                                            double width);
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_colormap(siaara_view* view, int32_t layer, int32_t colormap);
+/* Path for the curved modes: `count` (>= 2) points of 3 doubles; spline nonzero = Catmull-Rom spline. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_curve(siaara_view* view, const double* points, uint32_t count,
+                                                           int32_t spline);
+
+typedef struct siaara_transfer_function {
+    uint32_t struct_size;               /* sizeof(siaara_transfer_function) */
+    const double* opacity_points;       /* opacity_count pairs (value, opacity 0..1), sorted by value */
+    uint32_t opacity_count;
+    const double* color_points;         /* color_count quadruples (value, r, g, b 0..1); 0: white */
+    uint32_t color_count;
+    const double* gradient_points;      /* gradient_count pairs (|gradient| per mm, factor 0..1); 0: off */
+    uint32_t gradient_count;
+    int32_t shading;                    /* nonzero: Phong shading (headlight) */
+    double ambient, diffuse, specular, shininess;  /* all 0: defaults 0.25, 0.7, 0.25, 24 */
+    double unit_distance;               /* mm the opacities refer to; 0 = 1 mm */
+    double sample_distance;             /* mm; 0 = half the smallest voxel spacing */
+} siaara_transfer_function;
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_transfer_function(siaara_view* view,
+                                                                       const siaara_transfer_function* tf);
+
+typedef struct siaara_fusion_options {
+    uint32_t struct_size;               /* sizeof(siaara_fusion_options) */
+    int32_t colormap;                   /* SIAARA_COLORMAP_* */
+    double window_center, window_width; /* width 0 = full range */
+    double opacity;                     /* 0..1 */
+    int32_t opaque_below_window;        /* 0 (default): values at or below the window are transparent */
+    int32_t preresample;                /* nonzero: resample the overlay into the base grid once */
+} siaara_fusion_options;
+/* Sets (or with overlay == NULL removes) the fusion layer; the view keeps the overlay alive.
+ * options may be NULL (PET colour map, full range, opacity 0.5). */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_fusion_layer(siaara_view* view, const siaara_volume* overlay,
+                                                                  const siaara_fusion_options* options);
+/* Renders width * height * 4 bytes of RGBA8 (buffer rules as for siaara_frame_decode). */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_render_rgba8(siaara_view* view, uint8_t* buf, size_t cap,
+                                                              size_t* needed);
+
+typedef struct siaara_pick_result {
+    uint32_t struct_size;               /* sizeof(siaara_pick_result) */
+    int32_t hit;                        /* the point maps into the scene (VR: a surface was hit) */
+    int32_t inside;                     /* inside the base volume */
+    double patient[3];                  /* mm, LPS */
+    double index[3];                    /* continuous voxel index in the base volume */
+    double value;                       /* base value */
+    int32_t overlay_inside;
+    double overlay_value;
+} siaara_pick_result;
+/* Screen point (pixel coordinates) -> patient point and values, for crosshair synchronisation. */
+SIAARA_API siaara_status SIAARA_CALL siaara_view_pick(const siaara_view* view, double x, double y,
+                                                      siaara_pick_result* out);
+
 #ifdef __cplusplus
 }
 #endif

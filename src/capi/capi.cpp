@@ -1389,3 +1389,303 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* ba
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- volumes and 3D views (appended)
+#include <array>
+#include <cmath>
+#include <memory>
+#include <string>
+
+#include "volume/render3d.hpp"
+#include "volume/volume.hpp"
+
+struct siaara_volume {
+    std::shared_ptr<const siaara::volume::Volume> vol;
+};
+struct siaara_view {
+    siaara::volume::View view;
+};
+
+namespace {
+
+namespace vol = siaara::volume;
+
+bool finite3(const double* p) { return p && std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]); }
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_build(const char* const* utf8_paths, const size_t* path_lens,
+                                                         uint32_t count, const siaara_volume_options* options,
+                                                         siaara_volume** out) {
+    return guarded([&]() -> siaara_status {
+        if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
+        *out = nullptr;
+        if (!utf8_paths || count == 0) return fail(Errc::InvalidArgument, "no input paths");
+        if (options && options->struct_size < sizeof(siaara_volume_options))
+            return fail(Errc::InvalidArgument, "options->struct_size is too small");
+        vol::VolumeOptions o;
+        if (options) {
+            switch (options->voxel_type) {
+                case SIAARA_VOXEL_AUTO: o.type = vol::VoxelTypeRequest::Auto; break;
+                case SIAARA_VOXEL_INT16: o.type = vol::VoxelTypeRequest::Int16; break;
+                case SIAARA_VOXEL_FLOAT32: o.type = vol::VoxelTypeRequest::Float32; break;
+                default: return fail(Errc::InvalidArgument, "unknown voxel_type");
+            }
+            o.phase = options->phase;
+            o.threads = options->threads;
+            o.deshear_tilt = options->deshear_tilt != 0;
+            o.strict = options->strict != 0;
+            if (options->memory_budget) o.memory_budget = options->memory_budget;
+            if (options->spacing_tolerance != 0.0) {
+                if (!std::isfinite(options->spacing_tolerance) || options->spacing_tolerance < 0.0)
+                    return fail(Errc::InvalidArgument, "bad spacing_tolerance");
+                o.spacing_tolerance = options->spacing_tolerance;
+            }
+        }
+        std::vector<std::string> paths;
+        paths.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!utf8_paths[i]) return fail(Errc::InvalidArgument, "path is NULL");
+            paths.emplace_back(utf8_paths[i], path_lens ? path_lens[i] : std::strlen(utf8_paths[i]));
+        }
+        auto v = vol::build_volume_from_paths(paths, o);
+        if (!v) return fail(v.error());
+        auto h = std::make_unique<siaara_volume>();
+        h->vol = std::make_shared<const vol::Volume>(std::move(v).value());
+        *out = h.release();
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_info(const siaara_volume* volume, siaara_volume_properties* out) {
+    return guarded([&]() -> siaara_status {
+        if (!volume || !out) return fail(Errc::InvalidArgument, "volume and out must not be NULL");
+        if (out->struct_size < sizeof(siaara_volume_properties)) return fail(Errc::InvalidArgument, "out->struct_size is too small");
+        const vol::Volume& v = *volume->vol;
+        const vol::Grid& g = v.grid();
+        const uint32_t size = out->struct_size;
+        std::memset(out, 0, sizeof(siaara_volume_properties));
+        out->struct_size = size;
+        for (int a = 0; a < 3; ++a) {
+            const auto ua = static_cast<std::size_t>(a);
+            out->dims[a] = g.dims[ua];
+            out->spacing[a] = g.spacing[ua];
+            out->origin[a] = g.origin[a];
+            for (int r = 0; r < 3; ++r) out->direction[r * 3 + a] = g.axes[ua][r];
+        }
+        out->voxel_type = v.type() == vol::VoxelType::Int16 ? SIAARA_VOXEL_INT16 : SIAARA_VOXEL_FLOAT32;
+        out->flags = v.flags;
+        out->value_min = v.value_min;
+        out->value_max = v.value_max;
+        out->phase_count = v.phase_count;
+        out->phase_index = v.phase_index;
+        out->tilt_degrees = v.tilt_degrees;
+        out->warning_count = static_cast<uint32_t>(v.warnings.size());
+        out->histogram_bins = static_cast<uint32_t>(std::min<std::size_t>(256, v.histogram.bins.size()));
+        out->histogram_min = v.histogram.min;
+        out->histogram_max = v.histogram.max;
+        for (uint32_t b = 0; b < out->histogram_bins; ++b) out->histogram[b] = v.histogram.bins[b];
+        out->data_bytes = v.byte_size();
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_warning(const siaara_volume* volume, uint32_t index, char* buf,
+                                                           size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!volume) return fail(Errc::InvalidArgument, "volume must not be NULL");
+        if (index >= volume->vol->warnings.size()) return fail(Errc::InvalidArgument, "warning index out of range");
+        return copy_out(volume->vol->warnings[index], buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_volume_data(const siaara_volume* volume, const void** out_data,
+                                                        uint64_t* out_bytes) {
+    return guarded([&]() -> siaara_status {
+        if (!volume || !out_data) return fail(Errc::InvalidArgument, "volume and out_data must not be NULL");
+        *out_data = volume->vol->data();
+        if (out_bytes) *out_bytes = volume->vol->byte_size();
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_volume_free(siaara_volume* volume) { delete volume; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_create(const siaara_volume* volume, uint32_t width, uint32_t height,
+                                                        siaara_view** out) {
+    return guarded([&]() -> siaara_status {
+        if (!volume || !out) return fail(Errc::InvalidArgument, "volume and out must not be NULL");
+        *out = nullptr;
+        auto v = vol::View::create(volume->vol, width, height);
+        if (!v) return fail(v.error());
+        auto h = std::make_unique<siaara_view>();
+        h->view = std::move(v).value();
+        *out = h.release();
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_view_free(siaara_view* view) { delete view; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_plane(siaara_view* view, const double point[3],
+                                                           const double normal[3], const double up[3],
+                                                           double pixel_spacing) {
+    return guarded([&]() -> siaara_status {
+        if (!view || !finite3(point) || !finite3(normal) || !finite3(up))
+            return fail(Errc::InvalidArgument, "view must not be NULL and the vectors must be finite");
+        vol::Plane p;
+        p.point = {point[0], point[1], point[2]};
+        p.normal = {normal[0], normal[1], normal[2]};
+        p.up = {up[0], up[1], up[2]};
+        p.pixel_spacing = pixel_spacing;
+        if (Status s = view->view.set_plane(p); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_mode(siaara_view* view, int32_t mode, int32_t interpolation,
+                                                          int32_t slab, double slab_thickness, int32_t quality) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        if (mode < SIAARA_VIEW_MPR || mode > SIAARA_VIEW_VOLUME_MINIP) return fail(Errc::InvalidArgument, "unknown mode");
+        if (interpolation < SIAARA_INTERP_NEAREST || interpolation > SIAARA_INTERP_CUBIC_BSPLINE)
+            return fail(Errc::InvalidArgument, "unknown interpolation");
+        if (slab < SIAARA_SLAB_NONE || slab > SIAARA_SLAB_AVERAGE) return fail(Errc::InvalidArgument, "unknown slab mode");
+        if (quality != SIAARA_QUALITY_INTERACTIVE && quality != SIAARA_QUALITY_FINAL)
+            return fail(Errc::InvalidArgument, "unknown quality");
+        if (Status s = view->view.set_mode(static_cast<vol::ViewMode>(mode), static_cast<vol::Interpolation>(interpolation),
+                                           static_cast<vol::SlabMode>(slab), slab_thickness);
+            !s)
+            return fail(s);
+        view->view.set_quality(quality == SIAARA_QUALITY_FINAL ? vol::Quality::Final : vol::Quality::Interactive);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_window(siaara_view* view, int32_t layer, double center,
+                                                            double width) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        if (Status s = view->view.set_window(layer, center, width); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_colormap(siaara_view* view, int32_t layer, int32_t colormap) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        if (colormap < SIAARA_COLORMAP_GRAY || colormap > SIAARA_COLORMAP_PET_20_STEP)
+            return fail(Errc::InvalidArgument, "unknown colormap");
+        if (Status s = view->view.set_colormap(layer, static_cast<vol::ColorMap>(colormap)); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_curve(siaara_view* view, const double* points, uint32_t count,
+                                                           int32_t spline) {
+    return guarded([&]() -> siaara_status {
+        if (!view || (!points && count)) return fail(Errc::InvalidArgument, "view and points must not be NULL");
+        std::vector<vol::Vec3> pts;
+        pts.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) pts.push_back({points[3 * i], points[3 * i + 1], points[3 * i + 2]});
+        if (Status s = view->view.set_curve(pts, spline != 0); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_transfer_function(siaara_view* view,
+                                                                       const siaara_transfer_function* tf) {
+    return guarded([&]() -> siaara_status {
+        if (!view || !tf) return fail(Errc::InvalidArgument, "view and tf must not be NULL");
+        if (tf->struct_size < sizeof(siaara_transfer_function)) return fail(Errc::InvalidArgument, "tf->struct_size is too small");
+        if ((!tf->opacity_points && tf->opacity_count) || (!tf->color_points && tf->color_count) ||
+            (!tf->gradient_points && tf->gradient_count))
+            return fail(Errc::InvalidArgument, "point arrays must not be NULL");
+        if (tf->opacity_count > 65536 || tf->color_count > 65536 || tf->gradient_count > 65536)
+            return fail(Errc::LimitExceeded, "too many transfer function points");
+        vol::TransferFunction t;
+        for (uint32_t i = 0; i < tf->opacity_count; ++i) t.opacity.push_back({tf->opacity_points[2 * i], tf->opacity_points[2 * i + 1]});
+        for (uint32_t i = 0; i < tf->gradient_count; ++i)
+            t.gradient_opacity.push_back({tf->gradient_points[2 * i], tf->gradient_points[2 * i + 1]});
+        for (uint32_t i = 0; i < tf->color_count; ++i) {
+            const double* c = tf->color_points + 4 * i;
+            t.color.push_back({c[0], c[1], c[2], c[3]});
+        }
+        t.shading = tf->shading != 0;
+        if (tf->ambient != 0.0 || tf->diffuse != 0.0 || tf->specular != 0.0 || tf->shininess != 0.0) {
+            t.ambient = tf->ambient;
+            t.diffuse = tf->diffuse;
+            t.specular = tf->specular;
+            t.shininess = tf->shininess;
+        }
+        if (tf->unit_distance != 0.0) t.unit_distance = tf->unit_distance;
+        if (tf->sample_distance != 0.0) {
+            vol::RenderSettings rs;
+            rs.sample_distance = tf->sample_distance;
+            if (Status s = view->view.set_render_settings(rs); !s) return fail(s);
+        }
+        if (Status s = view->view.set_transfer_function(t); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_set_fusion_layer(siaara_view* view, const siaara_volume* overlay,
+                                                                  const siaara_fusion_options* options) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        if (options && options->struct_size < sizeof(siaara_fusion_options))
+            return fail(Errc::InvalidArgument, "options->struct_size is too small");
+        vol::LayerStyle st;
+        st.colormap = vol::ColorMap::Pet;
+        st.opacity = 0.5;
+        bool pre = false;
+        if (options) {
+            if (options->colormap < SIAARA_COLORMAP_GRAY || options->colormap > SIAARA_COLORMAP_PET_20_STEP)
+                return fail(Errc::InvalidArgument, "unknown colormap");
+            st.colormap = static_cast<vol::ColorMap>(options->colormap);
+            st.window_center = options->window_center;
+            st.window_width = options->window_width;
+            st.opacity = options->opacity;
+            st.transparent_below_window = options->opaque_below_window == 0;
+            pre = options->preresample != 0;
+        }
+        if (Status s = view->view.set_fusion_layer(overlay ? overlay->vol : nullptr, st, pre); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_render_rgba8(siaara_view* view, uint8_t* buf, size_t cap,
+                                                              size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!view) return fail(Errc::InvalidArgument, "view must not be NULL");
+        const std::uint64_t need = std::uint64_t{view->view.width()} * view->view.height() * 4u;
+        bool query = false;
+        if (siaara_status st = check_out_buffer(need, buf, cap, needed, query); st != SIAARA_OK || query) return st;
+        if (Status s = view->view.render_rgba8(std::span<std::uint8_t>(buf, static_cast<size_t>(need))); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_view_pick(const siaara_view* view, double x, double y,
+                                                      siaara_pick_result* out) {
+    return guarded([&]() -> siaara_status {
+        if (!view || !out) return fail(Errc::InvalidArgument, "view and out must not be NULL");
+        if (out->struct_size < sizeof(siaara_pick_result)) return fail(Errc::InvalidArgument, "out->struct_size is too small");
+        auto r = view->view.pick(x, y);
+        if (!r) return fail(r.error());
+        out->hit = r->hit ? 1 : 0;
+        out->inside = r->inside ? 1 : 0;
+        for (int a = 0; a < 3; ++a) {
+            out->patient[a] = r->patient[a];
+            out->index[a] = r->index[a];
+        }
+        out->value = r->value;
+        out->overlay_inside = r->overlay_inside ? 1 : 0;
+        out->overlay_value = r->overlay_value;
+        return ok();
+    });
+}
+
+}  // extern "C"
