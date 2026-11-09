@@ -68,6 +68,21 @@ def run(args, timeout=300):
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
 
+def _limit_memory():
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (3 << 30, 3 << 30))
+
+
+def run_oracle(args, timeout=300):
+    """Oracle processes get a 3 GiB address-space limit: some corrupt files make them allocate
+    huge amounts of memory. (SIAARA's own tool may be an ASan build, which cannot run under an
+    address-space limit; its memory use is bounded by the library itself.)"""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, preexec_fn=_limit_memory)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 1, "", "timeout")
+
+
 # ------------------------------------------------------------------ helpers
 
 def read_pgx(path):
@@ -159,11 +174,11 @@ def opj_components(path):
         data = raw_codestream(f.read())
     with open(src, "wb") as f:
         f.write(data)
-    p = run([OPJ_DEC, "-i", src, "-o", os.path.join(d, "o.pgx")])
+    p = run_oracle([OPJ_DEC, "-i", src, "-o", os.path.join(d, "o.pgx")])
     files = sorted(glob.glob(os.path.join(d, "o*.pgx")), key=lambda s: int(s.rsplit("_", 1)[-1][:-4]) if "_" in os.path.basename(s) else 0)
-    if p.returncode != 0 or not files:
-        return None
-    return [read_pgx(f)[0] for f in files]
+    out = [read_pgx(f)[0] for f in files] if p.returncode == 0 and files else None
+    shutil.rmtree(d, ignore_errors=True)
+    return out
 
 
 def pylibjpeg_components(path):
@@ -291,11 +306,187 @@ def section_files():
                f"peak error vs {oracle} {d}{conv}")
 
 
+
+# ------------------------------------------------------------------ 2b. non-regression corpus
+
+def section_nonregression():
+    print("== 2b. OpenJPEG non-regression corpus (many deliberately corrupt files)")
+    base = os.path.join(OPJ_DATA, "input", "nonregression")
+    files = sorted(f for f in glob.glob(os.path.join(base, "*"))
+                   if os.path.splitext(f)[1].lower() in (".j2k", ".jp2", ".j2c", ".jpc", ".jpx", ".jph", ".jhc"))
+    if not files:
+        skip("no non-regression corpus")
+        return
+    for f in files:
+        name = os.path.basename(f)
+        raw = os.path.join(TMP, "nr.raw")
+        try:
+            p = run([TOOL, "components", f, raw], timeout=120)
+        except subprocess.TimeoutExpired:
+            report(False, f"{name}: SIAARA timed out")
+            continue
+        sanitizer = "Sanitizer" in p.stderr or "runtime error" in p.stderr
+        if p.returncode < 0 or sanitizer:
+            report(False, f"{name}: SIAARA crashed or tripped a sanitizer: {p.stderr.strip()[-200:]}")
+            continue
+        ref = opj_components(f)
+        if p.returncode != 0:
+            msg = p.stderr.strip().splitlines()[-1] if p.stderr.strip() else "?"
+            if ref is None:
+                report(True, f"{name}: rejected by both ({msg})")
+            else:
+                # OpenJPEG is more lenient with some corrupt files; this is not a crash.
+                report(True, f"{name}: rejected by SIAARA ({msg}); OpenJPEG decodes it [lenient-oracle]")
+            continue
+        ours, comps = ours_components(f)
+        info = probe(f)
+        if ref is None:
+            report(True, f"{name}: decoded by SIAARA only (OpenJPEG rejects it)")
+            continue
+        d = compare(ours, ref, comps)
+        limit = 0 if info and info["reversible"] else (2 if info and info["precision"] > 12 else 1)
+        if d is not None and d > limit and info and info["subsampled"] and info["components"] == 3 and ref[1].shape == ref[0].shape:
+            d2 = compare(sycc_to_rgb(ours, info), ref)
+            if d2 is not None and d2 <= 3:
+                d, limit = d2, 3
+        tag = "" if d is not None and d <= limit else " [differs]"
+        # Differences on corrupt input are reported but only crashes count as failures here.
+        report(True, f"{name}: both decode; peak error vs OpenJPEG {d}{tag}")
+
+
+# ------------------------------------------------------------------ 3. opj_compress streams
+
+def synth_image(rng, w, h, nc, bits, signed):
+    yy, xx = np.mgrid[0:h, 0:w]
+    planes = []
+    top = (1 << bits) - 1
+    for c in range(nc):
+        base = (np.sin(xx / (7.0 + 3 * c)) + np.cos(yy / (5.0 + c)) + 2) / 4 * top
+        noise = rng.normal(0, top / 40.0 + 0.5, (h, w))
+        edge = ((xx // 9 + yy // 13) % 2) * top / 6
+        v = np.clip(base + noise + edge, 0, top).astype(np.int64)
+        if signed:
+            v -= 1 << (bits - 1)
+        planes.append(v)
+    return planes
+
+
+def write_raw(path, planes, bits, signed):
+    """opj_compress -F raw input: component after component, big-endian when bits > 8."""
+    dt = (">i2" if signed else ">u2") if bits > 8 else ("i1" if signed else "u1")
+    with open(path, "wb") as f:
+        for p in planes:
+            f.write(p.astype(dt).tobytes())
+
+
+def section_opj_streams():
+    print("== 3. Codestreams written by opj_compress")
+    if not OPJ_ENC or not OPJ_DEC:
+        skip("opj_compress / opj_decompress not installed")
+        return
+    rng = np.random.default_rng(1234)
+    cases = [
+        # (w, h, nc, bits, signed, extra opj_compress arguments)
+        (64, 64, 1, 8, False, []),
+        (97, 61, 1, 8, False, ["-I"]),
+        (128, 96, 3, 8, False, []),
+        (128, 96, 3, 8, False, ["-I", "-r", "20,10,5"]),
+        (77, 53, 1, 12, False, ["-n", "4"]),
+        (77, 53, 1, 16, False, []),
+        (64, 48, 1, 16, True, []),
+        (64, 48, 1, 12, True, ["-I", "-r", "8"]),
+        (1, 1, 1, 8, False, ["-n", "1"]),
+        (1, 37, 1, 8, False, ["-n", "1"]),
+        (37, 1, 1, 8, False, ["-n", "1"]),
+        (7, 13, 1, 8, False, ["-n", "3"]),
+        (513, 511, 1, 12, False, ["-n", "7"]),
+        (200, 150, 1, 8, False, ["-t", "64,48"]),
+        (200, 150, 3, 8, False, ["-t", "100,64", "-TP", "R"]),
+        (200, 150, 3, 8, False, ["-t", "64,64", "-TP", "C", "-p", "CPRL"]),
+        (200, 150, 1, 8, False, ["-d", "13,7", "-T", "5,3", "-t", "50,40"]),
+        (160, 120, 3, 8, False, ["-p", "RLCP", "-r", "40,20,10,1"]),
+        (160, 120, 3, 8, False, ["-p", "RPCL", "-c", "[64,64],[32,32],[16,16]"]),
+        (160, 120, 3, 8, False, ["-p", "PCRL", "-c", "[32,32],[32,32],[16,16]", "-r", "30,10,3"]),
+        (160, 120, 3, 8, False, ["-p", "CPRL", "-c", "[128,64],[64,32]", "-r", "30,10"]),
+        (160, 120, 1, 8, False, ["-b", "16,16"]),
+        (160, 120, 1, 8, False, ["-b", "64,16"]),
+        (160, 120, 1, 8, False, ["-b", "4,1024"]),
+        (160, 120, 1, 8, False, ["-SOP", "-EPH", "-r", "20,5"]),
+        (160, 120, 1, 8, False, ["-M", "1", "-r", "20,5,1"]),
+        (160, 120, 1, 8, False, ["-M", "2"]),
+        (160, 120, 1, 8, False, ["-M", "4", "-r", "15,4"]),
+        (160, 120, 1, 8, False, ["-M", "8"]),
+        (160, 120, 1, 8, False, ["-M", "16"]),
+        (160, 120, 1, 8, False, ["-M", "32"]),
+        (160, 120, 1, 12, False, ["-M", "63", "-r", "20,5"]),
+        (160, 120, 3, 8, False, ["-M", "5", "-I", "-r", "30,10"]),
+        (160, 120, 3, 8, False, ["-POC", "T1=0,0,1,3,2,LRCP/T1=0,0,1,6,3,RLCP", "-r", "30,10,1", "-n", "6"]),
+        (160, 120, 3, 8, False, ["-POC", "T0=0,0,3,6,3,CPRL/T0=0,0,3,6,3,RPCL", "-r", "40,10,3", "-t", "80,60"]),
+        (160, 120, 1, 8, False, ["-ROI", "c=0,U=6"]),
+        (160, 120, 3, 8, False, ["-ROI", "c=1,U=10", "-I", "-r", "10"]),
+        (160, 120, 3, 8, False, ["-mct", "0"]),
+        (160, 120, 3, 8, False, ["-s", "2,2", "-mct", "0"]),
+        (162, 121, 2, 8, False, ["-s", "2,1", "-mct", "0"]),
+        (161, 122, 2, 12, False, ["-s", "1,2", "-mct", "0", "-I"]),
+        (160, 120, 1, 8, False, ["-PLT", "-TLM"]),
+        (160, 120, 1, 8, False, ["-GuardBits", "1"]),
+        (160, 120, 1, 8, False, ["-GuardBits", "5", "-I"]),
+        (300, 200, 1, 16, False, ["-I", "-q", "50,60"]),
+        (120, 90, 1, 8, False, ["-n", "1"]),
+    ]
+    for i, (w, h, nc, bits, signed, extra) in enumerate(cases):
+        subsampled = "-s" in extra
+        if subsampled:
+            sx, sy = (int(v) for v in extra[extra.index("-s") + 1].split(","))
+            sub = ":".join(["1x1"] + [f"{sx}x{sy}"] * (nc - 1))
+            extra = [a for j, a in enumerate(extra) if a != "-s" and (j == 0 or extra[j - 1] != "-s")]
+            planes = synth_image(rng, w, h, 1, bits, signed)
+            for _ in range(nc - 1):
+                planes += synth_image(rng, -(-w // sx), -(-h // sy), 1, bits, signed)
+        else:
+            sub = ":".join(["1x1"] * nc)
+            planes = synth_image(rng, w, h, nc, bits, signed)
+        raw = os.path.join(TMP, f"s{i}.raw")
+        write_raw(raw, planes, bits, signed)
+        stream = os.path.join(TMP, f"s{i}.j2k")
+        fmt = f"{w},{h},{nc},{bits},{'s' if signed else 'u'}@{sub}"
+        p = run([OPJ_ENC, "-i", raw, "-o", stream, "-F", fmt] + extra)
+        desc = f"{w}x{h}x{nc} {bits}-bit{' signed' if signed else ''} {' '.join(extra)}{' subsampled ' + sub if subsampled else ''}"
+        if p.returncode != 0 or not os.path.exists(stream):
+            skip(f"opj_compress refused: {desc}: {p.stderr.strip()[-80:]}")
+            continue
+        ours, comps = ours_components(stream)
+        if ours is None:
+            report(False, f"{desc}: SIAARA failed: {comps}")
+            continue
+        ref = opj_components(stream)
+        d = compare(ours, ref, comps)
+        lossy = "-I" in extra or "-r" in extra or "-q" in extra
+        # Lossy: +-1, except above 12 bits where OpenJPEG's 9-7 reconstruction differs from
+        # SIAARA's by a gain of about 3e-5 (measured), i.e. up to 2 at 16 bits.
+        limit = (2 if bits > 12 else 1) if lossy else 0
+        conv = ""
+        if subsampled and nc == 3 and ref is not None and (d is None or d > limit):
+            info = probe(stream)
+            d = compare(sycc_to_rgb(ours, info), ref)
+            limit = 3
+            conv = " (after OpenJPEG's sYCC to RGB conversion)"
+        exact_src = None
+        if not lossy and "-ROI" not in extra:
+            exact_src = all(np.array_equal(a, b) for a, b in zip(ours, planes))
+        ok = d is not None and d <= limit
+        if exact_src is False:
+            ok = False
+        report(ok, f"{desc}: peak error vs OpenJPEG {d}{conv}" + ("" if exact_src is None else f", lossless round trip {'exact' if exact_src else 'NOT exact'}"))
+
+
 # ------------------------------------------------------------------ main
 
 if __name__ == "__main__":
     section_conformance()
     section_files()
+    section_nonregression()
+    section_opj_streams()
     print(f"\n{results['ok']} ok, {results['bad']} failed, {results['skip']} skipped")
     shutil.rmtree(TMP, ignore_errors=True)
     sys.exit(1 if results["bad"] else 0)
