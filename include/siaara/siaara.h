@@ -155,6 +155,73 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup(uint32_t tag, siaara_dic
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyword, size_t len,
                                                                 siaara_dict_entry* out);
 
+/* ---------------------------------------------------------------- pixel data */
+/* Image Pixel module of the file's main data set (PS3.3 C.7.6.3), validated. */
+typedef struct siaara_pixel_info {
+    uint32_t struct_size;            /* set to sizeof(siaara_pixel_info) */
+    uint32_t rows;
+    uint32_t columns;
+    uint32_t samples_per_pixel;
+    uint32_t bits_allocated;
+    uint32_t bits_stored;
+    uint32_t high_bit;
+    int32_t pixel_representation;    /* 0 unsigned, 1 two's complement */
+    int32_t planar_configuration;    /* 0 colour-by-pixel, 1 colour-by-plane */
+    uint32_t number_of_frames;
+    int32_t lossy;                   /* 1 if Lossy Image Compression is "01" or the transfer syntax is lossy */
+    int32_t sample_kind;             /* SIAARA_SAMPLES_INTEGER, _FLOAT32 or _FLOAT64 */
+    int32_t encapsulated;            /* 1 if the pixel data is encapsulated (compressed) */
+    uint64_t frame_bytes;            /* bytes of one frame from siaara_frame_decode with SIAARA_FRAME_NATIVE */
+    char photometric[20];            /* Photometric Interpretation, NUL-terminated (truncated if longer) */
+} siaara_pixel_info;
+
+enum {
+    SIAARA_SAMPLES_INTEGER = 0,
+    SIAARA_SAMPLES_FLOAT32 = 1,
+    SIAARA_SAMPLES_FLOAT64 = 2
+};
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_pixel_info(const siaara_file* file, siaara_pixel_info* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_count(const siaara_file* file, uint32_t* out);
+
+/* Frame output formats for siaara_frame_decode. */
+enum {
+    /* DICOM native layout of the file's own attributes: little-endian samples of Bits Allocated
+     * bits, Planar Configuration as stored, 1-bit frames bit-packed from bit 0, native YBR 4:2:2
+     * as stored (Y Y Cb Cr). Size: siaara_pixel_info.frame_bytes. */
+    SIAARA_FRAME_NATIVE = 0,
+    /* float32 per sample after the Modality LUT / rescale (grayscale; colour samples unchanged),
+     * colour-by-pixel. Size: rows * columns * samples_per_pixel * 4 bytes. */
+    SIAARA_FRAME_FLOAT32_MODALITY = 1
+};
+
+/* Decodes one frame (0-based) into buf. *needed receives the required size. With buf == NULL and
+ * cap == 0 the call only reports the size. cap < needed: SIAARA_ERR_BUFFER_TOO_SMALL. */
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_decode(const siaara_file* file, uint32_t frame, int32_t format,
+                                                         uint8_t* buf, size_t cap, size_t* needed);
+
+enum {
+    SIAARA_VOI_FILE = 0,      /* the file's first window / VOI LUT; full pixel range if it has none */
+    SIAARA_VOI_EXPLICIT = 1,  /* window_center / window_width below (LINEAR, width >= 1) */
+    SIAARA_VOI_FULL_RANGE = 2 /* minimum .. maximum of the frame */
+};
+
+typedef struct siaara_render_options {
+    uint32_t struct_size;     /* set to sizeof(siaara_render_options) */
+    uint32_t frame;           /* 0-based */
+    int32_t voi_mode;         /* SIAARA_VOI_* */
+    int32_t invert;           /* 0/1: invert on top of MONOCHROME1 / Presentation LUT Shape */
+    double window_center;
+    double window_width;
+    int32_t no_overlays;      /* 0/1 */
+    int32_t no_shutters;      /* 0/1 */
+} siaara_render_options;
+
+/* Renders a frame to RGBA8 (rows * columns * 4 bytes). options may be NULL (frame 0, file VOI).
+ * Buffer rules as for siaara_frame_decode. */
+SIAARA_API siaara_status SIAARA_CALL siaara_render_rgba8(const siaara_file* file, const siaara_render_options* options,
+                                                         uint8_t* buf, size_t cap, size_t* needed);
+
 #ifdef __cplusplus
 }
 #endif

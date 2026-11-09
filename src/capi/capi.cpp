@@ -1,6 +1,10 @@
 // SIAARA DICOM Toolkit - C API implementation (include/siaara/siaara.h).
 #include "siaara/siaara.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <span>
+#include <vector>
 #include <cstring>
 #include <new>
 #include <string>
@@ -9,6 +13,8 @@
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
 #include "dict/dictionary.hpp"
+#include "image/frames.hpp"
+#include "image/render.hpp"
 
 struct siaara_file {
     siaara::DicomFile file;
@@ -349,6 +355,129 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyw
     if (!e) return fail(Errc::NotFound, "keyword not in dictionary");
     fill_entry(*e, out);
     return ok();
+}
+
+}  // extern "C"
+
+// ---------------------------------------------------------------- pixel data
+namespace {
+
+// Size query / buffer check shared by the frame and render calls. Returns SIAARA_OK with
+// query == false when the caller should go on and fill the buffer; otherwise the status to return.
+siaara_status check_out_buffer(std::uint64_t need, const uint8_t* buf, size_t cap, size_t* needed, bool& query) {
+    query = false;
+    if (need > SIZE_MAX) return fail(Errc::LimitExceeded, "output does not fit in memory on this platform");
+    if (needed) *needed = static_cast<size_t>(need);
+    if (!buf && cap == 0) {
+        query = true;
+        return ok();
+    }
+    if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");
+    if (cap < need) return fail(Errc::BufferTooSmall, "buffer too small");
+    return SIAARA_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_pixel_info(const siaara_file* file, siaara_pixel_info* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out || out->struct_size < sizeof(siaara_pixel_info))
+            return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
+        auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax);
+        if (!fr) return fail(fr.error());
+        const auto& pi = fr->info();
+        const auto* ts = siaara::find_transfer_syntax(file->file.transfer_syntax);
+        out->rows = pi.rows;
+        out->columns = pi.columns;
+        out->samples_per_pixel = pi.samples_per_pixel;
+        out->bits_allocated = pi.bits_allocated;
+        out->bits_stored = pi.bits_stored;
+        out->high_bit = pi.high_bit;
+        out->pixel_representation = pi.is_signed ? 1 : 0;
+        out->planar_configuration = pi.planar ? 1 : 0;
+        out->number_of_frames = pi.number_of_frames;
+        out->lossy = (pi.lossy_attribute || (ts && ts->lossy && fr->encapsulated())) ? 1 : 0;
+        out->sample_kind = pi.kind == siaara::image::SampleKind::Integer   ? SIAARA_SAMPLES_INTEGER
+                           : pi.kind == siaara::image::SampleKind::Float32 ? SIAARA_SAMPLES_FLOAT32
+                                                                           : SIAARA_SAMPLES_FLOAT64;
+        out->encapsulated = fr->encapsulated() ? 1 : 0;
+        out->frame_bytes = fr->frame_bytes();
+        const size_t n = std::min(pi.photometric_text.size(), sizeof(out->photometric) - 1);
+        std::memcpy(out->photometric, pi.photometric_text.data(), n);
+        out->photometric[n] = '\0';
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_count(const siaara_file* file, uint32_t* out) {
+    return guarded([&]() -> siaara_status {
+        if (!file || !out) return fail(Errc::InvalidArgument, "file and out must not be NULL");
+        auto pi = siaara::image::read_pixel_info(file->file.dataset);
+        if (!pi) return fail(pi.error());
+        *out = pi->number_of_frames;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_decode(const siaara_file* file, uint32_t frame, int32_t format,
+                                                         uint8_t* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        if (format != SIAARA_FRAME_NATIVE && format != SIAARA_FRAME_FLOAT32_MODALITY)
+            return fail(Errc::InvalidArgument, "unknown frame format");
+        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
+        if (!img) return fail(img.error());
+        const auto& pi = img->info();
+        if (frame >= pi.number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
+        std::uint64_t need = img->frames().frame_bytes();
+        if (format == SIAARA_FRAME_FLOAT32_MODALITY) need = pi.pixels() * pi.samples_per_pixel * 4u;
+        bool query = false;
+        if (siaara_status st = check_out_buffer(need, buf, cap, needed, query); st != SIAARA_OK || query) return st;
+        const auto n = static_cast<size_t>(need);
+        if (format == SIAARA_FRAME_NATIVE) {
+            if (Status s = img->frames().decode(frame, std::span<std::uint8_t>(buf, n)); !s) return fail(s);
+            return ok();
+        }
+        std::vector<float> tmp(n / 4);
+        if (Status s = siaara::image::decode_modality_f32(*img, frame, tmp); !s) return fail(s);
+        std::memcpy(buf, tmp.data(), n);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_render_rgba8(const siaara_file* file, const siaara_render_options* options,
+                                                         uint8_t* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
+        siaara::image::RenderParams p;
+        if (options) {
+            if (options->struct_size < sizeof(siaara_render_options))
+                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            p.frame = options->frame;
+            switch (options->voi_mode) {
+                case SIAARA_VOI_FILE: p.voi = siaara::image::VoiMode::File; break;
+                case SIAARA_VOI_EXPLICIT: p.voi = siaara::image::VoiMode::Explicit; break;
+                case SIAARA_VOI_FULL_RANGE: p.voi = siaara::image::VoiMode::FullRange; break;
+                default: return fail(Errc::InvalidArgument, "unknown voi_mode");
+            }
+            p.window_center = options->window_center;
+            p.window_width = options->window_width;
+            p.invert = options->invert != 0;
+            p.overlays = options->no_overlays == 0;
+            p.shutters = options->no_shutters == 0;
+        }
+        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
+        if (!img) return fail(img.error());
+        if (p.frame >= img->info().number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
+        bool query = false;
+        if (siaara_status st = check_out_buffer(img->info().pixels() * 4u, buf, cap, needed, query); st != SIAARA_OK || query)
+            return st;
+        const auto n = static_cast<size_t>(img->info().pixels() * 4u);
+        if (Status s = siaara::image::render_2d(*img, p, std::span<std::uint8_t>(buf, n)); !s) return fail(s);
+        return ok();
+    });
 }
 
 }  // extern "C"
