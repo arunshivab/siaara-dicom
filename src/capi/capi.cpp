@@ -481,3 +481,71 @@ SIAARA_API siaara_status SIAARA_CALL siaara_render_rgba8(const siaara_file* file
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- character sets (appended)
+#include <optional>
+#include <string_view>
+
+#include "charset/charset.hpp"
+
+namespace {
+
+siaara_status get_utf8_impl(const siaara_dataset* ds, uint32_t tag, uint32_t vm, const char* inherited,
+                            size_t inherited_len, char* buf, size_t cap, size_t* needed) {
+    if (!ds || (!inherited && inherited_len)) return fail(Errc::InvalidArgument, "bad argument");
+    if (!ds_cast(ds)->contains(tag)) return fail(Errc::NotFound, "element not present");
+    std::optional<siaara::charset::CharacterSet> parent;
+    if (inherited) parent = siaara::charset::CharacterSet::parse(std::string_view(inherited, inherited_len));
+    auto v = siaara::charset::get_utf8(*ds_cast(ds), tag, vm, parent ? &*parent : nullptr);
+    if (!v) return fail(Errc::TypeMismatch, "value cannot be read as text at this index");
+    return copy_out(*v, buf, cap, needed);
+}
+
+siaara_status set_utf8_impl(siaara_dataset* ds, uint32_t tag, const char* vr, const char* utf8, size_t len,
+                            const char* inherited, size_t inherited_len) {
+    siaara::VR v{};
+    if (!ds || (!utf8 && len) || (!inherited && inherited_len) || !parse_vr(vr, v))
+        return fail(Errc::InvalidArgument, "bad argument");
+    std::optional<siaara::charset::CharacterSet> parent;
+    if (inherited) parent = siaara::charset::CharacterSet::parse(std::string_view(inherited, inherited_len));
+    if (Status s = siaara::charset::set_utf8(*ds_cast(ds), tag, v, std::string_view(utf8 ? utf8 : "", len),
+                                             parent ? &*parent : nullptr);
+        !s)
+        return fail(s);
+    return ok();
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_utf8(const siaara_dataset* ds, uint32_t tag,
+                                                             uint32_t vm, char* buf, size_t cap,
+                                                             size_t* needed) {
+    return guarded([&]() -> siaara_status { return get_utf8_impl(ds, tag, vm, nullptr, 0, buf, cap, needed); });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8(siaara_dataset* ds, uint32_t tag, const char* vr,
+                                                             const char* utf8, size_t len) {
+    return guarded([&]() -> siaara_status { return set_utf8_impl(ds, tag, vr, utf8, len, nullptr, 0); });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_utf8_cs(const siaara_dataset* ds, uint32_t tag,
+                                                                uint32_t vm, const char* inherited,
+                                                                size_t inherited_len, char* buf,
+                                                                size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        return get_utf8_impl(ds, tag, vm, inherited, inherited_len, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* ds, uint32_t tag,
+                                                                const char* vr, const char* utf8,
+                                                                size_t len, const char* inherited,
+                                                                size_t inherited_len) {
+    return guarded([&]() -> siaara_status {
+        return set_utf8_impl(ds, tag, vr, utf8, len, inherited, inherited_len);
+    });
+}
+
+}  // extern "C"
