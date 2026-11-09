@@ -1,6 +1,7 @@
 // SIAARA DICOM Toolkit - TLS internals shared by the per-OS backends (not a public header).
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -108,6 +109,13 @@ private:
 };
 
 // A TlsTransport over any connected Transport, driven by a TlsEngine.
+//
+// Threading contract (the one DIMSE and DICOMweb use): handshake() completes before the
+// transport is shared; afterwards one thread reads (read_some, wait_readable), at most one other
+// thread writes (write_all), and shutdown()/close() may be called from any thread, also while
+// the other two are blocked. Engine calls and the records they produce are serialised by `mu_`;
+// the state flags are atomics because each of these threads reads flags the others write.
+// The plaintext buffer (plain_, plain_pos_) belongs to the reading thread.
 class EngineTransport final : public TlsTransport {
 public:
     EngineTransport(std::shared_ptr<EngineContext> ctx, std::unique_ptr<Transport> inner,
@@ -134,11 +142,11 @@ private:
     std::mutex mu_;  // serialises engine calls and the ciphertext they produce
     std::vector<std::uint8_t> plain_;
     std::size_t plain_pos_ = 0;
-    bool done_ = false;
-    bool broken_ = false;       // handshake or record failure: no further I/O
-    bool peer_closed_ = false;  // close_notify received
-    bool eof_ = false;          // TCP closed without close_notify
-    bool sent_close_ = false;
+    std::atomic<bool> done_{false};
+    std::atomic<bool> broken_{false};       // handshake or record failure: no further I/O
+    std::atomic<bool> peer_closed_{false};  // close_notify received
+    std::atomic<bool> eof_{false};          // TCP closed without close_notify
+    std::atomic<bool> sent_close_{false};
     Status hs_error_;
 
     Status pump_decrypt(int deadline_left_ms);

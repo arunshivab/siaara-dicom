@@ -96,6 +96,8 @@ struct TlsSessionInfo {
 // A Transport protected by TLS. Transports from TlsContext::connect() have completed the
 // handshake; transports from TlsListener::accept() complete it in handshake(), which servers call
 // on the worker thread so a slow client cannot stall the accept loop.
+// Threading: after the handshake, one thread may read (read_some, wait_readable) while another
+// writes (write_all); shutdown() and close() may be called from any thread at any time.
 class TlsTransport : public Transport {
 public:
     // Runs the handshake to completion within `timeout_ms`. A no-op once it has completed.

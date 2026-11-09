@@ -424,7 +424,7 @@ void EngineTransport::shutdown() noexcept {
 
 void EngineTransport::close() noexcept {
     if (!inner_) return;
-    if (inner_->is_open() && done_ && !broken_ && !sent_close_ && !eof_) {
+    if (inner_->is_open() && done_ && !broken_ && !eof_ && !sent_close_.exchange(true)) {
         try {
             std::lock_guard<std::mutex> lock(mu_);
             std::vector<std::uint8_t> out;
@@ -432,7 +432,6 @@ void EngineTransport::close() noexcept {
             (void)send_locked(out, kAlertWriteMs);
         } catch (...) {
         }
-        sent_close_ = true;
     }
     inner_->close();
 }

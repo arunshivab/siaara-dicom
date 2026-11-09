@@ -848,3 +848,59 @@ TEST_CASE("tls/R-041 identity password is not kept in the context settings") {
     CHECK(c.is_ok());
     th.join();
 }
+
+// R-024: the documented threading contract of a TlsTransport: one thread reads (read_some,
+// wait_readable), another writes (write_all) at the same time, and close() may come from a
+// third. The transport's state flags are shared between them. (Run under ThreadSanitizer to
+// see the data races this used to have; under ASan it checks the behaviour.)
+TEST_CASE("tls/R-024 concurrent reader, writer and close") {
+    if (skip("tls/R-024")) return;
+    Result<std::shared_ptr<TlsContext>> sctx = TlsContext::create(server_tls(), TlsContext::Role::Server);
+    REQUIRE(sctx.is_ok());
+    TlsListener l;
+    REQUIRE(l.listen(sctx.value(), "127.0.0.1", 0).is_ok());
+    std::thread server([&] {
+        Result<std::unique_ptr<TlsTransport>> a = l.accept(5000);
+        if (!a) return;
+        std::unique_ptr<TlsTransport> t = std::move(a).value();
+        if (!t->handshake(5000)) return;
+        std::vector<std::uint8_t> buf(4096);
+        // Echo until the client goes away.
+        while (true) {
+            Result<std::size_t> r = t->read_some(buf.data(), buf.size(), 5000);
+            if (!r || *r == 0) break;
+            if (!t->write_all(buf.data(), *r, 5000)) break;
+        }
+    });
+    Result<std::unique_ptr<TlsTransport>> c = tls_connect(client_tls(), "127.0.0.1", l.port(), 5000);
+    REQUIRE(c.is_ok());
+    std::unique_ptr<TlsTransport> t = std::move(c).value();
+    std::atomic<std::size_t> received{0};
+    std::atomic<bool> stop{false};
+    std::thread reader([&] {
+        std::vector<std::uint8_t> buf(8192);
+        while (!stop.load()) {
+            Result<bool> ready = t->wait_readable(50);
+            if (!ready) break;
+            if (!*ready) continue;
+            Result<std::size_t> r = t->read_some(buf.data(), buf.size(), 1000);
+            if (!r || *r == 0) break;
+            received += *r;
+        }
+    });
+    std::thread writer([&] {
+        std::vector<std::uint8_t> msg(1000, 0x5A);
+        for (int i = 0; i < 200 && !stop.load(); ++i)
+            if (!t->write_all(msg.data(), msg.size(), 2000)) break;
+    });
+    writer.join();
+    for (int i = 0; i < 100 && received.load() < 200000; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK_EQ(received.load(), 200000u);
+    // close() from this (third) thread while the reader is still waiting.
+    std::thread closer([&] { t->close(); });
+    closer.join();
+    stop = true;
+    reader.join();
+    CHECK(!t->is_open());
+    server.join();
+}
