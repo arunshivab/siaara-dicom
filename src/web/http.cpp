@@ -53,7 +53,7 @@ std::int64_t now_ms() {
 // Lingering close of a refused connection on the accept thread: short, so a peer that keeps
 // the connection open cannot hold the accept loop for long.
 constexpr int kLingerMs = 250;
-constexpr std::size_t kLingerBytes = 64 * 1024;
+constexpr std::size_t kLingerBytes = std::size_t{64} * 1024;
 
 // Strict decimal Content-Length (RFC 9110 8.6): 1*DIGIT, checked.
 bool parse_decimal(std::string_view s, std::uint64_t& out) noexcept {
@@ -459,12 +459,17 @@ void Connection::close_lingering(int max_ms, std::size_t max_bytes) noexcept {
     const std::int64_t end = now_ms() + (max_ms < 0 ? 0 : max_ms);
     std::uint8_t sink[4096];
     std::size_t total = 0;
-    while (total < max_bytes) {
-        const std::int64_t left = end - now_ms();
-        if (left <= 0) break;
-        auto r = t_->read_some(sink, sizeof sink, static_cast<int>(left));
-        if (!r || *r == 0) break;  // peer closed, timed out or failed
-        total += *r;
+    try {
+        while (total < max_bytes) {
+            const std::int64_t left = end - now_ms();
+            if (left <= 0) break;
+            auto r = t_->read_some(sink, sizeof sink, static_cast<int>(left));
+            if (!r || *r == 0) break;  // peer closed, timed out or failed
+            total += *r;
+        }
+    } catch (...) {
+        // Building an error Status failed (std::bad_alloc): stop draining; the socket is closed below.
+        total = max_bytes;
     }
     close();
 }
