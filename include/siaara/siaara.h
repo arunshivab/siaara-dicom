@@ -246,6 +246,336 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
                                                                 size_t len, const char* inherited,
                                                                 size_t inherited_len);
 
+/* ---------------------------------------------------------------- index records (appended) */
+/* One flat record per instance (or per patient/study/series in store query results) for viewer
+ * databases. Numbers are fields; text is UTF-8 in a caller-supplied string table: string k is
+ * strings + str_offset[k], NUL-terminated, str_length[k] bytes (offset 0 / length 0 = empty).
+ * Calls that fill a record take buf/cap/needed for the string table: buf == NULL with cap == 0
+ * only reports *needed; a too-small buffer gives SIAARA_ERR_BUFFER_TOO_SMALL (the numeric fields
+ * and offsets are still filled). The layout has no implicit padding on any platform. */
+enum {
+    SIAARA_IDX_PATIENT_ID = 0,
+    SIAARA_IDX_ISSUER_OF_PATIENT_ID = 1,
+    SIAARA_IDX_PATIENT_NAME = 2,
+    SIAARA_IDX_PATIENT_BIRTH_DATE = 3,
+    SIAARA_IDX_PATIENT_SEX = 4,
+    SIAARA_IDX_STUDY_INSTANCE_UID = 5,
+    SIAARA_IDX_STUDY_DATE = 6,
+    SIAARA_IDX_STUDY_TIME = 7,
+    SIAARA_IDX_ACCESSION_NUMBER = 8,
+    SIAARA_IDX_STUDY_ID = 9,
+    SIAARA_IDX_STUDY_DESCRIPTION = 10,
+    SIAARA_IDX_REFERRING_PHYSICIAN = 11,
+    SIAARA_IDX_SERIES_INSTANCE_UID = 12,
+    SIAARA_IDX_MODALITY = 13,
+    SIAARA_IDX_SERIES_DESCRIPTION = 14,
+    SIAARA_IDX_BODY_PART_EXAMINED = 15,
+    SIAARA_IDX_SERIES_DATE = 16,
+    SIAARA_IDX_SERIES_TIME = 17,
+    SIAARA_IDX_FRAME_OF_REFERENCE_UID = 18,
+    SIAARA_IDX_SOP_CLASS_UID = 19,
+    SIAARA_IDX_SOP_INSTANCE_UID = 20,
+    SIAARA_IDX_TRANSFER_SYNTAX_UID = 21,
+    SIAARA_IDX_PHOTOMETRIC = 22,
+    SIAARA_IDX_CONTENT_DATE = 23,
+    SIAARA_IDX_CONTENT_TIME = 24,
+    SIAARA_IDX_IMAGE_TYPE = 25,
+    SIAARA_IDX_SPECIFIC_CHARACTER_SET = 26,
+    SIAARA_IDX_FILE_PATH = 27,            /* store results: absolute path; DICOMDIR: resolved file */
+    SIAARA_IDX_MODALITIES_IN_STUDY = 28,  /* store study/series/instance results */
+    SIAARA_IDX_RECORD_TYPE = 29,          /* DICOMDIR: Directory Record Type */
+    SIAARA_IDX_COUNT = 30
+};
+#define SIAARA_INDEX_MAX_STRINGS 32
+
+enum {
+    SIAARA_IDXF_SERIES_NUMBER = 1 << 0,
+    SIAARA_IDXF_INSTANCE_NUMBER = 1 << 1,
+    SIAARA_IDXF_POSITION = 1 << 2,        /* image_position valid */
+    SIAARA_IDXF_ORIENTATION = 1 << 3,     /* image_orientation valid */
+    SIAARA_IDXF_PIXEL_DATA = 1 << 4,
+    SIAARA_IDXF_ENCAPSULATED = 1 << 5,
+    SIAARA_IDXF_PREAMBLE = 1 << 6,
+    SIAARA_IDXF_PIXEL_SPACING = 1 << 7,
+    SIAARA_IDXF_SLICE_THICKNESS = 1 << 8,
+    SIAARA_IDXF_REFERENCED = 1 << 9,      /* store: indexed in place, not copied */
+    SIAARA_IDXF_PIXEL_OFFSET = 1 << 10    /* pixel_data_offset / _length are valid file offsets */
+};
+
+enum {
+    SIAARA_LEVEL_PATIENT = 0,
+    SIAARA_LEVEL_STUDY = 1,
+    SIAARA_LEVEL_SERIES = 2,
+    SIAARA_LEVEL_INSTANCE = 3
+};
+
+typedef struct siaara_index_record {
+    uint32_t struct_size;          /* set to sizeof(siaara_index_record) */
+    int32_t level;                 /* SIAARA_LEVEL_* */
+    uint32_t flags;                /* SIAARA_IDXF_* */
+    int32_t series_number;
+    int32_t instance_number;
+    uint32_t number_of_frames;     /* 0 when there is no pixel data */
+    uint32_t rows;
+    uint32_t columns;
+    uint16_t bits_allocated;
+    uint16_t bits_stored;
+    uint16_t high_bit;
+    uint16_t samples_per_pixel;
+    uint16_t pixel_representation;
+    uint16_t reserved0;
+    uint32_t num_studies;          /* store results: children counts */
+    uint32_t num_series;
+    uint32_t num_instances;
+    uint64_t file_size;
+    uint64_t pixel_data_offset;    /* value field of Pixel Data (first item if encapsulated) */
+    uint64_t pixel_data_length;
+    double image_position[3];
+    double image_orientation[6];
+    double pixel_spacing[2];
+    double slice_thickness;
+    uint32_t str_offset[SIAARA_INDEX_MAX_STRINGS];
+    uint32_t str_length[SIAARA_INDEX_MAX_STRINGS];
+} siaara_index_record;
+
+/* One parse of a file (header and pixel data position; pixel data is not decoded). */
+SIAARA_API siaara_status SIAARA_CALL siaara_extract_index(const char* utf8_path, size_t path_len,
+                                                          siaara_index_record* out, char* buf,
+                                                          size_t cap, size_t* needed);
+SIAARA_API siaara_status SIAARA_CALL siaara_extract_index_memory(const uint8_t* data, size_t size,
+                                                                 siaara_index_record* out, char* buf,
+                                                                 size_t cap, size_t* needed);
+
+/* ---------------------------------------------------------------- local store (appended) */
+/* A folder holding copied (or in-place referenced) instances and a crash-safe index. One
+ * process may open a store at a time (SIAARA_ERR_REJECTED otherwise). A siaara_store may be
+ * used from many threads at once. */
+typedef struct siaara_store siaara_store;
+typedef struct siaara_store_result siaara_store_result;
+
+typedef struct siaara_store_options {
+    uint32_t struct_size;          /* set to sizeof(siaara_store_options) */
+    int32_t create;                /* 0/1, default 1 */
+    int32_t durable;               /* 0/1: fsync every change (slower, survives power loss) */
+    int32_t rebuild_if_corrupt;    /* 0/1: re-index the data folder if the index is unreadable */
+    uint64_t compact_min_records;  /* 0 = default (50,000) */
+} siaara_store_options;
+
+enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
+enum { SIAARA_ADD_COPY = 0, SIAARA_ADD_REFERENCE = 1 };
+enum { SIAARA_ADD_ADDED = 0, SIAARA_ADD_REPLACED = 1, SIAARA_ADD_KEPT_EXISTING = 2 };
+
+/* options may be NULL. Caller owns *out: free with siaara_store_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* utf8_root, size_t root_len,
+                                                       const siaara_store_options* options,
+                                                       siaara_store** out);
+SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store);
+/* policy SIAARA_DUP_*, mode SIAARA_ADD_*; *outcome (may be NULL) receives SIAARA_ADD_ADDED etc. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_add_file(siaara_store* store, const char* utf8_path,
+                                                           size_t path_len, int32_t policy, int32_t mode,
+                                                           int32_t* outcome);
+/* The bytes are copied into the store (a raw data set is stored as a Part 10 file). */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_add_memory(siaara_store* store, const uint8_t* data,
+                                                             size_t size, int32_t policy, int32_t* outcome);
+
+/* Filters: NUL-terminated UTF-8, NULL or "" = no filter. Text filters accept the C-FIND
+ * wildcards '*' and '?'. Names and descriptions match case- and (Latin) accent-insensitively and
+ * a name matches any of its alphabetic / ideographic / phonetic groups. Dates take a single date
+ * or a range "YYYYMMDD-YYYYMMDD", "-YYYYMMDD", "YYYYMMDD-". modality may list several values
+ * separated by backslashes. UIDs are exact. */
+typedef struct siaara_store_filter {
+    uint32_t struct_size;          /* set to sizeof(siaara_store_filter) */
+    int32_t level;                 /* SIAARA_LEVEL_* of the rows returned */
+    const char* patient_name;
+    const char* patient_id;
+    const char* patient_birth_date;
+    const char* patient_sex;
+    const char* study_date;
+    const char* accession_number;
+    const char* study_description;
+    const char* referring_physician;
+    const char* modality;
+    const char* series_description;
+    const char* body_part;
+    const char* study_uid;
+    const char* series_uid;
+    const char* sop_instance_uid;
+    uint32_t offset;               /* rows to skip (paging) */
+    uint32_t limit;                /* 0 = all */
+} siaara_store_filter;
+
+/* Results are a snapshot: later changes to the store do not alter them. Caller owns *out. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_query(const siaara_store* store, const siaara_store_filter* query,
+                                                        siaara_store_result** out);
+/* Series of a study (ordered by Series Number), instances of a series (ordered by Instance
+ * Number, then position along the slice normal), each with SIAARA_IDX_FILE_PATH. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_get_series(const siaara_store* store, const char* study_uid,
+                                                             size_t len, siaara_store_result** out);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_get_instances(const siaara_store* store, const char* series_uid,
+                                                                size_t len, siaara_store_result** out);
+/* *count = rows held; *total (may be NULL) = matches before offset/limit. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_store_result* result, uint32_t* count,
+                                                               uint32_t* total);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_result* result, uint32_t index,
+                                                             siaara_index_record* out, char* buf, size_t cap,
+                                                             size_t* needed);
+SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* result);
+
+/* key: for SIAARA_LEVEL_PATIENT the key from siaara_store_patient_key, otherwise the Study,
+ * Series or SOP Instance UID. Copied files are deleted;
+ * referenced files are left alone. *removed (may be NULL) = instances removed. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_delete(siaara_store* store, int32_t level, const char* key,
+                                                         size_t len, uint32_t* removed);
+/* Copies the instances into dest (replacing duplicates) and removes them from store. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_move(siaara_store* store, siaara_store* dest, int32_t level,
+                                                       const char* key, size_t len, uint32_t* moved);
+/* The key identifying the patient of a row (Patient ID + issuer, or name + birth date). */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_patient_key(const siaara_store_result* result, uint32_t index,
+                                                              char* buf, size_t cap, size_t* needed);
+
+typedef struct siaara_store_verify_report {
+    uint32_t struct_size;          /* set to sizeof(siaara_store_verify_report) */
+    uint32_t checked;
+    uint32_t missing;              /* indexed, file absent */
+    uint32_t size_mismatch;
+    uint32_t content_mismatch;     /* deep check: file holds another instance or is unreadable */
+    uint32_t orphans;              /* files in the data folder the index does not know */
+    uint32_t repaired;
+    uint32_t reserved0;
+} siaara_store_verify_report;
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_verify(siaara_store* store, int32_t deep, int32_t repair,
+                                                         siaara_store_verify_report* out);
+/* Re-indexes the data folder and every referenced file still present. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_rebuild(siaara_store* store);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_compact(siaara_store* store);
+
+enum { SIAARA_EVENT_ADDED = 0, SIAARA_EVENT_REPLACED = 1, SIAARA_EVENT_DELETED = 2, SIAARA_EVENT_REBUILT = 3 };
+/* Called after each change commits, on the thread that made it, with no store lock held (the
+ * callback may query or change the store). The strings are valid during the call only; they
+ * are "" for SIAARA_EVENT_REBUILT. */
+typedef void (SIAARA_CALL* siaara_store_callback)(void* user, int32_t event, const char* sop_instance_uid,
+                                                  const char* series_uid, const char* study_uid);
+/* cb == NULL removes the callback. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_set_callback(siaara_store* store, siaara_store_callback cb,
+                                                               void* user);
+
+typedef struct siaara_store_stats {
+    uint32_t struct_size;          /* set to sizeof(siaara_store_stats) */
+    uint32_t reserved0;
+    uint64_t patients;
+    uint64_t studies;
+    uint64_t series;
+    uint64_t instances;
+    uint64_t data_bytes;
+    uint64_t journal_bytes;
+    uint64_t journal_records;
+    uint64_t snapshot_bytes;
+    uint64_t generation;
+    uint64_t replayed_records;     /* journal records applied at open */
+    uint64_t recovered_bytes;      /* torn journal tail removed at open */
+} siaara_store_stats;
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_stats_get(const siaara_store* store, siaara_store_stats* out);
+
+/* ---------------------------------------------------------------- folder scan (appended) */
+enum { SIAARA_SCAN_INSTANCE = 0, SIAARA_SCAN_DICOMDIR = 1, SIAARA_SCAN_NOT_DICOM = 2, SIAARA_SCAN_ERROR = 3 };
+
+typedef struct siaara_scan_options {
+    uint32_t struct_size;          /* set to sizeof(siaara_scan_options) */
+    uint32_t threads;              /* 0 = hardware concurrency (at most 16) */
+    int32_t recursive;             /* 0/1, default 1 */
+    int32_t follow_symlinks;       /* 0/1 */
+    int32_t allow_raw;             /* 0/1, default 1: accept files without preamble */
+    int32_t report_skipped;        /* 0/1: also call back for non-DICOM files */
+    int32_t use_dicomdir;          /* 0/1: scan only the files <root>/DICOMDIR lists, if present */
+    uint32_t reserved0;
+    uint64_t max_files;            /* 0 = no limit */
+} siaara_scan_options;
+
+typedef struct siaara_scan_stats {
+    uint32_t struct_size;          /* set to sizeof(siaara_scan_stats) */
+    int32_t used_dicomdir;
+    uint64_t files;
+    uint64_t instances;
+    uint64_t dicomdirs;
+    uint64_t skipped;
+    uint64_t errors;
+} siaara_scan_stats;
+
+/* Called once per file (never concurrently; possibly from different threads). rec and strings
+ * are valid during the call only (rec is NULL for SIAARA_SCAN_NOT_DICOM / _ERROR). Return 0 to
+ * continue, non-zero to stop (the scan then returns SIAARA_ERR_CANCELLED). */
+typedef int32_t (SIAARA_CALL* siaara_scan_callback)(void* user, const char* path, int32_t kind,
+                                                    siaara_status status, const siaara_index_record* rec,
+                                                    const char* strings);
+/* options and stats may be NULL. */
+SIAARA_API siaara_status SIAARA_CALL siaara_folder_scan(const char* utf8_root, size_t root_len,
+                                                        const siaara_scan_options* options,
+                                                        siaara_scan_callback cb, void* user,
+                                                        siaara_scan_stats* stats);
+
+/* ---------------------------------------------------------------- DICOMDIR (appended) */
+typedef struct siaara_dicomdir_entry {
+    uint32_t struct_size;          /* sizeof(siaara_dicomdir_entry) */
+    uint32_t index;                /* position in the Directory Record Sequence */
+    int32_t parent;                /* parent record index, -1 at the root */
+    uint32_t depth;
+    int32_t in_use;
+    siaara_status file_status;     /* OK, SIAARA_ERR_REJECTED (unsafe File ID) or _NOT_FOUND */
+    uint64_t offset;               /* file offset of the record */
+} siaara_dicomdir_entry;
+
+/* keys holds the record's keys plus those inherited from its ancestors; SIAARA_IDX_RECORD_TYPE,
+ * and SIAARA_IDX_FILE_PATH = resolved absolute path of the referenced file (if any).
+ * Return 0 to continue, non-zero to stop (SIAARA_ERR_CANCELLED). */
+typedef int32_t (SIAARA_CALL* siaara_dicomdir_callback)(void* user, const siaara_dicomdir_entry* entry,
+                                                        const siaara_index_record* keys, const char* strings);
+
+typedef struct siaara_dicomdir_read_options {
+    uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_read_options) */
+    int32_t include_inactive;      /* 0/1 */
+    int32_t resolve_files;         /* 0/1, default 1 */
+    int32_t case_insensitive;      /* 0/1, default 1 */
+    uint32_t max_depth;            /* 0 = default (16) */
+} siaara_dicomdir_read_options;
+
+typedef struct siaara_dicomdir_summary {
+    uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_summary) */
+    uint32_t records;
+    uint32_t reported;
+    uint32_t files;
+    uint32_t missing_files;
+    uint32_t rejected_paths;
+    uint32_t unreachable;
+    int32_t sequential_fallback;
+    uint32_t warnings;
+} siaara_dicomdir_summary;
+
+/* options and summary may be NULL. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* utf8_path, size_t path_len,
+                                                          const siaara_dicomdir_read_options* options,
+                                                          siaara_dicomdir_callback cb, void* user,
+                                                          siaara_dicomdir_summary* summary);
+
+enum { SIAARA_PROFILE_GENERAL_CD = 0, SIAARA_PROFILE_GENERAL_USB = 1 };
+
+typedef struct siaara_dicomdir_write_options {
+    uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_write_options) */
+    int32_t profile;               /* SIAARA_PROFILE_* */
+    int32_t overwrite;             /* 0/1 */
+    int32_t allow_any_transfer_syntax; /* 0/1 */
+    const char* file_set_id;       /* NULL or up to 16 of A-Z 0-9 _ space */
+} siaara_dicomdir_write_options;
+
+/* Copies the files to <root>/DICOM/... and writes <root>/DICOMDIR. files[i] has length lens[i].
+ * options and warnings may be NULL; *warnings receives the number of warnings. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write(const char* utf8_root, size_t root_len,
+                                                           const char* const* files, const size_t* lens,
+                                                           size_t count,
+                                                           const siaara_dicomdir_write_options* options,
+                                                           uint32_t* warnings);
+
 #ifdef __cplusplus
 }
 #endif

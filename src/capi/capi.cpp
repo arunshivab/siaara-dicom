@@ -549,3 +549,485 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
 }
 
 }  // extern "C"
+
+// ---------------------------------------------------------------- index records, store, scan, DICOMDIR (appended)
+#include <cstddef>
+#include <memory>
+
+#include "store/dicomdir.hpp"
+#include "store/index.hpp"
+#include "store/scan.hpp"
+#include "store/store.hpp"
+
+static_assert(sizeof(siaara_index_record) == 432, "siaara_index_record layout");
+static_assert(offsetof(siaara_index_record, file_size) == 56, "siaara_index_record layout");
+static_assert(offsetof(siaara_index_record, str_offset) == 176, "siaara_index_record layout");
+static_assert(static_cast<std::size_t>(SIAARA_IDX_COUNT) == siaara::store::kStrCount, "string ids");
+static_assert(SIAARA_INDEX_MAX_STRINGS >= SIAARA_IDX_COUNT, "string ids");
+static_assert(sizeof(siaara_store_stats) == 96, "siaara_store_stats layout");
+static_assert(sizeof(siaara_dicomdir_entry) == 32, "siaara_dicomdir_entry layout");
+
+struct siaara_store {
+    std::unique_ptr<siaara::store::Store> store;
+};
+
+struct siaara_store_result {
+    std::vector<siaara::store::IndexRecord> rows;
+    std::size_t total = 0;
+};
+
+namespace {
+
+namespace st = siaara::store;
+
+// Numeric fields and string offsets; returns the string table (starts with one NUL).
+std::string fill_index_record(const st::IndexRecord& r, siaara_index_record* out) {
+    const uint32_t size = out->struct_size;
+    std::memset(out, 0, sizeof(siaara_index_record));
+    out->struct_size = size;
+    out->level = static_cast<int32_t>(r.level);
+    out->flags = r.flags;
+    out->series_number = r.series_number;
+    out->instance_number = r.instance_number;
+    out->number_of_frames = r.number_of_frames;
+    out->rows = r.rows;
+    out->columns = r.columns;
+    out->bits_allocated = r.bits_allocated;
+    out->bits_stored = r.bits_stored;
+    out->high_bit = r.high_bit;
+    out->samples_per_pixel = r.samples_per_pixel;
+    out->pixel_representation = r.pixel_representation;
+    out->num_studies = r.num_studies;
+    out->num_series = r.num_series;
+    out->num_instances = r.num_instances;
+    out->file_size = r.file_size;
+    out->pixel_data_offset = r.pixel_data_offset;
+    out->pixel_data_length = r.pixel_data_length;
+    std::memcpy(out->image_position, r.position, sizeof out->image_position);
+    std::memcpy(out->image_orientation, r.orientation, sizeof out->image_orientation);
+    std::memcpy(out->pixel_spacing, r.pixel_spacing, sizeof out->pixel_spacing);
+    out->slice_thickness = r.slice_thickness;
+    std::string tab(1, '\0');
+    for (std::size_t i = 0; i < st::kStrCount; ++i) {
+        const std::string& v = r.s[i];
+        if (v.empty()) continue;
+        out->str_offset[i] = static_cast<uint32_t>(tab.size());
+        out->str_length[i] = static_cast<uint32_t>(v.size());
+        tab += v;
+        tab.push_back('\0');
+    }
+    return tab;
+}
+
+siaara_status record_out(const st::IndexRecord& r, siaara_index_record* out, char* buf, size_t cap, size_t* needed) {
+    if (!out || out->struct_size < sizeof(siaara_index_record))
+        return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+    const std::string tab = fill_index_record(r, out);
+    if (needed) *needed = tab.size();
+    if (!buf && cap == 0) return ok();
+    if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");
+    if (cap < tab.size()) return fail(Errc::BufferTooSmall, "buffer too small");
+    std::memcpy(buf, tab.data(), tab.size());
+    return ok();
+}
+
+std::string str_arg(const char* p) { return p ? std::string(p) : std::string(); }
+
+bool level_ok(int32_t level) { return level >= SIAARA_LEVEL_PATIENT && level <= SIAARA_LEVEL_INSTANCE; }
+
+siaara_status result_out(siaara::Result<std::vector<st::IndexRecord>> r, siaara_store_result** out) {
+    if (!r) return fail(r.error());
+    auto* res = new siaara_store_result;
+    res->rows = std::move(r).value();
+    res->total = res->rows.size();
+    *out = res;
+    return ok();
+}
+
+}  // namespace
+
+extern "C" {
+
+SIAARA_API siaara_status SIAARA_CALL siaara_extract_index(const char* path, size_t path_len, siaara_index_record* out,
+                                                          char* buf, size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!path || !out || out->struct_size < sizeof(siaara_index_record))
+            return fail(Errc::InvalidArgument, "path and out (with struct_size) must be set");
+        st::IndexRecord r;
+        if (Status s = st::extract_index_file(std::string(path, path_len), r); !s) return fail(s);
+        return record_out(r, out, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_extract_index_memory(const uint8_t* data, size_t size,
+                                                                 siaara_index_record* out, char* buf, size_t cap,
+                                                                 size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if ((!data && size) || !out || out->struct_size < sizeof(siaara_index_record))
+            return fail(Errc::InvalidArgument, "data and out (with struct_size) must be set");
+        st::IndexRecord r;
+        // Non-owning view: the record copies everything it keeps.
+        const siaara::Bytes view(std::shared_ptr<const void>(), data, size);
+        if (Status s = st::extract_index(view, r); !s) return fail(s);
+        return record_out(r, out, buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t root_len,
+                                                       const siaara_store_options* options, siaara_store** out) {
+    return guarded([&]() -> siaara_status {
+        if (!root || !out) return fail(Errc::InvalidArgument, "root and out must not be NULL");
+        *out = nullptr;
+        st::StoreOptions o;
+        if (options) {
+            if (options->struct_size < sizeof(siaara_store_options))
+                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            o.create = options->create != 0;
+            o.durable = options->durable != 0;
+            o.rebuild_if_corrupt = options->rebuild_if_corrupt != 0;
+            if (options->compact_min_records) o.compact_min_records = options->compact_min_records;
+        }
+        auto s = st::Store::open(std::string(root, root_len), o);
+        if (!s) return fail(s.error());
+        *out = new siaara_store{std::move(s).value()};
+        return ok();
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) { delete store; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_add_file(siaara_store* store, const char* path, size_t path_len,
+                                                           int32_t policy, int32_t mode, int32_t* outcome) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !path) return fail(Errc::InvalidArgument, "store and path must not be NULL");
+        if ((policy != SIAARA_DUP_KEEP && policy != SIAARA_DUP_REPLACE) ||
+            (mode != SIAARA_ADD_COPY && mode != SIAARA_ADD_REFERENCE))
+            return fail(Errc::InvalidArgument, "unknown policy or mode");
+        auto r = store->store->add_file(std::string(path, path_len),
+                                        policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep,
+                                        mode == SIAARA_ADD_REFERENCE ? st::AddMode::Reference : st::AddMode::Copy);
+        if (!r) return fail(r.error());
+        if (outcome) *outcome = static_cast<int32_t>(*r);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_add_memory(siaara_store* store, const uint8_t* data, size_t size,
+                                                             int32_t policy, int32_t* outcome) {
+    return guarded([&]() -> siaara_status {
+        if (!store || (!data && size)) return fail(Errc::InvalidArgument, "store and data must not be NULL");
+        if (policy != SIAARA_DUP_KEEP && policy != SIAARA_DUP_REPLACE) return fail(Errc::InvalidArgument, "unknown policy");
+        auto r = store->store->add_buffer(siaara::Bytes::copy_of(data, size),
+                                          policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep);
+        if (!r) return fail(r.error());
+        if (outcome) *outcome = static_cast<int32_t>(*r);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_query(const siaara_store* store, const siaara_store_filter* q,
+                                                        siaara_store_result** out) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !q || !out || q->struct_size < sizeof(siaara_store_filter))
+            return fail(Errc::InvalidArgument, "store, query (with struct_size) and out must be set");
+        *out = nullptr;
+        if (!level_ok(q->level)) return fail(Errc::InvalidArgument, "unknown level");
+        st::QueryFilter f;
+        f.level = static_cast<st::Level>(q->level);
+        f.patient_name = str_arg(q->patient_name);
+        f.patient_id = str_arg(q->patient_id);
+        f.patient_birth_date = str_arg(q->patient_birth_date);
+        f.patient_sex = str_arg(q->patient_sex);
+        f.study_date = str_arg(q->study_date);
+        f.accession_number = str_arg(q->accession_number);
+        f.study_description = str_arg(q->study_description);
+        f.referring_physician = str_arg(q->referring_physician);
+        f.modality = str_arg(q->modality);
+        f.series_description = str_arg(q->series_description);
+        f.body_part = str_arg(q->body_part);
+        f.study_uid = str_arg(q->study_uid);
+        f.series_uid = str_arg(q->series_uid);
+        f.sop_instance_uid = str_arg(q->sop_instance_uid);
+        f.offset = q->offset;
+        f.limit = q->limit;
+        auto r = store->store->query(f);
+        if (!r) return fail(r.error());
+        auto* res = new siaara_store_result;
+        res->rows = std::move(r->rows);
+        res->total = r->total;
+        *out = res;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_get_series(const siaara_store* store, const char* uid, size_t len,
+                                                             siaara_store_result** out) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !uid || !out) return fail(Errc::InvalidArgument, "store, uid and out must not be NULL");
+        *out = nullptr;
+        return result_out(store->store->series_of(std::string(uid, len)), out);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_get_instances(const siaara_store* store, const char* uid, size_t len,
+                                                                siaara_store_result** out) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !uid || !out) return fail(Errc::InvalidArgument, "store, uid and out must not be NULL");
+        *out = nullptr;
+        return result_out(store->store->instances_of(std::string(uid, len)), out);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_result_count(const siaara_store_result* res, uint32_t* count,
+                                                               uint32_t* total) {
+    if (!res || !count) return fail(Errc::InvalidArgument, "result and count must not be NULL");
+    *count = static_cast<uint32_t>(res->rows.size());
+    if (total) *total = static_cast<uint32_t>(std::min<std::size_t>(res->total, UINT32_MAX));
+    return ok();
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_result_get(const siaara_store_result* res, uint32_t index,
+                                                             siaara_index_record* out, char* buf, size_t cap,
+                                                             size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!res) return fail(Errc::InvalidArgument, "result must not be NULL");
+        if (index >= res->rows.size()) return fail(Errc::NotFound, "row index out of range");
+        return record_out(res->rows[index], out, buf, cap, needed);
+    });
+}
+
+SIAARA_API void SIAARA_CALL siaara_store_result_free(siaara_store_result* res) { delete res; }
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_patient_key(const siaara_store_result* res, uint32_t index, char* buf,
+                                                              size_t cap, size_t* needed) {
+    return guarded([&]() -> siaara_status {
+        if (!res) return fail(Errc::InvalidArgument, "result must not be NULL");
+        if (index >= res->rows.size()) return fail(Errc::NotFound, "row index out of range");
+        return copy_out(st::Store::patient_key(res->rows[index]), buf, cap, needed);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_delete(siaara_store* store, int32_t level, const char* key, size_t len,
+                                                         uint32_t* removed) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !key) return fail(Errc::InvalidArgument, "store and key must not be NULL");
+        if (!level_ok(level)) return fail(Errc::InvalidArgument, "unknown level");
+        auto r = store->store->remove(static_cast<st::Level>(level), std::string(key, len));
+        if (!r) return fail(r.error());
+        if (removed) *removed = static_cast<uint32_t>(*r);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_move(siaara_store* store, siaara_store* dest, int32_t level,
+                                                       const char* key, size_t len, uint32_t* moved) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !dest || !key) return fail(Errc::InvalidArgument, "store, dest and key must not be NULL");
+        if (!level_ok(level)) return fail(Errc::InvalidArgument, "unknown level");
+        auto r = store->store->move_to(*dest->store, static_cast<st::Level>(level), std::string(key, len));
+        if (!r) return fail(r.error());
+        if (moved) *moved = static_cast<uint32_t>(*r);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_verify(siaara_store* store, int32_t deep, int32_t repair,
+                                                         siaara_store_verify_report* out) {
+    return guarded([&]() -> siaara_status {
+        if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
+        if (out && out->struct_size < sizeof(siaara_store_verify_report))
+            return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        auto r = store->store->verify(deep != 0, repair != 0);
+        if (!r) return fail(r.error());
+        if (out) {
+            auto c = [](std::size_t v) { return static_cast<uint32_t>(std::min<std::size_t>(v, UINT32_MAX)); };
+            out->checked = c(r->checked);
+            out->missing = c(r->missing);
+            out->size_mismatch = c(r->size_mismatch);
+            out->content_mismatch = c(r->content_mismatch);
+            out->orphans = c(r->orphans);
+            out->repaired = c(r->repaired);
+            out->reserved0 = 0;
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_rebuild(siaara_store* store) {
+    return guarded([&]() -> siaara_status {
+        if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
+        if (Status s = store->store->rebuild(); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_compact(siaara_store* store) {
+    return guarded([&]() -> siaara_status {
+        if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
+        if (Status s = store->store->compact(); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_set_callback(siaara_store* store, siaara_store_callback cb, void* user) {
+    return guarded([&]() -> siaara_status {
+        if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
+        if (!cb) {
+            store->store->set_callback(nullptr);
+            return ok();
+        }
+        store->store->set_callback([cb, user](const st::Event& e) {
+            try {
+                cb(user, static_cast<int32_t>(e.kind), e.sop_instance_uid.c_str(), e.series_uid.c_str(),
+                   e.study_uid.c_str());
+            } catch (...) {
+                // a callback written in C cannot throw; keep foreign unwinding out of the store
+            }
+        });
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_stats_get(const siaara_store* store, siaara_store_stats* out) {
+    return guarded([&]() -> siaara_status {
+        if (!store || !out || out->struct_size < sizeof(siaara_store_stats))
+            return fail(Errc::InvalidArgument, "store and out (with struct_size) must be set");
+        const st::StoreStats s = store->store->stats();
+        out->reserved0 = 0;
+        out->patients = s.patients;
+        out->studies = s.studies;
+        out->series = s.series;
+        out->instances = s.instances;
+        out->data_bytes = s.data_bytes;
+        out->journal_bytes = s.journal_bytes;
+        out->journal_records = s.journal_records;
+        out->snapshot_bytes = s.snapshot_bytes;
+        out->generation = s.generation;
+        out->replayed_records = s.replayed_records;
+        out->recovered_bytes = s.recovered_bytes;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_folder_scan(const char* root, size_t root_len,
+                                                        const siaara_scan_options* options, siaara_scan_callback cb,
+                                                        void* user, siaara_scan_stats* stats) {
+    return guarded([&]() -> siaara_status {
+        if (!root) return fail(Errc::InvalidArgument, "root must not be NULL");
+        if (stats && stats->struct_size < sizeof(siaara_scan_stats))
+            return fail(Errc::InvalidArgument, "stats must be set up with struct_size");
+        st::ScanOptions o;
+        if (options) {
+            if (options->struct_size < sizeof(siaara_scan_options))
+                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            o.threads = options->threads;
+            o.recursive = options->recursive != 0;
+            o.follow_symlinks = options->follow_symlinks != 0;
+            o.allow_raw = options->allow_raw != 0;
+            o.report_skipped = options->report_skipped != 0;
+            o.use_dicomdir = options->use_dicomdir != 0;
+            o.max_files = options->max_files;
+        }
+        auto r = st::scan_folder(std::string(root, root_len), [&](const st::ScanItem& item) {
+            if (!cb) return true;
+            const bool has_rec = item.kind == st::ScanKind::Instance || item.kind == st::ScanKind::Dicomdir;
+            siaara_index_record rec{};
+            rec.struct_size = sizeof rec;
+            std::string tab;
+            if (has_rec) tab = fill_index_record(item.record, &rec);
+            return cb(user, item.path.c_str(), static_cast<int32_t>(item.kind), static_cast<siaara_status>(item.status.code),
+                      has_rec ? &rec : nullptr, has_rec ? tab.c_str() : nullptr) == 0;
+        }, o);
+        if (!r) return fail(r.error());
+        if (stats) {
+            stats->used_dicomdir = r->used_dicomdir ? 1 : 0;
+            stats->files = r->files;
+            stats->instances = r->instances;
+            stats->dicomdirs = r->dicomdirs;
+            stats->skipped = r->skipped;
+            stats->errors = r->errors;
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* path, size_t path_len,
+                                                          const siaara_dicomdir_read_options* options,
+                                                          siaara_dicomdir_callback cb, void* user,
+                                                          siaara_dicomdir_summary* summary) {
+    return guarded([&]() -> siaara_status {
+        if (!path) return fail(Errc::InvalidArgument, "path must not be NULL");
+        if (summary && summary->struct_size < sizeof(siaara_dicomdir_summary))
+            return fail(Errc::InvalidArgument, "summary must be set up with struct_size");
+        st::DicomdirReadOptions o;
+        if (options) {
+            if (options->struct_size < sizeof(siaara_dicomdir_read_options))
+                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            o.include_inactive = options->include_inactive != 0;
+            o.resolve_files = options->resolve_files != 0;
+            o.case_insensitive = options->case_insensitive != 0;
+            if (options->max_depth) o.max_depth = options->max_depth;
+        }
+        auto r = st::read_dicomdir(std::string(path, path_len), [&](const st::DicomdirRecord& d) {
+            if (!cb) return true;
+            siaara_dicomdir_entry e{};
+            e.struct_size = sizeof e;
+            e.index = static_cast<uint32_t>(d.index);
+            e.parent = static_cast<int32_t>(d.parent);
+            e.depth = d.depth;
+            e.in_use = d.in_use ? 1 : 0;
+            e.file_status = static_cast<siaara_status>(d.file_status.code);
+            e.offset = d.offset;
+            siaara_index_record rec{};
+            rec.struct_size = sizeof rec;
+            const std::string tab = fill_index_record(d.keys, &rec);
+            return cb(user, &e, &rec, tab.c_str()) == 0;
+        }, o);
+        if (!r) return fail(r.error());
+        if (summary) {
+            auto c = [](std::size_t v) { return static_cast<uint32_t>(std::min<std::size_t>(v, UINT32_MAX)); };
+            summary->records = c(r->records);
+            summary->reported = c(r->reported);
+            summary->files = c(r->files);
+            summary->missing_files = c(r->missing_files);
+            summary->rejected_paths = c(r->rejected_paths);
+            summary->unreachable = c(r->unreachable);
+            summary->sequential_fallback = r->sequential_fallback ? 1 : 0;
+            summary->warnings = c(r->warnings.size());
+        }
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_write(const char* root, size_t root_len, const char* const* files,
+                                                           const size_t* lens, size_t count,
+                                                           const siaara_dicomdir_write_options* options,
+                                                           uint32_t* warnings) {
+    return guarded([&]() -> siaara_status {
+        if (!root || (count && (!files || !lens))) return fail(Errc::InvalidArgument, "root, files and lens must be set");
+        st::DicomdirWriteOptions o;
+        if (options) {
+            if (options->struct_size < sizeof(siaara_dicomdir_write_options))
+                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+            if (options->profile != SIAARA_PROFILE_GENERAL_CD && options->profile != SIAARA_PROFILE_GENERAL_USB)
+                return fail(Errc::InvalidArgument, "unknown profile");
+            o.profile = options->profile == SIAARA_PROFILE_GENERAL_USB ? st::MediaProfile::GeneralUsb
+                                                                       : st::MediaProfile::GeneralCd;
+            o.overwrite = options->overwrite != 0;
+            o.allow_any_transfer_syntax = options->allow_any_transfer_syntax != 0;
+            o.file_set_id = str_arg(options->file_set_id);
+        }
+        std::vector<std::string> paths;
+        paths.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (!files[i]) return fail(Errc::InvalidArgument, "file path is NULL");
+            paths.emplace_back(files[i], lens[i]);
+        }
+        auto r = st::write_dicomdir(std::string(root, root_len), paths, o);
+        if (!r) return fail(r.error());
+        if (warnings) *warnings = static_cast<uint32_t>(r->warnings.size());
+        return ok();
+    });
+}
+
+}  // extern "C"
