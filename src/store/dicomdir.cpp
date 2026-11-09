@@ -229,7 +229,7 @@ Result<DicomdirSummary> read_dicomdir(const std::string& utf8_path, const Dicomd
 namespace {
 
 namespace kt {
-constexpr Tag SpecificCharacterSet = 0x00080005, ImageType = 0x00080008, StudyDate = 0x00080020,
+constexpr Tag SpecificCharacterSet = 0x00080005, StudyDate = 0x00080020,
               ContentDate = 0x00080023, StudyTime = 0x00080030, ContentTime = 0x00080033,
               Accession = 0x00080050, RefSeriesSeq = 0x00081115, StudyDescription = 0x00081030,
               PatientName = 0x00100010, PatientId = 0x00100020, BirthDate = 0x00100030,
