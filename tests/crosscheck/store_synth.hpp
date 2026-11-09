@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 #include "charset/charset.hpp"
@@ -32,6 +33,8 @@ struct Spec {
     bool pixels = true;
     std::string transfer_syntax = std::string(siaara::ts::ExplicitVRLittleEndian);
     bool preamble = true;
+    std::vector<std::tuple<siaara::Tag, siaara::VR, std::string>> extra;  // more string elements
+    bool concept_name = false;  // add a Concept Name Code Sequence (for SR)
 };
 
 inline void put_text(siaara::Dataset& ds, siaara::Tag tag, siaara::VR vr, const std::string& utf8) {
@@ -74,6 +77,18 @@ inline siaara::DicomFile make_file(const Spec& s) {
     (void)ds.set_string(0x00200032, VR::DS, ipp);
     (void)ds.set_string(0x00200037, VR::DS, "1\\0\\0\\0\\1\\0");
     (void)ds.set_string(0x00200052, VR::UI, s.study_uid + ".9");
+    for (const auto& [tag, vr, value] : s.extra) put_text(ds, tag, vr, value);
+    if (s.concept_name) {
+        siaara::Dataset code;
+        (void)code.set_string(0x00080100, VR::SH, "18748-4");
+        (void)code.set_string(0x00080102, VR::SH, "LN");
+        (void)code.set_string(0x00080104, VR::LO, "Diagnostic Imaging Report");
+        siaara::Element sq;
+        sq.tag = 0x0040A043;
+        sq.vr = VR::SQ;
+        sq.items.push_back(std::move(code));
+        ds.put(std::move(sq));
+    }
     if (s.pixels) {
         (void)ds.set_uint16(0x00280002, 1);
         (void)ds.set_string(0x00280004, VR::CS, "MONOCHROME2");
