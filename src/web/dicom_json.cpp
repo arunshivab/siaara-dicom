@@ -67,6 +67,7 @@ private:
 
     Status element(const Element& e, Charset cs, std::uint32_t depth) {
         VR vr = e.vr == VR::None ? VR::UN : e.vr;
+        if (e.is_encapsulated()) vr = VR::OB;  // PS3.5 A.4: encapsulated pixel data is OB
         out_.append("{\"vr\":\"");
         out_.append(vr_name(vr));
         out_.push_back('"');

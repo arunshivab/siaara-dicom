@@ -76,7 +76,7 @@ private:
     }
 
     Status element(const Dataset& ds, const Element& e, Charset cs, std::uint32_t depth) {
-        const VR vr = e.vr == VR::None ? VR::UN : e.vr;
+        const VR vr = e.is_encapsulated() ? VR::OB : e.vr == VR::None ? VR::UN : e.vr;
         out_.append("<DicomAttribute tag=\"");
         out_.append(detail::tag_hex(e.tag));
         out_.append("\" vr=\"");

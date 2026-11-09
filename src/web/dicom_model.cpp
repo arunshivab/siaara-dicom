@@ -320,15 +320,15 @@ Status encapsulated_stream(const Element& e, std::vector<std::uint8_t>& out) {
         out.insert(out.end(), f.data(), f.data() + f.size());
         if (f.size() & 1u) out.push_back(0);
     }
-    put_tag(tags::SequenceDelimitationItem);
-    put32(0);
+    // The Sequence Delimitation Item ends the encoding but is not written: the value is the
+    // item stream (the form other implementations exchange); the parser accepts both.
     return Status::ok();
 }
 
 bool parse_encapsulated_stream(const std::vector<std::uint8_t>& data, std::vector<Bytes>& fragments) {
     fragments.clear();
     const std::size_t n = data.size();
-    if (n < 16) return false;
+    if (n < 8) return false;
     auto shared = std::make_shared<std::vector<std::uint8_t>>(data);
     std::shared_ptr<const void> owner(shared, shared.get());
     const std::uint8_t* p = shared->data();
@@ -342,7 +342,8 @@ bool parse_encapsulated_stream(const std::vector<std::uint8_t>& data, std::vecto
         fragments.emplace_back(owner, p + pos, len);
         pos += len;
     }
-    return false;
+    // Item stream without the delimiter: must end exactly at the last item.
+    return pos == n && fragments.size() >= 1;
 }
 
 void apply_utf8_charset(Dataset& ds, bool any_non_ascii) {

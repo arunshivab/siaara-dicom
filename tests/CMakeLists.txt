@@ -33,3 +33,7 @@ target_compile_options(jpeg_tool PRIVATE ${SIAARA_WARN})
 add_executable(pixel_tool crosscheck/pixel_tool.cpp)
 target_link_libraries(pixel_tool PRIVATE siaara_static)
 target_compile_options(pixel_tool PRIVATE ${SIAARA_WARN})
+# Test-only helper for tests/crosscheck/web_crosscheck.py (not installed).
+add_executable(web_tool crosscheck/web_tool.cpp)
+target_link_libraries(web_tool PRIVATE siaara_static)
+target_compile_options(web_tool PRIVATE ${SIAARA_WARN})
