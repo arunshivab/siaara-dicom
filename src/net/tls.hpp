@@ -126,7 +126,8 @@ public:
     virtual Result<std::unique_ptr<TlsTransport>> connect(const std::string& host, std::uint16_t port,
                                                           int connect_timeout_ms) = 0;
     // Wraps an already connected stream (client side) and completes the handshake. `peer_name`
-    // is the name checked when settings().expected_identity is empty. Not available on macOS,
+    // is the name checked when settings().expected_identity is empty; with both empty the call
+    // fails with Errc::InvalidArgument (unless insecure_skip_validation). Not available on macOS,
     // where Network.framework owns the TCP connection (Errc::Unsupported).
     virtual Result<std::unique_ptr<TlsTransport>> wrap_client(std::unique_ptr<Transport> stream,
                                                               const std::string& peer_name);

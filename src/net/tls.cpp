@@ -136,6 +136,15 @@ std::string expected_name(const TlsSettings& s, const std::string& host) {
     return s.expected_identity.empty() ? host : s.expected_identity;
 }
 
+Status check_client_identity(const TlsSettings& s, const std::string& name) {
+    // Without a name the server certificate can only be checked against the trust anchors, and
+    // any certificate from any trusted CA would be accepted: fail closed on every backend.
+    if (name.empty() && !s.insecure_skip_validation)
+        return Status(Errc::InvalidArgument,
+                      "TLS client: no host name and no expected_identity to verify the server certificate against");
+    return Status::ok();
+}
+
 bool is_ip_literal(const std::string& s) noexcept {
     if (s.empty()) return false;
     if (s.find(':') != std::string::npos) return true;  // DNS names never contain ':'
@@ -467,7 +476,9 @@ Result<std::unique_ptr<TlsTransport>> EngineContext::wrap_client(std::unique_ptr
                                                                  const std::string& peer_name) {
     if (role() != Role::Client) return Status(Errc::InvalidArgument, "wrap_client() needs a client TLS context");
     if (!stream) return Status(Errc::InvalidArgument, "no stream");
-    Result<std::unique_ptr<TlsEngine>> e = make_engine(expected_name(settings_, peer_name));
+    const std::string name = expected_name(settings_, peer_name);
+    if (Status v = check_client_identity(settings_, name); !v) return v;
+    Result<std::unique_ptr<TlsEngine>> e = make_engine(name);
     if (!e) return e.take_error();
     auto t = std::make_unique<EngineTransport>(shared_from_this(), std::move(stream), std::move(e).value());
     if (Status h = t->handshake(settings_.handshake_timeout_ms); !h) return h;

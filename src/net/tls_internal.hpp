@@ -40,6 +40,9 @@ void tls_log(const TlsSettings& s, const std::string& msg);
 
 // The name the client checks in the server certificate.
 std::string expected_name(const TlsSettings& s, const std::string& host);
+// Client side, before any handshake: InvalidArgument when `name` (the result of expected_name)
+// is empty and certificate validation is on. Every backend calls it.
+Status check_client_identity(const TlsSettings& s, const std::string& name);
 // True for IPv4 dotted quads and IPv6 literals (no brackets).
 bool is_ip_literal(const std::string& s) noexcept;
 

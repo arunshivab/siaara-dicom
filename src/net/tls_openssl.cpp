@@ -463,7 +463,13 @@ public:
             return Status::ok();
         }
         a_.SSL_set_connect_state(ssl_);
-        if (peer_name.empty()) return Status::ok();
+        if (peer_name.empty()) {
+            // EngineContext::wrap_client refuses this already (check_client_identity); never
+            // run a client handshake without a host name or address check.
+            if (!s_.insecure_skip_validation)
+                return Status(Errc::InvalidArgument, "TLS client: no name to verify the server certificate against");
+            return Status::ok();
+        }
         if (is_ip_literal(peer_name)) {
             // No SNI for addresses (RFC 6066 section 3); match an iPAddress subjectAltName.
             if (!s_.insecure_skip_validation &&

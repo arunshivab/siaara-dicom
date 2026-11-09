@@ -341,6 +341,7 @@ Result<std::unique_ptr<TlsTransport>> AppleContext::connect(const std::string& h
                                                             int connect_timeout_ms) {
     if (role_ != Role::Client) return Status(Errc::InvalidArgument, "connect() needs a client TLS context");
     if (host.empty()) return Status(Errc::InvalidArgument, "empty host");
+    if (Status v = check_client_identity(settings_, expected_name(settings_, host)); !v) return v;
     const std::string port_text = std::to_string(port);
     nw_endpoint_t ep = nw_endpoint_create_host(host.c_str(), port_text.c_str());
     if (!ep) return Status(Errc::InvalidArgument, "invalid host");

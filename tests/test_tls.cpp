@@ -17,6 +17,10 @@
 #include <thread>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -712,4 +716,135 @@ TEST_CASE("tls/dicomweb over https") {
     o.struct_size = 4;
     CHECK(siaara_web_client_create_tls(base.data(), base.size(), 10000, &o, &wc) == SIAARA_ERR_INVALID_ARGUMENT);
     server.stop();
+}
+
+// R-009: a client with neither a peer name nor TlsSettings::expected_identity has nothing to check
+// the server certificate against. Every backend must refuse (fail closed) instead of accepting any
+// certificate issued by a trusted CA; insecure_skip_validation is the only way around it.
+TEST_CASE("tls/R-009 client without a peer name or expected identity fails closed") {
+    if (skip("tls/R-009")) return;
+    TlsScp scp(server_tls());
+    REQUIRE(scp.start().is_ok());
+    Result<std::shared_ptr<TlsContext>> ctx = TlsContext::create(client_tls(), TlsContext::Role::Client);
+    REQUIRE(ctx.is_ok());
+#if defined(__APPLE__)
+    // Network.framework owns the TCP connection: connect() is the only client entry point.
+    Result<std::unique_ptr<TlsTransport>> c = ctx.value()->connect("", scp.port(), 3000);
+    REQUIRE(!c.is_ok());
+    CHECK_EQ(c.error().code, Errc::InvalidArgument);
+#else
+    Result<std::unique_ptr<Transport>> tcp = tcp_connect("127.0.0.1", scp.port(), 3000);
+    REQUIRE(tcp.is_ok());
+    Result<std::unique_ptr<TlsTransport>> c = ctx.value()->wrap_client(std::move(tcp).value(), "");
+    CHECK(!c.is_ok());
+    if (!c) CHECK_EQ(c.error().code, Errc::InvalidArgument);
+    // With the expected identity set, the same empty peer name is fine (the identity is checked).
+    TlsSettings named = client_tls();
+    named.expected_identity = "localhost";
+    Result<std::shared_ptr<TlsContext>> nctx = TlsContext::create(named, TlsContext::Role::Client);
+    REQUIRE(nctx.is_ok());
+    Result<std::unique_ptr<Transport>> tcp2 = tcp_connect("127.0.0.1", scp.port(), 3000);
+    REQUIRE(tcp2.is_ok());
+    Result<std::unique_ptr<TlsTransport>> ok = nctx.value()->wrap_client(std::move(tcp2).value(), "");
+    CHECK(ok.is_ok());
+    if (ok) ok.value()->close();
+    // insecure_skip_validation: allowed (and warned about).
+    TlsSettings insecure = client_tls();
+    insecure.insecure_skip_validation = true;
+    LogSink warn;
+    insecure.log = warn.fn();
+    Result<std::shared_ptr<TlsContext>> ictx = TlsContext::create(insecure, TlsContext::Role::Client);
+    REQUIRE(ictx.is_ok());
+    Result<std::unique_ptr<Transport>> tcp3 = tcp_connect("127.0.0.1", scp.port(), 3000);
+    REQUIRE(tcp3.is_ok());
+    Result<std::unique_ptr<TlsTransport>> any = ictx.value()->wrap_client(std::move(tcp3).value(), "");
+    CHECK(any.is_ok());
+    if (any) any.value()->close();
+    CHECK(warn.contains("WARNING: TLS certificate validation is disabled"));
+#endif
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+// R-021: OpenSSL must be loaded only from absolute system paths, decided before dlopen runs any
+// library constructor. The child test runs in a fresh process (the library is loaded once per
+// process) with a relative LD_LIBRARY_PATH entry pointing at planted copies of the system
+// libraries; afterwards none of the planted files may be mapped into the process.
+TEST_CASE("tls/R-021 child: loads OpenSSL with a relative LD_LIBRARY_PATH") {
+    if (!std::getenv("SIAARA_R021_CHILD")) return;  // only meaningful in the child process
+    std::string why;
+    const bool avail = tls_available(&why);
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    bool planted = false;
+    while (std::getline(maps, line))
+        if (line.find("siaara_planted_ssl") != std::string::npos) planted = true;
+    std::printf("  child: TLS %s (%s), planted copy mapped: %s\n", avail ? "available" : "unavailable", why.c_str(),
+                planted ? "YES" : "no");
+    CHECK(!planted);
+}
+
+TEST_CASE("tls/R-021 planted OpenSSL on a relative LD_LIBRARY_PATH is never loaded") {
+    if (std::getenv("SIAARA_R021_CHILD")) return;
+    std::string why;
+    if (!tls_available(&why)) {
+        std::printf("  SKIPPED tls/R-021: TLS is not available (%s)\n", why.c_str());
+        return;
+    }
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    REQUIRE(!ec);
+    // The real libraries, as this process loaded them.
+    std::string crypto, ssl;
+    {
+        std::ifstream maps("/proc/self/maps");
+        std::string line;
+        while (std::getline(maps, line)) {
+            const std::size_t slash = line.find('/');
+            if (slash == std::string::npos) continue;
+            const std::string path = line.substr(slash);
+            if (crypto.empty() && path.find("/libcrypto.so.3") != std::string::npos) crypto = path;
+            if (ssl.empty() && path.find("/libssl.so.3") != std::string::npos) ssl = path;
+        }
+    }
+    REQUIRE(!crypto.empty() && !ssl.empty());
+    const fs::path work = fs::temp_directory_path(ec) / ("siaara_r021_" + std::to_string(::getpid()));
+    const fs::path planted = work / "siaara_planted_ssl";
+    fs::create_directories(planted, ec);
+    REQUIRE(!ec);
+    fs::copy_file(crypto, planted / "libcrypto.so.3", fs::copy_options::overwrite_existing, ec);
+    REQUIRE(!ec);
+    fs::copy_file(ssl, planted / "libssl.so.3", fs::copy_options::overwrite_existing, ec);
+    REQUIRE(!ec);
+    // Relative entry: resolved against the child's working folder, where the copies are.
+    const std::string cmd = "cd " + q(work) + " && SIAARA_R021_CHILD=1 LD_LIBRARY_PATH=siaara_planted_ssl " + q(exe) +
+                            " \"tls/R-021 child\"";
+    const int rc = std::system(cmd.c_str());
+    CHECK_EQ(rc, 0);
+    fs::remove_all(work, ec);
+}
+#endif
+
+// R-041: the identity password is wiped once the identity is loaded; settings() never exposes it.
+TEST_CASE("tls/R-041 identity password is not kept in the context settings") {
+    if (skip("tls/R-041")) return;
+    TlsSettings st;
+    st.enabled = true;
+    st.identity.pkcs12_file = pki().server_p12.string();
+    st.identity.password = kP12Password;
+    Result<std::shared_ptr<TlsContext>> ctx = TlsContext::create(st, TlsContext::Role::Server);
+    REQUIRE(ctx.is_ok());
+    CHECK(ctx.value()->settings().identity.password.empty());
+    CHECK(ctx.value()->settings().identity.pkcs12_file == st.identity.pkcs12_file);
+    // The caller's own copy is untouched (it is the caller's to wipe).
+    CHECK(st.identity.password == kP12Password);
+    // The context still works after the wipe.
+    TlsListener l;
+    REQUIRE(l.listen(ctx.value(), "127.0.0.1", 0).is_ok());
+    std::thread th([&] {
+        Result<std::unique_ptr<TlsTransport>> a = l.accept(5000);
+        if (a) (void)a.value()->handshake(5000);
+    });
+    Result<std::unique_ptr<TlsTransport>> c = tls_connect(client_tls(), "127.0.0.1", l.port(), 5000);
+    CHECK(c.is_ok());
+    th.join();
 }
