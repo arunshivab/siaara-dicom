@@ -443,7 +443,11 @@ private:
         if constexpr (Lossless) {
             int rx = px + signed_err;
             rx = rx < 0 ? rx + p_.range : rx;
-            return rx > p_.maxval ? rx - p_.range : rx;
+            rx = rx > p_.maxval ? rx - p_.range : rx;
+            // A corrupt code can carry an error up to max_code_ / 2 (> RANGE): one wrap is then not
+            // enough, and an out-of-range sample would index outside the gradient table.
+            if (static_cast<unsigned>(rx) > static_cast<unsigned>(p_.maxval)) rx = ((rx % p_.range) + p_.range) % p_.range;
+            return rx;
         } else {
             int rx = px + signed_err * qstep_;
             rx += rx < -p_.near ? rspan_ : 0;

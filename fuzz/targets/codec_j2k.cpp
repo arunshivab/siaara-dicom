@@ -24,7 +24,9 @@ SIAARA_FUZZ_TARGET(codec_j2k) {
     fi.bits_stored = static_cast<std::uint16_t>(si.precision > 0 && si.precision <= 32 ? si.precision : 8);
     fi.is_signed = si.is_signed;
     const std::uint64_t n = fi.frame_bytes();
-    if (n == 0 || n > (16u << 20)) return 0;
+    // Output-proportional work: a few hundred header bytes can describe a large image (or
+    // thousands of tiles), so frames are capped at 1 MiB to keep inputs under the 2 s limit.
+    if (n == 0 || n > (1u << 20)) return 0;
     std::vector<std::uint8_t> out(static_cast<std::size_t>(n));
     (void)codec::decode_j2k(s, fi, out);
     if (small && fi.samples_per_pixel == 3) {
