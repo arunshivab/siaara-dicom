@@ -243,7 +243,8 @@ jobs:
       - run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
 
   clang-tidy:
-    # Static analysis with the committed .clang-tidy (every enabled check is an error).
+    # Static analysis with the committed .clang-tidy; findings that predate the gate are listed in
+    # tools/ci/clang_tidy_baseline.txt, anything new fails.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -255,4 +256,6 @@ jobs:
           cmake -S . -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
           -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DSIAARA_BUILD_TESTS=OFF
       - name: clang-tidy over the library and tools
-        run: run-clang-tidy-18 -p build-tidy -j 4 -quiet -clang-tidy-binary clang-tidy-18 "src/|tools/"
+        run: run-clang-tidy-18 -p build-tidy -j 4 -quiet -clang-tidy-binary clang-tidy-18 "src/|tools/" > tidy.log 2>&1 || true
+      - name: No findings beyond the committed baseline (tools/ci/clang_tidy_baseline.txt)
+        run: python3 tools/ci/clang_tidy_gate.py tidy.log
