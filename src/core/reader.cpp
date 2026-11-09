@@ -64,11 +64,13 @@ public:
                  tag == tags::DoubleFloatPixelData)) {
                 pos_ = start;
                 stopped_at_pixels_ = true;
+                stop_offset_ = start;
                 return Status::ok();
             }
 
             Element e;
             e.tag = tag;
+            e.offset = start;
             std::uint32_t len = 0;
             if (Status s = read_vr_and_length(syn, tag, e.vr, len); !s) return s;
 
@@ -115,6 +117,7 @@ public:
     }
 
     bool stopped_at_pixels() const noexcept { return stopped_at_pixels_; }
+    std::uint64_t stop_offset() const noexcept { return stop_offset_; }
 
 private:
     Tag read_tag(Syntax syn) {
@@ -258,6 +261,7 @@ private:
     std::vector<std::string>* warnings_;
     std::uint64_t element_count_ = 0;
     bool stopped_at_pixels_ = false;
+    std::uint64_t stop_offset_ = 0;
 };
 
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {
@@ -299,12 +303,17 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
             return s;
         const std::uint8_t* q = store->data();
         Bytes inflated(std::shared_ptr<const void>(store, store.get()), q, store->size());
+        out.offsets_are_file_offsets = false;
         Parser p(inflated, opt, &out.warnings);
-        return p.parse(out.dataset, *syn, inflated.size(), false, 0);
+        Status s = p.parse(out.dataset, *syn, inflated.size(), false, 0);
+        out.stopped_at_offset = p.stop_offset();
+        return s;
     }
     Parser p(data, opt, &out.warnings);
     p.seek(start);
-    return p.parse(out.dataset, *syn, data.size(), false, 0);
+    Status s = p.parse(out.dataset, *syn, data.size(), false, 0);
+    out.stopped_at_offset = p.stop_offset();
+    return s;
 }
 
 }  // namespace
@@ -377,7 +386,7 @@ Result<Dataset> read_dataset(const Bytes& data, std::string_view transfer_syntax
 }
 
 Result<DicomFile> read_file(const std::string& utf8_path, const ReadOptions& opt) {
-    auto bytes = io::map_file(utf8_path);
+    auto bytes = io::map_file(utf8_path, !opt.stop_before_pixel_data);
     if (!bytes) return bytes.take_error();
     return read_part10(*bytes, opt);
 }

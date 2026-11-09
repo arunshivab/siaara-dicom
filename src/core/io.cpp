@@ -42,7 +42,7 @@ struct WinMapping {
 };
 }  // namespace
 
-Result<Bytes> map_file(const std::string& utf8_path) {
+Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
     auto m = std::make_shared<WinMapping>();
@@ -117,7 +117,7 @@ struct PosixMapping {
 };
 }  // namespace
 
-Result<Bytes> map_file(const std::string& utf8_path) {
+Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead) {
     const int fd = ::open(utf8_path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) return Status(Errc::IoError, "cannot open file");
     struct stat st {};
@@ -139,8 +139,8 @@ Result<Bytes> map_file(const std::string& utf8_path) {
     ::close(fd);
     if (m->addr == MAP_FAILED) return read_file(utf8_path);
     m->len = len;
-#if defined(MADV_SEQUENTIAL)
-    madvise(m->addr, len, MADV_WILLNEED);
+#if defined(MADV_WILLNEED)
+    if (read_ahead) madvise(m->addr, len, MADV_WILLNEED);
 #endif
     const auto* p = static_cast<const std::uint8_t*>(m->addr);
     return Bytes(std::shared_ptr<const void>(m, m->addr), p, len);

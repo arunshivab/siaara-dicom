@@ -12,7 +12,8 @@ namespace siaara::io {
 
 // Maps (or, where mapping is unavailable, reads) a whole file read-only.
 // The returned Bytes keeps the mapping alive for as long as any view into it exists.
-Result<Bytes> map_file(const std::string& utf8_path);
+// `read_ahead` hints the OS to prefetch the whole file; turn it off for header-only scans.
+Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead = true);
 
 // Reads the whole file into memory (no mapping).
 Result<Bytes> read_file(const std::string& utf8_path);

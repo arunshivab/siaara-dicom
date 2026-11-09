@@ -24,6 +24,9 @@ struct Element {
     Tag tag = 0;
     VR vr = VR::None;
     bool undefined_length = false;   // was encoded with undefined length
+    // Byte offset of this element's header in the parsed stream (the file for native syntaxes; the
+    // inflated stream for the deflated syntax, see DicomFile::offsets_are_file_offsets). 0 if built in memory.
+    std::uint64_t offset = 0;
     Bytes value;
     std::vector<Dataset> items;
     std::vector<Bytes> fragments;
@@ -82,6 +85,10 @@ struct DicomFile {
     std::string transfer_syntax;  // UID string, padding removed
     bool had_preamble = false;
     std::vector<std::string> warnings;  // lenient-mode findings (never contain PHI)
+    // Where a header-only parse stopped (offset of the Pixel Data element), or 0.
+    std::uint64_t stopped_at_offset = 0;
+    // False for the deflated transfer syntax, where Element::offset counts in the inflated stream.
+    bool offsets_are_file_offsets = true;
 };
 
 // Strips trailing spaces/NULs (and leading spaces for VRs where they are insignificant).

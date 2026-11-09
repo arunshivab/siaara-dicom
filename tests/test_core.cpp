@@ -248,3 +248,20 @@ TEST_CASE("AT values keep (group, element) order in every byte order") {
         CHECK_EQ(g->dataset.get_int(0x00209165, 1).value_or(0), 0x00200032);
     }
 }
+
+TEST_CASE("element offsets and header-only stop offset point at the encoded bytes") {
+    DicomFile f = make_sample();
+    std::vector<std::uint8_t> buf;
+    REQUIRE(write_part10(f, buf).is_ok());
+    ReadOptions opt;
+    opt.stop_before_pixel_data = true;
+    auto g = read_part10(Bytes::copy_of(buf.data(), buf.size()), opt);
+    REQUIRE(g.is_ok());
+    CHECK(g->offsets_are_file_offsets);
+    const std::uint64_t at = g->stopped_at_offset;
+    REQUIRE(at + 4 <= buf.size());
+    CHECK(buf[at] == 0xE0 && buf[at + 1] == 0x7F && buf[at + 2] == 0x10 && buf[at + 3] == 0x00);
+    const Element* rows = g->dataset.find(tags::Rows);
+    REQUIRE(rows != nullptr);
+    CHECK(buf[rows->offset] == 0x28 && buf[rows->offset + 2] == 0x10);
+}
