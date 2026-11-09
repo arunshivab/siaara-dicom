@@ -219,9 +219,9 @@ Status encode_rle(std::span<const std::uint8_t> in, const FrameInfo& info, const
             }
             if (out.size() & 1u) out.push_back(0);  // segments are padded to even length (G.3.1)
         }
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
         out.clear();
-        return Status(Errc::OutOfMemory, "rle: out of memory");
+        return Status::out_of_memory("rle: out of memory");
     }
     return Status::ok();
 }

@@ -14,6 +14,7 @@ int main(int argc, char** argv) {
     // Name the running test if it ends in std::terminate: stdout is buffered when redirected, so its
     // last lines are lost when the process aborts.
     std::set_terminate([] {
+        std::fflush(stdout);  // keep the test's own progress lines: stdout is buffered when redirected
         std::fprintf(stderr, "std::terminate called during test case: %s\n", g_running.load() ? g_running.load() : "(none)");
         std::abort();
     });

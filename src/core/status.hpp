@@ -40,6 +40,17 @@ struct [[nodiscard]] Status {
     Status(Errc c, std::string m, std::uint64_t off = 0, std::uint32_t t = 0)
         : code(c), message(std::move(m)), offset(off), tag(t) {}
     static Status ok() { return {}; }
+    // Errc::OutOfMemory for catch handlers: never throws. The message is set only if storing it
+    // succeeds (it may need memory itself); otherwise the status has the code and no message.
+    static Status out_of_memory(const char* msg) noexcept {
+        Status s;
+        s.code = Errc::OutOfMemory;
+        try {
+            s.message = msg;
+        } catch (...) {
+        }
+        return s;
+    }
     bool is_ok() const noexcept { return code == Errc::Ok; }
     explicit operator bool() const noexcept { return is_ok(); }
 };

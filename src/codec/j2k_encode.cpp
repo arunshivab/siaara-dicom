@@ -708,8 +708,9 @@ Status TileEncoder::encode(std::uint32_t index, std::int64_t x0, std::int64_t y0
 }  // namespace
 
 Status j2k::encode(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeOptions& opt,
-                   std::vector<std::uint8_t>& out) {
+                   std::vector<std::uint8_t>& out) try {
     if (info.frame_bytes() == 0) return invalid("invalid frame parameters");
+    if (!info.encode_fits_budget(16)) return Status(Errc::LimitExceeded, "JPEG 2000 encoder: frame exceeds the memory budget");
     if (in.size() != info.frame_bytes()) return invalid("input size differs from the frame size");
     if (info.bits_allocated != 8 && info.bits_allocated != 16) return invalid("BitsAllocated must be 8 or 16");
     if (info.bits_stored < 1 || info.bits_stored > info.bits_allocated) return invalid("bad BitsStored");
@@ -821,6 +822,8 @@ Status j2k::encode(std::span<const std::uint8_t> in, const FrameInfo& info, cons
     out.insert(out.end(), tiles.begin(), tiles.end());
     put16(out, kEOC);
     return Status::ok();
+} catch (...) {
+    return Status::out_of_memory("JPEG 2000 encoder: out of memory");  // R-062: never thrown
 }
 
 Status encode_j2k(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,

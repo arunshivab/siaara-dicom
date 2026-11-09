@@ -1630,8 +1630,8 @@ Status decode_j2k(std::span<const std::uint8_t> in, const FrameInfo& info, std::
     try {
         FrameSink sink(info, out);
         return run_decoder(in, sink);
-    } catch (const std::bad_alloc&) {
-        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    } catch (...) {
+        return Status::out_of_memory("JPEG 2000: out of memory");
     }
 }
 
@@ -1640,9 +1640,9 @@ Status j2k::decode_components(std::span<const std::uint8_t> in, std::vector<Comp
         ComponentSink sink(out);
         sink.max_samples = max_samples;
         return run_decoder(in, sink);
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
         out.clear();
-        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+        return Status::out_of_memory("JPEG 2000: out of memory");
     }
 }
 
@@ -1653,8 +1653,8 @@ Status probe_impl(std::span<const std::uint8_t> in, j2k::StreamInfo& out);
 Status j2k::probe(std::span<const std::uint8_t> in, StreamInfo& out) {
     try {
         return probe_impl(in, out);
-    } catch (const std::bad_alloc&) {
-        return Status(Errc::OutOfMemory, "JPEG 2000: out of memory");
+    } catch (...) {
+        return Status::out_of_memory("JPEG 2000: out of memory");
     }
 }
 
