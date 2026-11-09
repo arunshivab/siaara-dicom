@@ -34,6 +34,12 @@
 #include <string>
 #include <vector>
 
+#include "gpu/gpu_backends.hpp"
+#include "gpu/spirv_kernels.hpp"
+#include "gpu/vulkan_api.hpp"
+#include "volume/volume.hpp"
+
+// OS headers last, so that their macros cannot reach the toolkit's headers.
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -45,11 +51,6 @@
 #else
 #include <dlfcn.h>
 #endif
-
-#include "gpu/gpu_backends.hpp"
-#include "gpu/spirv_kernels.hpp"
-#include "gpu/vulkan_api.hpp"
-#include "volume/volume.hpp"
 
 namespace siaara::gpu::vulkan {
 

@@ -102,10 +102,13 @@ std::string error_text(id err) {
 }
 
 // ---------------------------------------------------------------- MSL kernels
-const char* const kMsl = R"MSL(
+// The standard library comes first: the parameter #defines (msl_source) must not reach it.
+const char* const kMslHead = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
+)MSL";
 
+const char* const kMsl = R"MSL(
 struct Ctx {
     device const uint* P;
     device const uint* D;
@@ -348,9 +351,10 @@ static inline float3 composite(Ctx c, texture3d<float> t0, float fx, float fy) {
             if (!(a > 0.0f)) continue;
             float3 col = float3(df(c, pu(c, TfR) + e), df(c, pu(c, TfG) + e), df(c, pu(c, TfB) + e));
             if (grad) {
-                const float3 gx = float3(linear_s(c, t0, L0, p + float3(1, 0, 0)) - linear_s(c, t0, L0, p - float3(1, 0, 0)),
-                                         linear_s(c, t0, L0, p + float3(0, 1, 0)) - linear_s(c, t0, L0, p - float3(0, 1, 0)),
-                                         linear_s(c, t0, L0, p + float3(0, 0, 1)) - linear_s(c, t0, L0, p - float3(0, 0, 1))) * 0.5f;
+                const float3 ex = float3(1.0f, 0.0f, 0.0f), ey = float3(0.0f, 1.0f, 0.0f), ez = float3(0.0f, 0.0f, 1.0f);
+                const float3 gx = float3(linear_s(c, t0, L0, p + ex) - linear_s(c, t0, L0, p - ex),
+                                         linear_s(c, t0, L0, p + ey) - linear_s(c, t0, L0, p - ey),
+                                         linear_s(c, t0, L0, p + ez) - linear_s(c, t0, L0, p - ez)) * 0.5f;
                 const float3 G = float3(dot(pv3(c, Gi), gx), dot(pv3(c, Gi + 3u), gx), dot(pv3(c, Gi + 6u), gx));
                 const float gm = sqrt(dot(G, G));
                 if (gop) a *= clamp01(piecewise_gop(c, gm));
@@ -434,10 +438,11 @@ kernel void k_mip(device const uint* P [[buffer(0)]], device const uint* D [[buf
 }
 )MSL";
 
-// The parameter layout as MSL #defines (from gpu_params.hpp, so both sides cannot drift).
+// The parameter layout as MSL #defines (from gpu_params.hpp, so both sides cannot drift),
+// placed after the standard library include.
 std::string msl_source() {
     namespace P = param;
-    std::string s;
+    std::string s = kMslHead;
     auto def = [&](const char* name, std::uint32_t v) { s += std::string("#define ") + name + " " + std::to_string(v) + "u\n"; };
     def("kNone", P::kNone);
     def("kFlagLinear", P::kFlagLinear);
