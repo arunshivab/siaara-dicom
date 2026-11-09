@@ -9,6 +9,7 @@
 #include <new>
 #include <string>
 
+#include "codec/transcode.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -181,12 +182,18 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_save(const siaara_file* file, c
         if (ts_uid && !siaara::find_transfer_syntax(ts_uid))
             return fail(Errc::Unsupported, "unknown transfer syntax");
         siaara::DicomFile copy = file->file;
-        if (ts_uid) copy.transfer_syntax = ts_uid;
-        // Native-only for now: refuse to relabel encapsulated data as native or vice versa.
-        const auto* from = siaara::find_transfer_syntax(file->file.transfer_syntax);
-        const auto* to = siaara::find_transfer_syntax(copy.transfer_syntax);
-        if (from && to && from->encapsulated != to->encapsulated)
-            return fail(Errc::Unsupported, "transcoding pixel data is not available yet");
+        // A different transfer syntax is reached by transcoding. siaara_file_save never applies
+        // lossy compression; use siaara_file_transcode for that.
+        if (ts_uid && copy.transfer_syntax != ts_uid) {
+            const auto* from = siaara::find_transfer_syntax(copy.transfer_syntax);
+            const auto* to = siaara::find_transfer_syntax(ts_uid);
+            if (!from || !to || from->encapsulated || to->encapsulated) {
+                siaara::codec::TranscodeParams p;
+                p.allow_lossy = false;
+                if (Status s = siaara::codec::transcode_file(copy, ts_uid, p); !s) return fail(s);
+            }
+            copy.transfer_syntax = ts_uid;
+        }
         if (Status s = siaara::write_file(copy, std::string(path, path_len)); !s) return fail(s);
         return ok();
     });
