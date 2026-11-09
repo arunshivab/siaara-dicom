@@ -8,7 +8,7 @@ Third-party software is used purely as an oracle:
 DCMTK binaries are called by absolute path: pynetdicom installs scripts with the same names.
 
 usage: services_crosscheck.py BUILD_DIR [section ...]
-  sections: transcode dcmtk-store dcmtk-mwl dcmtk-print commitment mpps ups (default: all)
+  sections: transcode dcmtk-store dcmtk-mwl dcmtk-print commitment mpps ups tools (default: all)
 Prints one line per check (PASS/FAIL/SKIP) and the exact commands it ran.
 """
 import os
@@ -22,7 +22,8 @@ import threading
 import time
 
 BUILD = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else "build"
-SECTIONS = sys.argv[2:] or ["transcode", "dcmtk-store", "dcmtk-mwl", "dcmtk-print", "commitment", "mpps", "ups"]
+SECTIONS = sys.argv[2:] or ["transcode", "dcmtk-store", "dcmtk-mwl", "dcmtk-print", "commitment", "mpps", "ups",
+                            "tools"]
 TOOL = os.path.join(BUILD, "tests", "services_tool")
 STORESCU = os.path.join(BUILD, "tools", "siaara-storescu")
 FINDSCU = os.path.join(BUILD, "tools", "siaara-findscu")
@@ -863,13 +864,75 @@ def section_ups():
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ===================================================================== the command line tools vs DCMTK
+
+def section_tools():
+    tmp = tempfile.mkdtemp(prefix="siaara_xc_tools_")
+    files = []
+    for i, kind in enumerate(("gray8", "gray16", "rgb8")):
+        f = os.path.join(tmp, f"in{i}.dcm")
+        run([TOOL, "make-image", f, kind, "32", "24", "1", f"2.25.6000{i}"], check=True)
+        files.append(f)
+    jls = os.path.join(tmp, "in3.dcm")
+    run([TOOL, "make-image", jls, "gray16", "20", "20", "1", "2.25.60003"], check=True)
+    run([TOOL, "transcode", jls, jls + ".tmp", TS["jls"]], check=True)
+    os.replace(jls + ".tmp", jls)
+    files.append(jls)
+    db = os.path.join(tmp, "qrdb")
+    os.makedirs(db)
+    rx = os.path.join(tmp, "dest")
+    os.makedirs(rx)
+    dport = free_port()
+    dest = Server([os.path.join(DCMTK, "storescp"), "-aet", "DEST", "+xa", "-od", rx, str(dport)], port=dport)
+    qport = free_port()
+    cfg = os.path.join(tmp, "dcmqrscp.cfg")
+    with open(cfg, "w") as f:
+        f.write(f"NetworkTCPPort = {qport}\nMaxPDUSize = 16384\nMaxAssociations = 16\n")
+        f.write(f"HostTable BEGIN\ndest = (DEST, 127.0.0.1, {dport})\nHostTable END\n")
+        f.write("VendorTable BEGIN\nVendorTable END\n")
+        f.write(f"AETable BEGIN\nQRSCP {db} RW (200, 1024mb) ANY\nAETable END\n")
+    qr = Server([os.path.join(DCMTK, "dcmqrscp"), "-c", cfg, str(qport)], port=qport)
+    cmd = [STORESCU, "-aec", "QRSCP", "--async", "4", "127.0.0.1", str(qport)] + files
+    p = run(cmd)
+    record("siaara-storescu --async 4 -> DCMTK dcmqrscp", p.returncode == 0,
+           " ".join(cmd) + " -> " + p.stdout.strip().replace("\n", " | ")[-300:] + p.stderr.strip()[-200:])
+    cmd = [FINDSCU, "-S", "-L", "IMAGE", "-aec", "QRSCP", "-k", "StudyInstanceUID=2.25.1001",
+           "-k", "SeriesInstanceUID=2.25.1002", "-k", "SOPInstanceUID", "-q", "127.0.0.1", str(qport)]
+    p = run(cmd)
+    record("siaara-findscu -S -L IMAGE -> DCMTK dcmqrscp", p.returncode == 0 and "4 match(es)" in p.stdout,
+           " ".join(cmd) + " -> " + p.stdout.strip())
+    out = os.path.join(tmp, "got")
+    cmd = [os.path.join(BUILD, "tools", "siaara-getscu"), "-S", "-L", "STUDY", "-aec", "QRSCP", "--compressed",
+           "-k", "StudyInstanceUID=2.25.1001", "-od", out, "-q", "127.0.0.1", str(qport)]
+    p = run(cmd)
+    same = 0
+    got_files = sorted(os.listdir(out)) if os.path.isdir(out) else []
+    for f in files:
+        uid = "2.25.6000" + os.path.basename(f)[2]
+        g = os.path.join(out, uid + ".dcm")
+        if os.path.exists(g) and frames_of(g, tmp)[0] == frames_of(f, tmp)[0]:
+            same += 1
+    record("siaara-getscu -S -L STUDY -> DCMTK dcmqrscp", p.returncode == 0 and same == 4,
+           " ".join(cmd) + f" -> {len(got_files)} file(s), {same} with identical pixels; " + p.stdout.strip()[-120:])
+    cmd = [os.path.join(BUILD, "tools", "siaara-movescu"), "-S", "-L", "STUDY", "-aec", "QRSCP", "-aem", "DEST",
+           "-k", "StudyInstanceUID=2.25.1001", "-q", "127.0.0.1", str(qport)]
+    p = run(cmd)
+    time.sleep(0.5)
+    record("siaara-movescu -S -L STUDY -> DCMTK dcmqrscp (to DCMTK storescp)",
+           p.returncode == 0 and len(os.listdir(rx)) == 4, " ".join(cmd) + f" -> {p.stdout.strip()}; "
+           f"{len(os.listdir(rx))} file(s) at the destination")
+    qr.stop()
+    dest.stop()
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     if not os.path.exists(TOOL):
         print(f"services_tool not found in {BUILD}")
         return 2
     table = {"transcode": section_transcode, "dcmtk-store": section_dcmtk_store, "dcmtk-mwl": section_dcmtk_mwl,
              "dcmtk-print": section_dcmtk_print, "commitment": section_commitment, "mpps": section_mpps,
-             "ups": section_ups}
+             "ups": section_ups, "tools": section_tools}
     for s in SECTIONS:
         try:
             table[s]()
