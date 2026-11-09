@@ -9,10 +9,12 @@
 #include <string>
 #include <vector>
 
+#include "codec/transcode.hpp"
 #include "core/dataset.hpp"
 #include "core/status.hpp"
 #include "net/association.hpp"
 #include "net/dimse.hpp"
+#include "net/spool.hpp"
 
 namespace siaara::net {
 
@@ -27,6 +29,9 @@ struct StoreRequest {
     std::optional<std::uint16_t> move_originator_message_id;
     Bytes raw;        // the data set exactly as received, encoded in `transfer_syntax`
     Dataset dataset;  // parsed from `raw`
+    // Set when the data set was received to disk (net/spool.hpp): a complete Part 10 file whose
+    // mapping `raw` and `dataset` view. Move it into place with spool->commit(path).
+    std::shared_ptr<SpoolFile> spool;
 };
 
 // Builds a Part 10 file (file meta + data set) from a received instance.
@@ -57,6 +62,18 @@ struct ScuConfig {
     Timeouts timeouts;
     AssociationLimits limits;
     std::optional<UserIdentityRq> identity;
+    // ---- transcoding, streaming and negotiation extras
+    // C-STORE: convert an instance when the SCP accepted only other transfer syntaxes
+    // (net/store_support.hpp). Lossy conversion only when transcode_params.allow_lossy.
+    bool transcode = true;
+    codec::TranscodeParams transcode_params = [] {
+        codec::TranscodeParams p;
+        p.allow_lossy = false;
+        return p;
+    }();
+    std::optional<SpoolConfig> spool;                       // C-GET: receive large instances to disk
+    std::optional<AsyncWindow> async_window;                // propose an Asynchronous Operations Window
+    std::vector<ExtendedNegotiation> extended_negotiation;  // SOP Class Extended Negotiation items
 };
 
 class Scu {
@@ -109,6 +126,8 @@ public:
         Dataset dataset;
     };
     Result<NResponse> n_request(Command rq, const Dataset* ds = nullptr);
+
+    const ScuConfig& config() const noexcept { return cfg_; }
 
 private:
     Result<Message> wait_response(std::uint16_t message_id, std::uint16_t response_field);

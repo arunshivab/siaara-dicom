@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -158,6 +159,7 @@ struct Message {
     Bytes data;                   // raw data set in `transfer_syntax`
     std::string transfer_syntax;  // of the presentation context
     std::string abstract_syntax;
+    std::shared_ptr<SpoolFile> spool;  // set when the data set was received to disk (net/spool.hpp)
 };
 
 enum class DimseKind { Message, PeerReleaseRequest };
@@ -172,6 +174,8 @@ Status send_dimse(Association& a, std::uint8_t context_id, const Command& c, con
 Status send_dimse_raw(Association& a, std::uint8_t context_id, const Command& c, const std::uint8_t* data,
                       std::size_t len);
 Result<DimseReceived> receive_dimse(Association& a, int timeout_ms);
+// Same; data sets larger than spool->threshold are received into a Part 10 spool file.
+Result<DimseReceived> receive_dimse(Association& a, int timeout_ms, const SpoolConfig* spool);
 // Parses the data set of a message with its transfer syntax.
 Result<Dataset> decode_message_dataset(const Message& m);
 
