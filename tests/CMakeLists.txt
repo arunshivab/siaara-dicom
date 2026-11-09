@@ -43,3 +43,8 @@ target_compile_options(pixel_tool PRIVATE ${SIAARA_TEST_WARN})
 add_executable(charset_tool crosscheck/charset_tool.cpp)
 target_link_libraries(charset_tool PRIVATE siaara_static)
 target_compile_options(charset_tool PRIVATE ${SIAARA_TEST_WARN})
+target_compile_options(siaara_codec_tool PRIVATE ${SIAARA_WARN})
+# Test-only JPEG 2000 tool for tests/crosscheck/j2k_crosscheck.py (not installed).
+add_executable(j2k_tool crosscheck/j2k_tool.cpp)
+target_link_libraries(j2k_tool PRIVATE siaara_static)
+target_compile_options(j2k_tool PRIVATE ${SIAARA_WARN})
