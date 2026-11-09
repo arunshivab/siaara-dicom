@@ -21,6 +21,10 @@
 // one packed RGBA8 uint per pixel.
 #if defined(__APPLE__) || defined(SIAARA_METAL_COMPILE_CHECK)
 
+// objc_msgSend is declared as void(void) and must be cast to each method's exact type.
+#ifndef OBJC_OLD_DISPATCH_PROTOTYPES
+#define OBJC_OLD_DISPATCH_PROTOTYPES 0
+#endif
 #include <objc/message.h>
 #include <objc/runtime.h>
 

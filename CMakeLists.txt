@@ -63,6 +63,10 @@ if(APPLE)
   # Network.framework (TLS), Security.framework (identities, trust), CoreFoundation (OS frameworks).
   target_link_libraries(siaara PRIVATE "-framework Network" "-framework Security" "-framework CoreFoundation")
   target_link_libraries(siaara_static PUBLIC "-framework Network" "-framework Security" "-framework CoreFoundation")
+  # GPU backend (src/gpu/metal_backend.cpp, plain C++ over the Objective-C runtime): Metal.framework,
+  # Foundation.framework (OS frameworks) and the Objective-C runtime library.
+  target_link_libraries(siaara PRIVATE "-framework Metal" "-framework Foundation" objc)
+  target_link_libraries(siaara_static PUBLIC "-framework Metal" "-framework Foundation" objc)
 endif()
 
 if(SIAARA_BUILD_TESTS)
