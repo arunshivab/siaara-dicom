@@ -62,7 +62,53 @@ bool in_buffer(const Bytes& buf, const std::uint8_t* p) noexcept {
     return p && buf.data() && p >= buf.data() && p <= buf.data() + buf.size();
 }
 
+constexpr struct {
+    Tag tag;
+    Str key;
+} kKeys[] = {
+    {tags::PatientID, Str::PatientId},
+    {t::IssuerOfPatientId, Str::IssuerOfPatientId},
+    {tags::PatientName, Str::PatientName},
+    {t::BirthDate, Str::PatientBirthDate},
+    {t::Sex, Str::PatientSex},
+    {tags::StudyInstanceUID, Str::StudyInstanceUid},
+    {t::StudyDate, Str::StudyDate},
+    {t::StudyTime, Str::StudyTime},
+    {t::AccessionNumber, Str::AccessionNumber},
+    {t::StudyId, Str::StudyId},
+    {t::StudyDescription, Str::StudyDescription},
+    {t::ReferringPhysician, Str::ReferringPhysician},
+    {tags::SeriesInstanceUID, Str::SeriesInstanceUid},
+    {tags::Modality, Str::Modality},
+    {t::SeriesDescription, Str::SeriesDescription},
+    {t::BodyPart, Str::BodyPartExamined},
+    {t::SeriesDate, Str::SeriesDate},
+    {t::SeriesTime, Str::SeriesTime},
+    {t::FrameOfReference, Str::FrameOfReferenceUid},
+    {tags::SOPClassUID, Str::SopClassUid},
+    {tags::SOPInstanceUID, Str::SopInstanceUid},
+    {tags::PhotometricInterpretation, Str::PhotometricInterpretation},
+    {t::ContentDate, Str::ContentDate},
+    {t::ContentTime, Str::ContentTime},
+    {t::ImageType, Str::ImageType},
+};
+
 }  // namespace
+
+void read_keys(const Dataset& ds, const charset::CharacterSet& cs, IndexRecord& out, bool overlay) {
+    for (const auto& k : kKeys)
+        if (!overlay || ds.contains(k.tag)) out[k.key] = text(ds, k.tag, cs);
+    if (auto v = ds.get_int(t::SeriesNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
+        out.series_number = static_cast<std::int32_t>(*v);
+        out.flags |= kHasSeriesNumber;
+    }
+    if (auto v = ds.get_int(t::InstanceNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
+        out.instance_number = static_cast<std::int32_t>(*v);
+        out.flags |= kHasInstanceNumber;
+    }
+}
+
+std::string element_text(const Dataset& ds, Tag tag, const charset::CharacterSet& cs) { return text(ds, tag, cs); }
 
 bool looks_like_dicom(const std::uint8_t* p, std::size_t n, bool allow_raw) noexcept {
     if (has_part10_header(p, n)) return true;
@@ -90,45 +136,13 @@ Status extract_index(const Bytes& data, IndexRecord& out, const ExtractOptions& 
     if (f.had_preamble) out.flags |= kHadPreamble;
     const charset::CharacterSet cs = charset::character_set_of(ds);
 
-    out[Str::PatientId] = text(ds, tags::PatientID, cs);
-    out[Str::IssuerOfPatientId] = text(ds, t::IssuerOfPatientId, cs);
-    out[Str::PatientName] = text(ds, tags::PatientName, cs);
-    out[Str::PatientBirthDate] = text(ds, t::BirthDate, cs);
-    out[Str::PatientSex] = text(ds, t::Sex, cs);
-    out[Str::StudyInstanceUid] = text(ds, tags::StudyInstanceUID, cs);
-    out[Str::StudyDate] = text(ds, t::StudyDate, cs);
-    out[Str::StudyTime] = text(ds, t::StudyTime, cs);
-    out[Str::AccessionNumber] = text(ds, t::AccessionNumber, cs);
-    out[Str::StudyId] = text(ds, t::StudyId, cs);
-    out[Str::StudyDescription] = text(ds, t::StudyDescription, cs);
-    out[Str::ReferringPhysician] = text(ds, t::ReferringPhysician, cs);
-    out[Str::SeriesInstanceUid] = text(ds, tags::SeriesInstanceUID, cs);
-    out[Str::Modality] = text(ds, tags::Modality, cs);
-    out[Str::SeriesDescription] = text(ds, t::SeriesDescription, cs);
-    out[Str::BodyPartExamined] = text(ds, t::BodyPart, cs);
-    out[Str::SeriesDate] = text(ds, t::SeriesDate, cs);
-    out[Str::SeriesTime] = text(ds, t::SeriesTime, cs);
-    out[Str::FrameOfReferenceUid] = text(ds, t::FrameOfReference, cs);
-    out[Str::SopClassUid] = text(ds, tags::SOPClassUID, cs);
+    read_keys(ds, cs, out, false);
+    out[Str::TransferSyntaxUid] = std::string(trim(f.transfer_syntax));
     if (out[Str::SopClassUid].empty()) out[Str::SopClassUid] = text(f.meta, tags::MediaStorageSOPClassUID, cs);
-    out[Str::SopInstanceUid] = text(ds, tags::SOPInstanceUID, cs);
     if (out[Str::SopInstanceUid].empty())
         out[Str::SopInstanceUid] = text(f.meta, tags::MediaStorageSOPInstanceUID, cs);
-    out[Str::TransferSyntaxUid] = std::string(trim(f.transfer_syntax));
-    out[Str::PhotometricInterpretation] = text(ds, tags::PhotometricInterpretation, cs);
-    out[Str::ContentDate] = text(ds, t::ContentDate, cs);
-    out[Str::ContentTime] = text(ds, t::ContentTime, cs);
-    out[Str::ImageType] = text(ds, t::ImageType, cs);
     if (auto v = ds.get_raw_string(tags::SpecificCharacterSet)) out[Str::SpecificCharacterSet] = std::string(trim(*v));
 
-    if (auto v = ds.get_int(t::SeriesNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
-        out.series_number = static_cast<std::int32_t>(*v);
-        out.flags |= kHasSeriesNumber;
-    }
-    if (auto v = ds.get_int(t::InstanceNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
-        out.instance_number = static_cast<std::int32_t>(*v);
-        out.flags |= kHasInstanceNumber;
-    }
     if (get_doubles(ds, t::Position, out.position, 3)) out.flags |= kHasPosition;
     if (get_doubles(ds, t::Orientation, out.orientation, 6)) out.flags |= kHasOrientation;
     if (get_doubles(ds, t::PixelSpacing, out.pixel_spacing, 2)) out.flags |= kHasPixelSpacing;

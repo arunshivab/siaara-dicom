@@ -12,6 +12,8 @@
 #include <string>
 #include <string_view>
 
+#include "charset/charset.hpp"
+#include "core/dataset.hpp"
 #include "core/status.hpp"
 #include "core/types.hpp"
 
@@ -87,6 +89,12 @@ struct ExtractOptions {
 Status extract_index(const Bytes& data, IndexRecord& out, const ExtractOptions& opt = {});
 // Memory-maps the file and extracts it.
 Status extract_index_file(const std::string& utf8_path, IndexRecord& out, const ExtractOptions& opt = {});
+
+// Fills the key strings (and Series/Instance Number) present in `ds`, decoding text with `cs`.
+// overlay = true leaves keys the data set does not contain untouched.
+void read_keys(const Dataset& ds, const charset::CharacterSet& cs, IndexRecord& out, bool overlay);
+// One element's whole value as UTF-8 (all values, backslash separated), padding removed.
+std::string element_text(const Dataset& ds, Tag tag, const charset::CharacterSet& cs);
 
 // Cheap test on the first bytes: preamble + "DICM", or a plausible raw data set start
 // (a group 0002/0008 element with a valid explicit VR or a sane implicit length).
