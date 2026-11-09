@@ -143,6 +143,7 @@ internal static class InteropTests
                 return p.WorkingSet64;
             }
             Round(20_000, true); // warm-up
+            long liveBefore = SiaaraLibrary.LiveHandleCount;
             long start = Rss();
             for (int r = 0; r < 3; r++)
             {
@@ -161,7 +162,10 @@ internal static class InteropTests
             Console.WriteLine($"  RSS: start {start / 1024} KiB, after 60,000 disposed {afterDispose / 1024} KiB, " +
                 $"after 20,000 finalized {afterFinalize1 / 1024} KiB, after 80,000 finalized {afterFinalize4 / 1024} KiB");
             Check(afterDispose - start < 16L * 1024 * 1024);
-            Check(afterFinalize4 - afterFinalize1 < 16L * 1024 * 1024);
+            // The finalizer path is checked exactly with the native live-handle counter: RSS after
+            // finalization depends on GC heap sizing and varies between runners (21 MB seen on CI).
+            Check(SiaaraLibrary.LiveHandleCount == liveBefore);
+            Check(afterFinalize4 - afterFinalize1 < 64L * 1024 * 1024);
         });
     }
 }
