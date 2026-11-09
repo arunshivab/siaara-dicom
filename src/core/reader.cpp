@@ -168,7 +168,7 @@ public:
                         e.vr = VR::UN;
                         e.value = buf_.sub(vstart, static_cast<std::size_t>(vend) - vstart);
                     }
-                    advance_to(vend);
+                    if (Status s = advance_to(vend, tag); !s) return s;
                 } else {
                     std::size_t unit = 0;
                     // Pixel samples wider than 16 bits stored as OW are big-endian per sample, not
@@ -184,7 +184,7 @@ public:
                         e.value = value_bytes(e.vr, pos_, len, syn, unit);
                     if (depth == 0 && tag == tags::BitsAllocated && e.value.size() >= 2)
                         bits_allocated_ = load_le16(e.value.data());
-                    advance_to(vend);
+                    if (Status s = advance_to(vend, tag); !s) return s;
                 }
             }
             if (ordered && !ds.empty() && !(ds.elements().back().tag < e.tag)) ordered = false;
@@ -199,10 +199,14 @@ public:
 
 private:
     // Moves the cursor forward to `to`. Children are bounded by their parent (limit_), so the
-    // cursor can never be past `to` here; the max() keeps it monotonic regardless (R-001).
-    void advance_to(std::uint64_t to) noexcept {
-        assert(pos_ <= to);
-        if (to > pos_) pos_ = static_cast<std::size_t>(to);
+    // cursor can never be past `to` here; the cursor never moves backwards (R-001). If a child did
+    // overrun its parent that is a parser bug: report it as Internal in every build instead of
+    // asserting only in Debug (R-051).
+    [[nodiscard]] Status advance_to(std::uint64_t to, Tag tag) {
+        if (pos_ > to)
+            return Status(Errc::Internal, "parser cursor moved past the end of its parent", pos_, tag);
+        pos_ = static_cast<std::size_t>(to);
+        return Status::ok();
     }
 
     static std::string tag_text(Tag t) {
@@ -348,13 +352,19 @@ private:
                     iend = limit_;
                 }
                 if (Status s = parse(item, syn, iend, false, depth + 1); !s) return s;
-                advance_to(iend);
+                if (Status s = advance_to(iend, e.tag); !s) return s;
             }
             e.items.push_back(std::move(item));
         }
     }
 
+    // Every scan and cursor move here is bounded by limit_, the end of the innermost enclosing
+    // defined-length container, not by the end of the data: an undefined-length OB inside a
+    // defined-length item must never take bytes that belong to the item's parent (R-051).
+    // Strict mode fails with Malformed (inside a parent) or Truncated (top level); lenient mode
+    // clamps to limit_ and warns.
     Status parse_fragments(Element& e, Syntax syn) {
+        const bool in_parent = limit_ < size_;
         while (true) {
             if (limit_ - pos_ < 8) return lenient_or(Errc::Truncated, "missing pixel data sequence delimiter");
             const std::size_t start = pos_;
@@ -368,36 +378,42 @@ private:
                     // fragment, after an empty Basic Offset Table.
                     static constexpr std::uint8_t delim[8] = {0xFE, 0xFF, 0xDD, 0xE0, 0, 0, 0, 0};
                     std::size_t d = start;
-                    while (d + 8 <= size_ && std::memcmp(p_ + d, delim, 8) != 0) ++d;
-                    const std::size_t stop = d + 8 <= size_ ? d : size_;
+                    while (limit_ - d >= 8 && std::memcmp(p_ + d, delim, 8) != 0) ++d;
+                    const bool found = limit_ - d >= 8;
+                    const std::size_t stop = found ? d : limit_;
                     warn("encapsulated pixel data without items; " + std::to_string(stop - start) +
-                         " bytes read as one fragment");
+                         " bytes read as one fragment" +
+                         (found ? std::string() : in_parent ? "; no delimiter before the end of the parent, clamped"
+                                                            : "; no delimiter before the end of the data"));
                     e.fragments.push_back(Bytes());
                     e.fragments.push_back(buf_.sub(start, stop - start));
-                    pos_ = stop + 8 <= size_ ? stop + 8 : size_;
+                    pos_ = found ? stop + 8 : limit_;
                     return Status::ok();
                 }
-                warn("pixel data fragments end without a sequence delimiter; " + std::to_string(size_ - start) +
-                     " trailing bytes ignored");
-                pos_ = size_;
+                warn("pixel data fragments end without a sequence delimiter; " + std::to_string(limit_ - start) +
+                     " trailing bytes ignored" + (in_parent ? " up to the end of the parent" : ""));
+                pos_ = limit_;
                 return Status::ok();
             }
             if (e.fragments.size() >= opt_.max_fragments)
                 return Status(Errc::LimitExceeded, "too many pixel data fragments", start, e.tag);
             std::uint64_t fend = 0;
-            if (len == kUndefinedLength || !checked_add(pos_, len, fend) || (fend > limit_ && limit_ == size_)) {
-                if (!opt_.lenient) return Status(Errc::Truncated, "fragment runs past end of data", start, e.tag);
-                warn("last pixel data fragment truncated at end of data");
-                if (pos_ < size_) e.fragments.push_back(buf_.sub(pos_, size_ - pos_));
-                pos_ = size_;
-                return Status::ok();
-            }
-            if (fend > limit_) {
+            if (len == kUndefinedLength || !checked_add(pos_, len, fend) || fend > limit_) {
                 if (!opt_.lenient)
-                    return Status(Errc::Malformed, "fragment runs past end of parent item", start, e.tag);
-                warn("fragment runs past end of parent; clamped");
-                len = static_cast<std::uint32_t>(limit_ - pos_);
-                fend = limit_;
+                    return in_parent ? Status(Errc::Malformed, "fragment runs past end of parent item", start, e.tag)
+                                     : Status(Errc::Truncated, "fragment runs past end of data", start, e.tag);
+                if (in_parent && len != kUndefinedLength) {
+                    // A defined length past the parent: clamp this fragment and keep reading.
+                    warn("fragment runs past end of parent; clamped");
+                    len = static_cast<std::uint32_t>(limit_ - pos_);
+                    fend = limit_;
+                } else {
+                    warn(in_parent ? "pixel data fragment of undefined length; clamped at end of parent"
+                                   : "last pixel data fragment truncated at end of data");
+                    if (pos_ < limit_) e.fragments.push_back(buf_.sub(pos_, limit_ - pos_));
+                    pos_ = limit_;
+                    return Status::ok();
+                }
             }
             e.fragments.push_back(buf_.sub(pos_, len));
             pos_ = static_cast<std::size_t>(fend);
