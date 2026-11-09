@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -24,6 +25,37 @@
 #include "image/pixel_info.hpp"
 
 namespace siaara::image {
+
+// Adjustments made in lenient mode when an encapsulated codestream's own header (JPEG SOF, JPEG-LS
+// SOF55, JPEG 2000 SIZ) disagrees with the Image Pixel module. The numeric values are stable (they
+// are part of the C API as SIAARA_FRAME_WARN_*). Strict mode refuses such frames instead.
+enum class FrameWarningCode : std::uint16_t {
+    None = 0,
+    // JPEG 2000 / JPEG-LS precision below Bits Stored: values are used as decoded (no scaling).
+    PrecisionBelowBitsStored = 1,
+    // JPEG 2000 / JPEG-LS precision above Bits Stored (but within Bits Allocated): values are kept
+    // and info().bits_stored reports the codestream precision (taken from frame 0).
+    PrecisionAboveBitsStored = 2,
+    // JPEG 2000 component signedness differs from Pixel Representation: the low `precision` bits of
+    // each decoded sample are reinterpreted as Pixel Representation says (two's complement or not).
+    SignednessMismatch = 3,
+    // The codestream has more components than Samples per Pixel: the first ones are used.
+    ExtraComponents = 4,
+    // The codestream image is larger than Rows x Columns: the top-left Rows x Columns are used.
+    CodestreamCropped = 5,
+    // The codestream precision exceeds Bits Allocated: frames decode only if every value fits Bits
+    // Allocated (otherwise the frame fails); info().bits_stored reports Bits Allocated.
+    PrecisionAboveBitsAllocated = 6,
+    // Bits Allocated is a container the codec does not produce: decoded at the codestream's own
+    // sample size and widened into Bits Allocated.
+    ContainerWidened = 7,
+};
+
+struct FrameWarning {
+    FrameWarningCode code = FrameWarningCode::None;
+    std::uint32_t frame = 0;  // 0-based frame index
+    std::string message;      // codestream and attribute values only (never patient data)
+};
 
 struct FrameOptions {
     // Largest buffer the frame API allocates for decoded pixels in one call (decode() returning a
@@ -51,13 +83,25 @@ public:
         return encapsulated_ && (codec_ == Codec::Jpeg2000 || codec_ == Codec::Htj2k);
     }
     const FrameOptions& options() const noexcept { return opt_; }
+    // Text of every warning, including the messages of frame_warnings().
     const std::vector<std::string>& warnings() const noexcept { return warnings_; }
+    // Codestream / attribute disagreements found in frame 0 when the reader was opened (lenient
+    // mode, JPEG family codecs). Other frames are checked when decoded: see check_frame().
+    const std::vector<FrameWarning>& frame_warnings() const noexcept { return frame_warnings_; }
+    // Bits Stored as the data set declares it (info().bits_stored may differ: see
+    // FrameWarningCode::PrecisionAboveBitsStored).
+    std::uint16_t declared_bits_stored() const noexcept { return declared_bits_stored_; }
+    // The adjustments decode(index) makes for frame `index` (header probe only, no decoding).
+    // Fails with the error decode() would report when the frame cannot be adjusted.
+    Status check_frame(std::uint32_t index, std::vector<FrameWarning>& out) const;
 
     // Size in bytes of one decoded frame (see the layout rules above).
     std::uint64_t frame_bytes() const noexcept { return frame_bytes_; }
 
     // Decodes frame `index` into out[0 .. frame_bytes()). Thread-safe (const, no shared state).
     Status decode(std::uint32_t index, std::span<std::uint8_t> out) const;
+    // As above; `warnings` (may be null) receives the adjustments made for this frame.
+    Status decode(std::uint32_t index, std::span<std::uint8_t> out, std::vector<FrameWarning>* warnings) const;
     Result<std::vector<std::uint8_t>> decode(std::uint32_t index) const;
 
     // Decodes frames [first, first + count) into consecutive frame_bytes() slots of `out`, using
@@ -83,7 +127,10 @@ private:
 
     Status index_fragments(const Dataset& ds);
     Status decode_native(std::uint32_t index, std::span<std::uint8_t> out) const;
-    Status decode_encapsulated(std::uint32_t index, std::span<std::uint8_t> out) const;
+    Status decode_encapsulated(std::uint32_t index, std::span<std::uint8_t> out,
+                               std::vector<FrameWarning>* warnings) const;
+    Status frame_data(std::uint32_t index, std::span<const std::uint8_t>& data, std::vector<std::uint8_t>& joined) const;
+    void probe_first_frame();
 
     PixelInfo info_;
     FrameOptions opt_;
@@ -92,6 +139,8 @@ private:
     bool encapsulated_ = false;
     std::uint64_t frame_bytes_ = 0;
     std::vector<std::string> warnings_;
+    std::vector<FrameWarning> frame_warnings_;
+    std::uint16_t declared_bits_stored_ = 0;
 
     // native
     Bytes native_;
