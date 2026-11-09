@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Test runner: a plain console app (no test framework packages). Arguments: optional
+       "layout-exe PATH" (with two leading dashes; the CMake target siaara_csharp_struct_layout),
+       "repo PATH", and test-name prefixes. See bindings/csharp/README.md. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Siaara.Tests</AssemblyName>
+    <RootNamespace>Siaara.Tests</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>false</IsPackable>
+    <SiaaraRepoRootForTests>$(SiaaraRepoRoot)</SiaaraRepoRootForTests>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Siaara/Siaara.csproj" />
+    <ProjectReference Include="../../src/Siaara.Interop/Siaara.Interop.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SiaaraRepoRoot</_Parameter1>
+      <_Parameter2>$(SiaaraRepoRoot)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>
