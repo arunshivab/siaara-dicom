@@ -350,3 +350,62 @@ jobs:
           ./aot-out/siaara-aot-sample
       - name: Pack (local package with this OS's native library)
         run: dotnet pack bindings/csharp/src/Siaara -c Release
+
+  app:
+    # SIAARA Viewer (app/): build with zero downloads and run the app test runner against the
+    # native library built in the same job. Restore and build run with a fresh package folder and a
+    # dead proxy, so any attempt to reach a feed fails the job; afterwards the folder must hold only
+    # the vendored Blazor script pack (app/vendor/packs).
+    name: app-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build the native library (Release)
+        run: |
+          cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rel --config Release --parallel --target siaara
+      - name: Vendored pack matches its checksum
+        shell: bash
+        run: |
+          py=python3; command -v python3 >/dev/null || py=python
+          $py - <<'PY'
+          import hashlib, pathlib
+          d = pathlib.Path("app/vendor/packs")
+          for line in (d / "SHA256SUMS").read_text().splitlines():
+              digest, name = line.split()
+              got = hashlib.sha256((d / name).read_bytes()).hexdigest()
+              assert got == digest, f"{name}: {got} != {digest}"
+              print("ok", name)
+          PY
+      - name: Restore and build offline (fresh package folder, dead proxy; warnings are errors)
+        shell: bash
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/app-nuget-packages
+          NUGET_HTTP_CACHE_PATH: ${{ runner.temp }}/app-nuget-http
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          http_proxy: http://127.0.0.1:9
+          https_proxy: http://127.0.0.1:9
+          NO_PROXY: ""
+          no_proxy: ""
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+        run: |
+          dotnet restore app/Siaara.Viewer.slnx
+          dotnet build app/Siaara.Viewer.slnx -c Release --no-restore
+          echo "package folder:"; ls "$NUGET_PACKAGES"
+          extra=$(ls "$NUGET_PACKAGES" | grep -v '^microsoft.aspnetcore.app.internal.assets$' || true)
+          if [ -n "$extra" ]; then echo "fetched packs that are not vendored: $extra"; exit 1; fi
+          if [ -d "$NUGET_HTTP_CACHE_PATH" ] && [ -n "$(ls -A "$NUGET_HTTP_CACHE_PATH")" ]; then echo "a feed was contacted"; exit 1; fi
+      - name: App tests (console runner; performance reported, not failing)
+        shell: bash
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/app-nuget-packages
+        run: dotnet run --project app/tests/Siaara.Viewer.Tests -c Release --no-build -- --quick
