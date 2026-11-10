@@ -115,6 +115,39 @@ per-row adaptive filters). Output in an owned `siaara_buffer`.
 - `siaara_gpu_select` affects views that have not rendered on the GPU yet; views that did keep
   their device.
 
+## 9a. Opening by path: read, map, or decide by size (R-160)
+
+`siaara_read_options.open_mode` (C++ `ReadOptions::open_mode`, `io::OpenMode`; C#
+`DicomReadOptions.OpenMode`):
+
+| value | what happens | default constant |
+|---|---|---|
+| `SIAARA_OPEN_AUTO` (default, `io::kDefaultOpenMode`) | files up to `open_read_threshold` are read into owned memory, larger ones are mapped | `io::kDefaultOpenReadThreshold` = 256 MiB |
+| `SIAARA_OPEN_MAP` | always the zero-copy mapping | - |
+| `SIAARA_OPEN_READ` | always owned memory; a file above `open_read_max_bytes` is `SIAARA_ERR_LIMIT_EXCEEDED`, a failed allocation `SIAARA_ERR_OUT_OF_MEMORY` | `io::kDefaultOpenReadMaxBytes` = 4 GiB |
+
+Why: a mapped file is not a private copy. A file on a shared or network folder that another
+process shortens while it is mapped ends the process when a missing page is touched (SIGBUS;
+an in-page exception on Windows). Owned memory has no such exposure.
+
+- AUTO applies to `siaara_file_open` and to everything else that opens someone else's file by
+  path: `siaara_store_add_file`, DICOMDIR reading and writing, repair and the validation scan,
+  volumes built from paths, the files an SCU sends.
+- MAP is kept, on purpose, for the store's own instance files when the SCP and the DICOMweb
+  server send them (owner-only files that are only ever replaced by rename), for the store's
+  index files, and for header-only scans (`siaara_scan_folder`, `siaara_extract_index`), which
+  touch a few pages of each file. A store that *references* files in place
+  (`SIAARA_ADD_REFERENCE`) serves those files mapped too: keep referenced files on storage that
+  nobody rewrites in place.
+- What MAP re-checks: the file's size against the mapped length, right after mapping and again
+  when frames are opened for decoding (`SIAARA_ERR_TRUNCATED`). On POSIX the check is by name and
+  inode (a file replaced by rename is a different file and the old mapping stays whole); on
+  Windows through the open handle. This narrows the window and cannot close it: the file can
+  still be shortened between the check and the access, and element values other than pixel data
+  are read through the mapping without a second check.
+- Identical in all modes: values, zero-copy accessors, warnings and the read report, and
+  keep-as-read saves (byte-identical).
+
 ## 10. Removed: SUV and ROI statistics (ABI change)
 
 Owner's rule: the toolkit returns DICOM data; applications do the calculations. Removed from the

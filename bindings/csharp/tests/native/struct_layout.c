@@ -13,6 +13,10 @@ int main(void) {
     printf("F siaara_read_options strict %u\n", (unsigned)offsetof(siaara_read_options, strict));
     printf("F siaara_read_options max_depth %u\n", (unsigned)offsetof(siaara_read_options, max_depth));
     printf("F siaara_read_options recover_overlong_lengths %u\n", (unsigned)offsetof(siaara_read_options, recover_overlong_lengths));
+    printf("F siaara_read_options open_mode %u\n", (unsigned)offsetof(siaara_read_options, open_mode));
+    printf("F siaara_read_options reserved0 %u\n", (unsigned)offsetof(siaara_read_options, reserved0));
+    printf("F siaara_read_options open_read_threshold %u\n", (unsigned)offsetof(siaara_read_options, open_read_threshold));
+    printf("F siaara_read_options open_read_max_bytes %u\n", (unsigned)offsetof(siaara_read_options, open_read_max_bytes));
     printf("S siaara_read_report %u\n", (unsigned)sizeof(siaara_read_report));
     printf("F siaara_read_report struct_size %u\n", (unsigned)offsetof(siaara_read_report, struct_size));
     printf("F siaara_read_report loss %u\n", (unsigned)offsetof(siaara_read_report, loss));

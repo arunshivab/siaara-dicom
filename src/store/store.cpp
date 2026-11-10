@@ -1300,7 +1300,7 @@ Result<std::unique_ptr<Store>> Store::open(const std::string& utf8_root, const S
 }
 
 Result<AddOutcome> Store::add_file(const std::string& utf8_path, DuplicatePolicy policy, AddMode mode) {
-    auto bytes = io::map_file(utf8_path);
+    auto bytes = io::open_file(utf8_path);  // someone else's file: read or mapped as io::kDefaultOpenMode says
     if (!bytes) return bytes.take_error();
     std::string ref;
     if (mode == AddMode::Reference) {

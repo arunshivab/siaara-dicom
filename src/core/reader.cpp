@@ -972,7 +972,12 @@ Result<DicomFile> read_dataset_report(const Bytes& data, std::string_view transf
 }
 
 Result<DicomFile> read_file(const std::string& utf8_path, const ReadOptions& opt) {
-    auto bytes = io::map_file(utf8_path, !opt.stop_before_pixel_data);
+    io::OpenOptions oo;
+    oo.mode = opt.open_mode;
+    oo.read_threshold = opt.open_read_threshold;
+    oo.read_max_bytes = opt.open_read_max_bytes;
+    oo.read_ahead = !opt.stop_before_pixel_data;
+    auto bytes = io::open_file(utf8_path, oo);  // a mapping's size is re-checked in there
     if (!bytes) return bytes.take_error();
     return read_part10(*bytes, opt);
 }

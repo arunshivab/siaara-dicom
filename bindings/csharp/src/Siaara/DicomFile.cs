@@ -8,6 +8,20 @@ using Siaara.Interop;
 
 namespace Siaara;
 
+/// <summary>How a file opened by path is brought into memory (SIAARA_OPEN_*).</summary>
+public enum DicomOpenMode
+{
+    /// <summary>Default: files up to <see cref="DicomReadOptions.OpenReadThreshold"/> are read into owned memory,
+    /// larger ones are memory-mapped.</summary>
+    Auto = C.SIAARA_OPEN_AUTO,
+    /// <summary>Always the zero-copy mapping. If another process shortens the file while it is mapped the process
+    /// can be ended when the missing pages are touched; the size is re-checked after mapping and before pixel data
+    /// is decoded, which narrows that window but does not close it.</summary>
+    Map = C.SIAARA_OPEN_MAP,
+    /// <summary>Always owned memory (at most <see cref="DicomReadOptions.OpenReadMaxBytes"/>).</summary>
+    Read = C.SIAARA_OPEN_READ,
+}
+
 /// <summary>Options for parsing a Part 10 file (siaara_read_options).</summary>
 public sealed record DicomReadOptions
 {
@@ -29,6 +43,17 @@ public sealed record DicomReadOptions
     /// the library default (currently on); false for data that did not come from a trusted local file.</summary>
     public bool? RecoverOverlongLengths { get; init; }
 
+    /// <summary>Opening by path only: read the file into memory, map it, or decide by size (default
+    /// <see cref="DicomOpenMode.Auto"/>). Values, the read report and unchanged saves are the same in every mode.</summary>
+    public DicomOpenMode OpenMode { get; init; } = DicomOpenMode.Auto;
+
+    /// <summary><see cref="DicomOpenMode.Auto"/>: files up to this many bytes are read, larger ones mapped;
+    /// 0 = library default (256 MiB).</summary>
+    public long OpenReadThreshold { get; init; }
+
+    /// <summary><see cref="DicomOpenMode.Read"/>: a larger file is refused; 0 = library default (4 GiB).</summary>
+    public long OpenReadMaxBytes { get; init; }
+
     internal siaara_read_options ToNative() => new()
     {
         struct_size = StructSize.Of<siaara_read_options>(),
@@ -37,6 +62,9 @@ public sealed record DicomReadOptions
         strict = Strict ? 1 : 0,
         max_depth = (uint)Math.Max(0, MaxDepth),
         recover_overlong_lengths = RecoverOverlongLengths switch { true => 1, false => 2, null => 0 },
+        open_mode = (int)OpenMode,
+        open_read_threshold = (ulong)Math.Max(0, OpenReadThreshold),
+        open_read_max_bytes = (ulong)Math.Max(0, OpenReadMaxBytes),
     };
 }
 

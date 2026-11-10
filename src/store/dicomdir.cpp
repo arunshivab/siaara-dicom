@@ -82,7 +82,7 @@ std::string_view record_type_for(std::string_view uid) noexcept {
 Result<DicomdirSummary> read_dicomdir(const std::string& utf8_path, const DicomdirCallback& cb,
                                       const DicomdirReadOptions& opt) {
     DicomdirSummary sum;
-    auto bytes = io::map_file(utf8_path);
+    auto bytes = io::open_file(utf8_path);
     if (!bytes) return bytes.take_error();
     auto file = read_part10(*bytes);
     if (!file) return file.take_error();
@@ -376,7 +376,7 @@ Result<DicomdirWriteSummary> write_dicomdir(const std::string& utf8_root, const 
     std::uint64_t step = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
         if (opt.progress && !opt.progress(step++, steps)) return Status(Errc::Cancelled, "DICOMDIR write cancelled");
-        auto bytes = io::map_file(files[i]);
+        auto bytes = io::open_file(files[i]);
         if (!bytes) return Status(bytes.error().code, "cannot read input file " + std::to_string(i));
         auto f = read_part10(*bytes);
         if (!f) return Status(f.error().code, "input file " + std::to_string(i) + " is not readable DICOM");
@@ -477,7 +477,7 @@ Result<DicomdirWriteSummary> write_dicomdir(const std::string& utf8_root, const 
                     for (const auto& c : leaf.file_id) dest /= u8path(c);
                     fs::create_directories(dest.parent_path(), ec);
                     if (ec) return Status(Errc::IoError, "cannot create a media folder");
-                    auto bytes = io::map_file(files[leaf.source]);
+                    auto bytes = io::open_file(files[leaf.source]);
                     if (!bytes) return bytes.take_error();
                     if (has_part10_header(bytes->data(), bytes->size())) {
                         if (Status s = write_replace(dest, bytes->data(), bytes->size(), false); !s) return s;

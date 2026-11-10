@@ -1,6 +1,8 @@
 // SIAARA DICOM Toolkit - frame access. Written from DICOM PS3.5 8.1, 8.2, A.4 and PS3.3 C.7.6.3.1.8.
 #include "image/frames.hpp"
 
+#include "core/io.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -359,6 +361,9 @@ Result<FrameReader> FrameReader::open(const Dataset& ds, std::string_view ts_uid
     if (!e) return Status(Errc::NotFound, "frames: pixel data missing", 0, r.info_.pixel_tag);
     if (e->is_sequence()) return Status(Errc::Malformed, "frames: pixel data is a sequence", 0, e->tag);
     r.encapsulated_ = e->is_encapsulated();
+    // R-160: pixel data in a memory-mapped file that has been shortened since is not touched.
+    if (Status m = io::check_mapping(e->is_encapsulated() && !e->fragments.empty() ? e->fragments.back().data() : e->value.data()); !m)
+        return Status(m.code, "frames: " + m.message, 0, e->tag);
 
     if (r.encapsulated_) {
         if (r.info_.kind != SampleKind::Integer)

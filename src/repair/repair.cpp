@@ -981,7 +981,7 @@ Result<Report> repair_files(std::span<const std::string> inputs, const std::stri
                 if (same_file(in, w.out_path))
                     return Status(Errc::InvalidArgument, "an output path is an input file; choose another output folder");
         }
-        auto bytes = io::map_file(inputs[i], true);
+        auto bytes = io::open_file(inputs[i]);
         if (bytes) w.data = std::move(bytes).value();
     }
     for (Work& w : works)
@@ -998,7 +998,7 @@ Result<Report> repair_file(const std::string& input, const std::string& output, 
     if (opt.write && output.empty()) return Status(Errc::InvalidArgument, "an output path is required to write a repair");
     if (!output.empty() && same_file(input, output))
         return Status(Errc::InvalidArgument, "the output path is the input file; a repair always writes a new file");
-    auto bytes = io::map_file(input, true);
+    auto bytes = io::open_file(input);
     if (!bytes) return bytes.take_error();
     std::vector<Work> works(1);
     works[0].in_path = input;

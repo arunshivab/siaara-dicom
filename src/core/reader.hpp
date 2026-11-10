@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/dataset.hpp"
+#include "core/io.hpp"
 #include "core/status.hpp"
 
 namespace siaara {
@@ -39,6 +40,17 @@ struct ReadOptions {
     // to explicit VR or big endian data, to binary VRs or to group 7FE0. Readers of data that
     // did not come from a local file (network receivers) should pass false.
     bool recover_overlong_lengths = kRecoverOverlongLengthsDefault;
+    // read_file() only (R-160): how the file is brought into memory - io::OpenMode::Auto (default:
+    // read into owned memory up to open_read_threshold bytes, memory-mapped above it), Map
+    // (always the zero-copy mapping) or Read (always owned memory, at most open_read_max_bytes;
+    // a larger file is Errc::LimitExceeded). A mapped file that another process shortens can end
+    // the process when the missing pages are touched; the size is re-checked after mapping and
+    // before pixel data is decoded (Errc::Truncated), which narrows that window but cannot close
+    // it. Values, zero-copy accessors, the read report and keep-as-read saves are the same in
+    // all three modes.
+    io::OpenMode open_mode = io::kDefaultOpenMode;
+    std::uint64_t open_read_threshold = io::kDefaultOpenReadThreshold;
+    std::uint64_t open_read_max_bytes = io::kDefaultOpenReadMaxBytes;
 };
 
 // Parses a complete Part 10 file held in `data` (the Bytes keeps the storage alive; values in

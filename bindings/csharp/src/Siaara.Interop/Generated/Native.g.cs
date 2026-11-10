@@ -45,6 +45,9 @@ internal static class C
     public const int SIAARA_RECOVER_DEFAULT = 0;
     public const int SIAARA_RECOVER_ON = 1;
     public const int SIAARA_RECOVER_OFF = 2;
+    public const int SIAARA_OPEN_AUTO = 0;
+    public const int SIAARA_OPEN_MAP = 1;
+    public const int SIAARA_OPEN_READ = 2;
     public const int SIAARA_FILE_WARNING_GENERAL = 0;
     public const int SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1;
     public const int SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2;
@@ -598,6 +601,10 @@ internal struct siaara_read_options
     public int strict;
     public uint max_depth;
     public int recover_overlong_lengths;
+    public int open_mode;
+    public uint reserved0;
+    public ulong open_read_threshold;
+    public ulong open_read_max_bytes;
 }
 
 /// <summary>siaara_read_report (blittable, C layout).</summary>

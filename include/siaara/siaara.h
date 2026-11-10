@@ -93,14 +93,42 @@ typedef struct siaara_read_options {
      * SIAARA_READ_RECOVERED, so a save is refused unless incomplete saves are allowed).
      * SIAARA_RECOVER_DEFAULT (0) takes the library default, currently on. */
     int32_t recover_overlong_lengths;
+    /* Read only when struct_size covers them. How siaara_file_open (and every other function that
+     * takes a path and these options) brings the file into memory: SIAARA_OPEN_*. Ignored by
+     * siaara_file_open_memory.
+     *
+     * A memory-mapped file is not a private copy: if another process shortens the file while it
+     * is mapped (a file on a shared or network folder being rewritten in place), touching a page
+     * past the new end ends the process (SIGBUS on POSIX, an in-page error on Windows). Reading
+     * the file into owned memory has no such exposure and costs the file's size in memory.
+     *   SIAARA_OPEN_AUTO (0, the default): files up to open_read_threshold bytes are read into
+     *     owned memory; larger files are memory-mapped.
+     *   SIAARA_OPEN_MAP: always the zero-copy mapping. The file's size is checked against the
+     *     mapped length after mapping and again before pixel data is decoded
+     *     (SIAARA_ERR_TRUNCATED when it became shorter). That narrows the window; it does not
+     *     close it. Use it for files nobody else rewrites in place.
+     *   SIAARA_OPEN_READ: always owned memory. A file larger than open_read_max_bytes is
+     *     SIAARA_ERR_LIMIT_EXCEEDED (nothing is read); a failed allocation SIAARA_ERR_OUT_OF_MEMORY.
+     * Values, zero-copy accessors, the read report and keep-as-read saves are identical in all
+     * three modes. */
+    int32_t open_mode;
+    uint32_t reserved0;              /* set to 0 */
+    uint64_t open_read_threshold;    /* SIAARA_OPEN_AUTO: 0 = default, 256 MiB */
+    uint64_t open_read_max_bytes;    /* SIAARA_OPEN_READ: 0 = default, 4 GiB */
 } siaara_read_options;
 enum {
     SIAARA_RECOVER_DEFAULT = 0, /* the library default */
     SIAARA_RECOVER_ON = 1,
     SIAARA_RECOVER_OFF = 2
 };
+enum {
+    SIAARA_OPEN_AUTO = 0, /* the default: read small files, map large ones */
+    SIAARA_OPEN_MAP = 1,
+    SIAARA_OPEN_READ = 2
+};
 
-/* Opens and parses a file. options may be NULL. Caller owns *out: free with siaara_file_free. */
+/* Opens and parses a file. options may be NULL (SIAARA_OPEN_AUTO then applies too). Caller owns
+ * *out: free with siaara_file_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* utf8_path, size_t path_len,
                                                       const siaara_read_options* options,
                                                       siaara_file** out);
@@ -1224,18 +1252,23 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, co
 #define SIAARA_LOSSY_HISTORY_NOT_APPLICABLE 0 /* no lossy compression applied: both untouched */
 #define SIAARA_LOSSY_HISTORY_ALIGNED 1        /* the source had as many Ratio as Method values (or
                                                  neither): one value appended to each */
-#define SIAARA_LOSSY_HISTORY_METHOD_FILLED 2  /* LOSSY_METHOD_FILLED: the source had one more Ratio
-                                                 than Method value and its pixel data was lossy
-                                                 coded in JPEG baseline/extended (.50/.51:
-                                                 ISO_10918_1), JPEG-LS near-lossless (.81:
-                                                 ISO_14495_1), JPEG 2000 (.91: ISO_15444_1) or
-                                                 HTJ2K (.203: ISO_15444_15); that Method value
+#define SIAARA_LOSSY_HISTORY_METHOD_FILLED 2  /* LOSSY_METHOD_FILLED: the source had exactly one
+                                                 Ratio value and no Method value, and its pixel
+                                                 data was lossy coded in JPEG baseline/extended
+                                                 (.50/.51: ISO_10918_1), JPEG-LS near-lossless
+                                                 (.81: ISO_14495_1), JPEG 2000 (.91: ISO_15444_1)
+                                                 or HTJ2K (.203: ISO_15444_15); that Method value
                                                  was filled in (lossy_method_filled), then one
                                                  value appended to each */
 #define SIAARA_LOSSY_HISTORY_MISALIGNED 3     /* LOSSY_HISTORY_MISALIGNED: any other mismatch (source
-                                                 not lossy coded, a gap of 2 or more, more Method
-                                                 than Ratio values): the Ratio was appended, Method
-                                                 was left exactly as it was */
+                                                 not lossy coded, more than one earlier step - e.g.
+                                                 2 Ratio and 1 Method value -, more Method than
+                                                 Ratio values): the Ratio was appended, Method was
+                                                 left exactly as it was. Pairing caveat: the two
+                                                 lists are then NOT pairs value by value, also when
+                                                 they have become equally long (a source with one
+                                                 more Method than Ratio value): do not read value i
+                                                 of one as belonging to value i of the other */
 
 typedef struct siaara_transcode_report {
     uint32_t struct_size;         /* set to sizeof(siaara_transcode_report) */

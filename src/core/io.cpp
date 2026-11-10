@@ -6,7 +6,10 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -46,6 +49,88 @@ Status write_slices(ExclusiveFile& f, const Slice* parts, std::size_t part_count
 }
 }  // namespace
 
+// ---------------------------------------------------------------- live mappings (R-160)
+namespace {
+struct MappingEntry {
+    std::size_t len = 0;
+    std::string path;
+    std::uint64_t id_a = 0, id_b = 0;
+    void* handle = nullptr;
+};
+struct MappingRegistry {
+    std::mutex mu;
+    std::map<const std::uint8_t*, MappingEntry> live;
+};
+// Never destroyed: mappings may be released during static destruction.
+MappingRegistry& mappings() {
+    static MappingRegistry* r = new MappingRegistry;
+    return *r;
+}
+}  // namespace
+
+namespace detail {
+void register_mapping(const void* addr, std::size_t len, const std::string& utf8_path, std::uint64_t id_a,
+                      std::uint64_t id_b, void* handle) {
+    if (!addr || len == 0) return;
+    MappingRegistry& r = mappings();
+    const std::lock_guard<std::mutex> l(r.mu);
+    r.live[static_cast<const std::uint8_t*>(addr)] = MappingEntry{len, utf8_path, id_a, id_b, handle};
+}
+void unregister_mapping(const void* addr) noexcept {
+    if (!addr) return;
+    MappingRegistry& r = mappings();
+    const std::lock_guard<std::mutex> l(r.mu);
+    r.live.erase(static_cast<const std::uint8_t*>(addr));
+}
+}  // namespace detail
+
+Status check_mapping(const std::uint8_t* p) noexcept {
+    if (!p) return Status::ok();
+    try {
+        MappingRegistry& r = mappings();
+        std::unique_lock<std::mutex> l(r.mu);
+        auto it = r.live.upper_bound(p);
+        if (it == r.live.begin()) return Status::ok();
+        --it;
+        if (static_cast<std::size_t>(p - it->first) >= it->second.len) return Status::ok();
+#if defined(_WIN32)
+        // Under the lock: the handle is open for as long as the mapping is registered.
+        const MappingEntry& e = it->second;
+        LARGE_INTEGER size{};
+        if (!e.handle || !GetFileSizeEx(static_cast<HANDLE>(e.handle), &size)) return Status::ok();
+        if (size.QuadPart >= 0 && static_cast<std::uint64_t>(size.QuadPart) < e.len)
+            return Status(Errc::Truncated, "the file was shortened after it was memory-mapped");
+#else
+        const MappingEntry e = it->second;
+        l.unlock();  // the stat may be slow (network folders)
+        struct stat st {};
+        // By name: the mapping holds no descriptor. Another file under the name (replaced by
+        // rename) or no file at all leaves the mapped one intact.
+        if (::stat(e.path.c_str(), &st) != 0) return Status::ok();
+        if (static_cast<std::uint64_t>(st.st_dev) != e.id_a || static_cast<std::uint64_t>(st.st_ino) != e.id_b)
+            return Status::ok();
+        if (st.st_size >= 0 && static_cast<std::uint64_t>(st.st_size) < e.len)
+            return Status(Errc::Truncated, "the file was shortened after it was memory-mapped");
+#endif
+        return Status::ok();
+    } catch (...) {
+        return Status(Errc::Internal, "mapping check failed");
+    }
+}
+
+Result<Bytes> open_file(const std::string& utf8_path, const OpenOptions& opt) {
+    if (opt.mode == OpenMode::Read) return read_file(utf8_path, opt.read_max_bytes);
+    if (opt.mode == OpenMode::Auto) {
+        // Small enough: owned memory. Larger (the only case read_file answers LimitExceeded): mapped.
+        auto r = read_file(utf8_path, opt.read_threshold);
+        if (r || r.error().code != Errc::LimitExceeded) return r;
+    }
+    auto m = map_file(utf8_path, opt.read_ahead);
+    if (!m) return m;
+    if (Status s = check_mapping(m->data()); !s) return s;
+    return m;
+}
+
 Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
     const Slice one{data, size};
     return write_parts_atomic(utf8_path, &one, 1, {}, [&utf8_path]() -> Result<std::string> { return utf8_path; }, mode);
@@ -69,6 +154,7 @@ struct WinMapping {
     HANDLE map = nullptr;
     const void* view = nullptr;
     ~WinMapping() {
+        detail::unregister_mapping(view);
         if (view) UnmapViewOfFile(view);
         if (map) CloseHandle(map);
         if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
@@ -92,11 +178,12 @@ Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead) {
     m->view = MapViewOfFile(m->map, FILE_MAP_READ, 0, 0, 0);
     if (!m->view) return read_file(utf8_path);
     const auto* p = static_cast<const std::uint8_t*>(m->view);
+    detail::register_mapping(m->view, static_cast<std::size_t>(size.QuadPart), utf8_path, 0, 0, m->file);
     return Bytes(std::shared_ptr<const void>(m, m->view), p,
                  static_cast<std::size_t>(size.QuadPart));
 }
 
-Result<Bytes> read_file(const std::string& utf8_path) {
+Result<Bytes> read_file(const std::string& utf8_path, std::uint64_t max_bytes) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
     // Full sharing, FILE_SHARE_DELETE included: reading a file never stops write_file_atomic (or
@@ -107,20 +194,25 @@ Result<Bytes> read_file(const std::string& utf8_path) {
     std::unique_ptr<void, decltype(&CloseHandle)> guard(h, &CloseHandle);
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(h, &size) || size.QuadPart < 0) return Status(Errc::IoError, "cannot get file size");
+    if (static_cast<std::uint64_t>(size.QuadPart) > max_bytes)
+        return Status(Errc::LimitExceeded, "file is larger than the read limit");
     if (static_cast<unsigned long long>(size.QuadPart) > static_cast<unsigned long long>(SIZE_MAX))
         return Status(Errc::OutOfMemory, "file too large for memory");
-    auto store = std::make_shared<std::vector<std::uint8_t>>(static_cast<std::size_t>(size.QuadPart));
+    const std::size_t len = static_cast<std::size_t>(size.QuadPart);
+    if (len == 0) return Bytes{};
+    std::shared_ptr<std::uint8_t[]> store(new (std::nothrow) std::uint8_t[len]);
+    if (!store) return Status(Errc::OutOfMemory, "out of memory reading the file");
     std::size_t got = 0;
-    while (got < store->size()) {
-        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(store->size() - got, 1u << 30));
+    while (got < len) {
+        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(len - got, 1u << 30));
         DWORD n = 0;
-        if (!ReadFile(h, store->data() + got, chunk, &n, nullptr)) return Status(Errc::IoError, "read failed");
+        if (!ReadFile(h, store.get() + got, chunk, &n, nullptr)) return Status(Errc::IoError, "read failed");
         if (n == 0) break;  // the file shrank while being read
         got += n;
     }
-    if (got != store->size()) return Status(Errc::IoError, "read failed");
-    const std::uint8_t* p = store->data();
-    return Bytes(std::shared_ptr<const void>(store, store.get()), p, store->size());
+    if (got != len) return Status(Errc::IoError, "read failed");
+    const std::uint8_t* p = store.get();
+    return Bytes(std::shared_ptr<const void>(store, store.get()), p, len);
 }
 
 namespace {
@@ -295,7 +387,10 @@ struct PosixMapping {
     void* addr = MAP_FAILED;
     std::size_t len = 0;
     ~PosixMapping() {
-        if (addr != MAP_FAILED) munmap(addr, len);
+        if (addr != MAP_FAILED) {
+            detail::unregister_mapping(addr);
+            munmap(addr, len);
+        }
     }
 };
 }  // namespace
@@ -326,10 +421,12 @@ Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead) {
     if (read_ahead) madvise(m->addr, len, MADV_WILLNEED);
 #endif
     const auto* p = static_cast<const std::uint8_t*>(m->addr);
+    detail::register_mapping(m->addr, len, utf8_path, static_cast<std::uint64_t>(st.st_dev),
+                             static_cast<std::uint64_t>(st.st_ino), nullptr);
     return Bytes(std::shared_ptr<const void>(m, m->addr), p, len);
 }
 
-Result<Bytes> read_file(const std::string& utf8_path) {
+Result<Bytes> read_file(const std::string& utf8_path, std::uint64_t max_bytes) {
     const int fd = ::open(utf8_path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) return Status(Errc::IoError, "cannot open file");
     struct stat st {};
@@ -337,19 +434,37 @@ Result<Bytes> read_file(const std::string& utf8_path) {
         ::close(fd);
         return Status(Errc::IoError, "cannot stat file");
     }
-    auto store = std::make_shared<std::vector<std::uint8_t>>(static_cast<std::size_t>(st.st_size));
+    if (st.st_size < 0 || static_cast<std::uint64_t>(st.st_size) > max_bytes) {
+        ::close(fd);
+        return Status(Errc::LimitExceeded, "file is larger than the read limit");
+    }
+    if (static_cast<std::uint64_t>(st.st_size) > SIZE_MAX) {
+        ::close(fd);
+        return Status(Errc::OutOfMemory, "file too large for memory");
+    }
+    const std::size_t len = static_cast<std::size_t>(st.st_size);
+    if (len == 0) {
+        ::close(fd);
+        return Bytes{};
+    }
+    std::shared_ptr<std::uint8_t[]> store(new (std::nothrow) std::uint8_t[len]);
+    if (!store) {
+        ::close(fd);
+        return Status(Errc::OutOfMemory, "out of memory reading the file");
+    }
     std::size_t done = 0;
-    while (done < store->size()) {
-        const ssize_t n = ::read(fd, store->data() + done, store->size() - done);
-        if (n <= 0) {
+    while (done < len) {
+        const ssize_t n = ::read(fd, store.get() + done, len - done);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {  // an error, or the file became shorter while it was read
             ::close(fd);
             return Status(Errc::IoError, "read failed");
         }
         done += static_cast<std::size_t>(n);
     }
     ::close(fd);
-    const std::uint8_t* p = store->data();
-    return Bytes(std::shared_ptr<const void>(store, store.get()), p, store->size());
+    const std::uint8_t* p = store.get();
+    return Bytes(std::shared_ptr<const void>(store, store.get()), p, len);
 }
 
 namespace {

@@ -26,6 +26,9 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
 - Part 10 reading and writing with byte-for-byte fidelity for unedited files; lenient reading
   with a full report of what was unusual and whether the read was complete; files that were not
   read completely are never saved or sent as if whole unless explicitly allowed.
+- Opening a file by path is an option (`open_mode`): by default files up to 256 MiB are read
+  into the library's own memory and larger ones are memory-mapped; always-read and always-map
+  can be chosen. Values, the read report and unchanged saves are the same in every mode.
 - Data dictionary and UID registry from the standard; a private-tag dictionary built only from
   vendor conformance statements (Siemens, GE, Philips, Canon/Toshiba, Varian, Elekta).
 - Access by tag, keyword, path and named module; DICOM JSON and XML.
@@ -88,6 +91,12 @@ Stated plainly, so that nobody finds them by surprise.
   (`state_folder`); without one it is lost when the SCP stops.
 - One recovery heuristic of the file reader (overlong element lengths as written by some GE
   systems) is on, in a narrowed form, for local file reads and off for all network input.
+- **Memory-mapped files and files that shrink.** A file that is memory-mapped (larger than
+  256 MiB by default, or opened with `SIAARA_OPEN_MAP`; also files a store references in place,
+  and header-only folder scans) and is shortened by another process while mapped can end the
+  process when the missing part is touched. The size is re-checked after mapping and before
+  pixel data is decoded (`SIAARA_ERR_TRUNCATED`), which narrows the window but cannot close it.
+  For files on shared or network folders that others rewrite in place, use `SIAARA_OPEN_READ`.
 - Only 8- and 16-bit integer pixel data can be recoded by the transcoder; other pixel data is
   carried unchanged or the transcode is refused.
 - A blocking C call occupies its thread; the C# `...Async` methods run it on a pool thread.

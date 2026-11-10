@@ -356,6 +356,7 @@ struct WinMap {
     HANDLE map = nullptr;
     const void* view = nullptr;
     ~WinMap() {
+        io::detail::unregister_mapping(view);
         if (view) UnmapViewOfFile(view);
         if (map) CloseHandle(map);
         if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
@@ -378,6 +379,7 @@ Result<Bytes> map_for_header(const std::string& utf8_path) {
     m->view = MapViewOfFile(m->map, FILE_MAP_READ, 0, 0, 0);
     if (!m->view) return io::read_file(utf8_path);
     const auto* q = static_cast<const std::uint8_t*>(m->view);
+    io::detail::register_mapping(m->view, static_cast<std::size_t>(size.QuadPart), utf8_path, 0, 0, m->file);
     return Bytes(std::shared_ptr<const void>(m, m->view), q, static_cast<std::size_t>(size.QuadPart));
 }
 #else
@@ -386,7 +388,10 @@ struct PosixMap {
     void* addr = MAP_FAILED;
     std::size_t len = 0;
     ~PosixMap() {
-        if (addr != MAP_FAILED) munmap(addr, len);
+        if (addr != MAP_FAILED) {
+            io::detail::unregister_mapping(addr);
+            munmap(addr, len);
+        }
     }
 };
 }  // namespace
@@ -417,6 +422,9 @@ Result<Bytes> map_for_header(const std::string& utf8_path) {
     (void)madvise(m->addr, len, MADV_RANDOM);
 #endif
     const auto* q = static_cast<const std::uint8_t*>(m->addr);
+    io::detail::register_mapping(m->addr, len, utf8_path, static_cast<std::uint64_t>(st.st_dev),
+                                 static_cast<std::uint64_t>(st.st_ino), nullptr);
+    if (Status s = io::check_mapping(q); !s) return s;
     return Bytes(std::shared_ptr<const void>(m, m->addr), q, len);
 }
 #endif

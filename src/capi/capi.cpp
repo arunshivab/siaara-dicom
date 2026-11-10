@@ -121,6 +121,13 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
         if (o->recover_overlong_lengths == SIAARA_RECOVER_ON) r.recover_overlong_lengths = true;
         else if (o->recover_overlong_lengths == SIAARA_RECOVER_OFF) r.recover_overlong_lengths = false;
     }
+    // R-160. An unknown open_mode keeps the default (the safest of the three for small files).
+    if (o->struct_size >= offsetof(siaara_read_options, open_read_max_bytes) + sizeof(uint64_t)) {
+        if (o->open_mode == SIAARA_OPEN_MAP) r.open_mode = siaara::io::OpenMode::Map;
+        else if (o->open_mode == SIAARA_OPEN_READ) r.open_mode = siaara::io::OpenMode::Read;
+        if (o->open_read_threshold) r.open_read_threshold = o->open_read_threshold;
+        if (o->open_read_max_bytes) r.open_read_max_bytes = o->open_read_max_bytes;
+    }
     return r;
 }
 

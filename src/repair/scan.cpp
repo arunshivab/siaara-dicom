@@ -808,7 +808,7 @@ Result<ScanResult> scan(const Bytes& data, const ScanOptions& opt) {
 }
 
 Result<ScanResult> scan_file(const std::string& utf8_path, const ScanOptions& opt) {
-    auto bytes = io::map_file(utf8_path, true);
+    auto bytes = io::open_file(utf8_path);
     if (!bytes) return bytes.take_error();
     return scan(*bytes, opt);
 }

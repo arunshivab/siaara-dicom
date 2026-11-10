@@ -684,6 +684,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         if (!hdr) {
             ReadOptions ro;
             ro.stop_before_pixel_data = true;
+            ro.open_mode = io::OpenMode::Map;  // the store's own files
             Result<DicomFile> f = read_file(l.path, ro);
             if (f) hdr = std::make_shared<const DicomFile>(std::move(f.value()));
         }
@@ -778,7 +779,9 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         std::uint16_t st = dimse_status::ProcessingFailure;
         std::shared_ptr<const DicomFile> f = l.file;
         if (l.ok && !f) {
-            Result<DicomFile> full = read_file(l.path);
+            ReadOptions full_ro;
+            full_ro.open_mode = io::OpenMode::Map;  // the store's own files
+            Result<DicomFile> full = read_file(l.path, full_ro);
             if (full) f = std::make_shared<const DicomFile>(std::move(full.value()));
         }
         if (f) {

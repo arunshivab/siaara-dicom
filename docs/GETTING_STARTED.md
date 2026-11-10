@@ -115,6 +115,16 @@ Things to know:
   that run past the end of their sequence item. For **local files** the reader recovers these (in
   a narrow, well-defined case) and reports it; for data **received from the network** this
   recovery is off.
+- **How a file is brought into memory** is an option (`siaara_read_options.open_mode`, C#
+  `DicomReadOptions.OpenMode`). The default, `SIAARA_OPEN_AUTO`, reads files up to 256 MiB
+  (`open_read_threshold`) into the library's own memory and memory-maps larger ones.
+  `SIAARA_OPEN_READ` always reads (and refuses a file above `open_read_max_bytes`, default
+  4 GiB); `SIAARA_OPEN_MAP` always maps, which costs no memory but is only safe for files nobody
+  rewrites in place: if another process shortens a mapped file - think of a shared or network
+  folder - touching the missing part ends the process. The library re-checks a mapped file's
+  size after mapping and before it decodes pixel data and returns `SIAARA_ERR_TRUNCATED` when it
+  changed, but that cannot close the gap completely. Values, the read report and unchanged saves
+  are identical in all three modes.
 - Paths, named modules, many pixel values at once, volumes: [DATA_ACCESS.md](DATA_ACCESS.md).
 - The toolkit gives stored values, modality values and geometry. Calculations on top of them
   (SUV, ROI statistics) are intentionally left to your application.
