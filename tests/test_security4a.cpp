@@ -18,10 +18,12 @@
 #include "charset/charset.hpp"
 #include "clinical/measure.hpp"
 #include "core/dataset.hpp"
+#include "core/incomplete_policy.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
 #include "dict/dictionary.hpp"
+#include "image/frames.hpp"
 #include "modules/data.hpp"
 #include "modules/modules.hpp"
 #include "repair/validate.hpp"
@@ -92,6 +94,59 @@ std::vector<std::uint8_t> ge_like() {
     imp(b, 0x0028, 0x0010, le16s(2));
     imp(b, 0x0028, 0x0011, le16s(2));
     imp(b, 0x7FE0, 0x0010, std::string("\x01\x00\x02\x00\x03\x00\x04\x00", 8));
+    return b;
+}
+
+// B3 (testing verdict on the release candidate): the layout of the gdcmData file
+// GE_GENESIS-16-MONO2-WrongLengthItem.dcm - a group length element in front of every group, nine
+// text values that state 13 bytes for 10, two of them directly after one another ((0010,1030),
+// (0010,21B0)), the second directly in front of the next group's group length, and three in a row
+// later on - then 64 x 64 16-bit pixel data. `elements` receives the number of elements.
+std::vector<std::uint8_t> ge_genesis_like(std::size_t& elements) {
+    std::vector<std::uint8_t> b;
+    elements = 0;
+    const auto el = [&](std::uint16_t g, std::uint16_t e, std::string_view v, std::uint32_t stated = 0xFFFFFFFFu) {
+        imp(b, g, e, v, stated);
+        ++elements;
+    };
+    const std::string ul4("\x00\x01\x00\x00", 4);
+    el(0x0008, 0x0000, ul4);
+    el(0x0008, 0x0016, std::string(kMR) + '\0');
+    el(0x0008, 0x0018, "2.25.41090");
+    el(0x0008, 0x0060, "MR");
+    el(0x0008, 0x103E, "AX T1 POST", 13);
+    el(0x0008, 0x1060, "JANETOS ");
+    el(0x0008, 0x1090, "GENESIS_SIGNA ");
+    el(0x0010, 0x0000, ul4);
+    el(0x0010, 0x0010, "MR^XXXXXXX^1.5T^HEAD");
+    el(0x0010, 0x0020, "4200838 ");
+    el(0x0010, 0x1030, " 54.431000", 13);
+    el(0x0010, 0x21B0, "TUMOR F/U ", 13);
+    el(0x0018, 0x0000, ul4);
+    el(0x0018, 0x0010, "12    gad ", 13);
+    el(0x0018, 0x0020, "SE");
+    el(0x0018, 0x0021, "NONE");
+    el(0x0018, 0x0022, "PFF\\SP\\FS ", 13);
+    el(0x0018, 0x0023, "2D");
+    el(0x0018, 0x0080, "600.000000", 13);
+    el(0x0018, 0x0081, "8.000000");
+    el(0x0018, 0x0093, "100.000000", 13);
+    el(0x0018, 0x0094, " 75.000000", 13);
+    el(0x0018, 0x0095, "125.000000", 13);
+    el(0x0018, 0x1020, "04");
+    el(0x0028, 0x0000, ul4);
+    el(0x0028, 0x0002, le16s(1));
+    el(0x0028, 0x0004, "MONOCHROME2 ");
+    el(0x0028, 0x0010, le16s(64));
+    el(0x0028, 0x0011, le16s(64));
+    el(0x0028, 0x0100, le16s(16));
+    el(0x0028, 0x0101, le16s(16));
+    el(0x0028, 0x0102, le16s(15));
+    el(0x0028, 0x0103, le16s(1));
+    el(0x7FE0, 0x0000, ul4);
+    std::string px(64u * 64u * 2u, '\0');
+    for (std::size_t k = 0; k < px.size(); k += 2) px[k] = static_cast<char>(k & 0x7Fu);
+    el(0x7FE0, 0x0010, px);
     return b;
 }
 
@@ -219,6 +274,83 @@ TEST_CASE("sec4a R-108: the length recovery never runs on the file meta group; l
     REQUIRE(siaara_file_read_report(cf, &rr) == SIAARA_OK);
     CHECK(rr.loss == 0);
     siaara_file_free(cf);
+}
+
+TEST_CASE("sec4a B3: GE Genesis lengths - adjacent overlong values and one in front of a group length are recovered") {
+    std::size_t elements = 0;
+    const std::vector<std::uint8_t> ge = ge_genesis_like(elements);
+    {
+        auto f = read_bytes(ge);  // the local-file default: recovery on
+        REQUIRE(f.is_ok());
+        CHECK_EQ(f->dataset.size(), elements);  // every element; the old rule stopped at (0010,1030)
+        // One ELEMENT_LENGTH_RECOVERED per element, plus the summary that starts the warnings.
+        CHECK_EQ(count_warnings(*f, "ELEMENT_LENGTH_RECOVERED"), 9);
+        CHECK_EQ(f->warnings.size(), 10u);
+        CHECK(!f->warnings.empty() && f->warnings.front().rfind("READ_RECOVERED", 0) == 0);
+        CHECK(f->read_loss == DicomFile::kReadRecovered);  // recovered, and nothing else lost
+        for (const Tag t : {Tag{0x0008103Eu}, Tag{0x00101030u}, Tag{0x001021B0u}, Tag{0x00180010u}, Tag{0x00180022u}, Tag{0x00180080u},
+                            Tag{0x00180093u}, Tag{0x00180094u}, Tag{0x00180095u}}) {
+            const Element* e = f->dataset.find(t);
+            REQUIRE(e != nullptr);
+            CHECK_EQ(e->value.size(), 10u);
+        }
+        CHECK(f->dataset.get_string(0x001021B0).value_or("") == "TUMOR F/U");
+        CHECK(f->dataset.get_string(0x00181020).value_or("") == "04");
+        CHECK_EQ(f->dataset.get_int(tags::Rows).value_or(0), 64);
+        // Pixel Data is there and decodes.
+        auto fr = image::FrameReader::open(f->dataset, f->transfer_syntax);
+        REQUIRE(fr.is_ok());
+        CHECK_EQ(fr->info().rows, 64u);
+        CHECK_EQ(fr->info().columns, 64u);
+        auto px = fr->decode(0);
+        REQUIRE(px.is_ok());
+        REQUIRE(px->size() == 64u * 64u * 2u);
+        CHECK_EQ((*px)[130], 2u);
+        // Never saved as if whole.
+        std::vector<std::uint8_t> out;
+        CHECK(!write_part10(*f, out).is_ok());
+    }
+    {
+        // Recovery off (as for everything that arrives over the network): no guessing - the
+        // stated lengths are taken as they are and the read reports that it is not complete.
+        for (int pass = 0; pass < 2; ++pass) {
+            ReadOptions off = pass == 0 ? ReadOptions{} : network_read_options();
+            off.recover_overlong_lengths = false;
+            auto f = read_bytes(ge, off);
+            if (!f.is_ok()) continue;  // a refusal is fine too
+            CHECK_EQ(count_warnings(*f, "ELEMENT_LENGTH_RECOVERED"), 0);
+            CHECK((f->read_loss & DicomFile::kReadRecovered) == 0);
+            CHECK((f->read_loss & DicomFile::kReadInputTruncated) != 0);
+            CHECK(!f->dataset.contains(tags::PixelData));
+        }
+        CHECK(!network_read_options().recover_overlong_lengths);
+    }
+    {
+        // Still bounded and narrow: a group-length-looking header with another length, an odd
+        // group, or without a run of three headers behind it starts no recovery.
+        std::vector<std::uint8_t> b;
+        imp(b, 0x0008, 0x0016, std::string(kMR) + '\0');
+        imp(b, 0x0008, 0x103E, "AX T1 POST", 13);
+        imp(b, 0x0019, 0x0000, std::string("\x00\x01\x00\x00", 4));  // odd group
+        imp(b, 0x0020, 0x000D, "2.25.1 ");
+        imp(b, 0x0020, 0x000E, "2.25.2 ");
+        auto f = read_bytes(b);
+        if (f.is_ok()) CHECK_EQ(count_warnings(*f, "ELEMENT_LENGTH_RECOVERED"), 0);
+        std::vector<std::uint8_t> c;
+        imp(c, 0x0008, 0x0016, std::string(kMR) + '\0');
+        imp(c, 0x0008, 0x103E, "AX T1 POST", 13);
+        imp(c, 0x0010, 0x0000, std::string("\x00\x01\x00\x00\x00\x00", 6));  // not a UL of 4 bytes
+        imp(c, 0x0020, 0x000D, "2.25.1 ");
+        imp(c, 0x0020, 0x000E, "2.25.2 ");
+        auto g = read_bytes(c);
+        if (g.is_ok()) CHECK_EQ(count_warnings(*g, "ELEMENT_LENGTH_RECOVERED"), 0);
+        std::vector<std::uint8_t> d;
+        imp(d, 0x0008, 0x0016, std::string(kMR) + '\0');
+        imp(d, 0x0008, 0x103E, "AX T1 POST", 13);
+        imp(d, 0x0010, 0x0000, std::string("\x00\x01\x00\x00", 4));  // a group length, but nothing after it
+        auto h = read_bytes(d);
+        if (h.is_ok()) CHECK_EQ(count_warnings(*h, "ELEMENT_LENGTH_RECOVERED"), 0);
+    }
 }
 
 TEST_CASE("sec4a R-108: the length recovery is implicit VR little endian only and can be switched off") {

@@ -598,25 +598,44 @@ private:
         while (n < 3) {
             if (q >= limit_) return n;
             auto h = header_at(syn, q);
-            if ((!h || !header_fits(*h, q)) && q >= std::size_t{shift} + 8) {
+            // B3: "does not fit" used to be the only reason to look `shift` bytes earlier; bytes
+            // in the middle of a header can also read as a header that fits but is no attribute.
+            if (!recovery_header(h, q, prev) && q >= std::size_t{shift} + 8) {
                 q -= shift;
                 h = header_at(syn, q);
             }
-            if (!h || !header_fits(*h, q)) return n;
-            if (tag_group(h->tag) == 0xFFFE || h->len == kUndefinedLength || !(prev < h->tag)) return n;
-            if (tag_group(h->tag) > 0x7FE0 || (!tag_is_private(h->tag) && !recovery_tag_known(h->tag))) return n;
+            if (!recovery_header(h, q, prev)) return n;
             ++n;
             prev = h->tag;
             q += h->size + std::size_t{h->len};
         }
         return n;
     }
+    // A (gggg,0000) group length element as GE Genesis files carry one per group: an even group
+    // and a length of exactly 4. Six of its eight header bytes are fixed, so - unlike the generic
+    // dictionary entry "group length of any group" alone (R-114) - it is not matched by chance.
+    static bool group_length_header(const Header& h) noexcept {
+        return tag_element(h.tag) == 0 && (tag_group(h.tag) & 1u) == 0 && tag_group(h.tag) <= 0x7FE0 && h.len == 4;
+    }
+    // A header the recovery accepts as part of its run after `prev`: a real, fitting header (no
+    // item tag, no undefined length) with a later tag, in a group up to 7FE0, that is private, a
+    // standard attribute of the dictionary, or a group length element.
+    bool recovery_header(const std::optional<Header>& h, std::size_t q, Tag prev) const {
+        if (!h || !header_fits(*h, q)) return false;
+        if (tag_group(h->tag) == 0xFFFE || h->len == kUndefinedLength || !(prev < h->tag)) return false;
+        if (tag_group(h->tag) > 0x7FE0) return false;
+        return tag_is_private(h->tag) || recovery_tag_known(h->tag) || group_length_header(*h);
+    }
     // The GE Genesis length error: the bytes at a text value's stated end (vend) do not start a
     // run of three element headers (nor one fitting header of a standard attribute, in any tag
     // order: R-164), but from k = 1..7 bytes earlier a run of three does, so the
     // k removed bytes and the 8 - k bytes after vend together are exactly the next element's
     // (implicit VR) header. That header's tag must come after `cur` and be a standard attribute of
-    // the data dictionary. Returns k, else 0. The caller applies it only to text values in
+    // the data dictionary or the group length element (even group, length 4) of a later group.
+    // The run may itself contain values with the same length error (the next header is then
+    // looked for k bytes earlier) and group length elements: GE Genesis files have overlong
+    // values directly after one another and directly in front of the next group (B3). Bounded:
+    // k <= 7, three headers, one alternative position per header. Returns k, else 0. The caller applies it only to text values in
     // implicit VR little endian outside the file meta group (R-108, R-114).
     std::uint32_t overlong_by(Syntax syn, Tag cur, std::size_t vend, std::uint32_t len) const {
         if (vend >= limit_) return 0;
@@ -632,7 +651,10 @@ private:
         for (std::uint32_t k = 1; k <= 7 && k <= len; ++k) {
             const std::size_t q = vend - k;
             const auto h = header_at(syn, q);
-            if (!h || !header_fits(*h, q) || !(cur < h->tag) || !recovery_tag_known(h->tag)) continue;
+            // The element the shortened value is followed by: a standard attribute, or (B3) the
+            // group length element of a later group - GE Genesis values are overlong right before
+            // the next group too.
+            if (!h || !header_fits(*h, q) || !(cur < h->tag) || !(recovery_tag_known(h->tag) || group_length_header(*h))) continue;
             if (recovery_run(syn, q, cur, k) >= 3) return k;
         }
         return 0;

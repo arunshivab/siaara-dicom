@@ -39,7 +39,8 @@ struct ReadOptions {
     // Lenient mode only: a text value in implicit VR little endian whose stated length runs 1..7
     // bytes into the next element's header (GE Genesis files) is read that much shorter when a
     // run of three known element headers starts there and none starts at the stated end (no run
-    // of three, and not even one fitting header of a standard attribute in any tag order). Each
+    // of three, and not even one fitting header of a standard attribute in any tag order). The
+    // run may contain further values with the same error and group length elements. Each
     // recovery is a warning (ELEMENT_LENGTH_RECOVERED) and sets DicomFile::kReadRecovered, so a
     // save is refused unless incomplete saves are allowed. Never applied to the file meta group,
     // to explicit VR or big endian data, to binary VRs or to group 7FE0. Readers of data that
