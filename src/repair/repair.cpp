@@ -399,14 +399,15 @@ public:
                 }
             }
             if (tag_element(e.tag) == 0 || e.is_encapsulated()) continue;
-            VR want = VR::None, alt = VR::None;
+            VR want = VR::None, alt = VR::None, alt2 = VR::None;
             if (tag_is_private(e.tag)) {
                 if (tag_element(e.tag) >= 0x10 && tag_element(e.tag) <= 0xFF) want = VR::LO;
             } else if (const dict::Entry* d = dict::lookup(e.tag)) {
                 want = d->vr;
                 alt = d->vr_alt;
+                alt2 = d->vr_alt2;  // "US or SS or OW": a third VR the dictionary allows
             }
-            if (want != VR::None && e.vr != want && e.vr != alt &&
+            if (want != VR::None && e.vr != want && e.vr != alt && (alt2 == VR::None || e.vr != alt2) &&
                 !((want == VR::OB || want == VR::OW) && (e.vr == VR::OB || e.vr == VR::OW))) {
                 const VR old = e.vr;
                 if (reencode(e, want, alt))

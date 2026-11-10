@@ -26,6 +26,7 @@ struct PixelValue {
     std::int64_t stored = 0;
     double stored_real = 0;
     bool has_modality = false;
+    bool modality_in_data = false;  // the data holds the transform (image::ModalityTransform::in_data)
     bool modality_lut = false;
     bool dose_grid_scaling = false;
     double modality_value = 0;
@@ -112,6 +113,7 @@ struct NmFrameIndex {
     std::uint32_t present = 0, in_pointer = 0;
     std::uint32_t values[9] = {};  // energy window, detector, phase, rotation, R-R, time slot, slice, angular view, time slice
 };
+// InvalidArgument when frame is not below Number of Frames (0028,0008), when that is present.
 Result<NmFrameIndex> nm_frame_index(const Dataset& ds, std::uint32_t frame);
 
 }  // namespace siaara::modules

@@ -130,6 +130,8 @@ def caption(tbl):
 
 def table_name(cap):
     n = re.sub(r"\s+Attributes?$", "", cap).strip()
+    # PS3.3 captions one module table "Enhanced XA/XRF Image Module Table": it is a module.
+    n = re.sub(r"(\bModule)\s+Table$", r"\1", n)
     return n or cap
 
 
@@ -155,6 +157,8 @@ class Model:
             self.add(n)
         self.fg = Node(KIND_GROUP, "Functional Group Macros", "")
         self.add(self.fg)
+        self.parsed = set()
+        self.tid_of = {n: tid for tid, n in self.by_table.items()}
         for tid in self.tables.order:
             self.parse_table(tid)
         self.collect_functional_groups()
@@ -187,10 +191,43 @@ class Model:
                         self.fg.entries.append(Include(self.by_table[t], False))
                     break
 
+    def extend_included_sequence(self, holder, table_node):
+        """Rows one level below an Include row ("Include Table X" followed by ">Attribute" rows, as
+        in the Image and Waveform Reference Macros) are further attributes of the items of the last
+        sequence of the included table. The Include is replaced in `holder` by the included
+        table's entries, the last of them a copy of that sequence with its own item node (the
+        included items' entries first), which is returned to receive the rows; None when the
+        included table does not end in a sequence.
+        """
+        if not holder.entries or not isinstance(holder.entries[-1], Include):
+            return None
+        entries = [holder.entries[-1]]
+        seen = set()
+        while entries and isinstance(entries[-1], Include):
+            t = entries[-1].target
+            if t is self.fg or t in seen:
+                return None
+            seen.add(t)
+            if t in self.tid_of:
+                self.parse_table(self.tid_of[t])
+            entries = entries[:-1] + list(t.entries)
+        if not entries:
+            return None
+        last = entries[-1]
+        if last.child is None and (self.info(last.tag, last.mask) or ("", "", "", False))[1] != "SQ":
+            return None
+        a = Attr(last.tag, last.mask, last.type)
+        a.child = Node(KIND_ITEM, "", "", owner=table_node, seq_tag=a.tag)
+        if last.child is not None:
+            a.child.entries = list(last.child.entries)
+        holder.entries[-1:] = entries[:-1] + [a]
+        return a
+
     def parse_table(self, tid):
         node = self.by_table.get(tid)
-        if node is None:
+        if node is None or tid in self.parsed:
             return
+        self.parsed.add(tid)
         tbl = self.tables.by_id[tid]
         h = gi.header(tbl)
         type_col = h.index("Type") if "Type" in h else -1
@@ -207,6 +244,10 @@ class Model:
             if depth >= len(stack):
                 # Item rows: the item node of the last sequence one level up.
                 parent = last_attr.get(depth - 1)
+                if parent is None and depth == len(stack):
+                    parent = self.extend_included_sequence(stack[depth - 1], node)
+                    if parent is not None:
+                        last_attr[depth - 1] = parent
                 if parent is None or depth != len(stack):
                     continue
                 if parent.child is None:
@@ -242,14 +283,20 @@ class Model:
     def finish(self):
         """Registers item nodes (document order) and replaces single-Include items by the table."""
         order = []
+        registered = set()  # an attribute copied into another table shares its item node
 
         def visit(n):
             for e in n.entries:
                 if isinstance(e, Attr) and e.child is not None:
                     c = e.child
+                    if c.kind != KIND_ITEM:
+                        continue
                     if len(c.entries) == 1 and isinstance(c.entries[0], Include):
                         e.child = c.entries[0].target
                         continue
+                    if c in registered:
+                        continue
+                    registered.add(c)
                     order.append(c)
                     visit(c)
 

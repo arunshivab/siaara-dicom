@@ -16,6 +16,7 @@
 #include "siaara/siaara.h"
 #include "core/reader.hpp"
 #include "core/status.hpp"
+#include "dict/dictionary.hpp"
 #include "net/tls.hpp"
 #include "store/store.hpp"
 #include "volume/volume.hpp"
@@ -28,6 +29,12 @@ struct PixelValue;
 namespace siaara::capi {
 
 // siaara_pixel_value from a modules::PixelValue (capi_named.cpp; used by capi_view2d.cpp too).
+// siaara_dict_entry grew (vr_alt2, mask): callers built before that are still accepted and get
+// the fields their struct_size covers.
+bool dict_entry_sized(const siaara_dict_entry* out) noexcept;
+void fill_dict_entry(const dict::Entry& e, siaara_dict_entry* out);
+// out is set up with a struct_size that covers at least the fields before modality_in_data.
+bool pixel_value_sized(const siaara_pixel_value* out) noexcept;
 void fill_pixel_value(const modules::PixelValue& v, uint32_t frame, uint32_t column, uint32_t row, uint32_t sample,
                       siaara_pixel_value* out);
 

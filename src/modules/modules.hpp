@@ -81,7 +81,8 @@ bool node_present(const Dataset& ds, std::uint32_t index);
 // A sequence segment that is not the last needs an item index. On the last segment, an index
 // selects an item of a sequence, or a value of a multi-valued element. Private attributes are
 // found through their Private Creator block (gggg,00bb) in the data set being walked; an unquoted
-// creator cannot contain '.', '[' or ']'.
+// creator cannot contain '.', '[' or ']'. A repeating-group keyword (OverlayRows, CurveDimensions,
+// ...) names the first group, 6000 or 5000; other groups are addressed by tag, e.g. (6002,0010).
 enum class ValueKind : std::int32_t { Empty = 0, Text = 1, Integer = 2, Real = 3, Binary = 4, Sequence = 5, Tag = 6, Item = 7 };
 
 struct PathTarget {
@@ -106,6 +107,9 @@ struct PathValue {
     bool has_real = false;
     double real = 0;
     std::string text;  // UTF-8; all values backslash separated, or the selected value
+    // Byte sequences of the element that are not characters of the character set in force and
+    // are U+FFFD in `text` (0: the text is exactly what the bytes hold). The bytes are unchanged.
+    std::uint32_t undecodable = 0;
 };
 Result<PathValue> get_by_path(const Dataset& root, std::string_view path);
 // Every value of the element as double (numeric VRs, including OF / OD / OL / OV / OW and the

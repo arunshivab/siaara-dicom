@@ -62,10 +62,36 @@ constexpr std::array kTransferSyntaxes = {
     TransferSyntaxInfo{"1.2.840.10008.1.2.7.2", "SMPTE ST 2110-20 Uncompressed Interlaced Active Video", true, false, false, false, Codec::Smpte2110, false},
     TransferSyntaxInfo{"1.2.840.10008.1.2.7.3", "SMPTE ST 2110-30 PCM Digital Audio", true, false, false, false, Codec::Smpte2110, false},
 };
+
+// Retired transfer syntaxes of PS3.6 Table A-1 that the toolkit does not read or write. They are
+// in the registry so a lookup can name them and say "retired" (find_registered_transfer_syntax);
+// find_transfer_syntax does not return them, so readers and writers treat them as before.
+// Hierarchical JPEG was explicit VR little endian with encapsulated pixel data; the MIME and XML
+// encodings are not PS3.5 data set encodings at all; Papyrus 3 is implicit VR little endian.
+constexpr std::array kRetiredOnly = {
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.59", "JPEG Extended, Hierarchical (Process 16 & 18)", true, false, true, true, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.60", "JPEG Extended, Hierarchical (Process 17 & 19)", true, false, true, true, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.61", "JPEG Spectral Selection, Hierarchical (Process 20 & 22)", true, false, true, true, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.62", "JPEG Spectral Selection, Hierarchical (Process 21 & 23)", true, false, true, true, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.63", "JPEG Full Progression, Hierarchical (Process 24 & 26)", true, false, true, true, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.64", "JPEG Full Progression, Hierarchical (Process 25 & 27)", true, false, true, true, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.65", "JPEG Lossless, Hierarchical (Process 28)", true, false, true, false, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.4.66", "JPEG Lossless, Hierarchical (Process 29)", true, false, true, false, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.6.1", "RFC 2557 MIME encapsulation", false, false, false, false, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.2.6.2", "XML Encoding", false, false, false, false, Codec::Unknown, true},
+    TransferSyntaxInfo{"1.2.840.10008.1.20", "Papyrus 3 Implicit VR Little Endian", false, false, false, false, Codec::Unknown, true},
+};
 }  // namespace
 
 const TransferSyntaxInfo* find_transfer_syntax(std::string_view uid) noexcept {
     for (const auto& t : kTransferSyntaxes)
+        if (t.uid == uid) return &t;
+    return nullptr;
+}
+
+const TransferSyntaxInfo* find_registered_transfer_syntax(std::string_view uid) noexcept {
+    if (const TransferSyntaxInfo* t = find_transfer_syntax(uid)) return t;
+    for (const auto& t : kRetiredOnly)
         if (t.uid == uid) return &t;
     return nullptr;
 }

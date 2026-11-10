@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <new>
 #include <span>
@@ -94,9 +95,18 @@ void fill_units(char (&dst)[32], const std::string& u) {
 
 namespace siaara::capi {
 // Shared with capi_view2d.cpp (siaara_frame_pixel_value).
+bool pixel_value_sized(const siaara_pixel_value* out) noexcept {
+    return out && out->struct_size >= offsetof(siaara_pixel_value, modality_in_data);
+}
+
 void fill_pixel_value(const mod::PixelValue& v, uint32_t frame, uint32_t column, uint32_t row, uint32_t sample,
                       siaara_pixel_value* out) {
-    reset(out);
+    // The struct grew (modality_in_data): only the bytes the caller's struct_size covers are written.
+    const uint32_t size = out->struct_size;
+    const bool full = size >= sizeof(siaara_pixel_value);
+    std::memset(out, 0, full ? sizeof(siaara_pixel_value) : offsetof(siaara_pixel_value, modality_in_data));
+    out->struct_size = size;
+    if (full) out->modality_in_data = v.modality_in_data ? 1 : 0;
     out->frame = frame;
     out->column = column;
     out->row = row;
@@ -225,6 +235,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_get_by_path(const siaara_dataset* ds
             out->item_count = v.item_count;
             out->has_integer = v.has_integer ? 1 : 0;
             out->has_real = v.has_real ? 1 : 0;
+            out->undecodable = v.undecodable;
             out->integer = v.integer;
             out->real = v.real;
             out->byte_length = v.byte_length;
@@ -266,7 +277,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_by_path(siaara_dataset* ds, 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_pixel_value(const siaara_file* file, uint32_t frame, uint32_t column,
                                                              uint32_t row, uint32_t sample, siaara_pixel_value* out) {
     return guarded([&]() -> siaara_status {
-        if (!file || !sized(out)) return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
+        if (!file || !capi::pixel_value_sized(out)) return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
         auto im = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
         if (!im) return fail(im.error());
         const siaara::image::Image& img = im.value();
@@ -554,14 +565,18 @@ SIAARA_API siaara_status SIAARA_CALL siaara_transfer_syntax_info_get(const char*
         if (!uid || !sized(out)) return fail(Errc::InvalidArgument, "uid and out (with struct_size) must be set");
         std::string_view u(uid, len);
         while (!u.empty() && (u.back() == '\0' || u.back() == ' ')) u.remove_suffix(1);
-        const auto* t = siaara::find_transfer_syntax(u);
+        const auto* t = siaara::find_registered_transfer_syntax(u);
         if (!t) return fail(Errc::NotFound, "unknown transfer syntax");
         reset(out);
         out->explicit_vr = t->explicit_vr ? 1 : 0;
         out->big_endian = t->big_endian ? 1 : 0;
-        out->encapsulated = t->encapsulated ? 1 : 0;
+        // "Compressed or referenced": the JPIP Referenced and SMPTE ST 2110 syntaxes carry no
+        // native Pixel Data either (it is referenced / streamed), so they report 1 here although
+        // the data set itself has no encapsulated Pixel Data element to parse.
+        const bool referenced = t->codec == siaara::Codec::Jpip || t->codec == siaara::Codec::Smpte2110;
+        out->encapsulated = t->encapsulated || referenced ? 1 : 0;
         out->lossy = t->lossy ? 1 : 0;
-        out->deflated = t->codec == siaara::Codec::Deflate ? 1 : 0;
+        out->deflated = t->codec == siaara::Codec::Deflate || t->name.find("Deflate") != std::string_view::npos ? 1 : 0;
         out->retired = t->retired ? 1 : 0;
         out->name = t->name.data();
         return ok();
@@ -578,23 +593,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_count(uint32_t* out) {
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_entry_at(uint32_t index, siaara_dict_entry* out) {
     return guarded([&]() -> siaara_status {
-        if (!out || out->struct_size < sizeof(siaara_dict_entry)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        if (!capi::dict_entry_sized(out)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         const auto* e = siaara::dict::entry_at(index);
         if (!e) return fail(Errc::NotFound, "index out of range");
-        // The same fields siaara_dict_lookup fills.
-        const auto a = siaara::vr_name(e->vr);
-        const auto b = siaara::vr_name(e->vr_alt);
-        out->tag = e->tag;
-        out->vr[0] = e->vr == siaara::VR::None ? 0 : a[0];
-        out->vr[1] = e->vr == siaara::VR::None ? 0 : a[1];
-        out->vr[2] = 0;
-        out->vr_alt[0] = e->vr_alt == siaara::VR::None ? 0 : b[0];
-        out->vr_alt[1] = e->vr_alt == siaara::VR::None ? 0 : b[1];
-        out->vr_alt[2] = 0;
-        out->retired = e->retired ? 1 : 0;
-        out->keyword = e->keyword.data();
-        out->name = e->name.data();
-        out->vm = e->vm.data();
+        capi::fill_dict_entry(*e, out);  // the same fields siaara_dict_lookup fills
         return ok();
     });
 }

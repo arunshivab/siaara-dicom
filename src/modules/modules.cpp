@@ -93,11 +93,14 @@ std::optional<std::uint32_t> find_node(std::string_view name) noexcept {
         if (iequals(n.name, name) || (!n.table_id.empty() && iequals(n.table_id, id)) || iequals(n.class_name, name))
             return i;
     }
-    for (std::uint32_t i = 0; i < std::size(ns); ++i) {
-        const ModNode& n = ns[i];
-        if (n.kind == static_cast<std::int32_t>(NodeKind::Item)) continue;
-        if (iequals_suffixed(n.name, name, " Module") || iequals_suffixed(n.name, name, " Macro")) return i;
-    }
+    // A bare name: the Module of that name first, then the Macro (several names have both, e.g.
+    // Cardiac Synchronization, Respiratory Synchronization, Real World Value Mapping).
+    for (const char* suffix : {" Module", " Macro"})
+        for (std::uint32_t i = 0; i < std::size(ns); ++i) {
+            const ModNode& n = ns[i];
+            if (n.kind == static_cast<std::int32_t>(NodeKind::Item)) continue;
+            if (iequals_suffixed(n.name, name, suffix)) return i;
+        }
     return std::nullopt;
 }
 
@@ -208,15 +211,21 @@ Result<std::vector<Segment>> parse_path(std::string_view p) {
                 s.tag = make_tag(g, el);
             } else {
                 const auto* d = dict::lookup_keyword(t);
-                if (!d || d->mask != 0xFFFFFFFFu) {
+                // Repeating groups (Overlay 60xx, Curve 50xx): the keyword names the first group
+                // (6000 / 5000); another group is addressed by its tag, e.g. (6002,0010).
+                if (d && d->mask == 0xFF00FFFFu) {
+                    s.tag = d->tag;
+                } else if (!d || d->mask != 0xFFFFFFFFu) {
                     std::string m = "unknown keyword: " + std::string(t.substr(0, 80));
+                    if (d) m += " (a repeating-element keyword: use the tag)";
                     // R-157: creator:gggg,xx with a '.', '[' or ']' in an unquoted creator ends
                     // up here, cut at that character.
                     if (p.find(':', start) != std::string_view::npos)
                         m += " (a private creator that contains '.', '[' or ']' must be quoted: \"creator\":gggg,xx)";
                     return Status(Errc::NotFound, std::move(m));
+                } else {
+                    s.tag = d->tag;
                 }
-                s.tag = d->tag;
             }
         }
         if (i < p.size() && p[i] == '[') {
@@ -400,11 +409,12 @@ Result<PathValue> get_by_path_impl(const Dataset& root, std::string_view path) {
     const bool integer = e.vr != VR::FL && e.vr != VR::FD && e.vr != VR::DS;
     // One pass over the element whatever its value count (R-111): text is decoded once and split
     // once; fetching value i with get_string / get_utf8 for every i rescans it each time.
+    std::size_t replaced = 0;
     if (w.index >= 0) {
-        std::optional<std::string> s = numeric ? ds.get_string(e.tag, first) : charset::get_utf8(ds, e.tag, first, &w.cs);
+        std::optional<std::string> s = numeric ? ds.get_string(e.tag, first) : charset::get_utf8(ds, e.tag, first, &w.cs, &replaced);
         if (s) v.text = std::move(*s);
     } else if (vr_is_string(e.vr) && !numeric) {
-        if (auto s = charset::get_utf8_all(ds, e.tag, &w.cs)) v.text = std::move(*s);
+        if (auto s = charset::get_utf8_all(ds, e.tag, &w.cs, &replaced)) v.text = std::move(*s);
     } else if (vr_is_string(e.vr) || !vr_is_binary_numeric(e.vr)) {
         // DS / IS, and a VR that is none of the above (read like text, as get_string does).
         const std::string_view raw = e.value.as_chars();
@@ -421,6 +431,7 @@ Result<PathValue> get_by_path_impl(const Dataset& root, std::string_view path) {
             if (auto s = ds.get_string(e.tag, i)) v.text += *s;
         }
     }
+    v.undecodable = static_cast<std::uint32_t>(std::min<std::size_t>(replaced, 0xFFFFFFFFu));
     if (numeric) {
         v.kind = integer ? ValueKind::Integer : ValueKind::Real;
         if (auto d = ds.get_double(e.tag, first)) {

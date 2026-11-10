@@ -97,7 +97,7 @@ struct DictChecker {
             sink.add(Severity::Error, "illegal-group", kStructural, here, "odd group that may not be used (PS3.5 7.8.1)");
         if (tag_element(e.tag) == 0x0000) return;  // group lengths are checked by the scanner
 
-        VR want = VR::None, want_alt = VR::None;
+        VR want = VR::None, want_alt = VR::None, want_alt2 = VR::None;
         std::string_view vm;
         if (tag_is_private(e.tag)) {
             const std::uint16_t el = tag_element(e.tag);
@@ -120,13 +120,14 @@ struct DictChecker {
             } else {
                 want = d->vr;
                 want_alt = d->vr_alt;
+                want_alt2 = d->vr_alt2;  // "US or SS or OW"
                 vm = d->vm;
                 if (d->retired) sink.add(Severity::Warning, "retired", 0, here, "retired attribute");
             }
         }
         // VR
         VR vr = e.vr;
-        if (want != VR::None && vr != want && vr != want_alt) {
+        if (want != VR::None && vr != want && vr != want_alt && (want_alt2 == VR::None || vr != want_alt2)) {
             const bool ox = (want == VR::OB || want == VR::OW) && (vr == VR::OB || vr == VR::OW);
             if (vr == VR::UN) {
                 sink.add(Severity::Warning, "vr-un", kValues, here,
@@ -134,7 +135,8 @@ struct DictChecker {
             } else if (!ox) {
                 sink.add(Severity::Error, "vr-mismatch", kValues, here,
                          "VR is " + std::string(vr_name(vr)) + "; the dictionary VR is " + std::string(vr_name(want)) +
-                             (want_alt != VR::None ? " or " + std::string(vr_name(want_alt)) : std::string()));
+                             (want_alt != VR::None ? " or " + std::string(vr_name(want_alt)) : std::string()) +
+                             (want_alt2 != VR::None ? " or " + std::string(vr_name(want_alt2)) : std::string()));
             }
         }
         if (e.is_sequence()) {

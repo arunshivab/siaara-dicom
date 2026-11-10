@@ -34,6 +34,7 @@ const Dataset* functional_group(const Dataset& ds, std::uint32_t frame, Tag macr
 }
 
 Status read_rescale(const Dataset& src, ModalityTransform& m, bool lenient) {
+    if (src.contains(siaara::tags::RescaleSlope) || src.contains(siaara::tags::RescaleIntercept)) m.in_data = true;
     if (src.contains(siaara::tags::RescaleSlope)) {
         auto s = src.get_double(siaara::tags::RescaleSlope);
         if (!s || !std::isfinite(*s)) {
@@ -76,6 +77,7 @@ Result<bool> read_dose_scaling(const Dataset& ds, ModalityTransform& m, bool len
     m.slope = *g;
     m.intercept = 0.0;
     m.dose_grid_scaling = true;
+    m.in_data = true;
     m.rescale_type = ds.get_string(kDoseUnits).value_or(std::string());
     return true;
 }
@@ -197,6 +199,7 @@ Result<ModalityTransform> modality_for_frame(const Dataset& ds, const PixelInfo&
             auto l = read_lut(*ml, pi.is_signed, lenient);
             if (!l) return l.take_error();
             m.has_lut = true;
+            m.in_data = true;
             m.lut = std::move(l).value();
             return m;
         }
@@ -207,6 +210,7 @@ Result<ModalityTransform> modality_for_frame(const Dataset& ds, const PixelInfo&
         auto l = read_lut(*ml, pi.is_signed, lenient);
         if (l) {
             m.has_lut = true;
+            m.in_data = true;
             m.lut = std::move(l).value();
             if (auto t = ml->get_string(tags::ModalityLutType)) m.rescale_type = *t;
             return m;

@@ -66,6 +66,10 @@ struct ModalityTransform {
     double intercept = 0.0;
     std::string rescale_type;
     bool from_functional_groups = false;
+    // The data holds the transform: a Modality LUT Sequence, Rescale Slope or Rescale Intercept,
+    // or Dose Grid Scaling. False: none of them is present and the identity is assumed, which
+    // callers can tell apart from an explicit slope 1 / intercept 0 (testing 2026-11-11, 6.9).
+    bool in_data = false;
     // RT Dose (PS3.3 C.8.8.3): slope is Dose Grid Scaling (3004,000E), intercept 0, and
     // rescale_type the Dose Units (3004,0002, e.g. "GY"). Testing-chat P0-2a.
     bool dose_grid_scaling = false;

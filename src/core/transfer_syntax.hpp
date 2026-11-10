@@ -40,6 +40,10 @@ struct TransferSyntaxInfo {
 
 // Looks up a transfer syntax by UID (padding must already be removed). Returns nullptr if unknown.
 const TransferSyntaxInfo* find_transfer_syntax(std::string_view uid) noexcept;
+// For information only: also finds the retired transfer syntaxes of PS3.6 that the toolkit does
+// not read or write (hierarchical JPEG, MIME / XML encodings, Papyrus 3), with retired = true and
+// Codec::Unknown. Never use the result to decide how to parse.
+const TransferSyntaxInfo* find_registered_transfer_syntax(std::string_view uid) noexcept;
 
 namespace ts {
 constexpr std::string_view ImplicitVRLittleEndian = "1.2.840.10008.1.2";

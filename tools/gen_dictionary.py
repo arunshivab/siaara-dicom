@@ -58,9 +58,8 @@ def parse_tag(tag_text):
 def parse_vr(vr_text):
     # Examples: "US", "US or SS", "OB or OW", "US or SS or OW", "" (item delimiters), "See Note"
     vrs = [v for v in re.findall(r"\b[A-Z]{2}\b", vr_text) if v in KNOWN_VRS]
-    if not vrs:
-        return "None", "None"
-    return vrs[0], (vrs[1] if len(vrs) > 1 else "None")
+    vrs = (vrs + ["None", "None", "None"])[:3]
+    return vrs[0], vrs[1], vrs[2]
 
 
 def collect_elements(part06, part07):
@@ -72,13 +71,14 @@ def collect_elements(part06, part07):
             if len(cells) < 5:
                 continue
             tag_text, name, keyword, vr_text, vm = cells[:5]
-            retired = len(cells) > 5 and "RET" in cells[5].upper()
+            # PS3.7 Table E.2-1 lists only retired command elements (it has no "RET" column).
+            retired = tid == "table_E.2-1" or (len(cells) > 5 and "RET" in cells[5].upper())
             parsed = parse_tag(tag_text)
             if parsed is None or not keyword:
                 continue
             value, mask = parsed
-            vr, vr_alt = parse_vr(vr_text)
-            entries[(value, mask)] = (value, mask, vr, vr_alt, keyword, name, vm, retired)
+            vr, vr_alt, vr_alt2 = parse_vr(vr_text)
+            entries[(value, mask)] = (value, mask, vr, vr_alt, keyword, name, vm, retired, vr_alt2)
     return sorted(entries.values(), key=lambda e: (e[0], e[1]))
 
 
@@ -112,9 +112,10 @@ def main():
     out.append("")
 
     def entry_line(e):
-        value, mask, vr, vr_alt, keyword, name, vm, retired = e
+        value, mask, vr, vr_alt, keyword, name, vm, retired, vr_alt2 = e
+        third = "" if vr_alt2 == "None" else f", VR::{vr_alt2}"  # "US or SS or OW"
         return (f"    Entry{{0x{value:08X}u, 0x{mask:08X}u, VR::{vr}, VR::{vr_alt}, {c_str(keyword)}, "
-                f"{c_str(name)}, {c_str(vm)}, {'true' if retired else 'false'}}},")
+                f"{c_str(name)}, {c_str(vm)}, {'true' if retired else 'false'}{third}}},")
 
     out.append("constexpr Entry kEntries[] = {")
     out += [entry_line(e) for e in plain]

@@ -662,8 +662,8 @@ public sealed partial class DicomModules
     public StereometricRelationshipModule StereometricRelationship => new(_ds);
     /// <summary>XA/XRF Series Module (PS3.3 Table C.8.19.1-1).</summary>
     public XAXRFSeriesModule XAXRFSeries => new(_ds);
-    /// <summary>Enhanced XA/XRF Image Module Table (PS3.3 Table C.8.19.2-1).</summary>
-    public EnhancedXAXRFImageModuleTable EnhancedXAXRFImageModuleTable => new(_ds);
+    /// <summary>Enhanced XA/XRF Image Module (PS3.3 Table C.8.19.2-1).</summary>
+    public EnhancedXAXRFImageModule EnhancedXAXRFImage => new(_ds);
     /// <summary>XA/XRF Acquisition Module (PS3.3 Table C.8.19.3-1).</summary>
     public XAXRFAcquisitionModule XAXRFAcquisition => new(_ds);
     /// <summary>X-Ray Image Intensifier Module (PS3.3 Table C.8.19.4-1).</summary>
@@ -10028,10 +10028,10 @@ public sealed partial class XAXRFSeriesModule : ModuleBase
     public IReadOnlyList<SOPInstanceReferenceMacro> ReferencedPerformedProcedureStepSequence => GetSeq(0x00081111u, static d => new SOPInstanceReferenceMacro(d));
 }
 
-/// <summary>Enhanced XA/XRF Image Module Table (PS3.3 Table C.8.19.2-1). Read-only and lazy: each property reads the data set when accessed.</summary>
-public sealed partial class EnhancedXAXRFImageModuleTable : ModuleBase
+/// <summary>Enhanced XA/XRF Image Module (PS3.3 Table C.8.19.2-1). Read-only and lazy: each property reads the data set when accessed.</summary>
+public sealed partial class EnhancedXAXRFImageModule : ModuleBase
 {
-    internal EnhancedXAXRFImageModuleTable(DicomDataset ds) : base(ds) { }
+    internal EnhancedXAXRFImageModule(DicomDataset ds) : base(ds) { }
     /// <summary>The PS3.3 table this class is generated from.</summary>
     public const string TableId = "C.8.19.2-1";
     /// <summary>True when at least one attribute of this table (Includes resolved) is present.</summary>
@@ -10069,7 +10069,7 @@ public sealed partial class EnhancedXAXRFImageModuleTable : ModuleBase
     /// <summary>ContentQualification (0018,9004) CS, VM 1, Type 1.</summary>
     public string? ContentQualification => GetStr(0x00189004u);
     /// <summary>PatientOrientationCodeSequence (0054,0410) SQ, VM 1, Type 1C.</summary>
-    public IReadOnlyList<EnhancedXAXRFImageModuleTablePatientOrientationCodeItem> PatientOrientationCodeSequence => GetSeq(0x00540410u, static d => new EnhancedXAXRFImageModuleTablePatientOrientationCodeItem(d));
+    public IReadOnlyList<EnhancedXAXRFImagePatientOrientationCodeItem> PatientOrientationCodeSequence => GetSeq(0x00540410u, static d => new EnhancedXAXRFImagePatientOrientationCodeItem(d));
     /// <summary>PatientGantryRelationshipCodeSequence (0054,0414) SQ, VM 1, Type 2C.</summary>
     public IReadOnlyList<CodeSequenceMacro> PatientGantryRelationshipCodeSequence => GetSeq(0x00540414u, static d => new CodeSequenceMacro(d));
     /// <summary>ExaminedBodyThickness (0010,9431) FL, VM 1, Type 3.</summary>
@@ -10091,7 +10091,7 @@ public sealed partial class EnhancedXAXRFImageModuleTable : ModuleBase
     /// <summary>SourceImageEvidenceSequence (0008,9154) SQ, VM 1, Type 1C.</summary>
     public IReadOnlyList<HierarchicalSOPInstanceReferenceMacro> SourceImageEvidenceSequence => GetSeq(0x00089154u, static d => new HierarchicalSOPInstanceReferenceMacro(d));
     /// <summary>ReferencedInstanceSequence (0008,114A) SQ, VM 1, Type 3.</summary>
-    public IReadOnlyList<EnhancedXAXRFImageModuleTableReferencedInstanceItem> ReferencedInstanceSequence => GetSeq(0x0008114Au, static d => new EnhancedXAXRFImageModuleTableReferencedInstanceItem(d));
+    public IReadOnlyList<EnhancedXAXRFImageReferencedInstanceItem> ReferencedInstanceSequence => GetSeq(0x0008114Au, static d => new EnhancedXAXRFImageReferencedInstanceItem(d));
     /// <summary>ImageComments (0020,4000) LT, VM 1, Type 3.</summary>
     public string? ImageComments => GetStr(0x00204000u);
     /// <summary>QualityControlImage (0028,0300) CS, VM 1, Type 3.</summary>
@@ -15161,7 +15161,7 @@ public sealed partial class ImageReferenceMacro : ModuleBase
     /// <summary>True when at least one attribute of this table (Includes resolved) is present.</summary>
     public bool IsPresent => IsTablePresent(TableId);
     /// <summary>ReferencedSOPSequence (0008,1199) SQ, VM 1, Type 1.</summary>
-    public IReadOnlyList<SOPInstanceReferenceMacro> ReferencedSOPSequence => GetSeq(0x00081199u, static d => new SOPInstanceReferenceMacro(d));
+    public IReadOnlyList<ImageReferenceReferencedSOPItem> ReferencedSOPSequence => GetSeq(0x00081199u, static d => new ImageReferenceReferencedSOPItem(d));
 }
 
 /// <summary>Waveform Reference Macro (PS3.3 Table C.18.5-1). Read-only and lazy: each property reads the data set when accessed.</summary>
@@ -15173,7 +15173,7 @@ public sealed partial class WaveformReferenceMacro : ModuleBase
     /// <summary>True when at least one attribute of this table (Includes resolved) is present.</summary>
     public bool IsPresent => IsTablePresent(TableId);
     /// <summary>ReferencedSOPSequence (0008,1199) SQ, VM 1, Type 1.</summary>
-    public IReadOnlyList<SOPInstanceReferenceMacro> ReferencedSOPSequence => GetSeq(0x00081199u, static d => new SOPInstanceReferenceMacro(d));
+    public IReadOnlyList<WaveformReferenceReferencedSOPItem> ReferencedSOPSequence => GetSeq(0x00081199u, static d => new WaveformReferenceReferencedSOPItem(d));
 }
 
 /// <summary>Spatial Coordinates Macro (PS3.3 Table C.18.6-1). Read-only and lazy: each property reads the data set when accessed.</summary>
@@ -28388,10 +28388,10 @@ public sealed partial class StereoPairsItem : ModuleBase
     public IReadOnlyList<ImageSOPInstanceReferenceMacro> RightImageSequence => GetSeq(0x00220022u, static d => new ImageSOPInstanceReferenceMacro(d));
 }
 
-/// <summary>Enhanced XA/XRF Image Module Table &gt; PatientOrientationCodeSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>
-public sealed partial class EnhancedXAXRFImageModuleTablePatientOrientationCodeItem : ModuleBase
+/// <summary>Enhanced XA/XRF Image Module &gt; PatientOrientationCodeSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>
+public sealed partial class EnhancedXAXRFImagePatientOrientationCodeItem : ModuleBase
 {
-    internal EnhancedXAXRFImageModuleTablePatientOrientationCodeItem(DicomDataset ds) : base(ds) { }
+    internal EnhancedXAXRFImagePatientOrientationCodeItem(DicomDataset ds) : base(ds) { }
     /// <summary>CodeValue (0008,0100) SH, VM 1, Type 1C.</summary>
     public string? CodeValue => GetStr(0x00080100u);
     /// <summary>CodingSchemeDesignator (0008,0102) SH, VM 1, Type 1C.</summary>
@@ -28432,10 +28432,10 @@ public sealed partial class EnhancedXAXRFImageModuleTablePatientOrientationCodeI
     public IReadOnlyList<CodeSequenceMacro> PatientOrientationModifierCodeSequence => GetSeq(0x00540412u, static d => new CodeSequenceMacro(d));
 }
 
-/// <summary>Enhanced XA/XRF Image Module Table &gt; ReferencedInstanceSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>
-public sealed partial class EnhancedXAXRFImageModuleTableReferencedInstanceItem : ModuleBase
+/// <summary>Enhanced XA/XRF Image Module &gt; ReferencedInstanceSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>
+public sealed partial class EnhancedXAXRFImageReferencedInstanceItem : ModuleBase
 {
-    internal EnhancedXAXRFImageModuleTableReferencedInstanceItem(DicomDataset ds) : base(ds) { }
+    internal EnhancedXAXRFImageReferencedInstanceItem(DicomDataset ds) : base(ds) { }
     /// <summary>ReferencedSOPClassUID (0008,1150) UI, VM 1, Type 1.</summary>
     public string? ReferencedSOPClassUID => GetStr(0x00081150u);
     /// <summary>ReferencedSOPInstanceUID (0008,1155) UI, VM 1, Type 1.</summary>
@@ -33496,6 +33496,38 @@ public sealed partial class MeasuredValueItem : ModuleBase
     public long[]? RationalDenominatorValue => GetInts(0x0040A163u);
     /// <summary>MeasurementUnitsCodeSequence (0040,08EA) SQ, VM 1, Type 1.</summary>
     public IReadOnlyList<CodeSequenceMacro> MeasurementUnitsCodeSequence => GetSeq(0x004008EAu, static d => new CodeSequenceMacro(d));
+}
+
+/// <summary>Image Reference Macro &gt; ReferencedSOPSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>
+public sealed partial class ImageReferenceReferencedSOPItem : ModuleBase
+{
+    internal ImageReferenceReferencedSOPItem(DicomDataset ds) : base(ds) { }
+    /// <summary>ReferencedSOPClassUID (0008,1150) UI, VM 1, Type 1.</summary>
+    public string? ReferencedSOPClassUID => GetStr(0x00081150u);
+    /// <summary>ReferencedSOPInstanceUID (0008,1155) UI, VM 1, Type 1.</summary>
+    public string? ReferencedSOPInstanceUID => GetStr(0x00081155u);
+    /// <summary>ReferencedFrameNumber (0008,1160) IS, VM 1-n, Type 1C.</summary>
+    public long[]? ReferencedFrameNumber => GetInts(0x00081160u);
+    /// <summary>ReferencedSegmentNumber (0062,000B) US, VM 1-n, Type 1C.</summary>
+    public long[]? ReferencedSegmentNumber => GetInts(0x0062000Bu);
+    /// <summary>ReferencedSOPSequence (0008,1199) SQ, VM 1, Type 3.</summary>
+    public IReadOnlyList<SOPInstanceReferenceMacro> ReferencedSOPSequence => GetSeq(0x00081199u, static d => new SOPInstanceReferenceMacro(d));
+    /// <summary>ReferencedRealWorldValueMappingInstanceSequence (0008,114B) SQ, VM 1, Type 3.</summary>
+    public IReadOnlyList<SOPInstanceReferenceMacro> ReferencedRealWorldValueMappingInstanceSequence => GetSeq(0x0008114Bu, static d => new SOPInstanceReferenceMacro(d));
+    /// <summary>IconImageSequence (0088,0200) SQ, VM 1, Type 3.</summary>
+    public IReadOnlyList<ImagePixelMacro> IconImageSequence => GetSeq(0x00880200u, static d => new ImagePixelMacro(d));
+}
+
+/// <summary>Waveform Reference Macro &gt; ReferencedSOPSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>
+public sealed partial class WaveformReferenceReferencedSOPItem : ModuleBase
+{
+    internal WaveformReferenceReferencedSOPItem(DicomDataset ds) : base(ds) { }
+    /// <summary>ReferencedSOPClassUID (0008,1150) UI, VM 1, Type 1.</summary>
+    public string? ReferencedSOPClassUID => GetStr(0x00081150u);
+    /// <summary>ReferencedSOPInstanceUID (0008,1155) UI, VM 1, Type 1.</summary>
+    public string? ReferencedSOPInstanceUID => GetStr(0x00081155u);
+    /// <summary>ReferencedWaveformChannels (0040,A0B0) US, VM 2-2n, Type 1C.</summary>
+    public long[]? ReferencedWaveformChannels => GetInts(0x0040A0B0u);
 }
 
 /// <summary>Container Macro &gt; ContentTemplateSequence item. Read-only and lazy: each property reads the data set when accessed.</summary>

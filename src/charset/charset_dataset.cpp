@@ -38,13 +38,15 @@ CharacterSet character_set_of(const Dataset& ds, const CharacterSet* inherited) 
     return default_set();
 }
 
-std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm, const CharacterSet* inherited) {
+std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm, const CharacterSet* inherited,
+                                    std::size_t* replacements) {
+    if (replacements) *replacements = 0;
     const Element* e = ds.find(tag);
     if (!e || e->is_sequence() || e->is_encapsulated()) return std::nullopt;
     if (!vr_is_string(e->vr)) return ds.get_string(tag, vm);
     const TextKind kind = text_kind(e->vr);
     const CharacterSet cs = vr_uses_character_set(e->vr) ? character_set_of(ds, inherited) : default_set();
-    const std::string all = decode(e->value.as_chars(), cs, kind);
+    const std::string all = decode(e->value.as_chars(), cs, kind, replacements);
     std::string_view v = all;
     if (kind == TextKind::Text) {
         if (vm != 0) return std::nullopt;
@@ -57,12 +59,14 @@ std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm, 
     return std::string(trim_value(v, e->vr));
 }
 
-std::optional<std::string> get_utf8_all(const Dataset& ds, Tag tag, const CharacterSet* inherited) {
+std::optional<std::string> get_utf8_all(const Dataset& ds, Tag tag, const CharacterSet* inherited,
+                                        std::size_t* replacements) {
+    if (replacements) *replacements = 0;
     const Element* e = ds.find(tag);
     if (!e || e->is_sequence() || e->is_encapsulated() || !vr_is_string(e->vr)) return std::nullopt;
     const TextKind kind = text_kind(e->vr);
     const CharacterSet cs = vr_uses_character_set(e->vr) ? character_set_of(ds, inherited) : default_set();
-    const std::string all = decode(e->value.as_chars(), cs, kind);
+    const std::string all = decode(e->value.as_chars(), cs, kind, replacements);
     if (kind == TextKind::Text) return std::string(trim_value(all, e->vr));
     std::string out;
     out.reserve(all.size());

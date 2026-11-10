@@ -3,9 +3,12 @@
 // access), R-112 (validator value split), R-123 (named data buffers), R-137 (waveform bits),
 // R-138 (non-finite DS), R-140 (line profile), R-157 (path hint). The allocation-guard tests of
 // R-123 are in test_security4a_alloc.cpp. Every input is synthetic.
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -18,6 +21,7 @@
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
+#include "dict/dictionary.hpp"
 #include "modules/data.hpp"
 #include "modules/modules.hpp"
 #include "repair/validate.hpp"
@@ -818,4 +822,260 @@ TEST_CASE("sec4a R-157: an unquoted private creator with a dot gets a hint to qu
     auto plain = modules::get_by_path(ds, "NoSuchKeyword");
     REQUIRE(!plain.is_ok());
     CHECK(plain.error().message.find("quoted") == std::string::npos);
+}
+
+// ================================================================ testing re-run 2026-11-11, section 6
+
+namespace {
+
+uint32_t module_index(const char* name) {
+    uint32_t idx = 0xFFFFFFFFu;
+    if (siaara_module_find(name, std::strlen(name), &idx) != SIAARA_OK) return 0xFFFFFFFFu;
+    return idx;
+}
+
+siaara_module_info module_info(uint32_t idx) {
+    siaara_module_info mi;
+    std::memset(&mi, 0, sizeof mi);
+    mi.struct_size = sizeof mi;
+    (void)siaara_module_get(idx, &mi);
+    return mi;
+}
+
+// True when table `name` lists `tag` at any depth (through its sequence item nodes).
+bool module_lists(const char* name, uint32_t tag) {
+    const auto idx = modules::find_node(name);
+    if (!idx) return false;
+    std::vector<std::uint32_t> todo{*idx}, seen;
+    while (!todo.empty()) {
+        const std::uint32_t n = todo.back();
+        todo.pop_back();
+        if (std::find(seen.begin(), seen.end(), n) != seen.end()) continue;
+        seen.push_back(n);
+        for (const modules::ModEntry& e : modules::entries(modules::nodes()[n])) {
+            if (e.attr >= 0 && modules::attribute(e.attr)->tag == tag) return true;
+            if (e.node >= 0) todo.push_back(static_cast<std::uint32_t>(e.node));
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("sec4a 6.3: repeating-group keywords resolve in the path API (first group; other groups by tag)") {
+    Dataset ds;
+    (void)ds.set_uint16(0x60000010, 512);
+    (void)ds.set_uint16(0x60020010, 256);
+    (void)ds.set_uint16(0x50000005, 2);
+    auto a = modules::get_by_path(ds, "OverlayRows");
+    REQUIRE(a.is_ok());
+    CHECK(a->tag == 0x60000010u);
+    CHECK(a->integer == 512);
+    auto b = modules::get_by_path(ds, "(6002,0010)");
+    REQUIRE(b.is_ok());
+    CHECK(b->integer == 256);
+    auto c = modules::get_by_path(ds, "CurveDimensions");
+    REQUIRE(c.is_ok());
+    CHECK(c->integer == 2);
+    siaara_dict_entry e;
+    std::memset(&e, 0, sizeof e);
+    e.struct_size = sizeof e;
+    REQUIRE(siaara_dict_lookup_keyword("OverlayRows", 11, &e) == SIAARA_OK);
+    CHECK(e.tag == 0x60000010u);
+    CHECK(e.mask == 0xFF00FFFFu);
+    // A repeating *element* keyword has no default tag: still an error, with a hint.
+    auto d = modules::get_by_path(ds, "RowsForNthOrderCoefficients");
+    REQUIRE(!d.is_ok());
+    CHECK(d.error().message.find("use the tag") != std::string::npos);
+}
+
+TEST_CASE("sec4a 6.4: a bare module name prefers the Module over the Macro; Enhanced XA/XRF Image is a module") {
+    for (const char* name : {"Cardiac Synchronization", "Respiratory Synchronization", "Real World Value Mapping", "Patient Orientation"}) {
+        const uint32_t idx = module_index(name);
+        REQUIRE(idx != 0xFFFFFFFFu);
+        const siaara_module_info mi = module_info(idx);
+        CHECK(mi.kind == static_cast<int32_t>(modules::NodeKind::Module));
+        CHECK(std::string(mi.name) == std::string(name) + " Module");
+        // The macro is still reachable by its full name.
+        const uint32_t macro = module_index((std::string(name) + " Macro").c_str());
+        REQUIRE(macro != 0xFFFFFFFFu);
+        CHECK(module_info(macro).kind == static_cast<int32_t>(modules::NodeKind::Macro));
+    }
+    const uint32_t xa = module_index("Enhanced XA/XRF Image");
+    REQUIRE(xa != 0xFFFFFFFFu);
+    CHECK(module_info(xa).kind == static_cast<int32_t>(modules::NodeKind::Module));
+    CHECK(std::string(module_info(xa).name) == "Enhanced XA/XRF Image Module");
+    CHECK(module_index("Enhanced XA/XRF Image Module") == xa);
+}
+
+TEST_CASE("sec4a 6.5: rows that follow an Include row are in the generated tables") {
+    CHECK(module_lists("Image Reference Macro", 0x00081160));   // Referenced Frame Number
+    CHECK(module_lists("Image Reference Macro", 0x0062000B));   // Referenced Segment Number
+    CHECK(module_lists("Image Reference Macro", 0x0008114B));   // Referenced Real World Value Mapping Instance Sequence
+    CHECK(module_lists("Waveform Reference Macro", 0x0040A0B0)); // Referenced Waveform Channels
+    // The attributes of the included table are still there.
+    CHECK(module_lists("Image Reference Macro", 0x00081199));
+    CHECK(module_lists("Image Reference Macro", 0x00081155));
+    CHECK(module_lists("Waveform Reference Macro", 0x00081150));
+}
+
+TEST_CASE("sec4a 6.6: bytes outside the character set are U+FFFD and counted; the stored bytes stay") {
+    Dataset ds;
+    (void)ds.set_string(tags::SpecificCharacterSet, VR::CS, "ISO_IR 100");
+    // Patient Position is CS: (0008,0005) does not apply, 0xE9 is not a character of its repertoire.
+    (void)ds.set_string(0x00185100, VR::CS, std::string("HF\xE9S"));
+    (void)ds.set_string(tags::PatientName, VR::PN, std::string("Andr\xE9"));
+    std::size_t bad = 99;
+    CHECK(charset::get_utf8(ds, 0x00185100, 0, nullptr, &bad).value_or("") == "HF\xEF\xBF\xBDS");
+    CHECK(bad == 1);
+    CHECK(charset::get_utf8_all(ds, 0x00185100, nullptr, &bad).value_or("") == "HF\xEF\xBF\xBDS");
+    CHECK(bad == 1);
+    auto pv = modules::get_by_path(ds, "PatientPosition");
+    REQUIRE(pv.is_ok());
+    CHECK(pv->text == "HF\xEF\xBF\xBDS");
+    CHECK(pv->undecodable == 1);
+    CHECK(ds.get_raw_string(0x00185100).value_or("") == std::string("HF\xE9S"));
+    // Text the character set covers decodes, with nothing to report.
+    auto pn = modules::get_by_path(ds, "PatientName");
+    REQUIRE(pn.is_ok());
+    CHECK(pn->text == "Andr\xC3\xA9");
+    CHECK(pn->undecodable == 0);
+    siaara_path_value v;
+    std::memset(&v, 0, sizeof v);
+    v.struct_size = sizeof v;
+    char buf[32];
+    size_t needed = 0;
+    REQUIRE(siaara_get_by_path(handle(ds), "PatientPosition", 15, &v, buf, sizeof buf, &needed) == SIAARA_OK);
+    CHECK(v.undecodable == 1);
+}
+
+TEST_CASE("sec4a 6.7: transfer syntax and dictionary lookups") {
+    auto ts_info = [](const char* uid, siaara_transfer_syntax_info& out) {
+        std::memset(&out, 0, sizeof out);
+        out.struct_size = sizeof out;
+        return siaara_transfer_syntax_info_get(uid, std::strlen(uid), &out);
+    };
+    siaara_transfer_syntax_info t;
+    // The 11 retired transfer syntaxes the toolkit does not read: found, retired.
+    for (const char* uid : {"1.2.840.10008.1.2.4.59", "1.2.840.10008.1.2.4.60", "1.2.840.10008.1.2.4.61", "1.2.840.10008.1.2.4.62",
+                            "1.2.840.10008.1.2.4.63", "1.2.840.10008.1.2.4.64", "1.2.840.10008.1.2.4.65", "1.2.840.10008.1.2.4.66",
+                            "1.2.840.10008.1.2.6.1", "1.2.840.10008.1.2.6.2", "1.2.840.10008.1.20"}) {
+        REQUIRE(ts_info(uid, t) == SIAARA_OK);
+        CHECK(t.retired == 1);
+        CHECK(find_transfer_syntax(uid) == nullptr);  // readers and writers do not know them
+    }
+    // JPIP Referenced and SMPTE ST 2110: no native pixel data.
+    for (const char* uid : {"1.2.840.10008.1.2.4.94", "1.2.840.10008.1.2.4.95", "1.2.840.10008.1.2.4.204", "1.2.840.10008.1.2.4.205",
+                            "1.2.840.10008.1.2.7.1", "1.2.840.10008.1.2.7.2", "1.2.840.10008.1.2.7.3"}) {
+        REQUIRE(ts_info(uid, t) == SIAARA_OK);
+        CHECK(t.encapsulated == 1);
+        CHECK(t.retired == 0);
+    }
+    REQUIRE(ts_info("1.2.840.10008.1.2.4.95", t) == SIAARA_OK);
+    CHECK(t.deflated == 1);
+    REQUIRE(ts_info("1.2.840.10008.1.2.1", t) == SIAARA_OK);
+    CHECK(t.encapsulated == 0 && t.retired == 0 && t.deflated == 0);
+    CHECK(ts_info("1.2.3.4", t) == SIAARA_ERR_NOT_FOUND);
+
+    // Dictionary enumeration: every entry's tag looks up to the entry itself (a repeating element
+    // such as (0028,04x0) is not listed under a tag that is another attribute).
+    uint32_t count = 0;
+    REQUIRE(siaara_dict_count(&count) == SIAARA_OK);
+    int masked = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        siaara_dict_entry e, l;
+        std::memset(&e, 0, sizeof e);
+        e.struct_size = sizeof e;
+        REQUIRE(siaara_dict_entry_at(i, &e) == SIAARA_OK);
+        std::memset(&l, 0, sizeof l);
+        l.struct_size = sizeof l;
+        REQUIRE(siaara_dict_lookup(e.tag, &l) == SIAARA_OK);
+        if (std::strcmp(e.keyword, l.keyword) != 0) {
+            std::printf("  entry %u tag %08X: %s looks up as %s\n", i, e.tag, e.keyword, l.keyword);
+            CHECK(false);
+        }
+        masked += e.mask != 0xFFFFFFFFu ? 1 : 0;
+    }
+    CHECK(masked > 50);
+    siaara_dict_entry e;
+    std::memset(&e, 0, sizeof e);
+    e.struct_size = sizeof e;
+    REQUIRE(siaara_dict_lookup_keyword("RowsForNthOrderCoefficients", 27, &e) == SIAARA_OK);
+    CHECK(e.tag == 0x00280410u);
+    CHECK(e.mask == 0xFFFFFF0Fu);
+    REQUIRE(siaara_dict_lookup(0x00280400u, &e) == SIAARA_OK);
+    CHECK(std::string(e.keyword) == "TransformLabel");
+    // Command elements retired in PS3.7 (Table E.2-1).
+    REQUIRE(siaara_dict_lookup(0x00000001u, &e) == SIAARA_OK);
+    CHECK(e.retired == 1);
+    REQUIRE(siaara_dict_lookup(0x00000200u, &e) == SIAARA_OK);
+    CHECK(e.retired == 1);
+    REQUIRE(siaara_dict_lookup(0x00000100u, &e) == SIAARA_OK);  // Command Field: current
+    CHECK(e.retired == 0);
+    // "US or SS or OW": all three VRs.
+    const dict::Entry* three = nullptr;
+    for (std::size_t i = 0; i < dict::entry_count(); ++i)
+        if (dict::entry_at(i)->vr_alt2 != VR::None) three = dict::entry_at(i);
+    REQUIRE(three != nullptr);
+    CHECK(three->vr == VR::US && three->vr_alt == VR::SS && three->vr_alt2 == VR::OW);
+    CHECK(three->allows(VR::OW) && three->allows(VR::US) && !three->allows(VR::LO));
+    REQUIRE(siaara_dict_lookup(three->tag, &e) == SIAARA_OK);
+    CHECK(std::string(e.vr) == "US" && std::string(e.vr_alt) == "SS" && std::string(e.vr_alt2) == "OW");
+    // A caller built before the struct grew is still served (and its bytes past the old end are untouched).
+    siaara_dict_entry old;
+    std::memset(&old, 0x5A, sizeof old);
+    old.struct_size = static_cast<uint32_t>(offsetof(siaara_dict_entry, vr_alt2));
+    REQUIRE(siaara_dict_lookup(three->tag, &old) == SIAARA_OK);
+    CHECK(std::string(old.vr) == "US");
+    CHECK(old.vr_alt2[0] == 0x5A);
+    CHECK(old.mask == 0x5A5A5A5Au);
+}
+
+TEST_CASE("sec4a 6.9: pixel value tells an assumed identity from a stored rescale") {
+    auto make = [](bool with_rescale) {
+        DicomFile f;
+        f.transfer_syntax = std::string(ts::ExplicitVRLittleEndian);
+        Dataset& ds = f.dataset;
+        (void)ds.set_string(tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+        (void)ds.set_string(tags::SOPInstanceUID, VR::UI, "2.25.41093");
+        (void)ds.set_uint16(tags::SamplesPerPixel, 1);
+        (void)ds.set_string(tags::PhotometricInterpretation, VR::CS, "MONOCHROME2");
+        (void)ds.set_uint16(tags::Rows, 1);
+        (void)ds.set_uint16(tags::Columns, 2);
+        (void)ds.set_uint16(tags::BitsAllocated, 8);
+        (void)ds.set_uint16(tags::BitsStored, 8);
+        (void)ds.set_uint16(tags::HighBit, 7);
+        (void)ds.set_uint16(tags::PixelRepresentation, 0);
+        if (with_rescale) {
+            (void)ds.set_string(tags::RescaleSlope, VR::DS, "1");
+            (void)ds.set_string(tags::RescaleIntercept, VR::DS, "0");
+        }
+        (void)ds.set_bytes(tags::PixelData, VR::OB, Bytes::copy_of(reinterpret_cast<const std::uint8_t*>("\x07\x09"), 2));
+        std::vector<std::uint8_t> bytes;
+        (void)write_part10(f, bytes);
+        siaara_file* h = nullptr;
+        (void)siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &h);
+        return h;
+    };
+    for (const bool with_rescale : {false, true}) {
+        siaara_file* h = make(with_rescale);
+        REQUIRE(h);
+        siaara_pixel_value v;
+        std::memset(&v, 0, sizeof v);
+        v.struct_size = sizeof v;
+        REQUIRE(siaara_file_pixel_value(h, 0, 1, 0, 0, &v) == SIAARA_OK);
+        CHECK(v.stored == 9);
+        CHECK(v.has_modality == 1);
+        CHECK(v.modality_value == 9.0);
+        CHECK(v.rescale_slope == 1.0 && v.rescale_intercept == 0.0);
+        CHECK(v.modality_in_data == (with_rescale ? 1 : 0));
+        // An older caller (struct without the appended field) is still accepted.
+        siaara_pixel_value old;
+        std::memset(&old, 0x5A, sizeof old);
+        old.struct_size = static_cast<uint32_t>(offsetof(siaara_pixel_value, modality_in_data));
+        REQUIRE(siaara_file_pixel_value(h, 0, 0, 0, 0, &old) == SIAARA_OK);
+        CHECK(old.stored == 7);
+        CHECK(old.modality_in_data == 0x5A5A5A5A);
+        siaara_file_free(h);
+    }
 }

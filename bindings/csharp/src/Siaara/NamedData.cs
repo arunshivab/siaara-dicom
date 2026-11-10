@@ -39,7 +39,12 @@ public enum DicomValueKind
 /// <param name="ItemCount">Items of a sequence.</param>
 /// <param name="ByteLength">Value bytes as held.</param>
 public sealed record DicomPathValue(DicomTag Tag, string VR, int VM, DicomValueKind Kind, string Text, long? IntegerValue,
-    double? RealValue, int ItemCount, ulong ByteLength);
+    double? RealValue, int ItemCount, ulong ByteLength)
+{
+    /// <summary>Byte sequences of the element that are not characters of the character set in force; they are
+    /// U+FFFD in <see cref="Text"/> (0: the text is what the bytes hold). The stored bytes are unchanged.</summary>
+    public int UndecodableCount { get; init; }
+}
 
 /// <summary>Units source of a modality value (siaara_pixel_value.units_source).</summary>
 public enum UnitsSource
@@ -75,10 +80,18 @@ public enum UnitsSource
 public sealed record PixelValue(int Frame, int Column, int Row, int Sample, long? Stored, double StoredReal, double? ModalityValue,
     double RescaleSlope, double RescaleIntercept, bool FromModalityLut, bool DoseGridScaling, string Units, UnitsSource UnitsSource)
 {
+    /// <summary>The data holds the modality transform (Modality LUT Sequence, Rescale Slope or Rescale
+    /// Intercept, Dose Grid Scaling). False with a <see cref="ModalityValue"/>: none is present, so slope 1 /
+    /// intercept 0 is the identity assumed, not a stored rescale.</summary>
+    public bool ModalityInData { get; init; }
+
     internal static PixelValue From(in siaara_pixel_value v) => new((int)v.frame, (int)v.column, (int)v.row, (int)v.sample,
         v.sample_kind == C.SIAARA_SAMPLES_INTEGER ? v.stored : null, v.stored_real,
         v.has_modality != 0 ? v.modality_value : null, v.rescale_slope, v.rescale_intercept, v.modality_lut != 0,
-        v.dose_grid_scaling != 0, DicomDictionary.Chars(v.units), (UnitsSource)v.units_source);
+        v.dose_grid_scaling != 0, DicomDictionary.Chars(v.units), (UnitsSource)v.units_source)
+    {
+        ModalityInData = v.modality_in_data != 0,
+    };
 }
 
 /// <summary>NM frame index vectors at one frame (siaara_nm_frame_index): 1-based values as stored, null when the vector is absent or too short.</summary>
@@ -571,7 +584,10 @@ public sealed partial class DicomDataset
             throw Status.Error(st);
         }
         return new DicomPathValue(new DicomTag(v.tag), DicomDictionary.Chars(v.vr), (int)v.vm, (DicomValueKind)v.kind, text,
-            v.has_integer != 0 ? v.integer : null, v.has_real != 0 ? v.real : null, (int)v.item_count, v.byte_length);
+            v.has_integer != 0 ? v.integer : null, v.has_real != 0 ? v.real : null, (int)v.item_count, v.byte_length)
+        {
+            UndecodableCount = (int)Math.Min(v.undecodable, int.MaxValue),
+        };
     }
 
     /// <summary>Every value of a numeric element at a path as doubles; null when absent.</summary>

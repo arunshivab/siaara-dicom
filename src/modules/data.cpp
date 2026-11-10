@@ -2,6 +2,7 @@
 // frame index vectors (see data.hpp).
 #include "modules/data.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <new>
@@ -163,6 +164,7 @@ Result<PixelValue> pixel_value(const Dataset& ds, const image::PixelInfo& pi, st
     v.stored_real = static_cast<double>(v.stored);
     if (m && pi.samples_per_pixel == 1) {
         v.has_modality = true;
+        v.modality_in_data = m->in_data;
         v.modality_lut = m->has_lut;
         v.dose_grid_scaling = m->dose_grid_scaling;
         v.slope = m->has_lut ? 1.0 : m->slope;
@@ -535,6 +537,10 @@ Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t 
 Result<NmFrameIndex> nm_frame_index(const Dataset& ds, std::uint32_t frame) {
     static constexpr Tag kVectors[9] = {0x00540010, 0x00540020, 0x00540030, 0x00540050, 0x00540060,
                                         0x00540070, 0x00540080, 0x00540090, 0x00540100};
+    // Frames past Number of Frames are refused like everywhere else (they used to read as zeros).
+    // Without a readable Number of Frames the range is not known and the vectors decide.
+    if (const auto frames = ds.get_int(0x00280008); frames && *frames >= 1 && frame >= *frames)
+        return Status(Errc::InvalidArgument, "frame index out of range");
     NmFrameIndex r;
     std::vector<Tag> pointer;
     if (const Element* f = ds.find(0x00280009); f && !f->is_sequence()) {

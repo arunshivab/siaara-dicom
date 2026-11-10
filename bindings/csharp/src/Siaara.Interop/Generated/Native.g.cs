@@ -568,6 +568,9 @@ internal struct siaara_dict_entry
     public nint keyword;
     public nint name;
     public nint vm;
+    public FixedArray3OfByte vr_alt2;
+    public byte reserved0;
+    public uint mask;
 }
 
 /// <summary>siaara_private_dict_entry (blittable, C layout).</summary>
@@ -1398,7 +1401,7 @@ internal struct siaara_path_value
     public uint item_count;
     public int has_integer;
     public int has_real;
-    public uint reserved0;
+    public uint undecodable;
     public long integer;
     public double real;
     public ulong byte_length;
@@ -1424,6 +1427,8 @@ internal struct siaara_pixel_value
     public double rescale_slope;
     public double rescale_intercept;
     public FixedArray32OfByte units;
+    public int modality_in_data;
+    public int reserved0;
 }
 
 /// <summary>siaara_volume_sample (blittable, C layout).</summary>
