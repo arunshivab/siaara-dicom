@@ -429,6 +429,8 @@ private:
                 return Status(Errc::Malformed, "expected item in sequence", start, e.tag);
             if (e.items.size() >= opt_.max_items_per_sequence)
                 return Status(Errc::LimitExceeded, "too many items in sequence", start, e.tag);
+            if (++item_count_ > opt_.max_items_total)
+                return Status(Errc::LimitExceeded, "too many sequence items", start, e.tag);
             Dataset item;
             item.set_item_length_mode(len == kUndefinedLength ? Dataset::kItemLengthUndefined
                                                               : Dataset::kItemLengthExplicit);
@@ -743,6 +745,7 @@ private:
     const ReadOptions& opt_;
     std::vector<std::string>* warnings_;
     std::uint64_t element_count_ = 0;
+    std::uint64_t item_count_ = 0;  // sequence items of the whole read (max_items_total)
     bool stopped_at_pixels_ = false;
     std::uint64_t stop_offset_ = 0;
     std::uint16_t bits_allocated_ = 0;

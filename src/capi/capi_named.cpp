@@ -278,11 +278,12 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_pixel_value(const siaara_file* 
                                                              uint32_t row, uint32_t sample, siaara_pixel_value* out) {
     return guarded([&]() -> siaara_status {
         if (!file || !capi::pixel_value_sized(out)) return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
-        auto im = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
+        auto im = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax, siaara::capi::frame_options(*file));
         if (!im) return fail(im.error());
         const siaara::image::Image& img = im.value();
         const auto& pi = img.info();
         if (frame >= pi.number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
+        if (Status lim = siaara::capi::frame_limit(*file, img.frames().frame_bytes()); !lim) return fail(lim);
         if (column >= pi.columns || row >= pi.rows || sample >= pi.samples_per_pixel)
             return fail(Errc::InvalidArgument, "column, row or sample out of range");
         auto px = img.frames().decode(frame);

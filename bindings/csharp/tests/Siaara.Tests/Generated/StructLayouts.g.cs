@@ -30,6 +30,10 @@ internal static class StructLayouts
             r.Add("F siaara_read_options reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_read_options open_read_threshold " + Offset(ref s, ref s.open_read_threshold).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_read_options open_read_max_bytes " + Offset(ref s, ref s.open_read_max_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_options max_inflated_size " + Offset(ref s, ref s.max_inflated_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_options max_elements " + Offset(ref s, ref s.max_elements).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_options frame_memory_budget " + Offset(ref s, ref s.frame_memory_budget).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_options max_frame_bytes " + Offset(ref s, ref s.max_frame_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_read_report);

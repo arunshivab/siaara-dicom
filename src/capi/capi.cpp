@@ -128,7 +128,27 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
         if (o->open_read_threshold) r.open_read_threshold = o->open_read_threshold;
         if (o->open_read_max_bytes) r.open_read_max_bytes = o->open_read_max_bytes;
     }
+    // Limits for untrusted input; 0 keeps each default.
+    if (o->struct_size >= offsetof(siaara_read_options, max_frame_bytes) + sizeof(uint64_t)) {
+        if (o->max_inflated_size) r.max_inflated_size = o->max_inflated_size;
+        if (o->max_elements) {
+            r.max_elements = o->max_elements;
+            r.max_items_per_sequence = std::min(r.max_items_per_sequence, o->max_elements);
+            r.max_items_total = o->max_elements;
+            r.max_fragments = std::min(r.max_fragments, o->max_elements);
+        }
+    }
     return r;
+}
+
+// The frame limits of siaara_read_options belong to the file handle.
+siaara_file* new_file(siaara::DicomFile&& f, const siaara_read_options* o) {
+    auto* h = new siaara_file{std::move(f)};
+    if (o && o->struct_size >= offsetof(siaara_read_options, max_frame_bytes) + sizeof(uint64_t)) {
+        h->frame_memory_budget = o->frame_memory_budget;
+        h->max_frame_bytes = o->max_frame_bytes;
+    }
+    return h;
 }
 
 // siaara_save_options -> WriteOptions. Fields past struct_size keep their defaults.
@@ -266,7 +286,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* path, size_t p
         *out = nullptr;
         auto r = siaara::read_file(std::string(path, path_len), to_options(options));
         if (!r) return fail(r.error());
-        *out = new siaara_file{std::move(r).value()};
+        *out = new_file(std::move(r).value(), options);
         return ok();
     });
 }
@@ -279,7 +299,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open_memory(const uint8_t* data
         *out = nullptr;
         auto r = siaara::read_part10(siaara::Bytes::copy_of(data, size), to_options(options));
         if (!r) return fail(r.error());
-        *out = new siaara_file{std::move(r).value()};
+        *out = new_file(std::move(r).value(), options);
         return ok();
     });
 }
@@ -662,7 +682,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_pixel_info(const siaara_file* f
     return guarded([&]() -> siaara_status {
         if (!file || !out || out->struct_size < sizeof(siaara_pixel_info))
             return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
-        auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax);
+        auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax, siaara::capi::frame_options(*file));
         if (!fr) return fail(fr.error());
         const auto& pi = fr->info();
         const auto* ts = siaara::find_transfer_syntax(file->file.transfer_syntax);
@@ -704,10 +724,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_decode(const siaara_file* file
         if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
         if (format != SIAARA_FRAME_NATIVE && format != SIAARA_FRAME_FLOAT32_MODALITY)
             return fail(Errc::InvalidArgument, "unknown frame format");
-        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
+        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax, siaara::capi::frame_options(*file));
         if (!img) return fail(img.error());
         const auto& pi = img->info();
         if (frame >= pi.number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
+        if (Status lim = siaara::capi::frame_limit(*file, img->frames().frame_bytes()); !lim) return fail(lim);
         std::uint64_t need = img->frames().frame_bytes();
         if (format == SIAARA_FRAME_FLOAT32_MODALITY) need = pi.pixels() * pi.samples_per_pixel * 4u;
         bool query = false;
@@ -745,9 +766,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_render_rgba8(const siaara_file* file
             p.overlays = options->no_overlays == 0;
             p.shutters = options->no_shutters == 0;
         }
-        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
+        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax, siaara::capi::frame_options(*file));
         if (!img) return fail(img.error());
         if (p.frame >= img->info().number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
+        if (Status lim = siaara::capi::frame_limit(*file, img->frames().frame_bytes()); !lim) return fail(lim);
         bool query = false;
         if (siaara_status st = check_out_buffer(img->info().pixels() * 4u, buf, cap, needed, query); st != SIAARA_OK || query)
             return st;
@@ -2636,9 +2658,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_get_raw_stored(const siaara_fil
 namespace {
 
 siaara_status frame_warnings_of(const siaara_file* file, uint32_t frame, std::vector<siaara::image::FrameWarning>& out) {
-    auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax);
+    auto fr = siaara::image::FrameReader::open(file->file.dataset, file->file.transfer_syntax, siaara::capi::frame_options(*file));
     if (!fr) return fail(fr.error());
     if (frame >= fr->frame_count()) return fail(Errc::InvalidArgument, "frame index out of range");
+    if (Status lim = siaara::capi::frame_limit(*file, fr->frame_bytes()); !lim) return fail(lim);
     // Decoding (not only the header probe) also finds the repairs made inside the codecs.
     auto px = fr->decode(frame);
     if (!px) return fail(px.error());

@@ -18,14 +18,16 @@ endif()
 
 add_executable(siaara_example_read_file c/read_file.c)
 add_executable(siaara_example_network c/network.c)
+add_executable(siaara_example_attachment_preview c/attachment_preview.c)
 add_executable(siaara_example_read_file_cpp cpp/read_file.cpp)
-foreach(t siaara_example_read_file siaara_example_network siaara_example_read_file_cpp)
+foreach(t siaara_example_read_file siaara_example_network siaara_example_attachment_preview siaara_example_read_file_cpp)
   target_link_libraries(${t} PRIVATE siaara_example_lib)
 endforeach()
-set_target_properties(siaara_example_read_file siaara_example_network PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+set_target_properties(siaara_example_read_file siaara_example_network siaara_example_attachment_preview
+                      PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 set_target_properties(siaara_example_read_file_cpp PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 if(MSVC)
-  foreach(t siaara_example_read_file siaara_example_network siaara_example_read_file_cpp)
+  foreach(t siaara_example_read_file siaara_example_network siaara_example_attachment_preview siaara_example_read_file_cpp)
     target_compile_definitions(${t} PRIVATE _CRT_SECURE_NO_WARNINGS)
   endforeach()
 endif()
@@ -36,10 +38,13 @@ add_test(NAME example_c_network
          COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:siaara_example_network> -DWORK=${_work}/network
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/run_in_fresh_folder.cmake)
 add_test(NAME example_cpp_read_file COMMAND siaara_example_read_file_cpp)
-set_tests_properties(example_c_read_file example_cpp_read_file PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+# Untrusted bytes (a mail attachment) to a caption and a PNG / JPEG: docs/GETTING_STARTED.md.
+add_test(NAME example_c_attachment_preview COMMAND siaara_example_attachment_preview)
+set_tests_properties(example_c_read_file example_cpp_read_file example_c_attachment_preview
+                     PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 if(WIN32 AND TARGET siaara)
   string(REPLACE ";" "\;" _siaara_example_path "$ENV{PATH}")
-  set_tests_properties(example_c_read_file example_c_network example_cpp_read_file PROPERTIES
+  set_tests_properties(example_c_read_file example_c_network example_cpp_read_file example_c_attachment_preview PROPERTIES
                        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:siaara>\;${_siaara_example_path}")
 endif()
 
@@ -57,8 +62,18 @@ if(TARGET siaara AND NOT SIAARA_SANITIZE AND CMAKE_SIZEOF_VOID_P EQUAL 8)
                        --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/csharp-artifacts
                        -p:SiaaraFromSource=true -p:SiaaraNativeLibrary=$<TARGET_FILE:siaara>
                        -- ${_work}/csharp)
-      set_tests_properties(example_csharp_quickstart PROPERTIES TIMEOUT 900
+      # Untrusted bytes (a mail attachment) to a caption and a PNG / JPEG, in C#. After the
+      # QuickStart test: both build the same binding projects.
+      add_test(NAME example_csharp_attachment_preview
+               COMMAND ${SIAARA_DOTNET} run -c Release --project ${CMAKE_CURRENT_SOURCE_DIR}/csharp/AttachmentPreview
+                       --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/csharp-artifacts-preview
+                       -p:SiaaraFromSource=true -p:SiaaraNativeLibrary=$<TARGET_FILE:siaara>
+                       -- ${_work}/csharp-preview)
+      set_tests_properties(example_csharp_quickstart example_csharp_attachment_preview PROPERTIES TIMEOUT 900
                            ENVIRONMENT "DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1")
+      set_tests_properties(example_csharp_attachment_preview PROPERTIES DEPENDS example_csharp_quickstart
+                           RESOURCE_LOCK siaara_dotnet_build)
+      set_tests_properties(example_csharp_quickstart PROPERTIES RESOURCE_LOCK siaara_dotnet_build)
     endif()
   endif()
 endif()

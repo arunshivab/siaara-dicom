@@ -173,6 +173,15 @@ using var client = new DicomWebClient($"http://127.0.0.1:{web.Port}/dicomweb");
 string json = client.Search(QidoLevel.Studies, "PatientID=EX-0001");
 ```
 
+### Showing a DICOM file that arrived as untrusted bytes (a mail attachment, an upload)
+
+Open from memory with explicit limits, decode a fixed number of frames, render at a fixed size,
+encode PNG / JPEG - or say plainly why there is no picture. The recommended settings and what
+each protects against are in
+[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md#7-showing-a-dicom-attachment-safely-untrusted-input);
+the programs are [`examples/csharp/AttachmentPreview`](examples/csharp/AttachmentPreview) and
+[`examples/c/attachment_preview.h`](examples/c/attachment_preview.h).
+
 ## Command-line tools
 
 `siaara-dump`, `siaara-repair`, `siaara-deid`, `siaara-echoscu`, `siaara-storescu`,

@@ -283,7 +283,97 @@ Things to know:
   absolute path from `runtimes/<rid>/native` under the application folder (or the application
   folder itself for a RID-specific publish); `PATH` and the current directory are never searched.
 
-## 7. The command-line tools
+## 7. Showing a DICOM attachment safely (untrusted input)
+
+A DICOM file that arrives from outside - a mail attachment, an upload - is **untrusted bytes**.
+To show it (a caption and a small picture) without letting it take the server's memory or time,
+open it from memory with every limit set explicitly, decode a fixed number of frames, and render
+at a fixed size. The two example programs do exactly that and are run by the test suite:
+
+- C#: `examples/csharp/AttachmentPreview/Program.cs` (`AttachmentPreview.Create(bytes, limits)`)
+- C: `examples/c/attachment_preview.h` (`preview_attachment`) and `attachment_preview.c`
+
+The steps, in C# (the C calls are in brackets):
+
+```csharp
+// 1. Not DICOM at all? A Part 10 file has "DICM" at offset 128. Nothing else is parsed.
+if (data.Length < 132 || !data.Slice(128, 4).SequenceEqual("DICM"u8)) return NotDicom;
+
+// 2. Open from memory with the limits  [siaara_file_open_memory + siaara_read_options]
+using DicomFile file = DicomFile.Open(data, new DicomReadOptions
+{
+    AllowRawDataset = false,          // Part 10 only
+    RecoverOverlongLengths = false,   // no guessing at damaged lengths
+    MaxDepth = 16,
+    MaxElements = 200_000,
+    MaxInflatedSize = 128L << 20,
+    MaxFrameBytes = 64L << 20,
+    FrameMemoryBudget = 256L << 20,
+});
+
+// 3. Was the read complete? If not, show what there is and say so  [siaara_file_read_report]
+bool incomplete = !file.ReadReport.IsComplete;
+
+// 4. Caption: safe header fields only  [siaara_dataset_get_utf8]
+string modality = file.Dataset.TryGetString(DicomTags.Modality, out string? m) ? m : "";
+
+// 5. Is there an image the toolkit can decode? Nothing is decoded yet  [siaara_file_pixel_info]
+DicomPixelInfo pi = file.GetPixelInfo();   // NotFound: no image; Unsupported: video, JPEG XL ...
+
+// 6. Frame 0, with the file's own window / palette / presentation defaults, fitted into 512 x 512
+//    [siaara_frame_open + siaara_frame_render with viewport_width / viewport_height, zoom 0]
+using DicomFrame frame = file.OpenFrame(0);
+byte[] rgba = frame.Render(new ViewportOptions { Width = w, Height = h, Interpolation = Interpolation.Linear });
+
+// 7. PNG and JPEG  [siaara_encode_png / siaara_encode_jpeg]
+byte[] png = ImageEncoder.EncodePng(rgba, w, h);
+byte[] jpeg = ImageEncoder.EncodeJpeg(rgba, w, h);
+```
+
+The recommended settings and what each protects against:
+
+| Setting | Recommended | Protects against |
+|---|---|---|
+| attachment size (your own check, before anything else) | 64 MiB | everything below is proportional to the input at worst |
+| the "DICM" check at offset 128, `AllowRawDataset = false` (`allow_raw_dataset = 0`) | on | parsing arbitrary bytes as a data set without a header |
+| `RecoverOverlongLengths = false` (`SIAARA_RECOVER_OFF`) | off | a recovery heuristic meant for trusted local files reinterpreting hostile bytes |
+| `MaxDepth` (`max_depth`) | 16 | deeply nested sequences |
+| `MaxElements` (`max_elements`) | 200,000 | millions of tiny elements or empty sequence items: 8 bytes of input each become an object in memory |
+| `MaxInflatedSize` (`max_inflated_size`) | 128 MiB | a deflate bomb: a few kB in a deflated transfer syntax that inflate to gigabytes |
+| `MaxFrameBytes` (`max_frame_bytes`) | 64 MiB | huge Rows x Columns: a frame larger than this is refused before anything is decoded |
+| `FrameMemoryBudget` (`frame_memory_budget`) | 256 MiB | a JPEG 2000 / JPEG-LS / JPEG stream that claims huge dimensions or many components |
+| frames decoded | frame 0, plus at most 8 for a strip | a file that claims a million frames: frames are decoded one at a time, only the ones you ask for |
+| output size | 512 x 512 (strip tiles 128 x 128) | the size of what you produce and encode, whatever the file claims |
+| patient identifiers | not read | personal data in a preview nobody asked for; `PatientFields` / `preview_patient_fields` read them on request |
+
+What you get back, and what to show:
+
+| Outcome | When | Show |
+|---|---|---|
+| picture | the first frame could be decoded | the picture and the caption; "incomplete file" when the read was not complete |
+| not DICOM | no "DICM" header | a plain attachment |
+| no image | SR, RT Structure Set, encapsulated PDF, DICOMDIR and other objects without pixel data | the caption |
+| cannot preview | pixel data the toolkit does not decode: MPEG-2 / MPEG-4 / HEVC video, JPEG XL - the reason names the transfer syntax | the caption and the reason |
+| too large | a limit above was reached; nothing was decoded | the caption if there is one |
+| damaged | DICOM, but the file or its pixel data cannot be read | the caption if there is one |
+
+Things to know:
+
+- The frame limits (`MaxFrameBytes`, `FrameMemoryBudget`) belong to the **opened file**: every
+  later decode, render and `OpenFrame` on that `DicomFile` is held to them. A file opened without
+  them has the library defaults (4 GiB), which are meant for trusted data.
+- **There is no time limit in the API.** The limits bound the work, and the toolkit's test for
+  this path (`tests/test_rc1_preview_alloc.cpp`: mutated and truncated files, decompression and
+  deflate bombs, a million claimed frames, element and nesting bombs) holds each preview to a
+  small memory budget and a time limit. Still, run previews on a worker you can abandon.
+- The caption fields are text from the file. Escape them before they go into HTML.
+- Colour, palette colour, signed and 12 / 16-bit images, MONOCHROME1 and the file's window are
+  handled by the render call. Pixel spacing with non-square pixels is not corrected in the
+  example.
+- A cut-off file is flagged (`ReadReport`), never shown as if whole. Its picture is shown when
+  the first frame is all there; uncompressed pixel data that ends early has no picture.
+
+## 8. The command-line tools
 
     siaara-dump image.dcm                        # elements, with private names from the dictionary
     siaara-echoscu -aec ARCHIVE host 104         # C-ECHO

@@ -45,6 +45,52 @@ internal static class PixelTests
             Check(!empty.TryGetPixelInfo(out _));
         });
 
+        Case("pixel: limits for untrusted input (read options) and the open mode", () =>
+        {
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "siaara-cs-limits-" + Guid.NewGuid().ToString("N") + ".dcm");
+            try
+            {
+                using (DicomFile made = Builders.Smoke())
+                {
+                    made.Save(path, "1.2.840.10008.1.2.1");
+                }
+                byte[] bytes = System.IO.File.ReadAllBytes(path);
+                // Defaults: unchanged.
+                using (DicomFile f = DicomFile.Open(bytes))
+                {
+                    CheckEq(f.DecodeFrame(0).Length, 8);
+                }
+                // A decoded frame (8 bytes) larger than the file's limit is refused by every frame function.
+                using (DicomFile f = DicomFile.Open(bytes, new DicomReadOptions { MaxFrameBytes = 4, RecoverOverlongLengths = false }))
+                {
+                    CheckEq(f.GetPixelInfo().FrameBytes, 8L);
+                    CheckEq(Throws<SiaaraException>(() => f.DecodeFrame(0))?.ErrorCode, SiaaraErrorCode.LimitExceeded);
+                    CheckEq(Throws<SiaaraException>(() => f.RenderRgba8())?.ErrorCode, SiaaraErrorCode.LimitExceeded);
+                    CheckEq(Throws<SiaaraException>(() => f.OpenFrame(0))?.ErrorCode, SiaaraErrorCode.LimitExceeded);
+                }
+                using (DicomFile f = DicomFile.Open(bytes, new DicomReadOptions { FrameMemoryBudget = 1 << 20, MaxFrameBytes = 8 }))
+                {
+                    using DicomFrame frame = f.OpenFrame(0);
+                    CheckEq(frame.Render(new ViewportOptions { Width = 2, Height = 2 }).Length, 16);
+                }
+                CheckEq(Throws<SiaaraException>(() => DicomFile.Open(bytes, new DicomReadOptions { MaxElements = 3 }))?.ErrorCode,
+                    SiaaraErrorCode.LimitExceeded);
+                // Open by path: the three modes read the same; Read refuses a file above its limit.
+                foreach (DicomOpenMode mode in new[] { DicomOpenMode.Auto, DicomOpenMode.Map, DicomOpenMode.Read })
+                {
+                    using DicomFile f = DicomFile.Open(path, new DicomReadOptions { OpenMode = mode });
+                    Check(f.ReadReport.IsComplete);
+                    Check(f.DecodeFrame(0).SequenceEqual(new byte[] { 0x00, 0x04, 0x32, 0x04, 0xCE, 0x03, 0xFF, 0x7F }));
+                }
+                CheckEq(Throws<SiaaraException>(() => DicomFile.Open(path, new DicomReadOptions { OpenMode = DicomOpenMode.Read, OpenReadMaxBytes = 16 }))?.ErrorCode,
+                    SiaaraErrorCode.LimitExceeded);
+            }
+            finally
+            {
+                System.IO.File.Delete(path);
+            }
+        });
+
         Case("pixel: render RGBA8 (file VOI, explicit window, invert, errors)", () =>
         {
             using DicomFile f = Builders.Smoke();

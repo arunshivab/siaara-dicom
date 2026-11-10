@@ -607,6 +607,10 @@ internal struct siaara_read_options
     public uint reserved0;
     public ulong open_read_threshold;
     public ulong open_read_max_bytes;
+    public ulong max_inflated_size;
+    public ulong max_elements;
+    public ulong frame_memory_budget;
+    public ulong max_frame_bytes;
 }
 
 /// <summary>siaara_read_report (blittable, C layout).</summary>

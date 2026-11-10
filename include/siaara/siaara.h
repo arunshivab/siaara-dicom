@@ -115,6 +115,26 @@ typedef struct siaara_read_options {
     uint32_t reserved0;              /* set to 0 */
     uint64_t open_read_threshold;    /* SIAARA_OPEN_AUTO: 0 = default, 256 MiB */
     uint64_t open_read_max_bytes;    /* SIAARA_OPEN_READ: 0 = default, 4 GiB */
+    /* Read only when struct_size covers them. Limits for input that is not trusted (for example a
+     * mail attachment; docs/GETTING_STARTED.md, "Showing a DICOM attachment safely"). 0 keeps the
+     * library default every time; the defaults are unchanged.
+     *   max_inflated_size: the most a deflated transfer syntax (1.2.840.10008.1.2.1.99 and the
+     *     deflated image syntaxes) may inflate to; more is SIAARA_ERR_LIMIT_EXCEEDED. Default 4 GiB.
+     *   max_elements: the most data elements a read may hold (default 10,000,000). When set it
+     *     is also the most sequence items of the whole read (default: no limit of its own), and
+     *     the most items of one sequence and fragments of one pixel data element where it is
+     *     smaller than their defaults (1,000,000 each). More is SIAARA_ERR_LIMIT_EXCEEDED.
+     *   frame_memory_budget: memory the frame functions of THIS file handle may use for decoded
+     *     pixels and codec working memory (siaara_frame_decode, siaara_render_rgba8,
+     *     siaara_frame_open, siaara_file_pixel_value, frame warnings). Default 4 GiB.
+     *   max_frame_bytes: the largest decoded frame (rows x columns x samples x bytes per sample)
+     *     those functions accept; a larger frame is SIAARA_ERR_LIMIT_EXCEEDED before anything is
+     *     decoded. Default: no limit other than frame_memory_budget.
+     * The frame limits belong to the file handle: they apply to every later call on it. */
+    uint64_t max_inflated_size;
+    uint64_t max_elements;
+    uint64_t frame_memory_budget;
+    uint64_t max_frame_bytes;
 } siaara_read_options;
 enum {
     SIAARA_RECOVER_DEFAULT = 0, /* the library default */

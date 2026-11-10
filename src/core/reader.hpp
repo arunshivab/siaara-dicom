@@ -24,6 +24,10 @@ struct ReadOptions {
     std::uint32_t max_depth = 64;          // sequence nesting limit (PARSE-20)
     std::uint64_t max_elements = 10'000'000;
     std::uint64_t max_items_per_sequence = 1'000'000;
+    // Sequence items of the whole read, all sequences together (an empty item is 8 bytes of
+    // input and a data set object in memory). Default: no limit of its own; readers of untrusted
+    // input set it (the C API sets it with siaara_read_options.max_elements).
+    std::uint64_t max_items_total = UINT64_MAX;
     std::uint64_t max_fragments = 1'000'000;
     std::uint64_t max_inflated_size = 4ull << 30;  // deflated TS output cap
     // Implicit VR (little endian) private data elements whose Private Creator and element the

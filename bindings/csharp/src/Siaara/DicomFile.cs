@@ -54,6 +54,24 @@ public sealed record DicomReadOptions
     /// <summary><see cref="DicomOpenMode.Read"/>: a larger file is refused; 0 = library default (4 GiB).</summary>
     public long OpenReadMaxBytes { get; init; }
 
+    /// <summary>Untrusted input: the most a deflated transfer syntax may inflate to (more is refused);
+    /// 0 = library default (4 GiB).</summary>
+    public long MaxInflatedSize { get; init; }
+
+    /// <summary>Untrusted input: the most data elements a read may hold (also items per sequence and fragments
+    /// per pixel data element when smaller than their defaults); 0 = library default (10,000,000).</summary>
+    public long MaxElements { get; init; }
+
+    /// <summary>Untrusted input: memory the frame functions of the opened file may use for decoded pixels and
+    /// codec working memory; 0 = library default (4 GiB). Belongs to the file: applies to every later decode,
+    /// render and <see cref="DicomFile.OpenFrame"/> on it.</summary>
+    public long FrameMemoryBudget { get; init; }
+
+    /// <summary>Untrusted input: the largest decoded frame (rows x columns x samples x bytes per sample) the
+    /// frame functions of the opened file accept; a larger one is refused before anything is decoded.
+    /// 0 = no limit other than <see cref="FrameMemoryBudget"/>.</summary>
+    public long MaxFrameBytes { get; init; }
+
     internal siaara_read_options ToNative() => new()
     {
         struct_size = StructSize.Of<siaara_read_options>(),
@@ -65,6 +83,10 @@ public sealed record DicomReadOptions
         open_mode = (int)OpenMode,
         open_read_threshold = (ulong)Math.Max(0, OpenReadThreshold),
         open_read_max_bytes = (ulong)Math.Max(0, OpenReadMaxBytes),
+        max_inflated_size = (ulong)Math.Max(0, MaxInflatedSize),
+        max_elements = (ulong)Math.Max(0, MaxElements),
+        frame_memory_budget = (ulong)Math.Max(0, FrameMemoryBudget),
+        max_frame_bytes = (ulong)Math.Max(0, MaxFrameBytes),
     };
 }
 

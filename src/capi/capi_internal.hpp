@@ -18,6 +18,7 @@
 #include "core/status.hpp"
 #include "dict/dictionary.hpp"
 #include "net/tls.hpp"
+#include "image/frames.hpp"
 #include "store/quarantine.hpp"
 #include "store/store.hpp"
 #include "volume/volume.hpp"
@@ -124,7 +125,28 @@ private:
 struct siaara_file {
     siaara::DicomFile file;
     siaara::capi::LiveHandle live_{};
+    // Limits of this handle's frame functions (siaara_read_options.frame_memory_budget /
+    // max_frame_bytes); 0 = the library default / no limit.
+    std::uint64_t frame_memory_budget = 0;
+    std::uint64_t max_frame_bytes = 0;
 };
+
+namespace siaara::capi {
+// The frame options of a file handle: the library defaults unless the handle was opened with limits.
+inline image::FrameOptions frame_options(const siaara_file& f) {
+    image::FrameOptions o;
+    if (f.frame_memory_budget != 0) o.memory_budget = f.frame_memory_budget;
+    return o;
+}
+// Errc::LimitExceeded when a decoded frame of `frame_bytes` is more than the handle accepts.
+inline Status frame_limit(const siaara_file& f, std::uint64_t frame_bytes) {
+    if (f.max_frame_bytes != 0 && frame_bytes > f.max_frame_bytes)
+        return Status(Errc::LimitExceeded, "the decoded frame is larger than max_frame_bytes of this file handle");
+    if (f.frame_memory_budget != 0 && frame_bytes > f.frame_memory_budget)
+        return Status(Errc::LimitExceeded, "the decoded frame is larger than frame_memory_budget of this file handle");
+    return Status::ok();
+}
+}  // namespace siaara::capi
 
 namespace siaara::capi {
 

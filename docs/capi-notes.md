@@ -148,6 +148,24 @@ an in-page exception on Windows). Owned memory has no such exposure.
 - Identical in all modes: values, zero-copy accessors, warnings and the read report, and
   keep-as-read saves (byte-identical).
 
+## 9b. Limits for untrusted input belong to the file handle
+
+`siaara_read_options` carries, appended: `max_inflated_size`, `max_elements` (also the cap on
+sequence items of the whole read), `frame_memory_budget` and `max_frame_bytes`. 0 keeps each
+library default; nothing changes for callers that do not set them.
+
+- The first two act while the bytes are parsed. The last two are stored in the `siaara_file` and
+  apply to every frame function called on it later (`siaara_frame_decode`, `siaara_render_rgba8`,
+  `siaara_frame_open`, `siaara_file_pixel_value`, the frame warnings): a decoded frame larger than
+  `max_frame_bytes` is `SIAARA_ERR_LIMIT_EXCEEDED` before anything is decoded, and decoding runs
+  within `frame_memory_budget`.
+- Why on the file and not per call: the caller that opens untrusted bytes is the one that knows
+  they are untrusted; every later use of the handle - also by code that only gets the handle -
+  is then bounded without having to pass limits again.
+- Not covered: transcoding (`siaara_file_transcode`) and volumes built from files decode with the
+  library defaults. Do not transcode untrusted input without your own size check.
+- There is no time or work limit in the API. See docs/GETTING_STARTED.md section 7.
+
 ## 10. Removed: SUV and ROI statistics (ABI change)
 
 Owner's rule: the toolkit returns DICOM data; applications do the calculations. Removed from the

@@ -230,11 +230,12 @@ SIAARA_API siaara_status SIAARA_CALL siaara_frame_open(const siaara_file* file, 
         *out = nullptr;
         auto h = std::make_unique<siaara_frame>();
         h->file = file->file;
-        auto im = img::Image::open(h->file.dataset, h->file.transfer_syntax);
+        auto im = img::Image::open(h->file.dataset, h->file.transfer_syntax, siaara::capi::frame_options(*file));
         if (!im) return fail(im.error());
         h->img = std::make_unique<img::Image>(std::move(im).value());
         const img::PixelInfo& pi = h->img->info();
         if (frame >= pi.number_of_frames) return fail(Errc::InvalidArgument, "frame index out of range");
+        if (Status lim = siaara::capi::frame_limit(*file, h->img->frames().frame_bytes()); !lim) return fail(lim);
         h->index = frame;
         const std::uint64_t fb = h->img->frames().frame_bytes();
         if (fb > SIZE_MAX || fb > h->img->frames().options().memory_budget)

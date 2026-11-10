@@ -81,7 +81,9 @@ def main():
     need = ["include/siaara/siaara.h", "LICENSE", "README.md", "SECURITY.md", "CHANGELOG.md", "siaara.spdx.json",
             "lib/cmake/siaara/siaaraConfig.cmake", "lib/cmake/siaara/siaaraConfigVersion.cmake",
             "lib/cmake/siaara/siaaraTargets.cmake", "examples/CMakeLists.txt", "examples/c/read_file.c",
-            "examples/c/network.c", "examples/cpp/read_file.cpp", "examples/csharp/QuickStart/Program.cs"]
+            "examples/c/network.c", "examples/cpp/read_file.cpp", "examples/csharp/QuickStart/Program.cs",
+            "examples/c/attachment_preview.c", "examples/c/attachment_preview.h",
+            "examples/csharp/AttachmentPreview/Program.cs", "examples/csharp/AttachmentPreview/AttachmentPreview.csproj"]
     need += ["docs/" + d for d in DOCS]
     need += ["bin/%s%s" % (t, exe) for t in TOOLS]
     if windows:

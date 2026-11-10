@@ -41,6 +41,9 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
 - A lossy transcode makes a derived image as the standard requires (new SOP Instance UID, source
   reference, derivation and lossy-compression attributes), with the history lists kept aligned or
   the misalignment reported.
+- Limits for untrusted input, per opened file: nesting depth, number of elements and items,
+  inflated size, largest decoded frame, frame memory budget; a worked example for previewing a
+  mail attachment safely (C and C#).
 - Rendering: Modality and VOI LUTs, windowing, palettes, overlays, shutters, Grayscale Softcopy
   Presentation States; JPEG and PNG export.
 - Volumes from series, multi-planar reformatting, projections, fusion; optional GPU backends.
@@ -108,7 +111,8 @@ Stated plainly, so that nobody finds them by surprise.
   (`recover_overlong_lengths`).
 - A Segmentation object that states a false frame count can cost up to about 15 seconds and
   336 MB before it is rejected.
-- 3D rendering and volume resampling cannot be cancelled once started.
+- 3D rendering and volume resampling cannot be cancelled once started. Decoding a frame has no
+  time limit of its own either: for untrusted input the size limits bound the work.
 - New UIDs are not fork-safe: a process that calls `fork()` and creates UIDs in both parent and
   child without an `exec` can produce the same UID twice.
 - **Memory-mapped files and files that shrink.** A file that is memory-mapped (larger than
