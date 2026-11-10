@@ -288,6 +288,22 @@ Result<PixelInfo> read_pixel_info(const Dataset& ds, const PixelInfoOptions& opt
     // ---- size math: must not overflow for one frame (the frame layer checks totals).
     if (pi.native_frame_bits() == 0 || pi.decoded_frame_bytes() == 0)
         return Status(Errc::LimitExceeded, "pixel module: frame size overflows", 0, PixelData);
+
+    // ---- ACR-NEMA 2.0 volumes (P3-10): no Number of Frames; the retired Planes (0028,0012) gives
+    // the number of images. Lenient mode only, and only when the native pixel data holds exactly
+    // that many frames - nothing is guessed from a number alone.
+    if (opt.lenient && !opt.encapsulated && pi.number_of_frames == 1 && !ds.contains(NumberOfFrames)) {
+        constexpr Tag kPlanes = 0x00280012u;
+        const auto planes = ds.get_int(kPlanes);
+        const Element* px = ds.find(PixelData);
+        const std::uint64_t frame = pi.decoded_frame_bytes();
+        if (planes && *planes > 1 && *planes <= 0x7FFFFFFF && px && !px->is_encapsulated() && !px->is_sequence() &&
+            px->value.size() / frame == static_cast<std::uint64_t>(*planes) && px->value.size() % frame == 0) {
+            pi.number_of_frames = static_cast<std::uint32_t>(*planes);
+            warn("ACR_NEMA_PLANES: no Number of Frames (0028,0008); Planes (0028,0012) is " + std::to_string(*planes) +
+                 " and the pixel data holds exactly that many frames: read as " + std::to_string(*planes) + " frames");
+        }
+    }
     return pi;
 }
 
