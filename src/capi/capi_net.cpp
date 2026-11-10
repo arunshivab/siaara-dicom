@@ -374,7 +374,8 @@ std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st
         }
     }
     if (store) {
-        auto r = store->store->add_buffer(bytes_of(std::move(bytes)), policy);
+        // An instance accepted although incomplete is flagged in the index (SIAARA_IDXF_INCOMPLETE).
+        auto r = store->store->add_buffer(bytes_of(std::move(bytes)), policy, rq.read_loss != 0 ? st::kIncompleteRead : 0u);
         if (!r) {
             error = r.error().message;
             return 0xA700;
@@ -626,6 +627,24 @@ siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg) {
     cfg.spool = spool;
     if (has(offsetof(siaara_scp_options, incomplete_policy) + sizeof(int32_t)))
         if (siaara_status ps = capi::incomplete_policy(o->incomplete_policy, cfg.incomplete_policy); ps != SIAARA_OK) return ps;
+    if (has(offsetof(siaara_scp_options, quarantine_response) + sizeof(int32_t)))
+        if (siaara_status ps = capi::quarantine_response(o->quarantine_response, cfg.quarantine_response); ps != SIAARA_OK)
+            return ps;
+    if (has(offsetof(siaara_scp_options, incomplete_override_count) + sizeof(uint32_t))) {
+        if (o->incomplete_override_count && !o->incomplete_overrides) return fail(Errc::InvalidArgument, "incomplete_overrides is NULL");
+        if (o->incomplete_override_count > 4096) return fail(Errc::LimitExceeded, "at most 4096 incomplete_overrides");
+        for (uint32_t i = 0; i < o->incomplete_override_count; ++i) {
+            const siaara_incomplete_override& ov = o->incomplete_overrides[i];
+            if (ov.struct_size < sizeof(siaara_incomplete_override) || !ov.calling_ae)
+                return fail(Errc::InvalidArgument, "incomplete_overrides entry: struct_size and calling_ae");
+            std::string ae = ov.calling_ae;
+            while (!ae.empty() && ae.back() == ' ') ae.pop_back();
+            while (!ae.empty() && ae.front() == ' ') ae.erase(ae.begin());
+            siaara::IncompletePolicy pol = siaara::kDefaultIncompletePolicy;
+            if (siaara_status ps = capi::incomplete_policy(ov.policy, pol); ps != SIAARA_OK) return ps;
+            cfg.incomplete_policy_by_caller[ae] = pol;
+        }
+    }
     return SIAARA_OK;
 }
 
@@ -684,6 +703,30 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
                        rq.peer_address, &rq);
           } catch (...) {
             capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+          }
+        };
+        // R-116, Quarantine: the instance is kept, as the Part 10 stream a release would store,
+        // outside the archive.
+        hd.on_store_quarantine = [raw](const net::StoreRequest& rq, std::uint16_t answer) noexcept -> std::uint16_t {
+          try {
+            std::vector<std::uint8_t> bytes;
+            if (Status s = net::encode_received_part10(rq, bytes); !s) return 0x0110;
+            const std::uint16_t kept = capi::quarantine_bytes(raw->store, bytes_of(std::move(bytes)), "C-STORE", rq.calling_ae,
+                                                              rq.peer_address, rq.sop_class_uid, rq.sop_instance_uid,
+                                                              rq.read_loss, rq.read_warning);
+            if (kept != 0) {
+                raw->failures.fetch_add(1, std::memory_order_relaxed);
+                raw->event(SIAARA_SCP_STORE_FAILED, kept, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid,
+                           rq.peer_address, &rq);
+                return kept;
+            }
+            capi::log(SIAARA_LOG_WARNING, false, "Storage SCP: an incomplete data set was quarantined (" + rq.read_warning + ")");
+            raw->event(SIAARA_SCP_QUARANTINED, answer, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, rq.peer_address,
+                       &rq);
+            return net::dimse_status::Success;
+          } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+            return net::dimse_status::OutOfResources;
           }
         };
         hd.log = capi::log_sink(SIAARA_LOG_INFO);
@@ -976,6 +1019,18 @@ siaara_status get_impl(const siaara_dimse_peer* peer, int32_t model,
         if (qo) qo->accepted_flags = 0;
         if (qo && (qo->flags & SIAARA_QR_RELATIONAL) != 0)
             c.extended_negotiation.push_back(net::retrieve_extended_negotiation(cls, true));
+        if (siaara_store* qstore = options->store)
+            c.on_quarantine = [qstore](const net::StoreRequest& rq) noexcept -> std::uint16_t {
+                try {
+                    std::vector<std::uint8_t> bytes;
+                    if (Status s = net::encode_received_part10(rq, bytes); !s) return 0x0110;
+                    return capi::quarantine_bytes(qstore, bytes_of(std::move(bytes)), "C-GET", rq.calling_ae, std::string(),
+                                                  rq.sop_class_uid, rq.sop_instance_uid, rq.read_loss, rq.read_warning);
+                } catch (...) {
+                    capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+                    return net::dimse_status::OutOfResources;
+                }
+            };
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
         for (const std::string& k : classes) scu.add_get_storage(k, ts);

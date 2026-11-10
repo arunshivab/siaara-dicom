@@ -486,7 +486,7 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
         rq.spool = m.spool;
         // R-116: the read keeps its loss bits and warnings.
         Result<DicomFile> ds = m.discarded ? Result<DicomFile>(Status(Errc::LimitExceeded, "discarded"))
-                               : m.has_data ? read_dataset_report(m.data, m.transfer_syntax)
+                               : m.has_data ? read_dataset_report(m.data, m.transfer_syntax, network_read_options())
                                             : Result<DicomFile>(DicomFile{});
         if (m.discarded) {
             st = dimse_status::OutOfResources;  // R-074: spool disk quota or free-space floor
@@ -506,8 +506,23 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                         ? "C-STORE: command UIDs differ from the data set's; accepted under the data set's UIDs"
                         : "C-STORE: command UIDs differ from the data set's; refused (0xA900)");
         }
-        if (ds && st == dimse_status::Success && rq.read_loss != 0 &&
-            cfg_.incomplete_policy == IncompletePolicy::Refuse) {
+        IncompletePolicy policy = cfg_.incomplete_policy;
+        if (const auto by = cfg_.incomplete_policy_by_caller.find(trimmed_ae(rq.calling_ae));
+            by != cfg_.incomplete_policy_by_caller.end())
+            policy = by->second;
+        if (policy == IncompletePolicy::Quarantine && !h_.on_store_quarantine) policy = IncompletePolicy::Refuse;
+        if (ds && st == dimse_status::Success && rq.read_loss != 0 && policy == IncompletePolicy::Quarantine) {
+            // Kept verbatim outside the archive; the sender learns that it is not a normal store.
+            const std::uint16_t answer = cfg_.quarantine_response == QuarantineResponse::Warning
+                                             ? kQuarantineWarningStatus
+                                             : dimse_status::CannotUnderstand;
+            const std::uint16_t kept = h_.on_store_quarantine(rq, answer);
+            st = kept == dimse_status::Success ? answer : kept;
+            error_comment = kept == dimse_status::Success ? "data set incomplete: quarantined" : "data set incomplete";
+            log(std::string("C-STORE: incomplete data set ") +
+                (kept == dimse_status::Success ? "quarantined" : "not quarantined (quarantine full or failed)") + " (" +
+                (rq.read_warning.empty() ? std::string("read loss") : rq.read_warning) + ")");
+        } else if (ds && st == dimse_status::Success && rq.read_loss != 0 && policy == IncompletePolicy::Refuse) {
             // The data set arrived truncated or damaged: storing it would keep less than the
             // sender holds while answering Success.
             st = dimse_status::CannotUnderstand;

@@ -406,7 +406,7 @@ private:
 
 Status dataset_to_json(const Dataset& ds, std::string& out, const ModelWriteOptions& opt) {
     Encoder enc(out, opt);
-    return enc.dataset(ds, Charset::Utf8, 0);
+    return enc.dataset(ds, Charset::Ascii, 0);
 }
 
 Status datasets_to_json(const std::vector<const Dataset*>& sets, std::string& out, const ModelWriteOptions& opt) {

@@ -118,6 +118,10 @@ struct ScuConfig {
     // C-GET: a received data set whose read was not complete (R-116): refused (0xC000, the
     // sub-operation fails) or handed to on_instance as received, flagged in StoreRequest::read_loss.
     IncompletePolicy incomplete_policy = kDefaultIncompletePolicy;
+    // IncompletePolicy::Quarantine for C-GET: keeps the instance outside the archive and returns
+    // Success, or a failure status. Unset: such an instance is refused.
+    std::function<std::uint16_t(const StoreRequest&)> on_quarantine;
+    QuarantineResponse quarantine_response = kDefaultQuarantineResponse;
     std::optional<SpoolConfig> spool;                       // C-GET: receive large instances to disk
     // C-GET sub-operations whose command UIDs differ from the data set's: refuse (0xA900) instead of
     // accepting them under the data set's UIDs with StoreRequest::uid_mismatch (R-073).

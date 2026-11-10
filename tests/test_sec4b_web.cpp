@@ -20,6 +20,7 @@
 #include "test.hpp"
 #include "web/client.hpp"
 #include "web/dicom_json.hpp"
+#include "web/dicom_xml.hpp"
 #include "web/http.hpp"
 #include "web/multipart.hpp"
 #include "web/server.hpp"
@@ -469,4 +470,57 @@ TEST_CASE("web/sec4 T-P3-1 QIDO-RS results carry the Retrieve URL of their level
     REQUIRE(siaara_web_server_port(ws, &port) == SIAARA_OK);
     CHECK(get("/studies").get_string(0x00081190).value_or("") == "https://pacs.example/dw/studies/2.25.64900");
     siaara_web_server_free(ws);
+}
+
+// ---------------------------------------------------------------- JSON / XML: bytes outside the character set
+TEST_CASE("web/sec4 JSON and XML write U+FFFD for bytes outside the declared character set, never a guess") {
+    const std::string fffd = "\xEF\xBF\xBD";
+    {  // No Specific Character Set (default repertoire) with a Latin-1 byte, as in old files.
+        Dataset ds;
+        Element e;
+        e.tag = tags::PatientName;
+        e.vr = VR::PN;
+        const std::string raw = "M\xFCller^Hans ";  // 0xFC: not a character of ISO_IR 6
+        e.value = Bytes::copy_of(raw.data(), raw.size());
+        ds.put(std::move(e));
+        std::string json;
+        REQUIRE(web::dataset_to_json(ds, json).is_ok());
+        CHECK(json.find("M" + fffd + "ller") != std::string::npos);
+        CHECK(json.find("M\xC3\xBCller") == std::string::npos);  // not guessed as Latin-1
+        std::string xml;
+        REQUIRE(web::dataset_to_xml(ds, xml).is_ok());
+        CHECK(xml.find("M" + fffd + "ller") != std::string::npos);
+        // The raw bytes are still what the data set holds.
+        CHECK(ds.get_raw_string(tags::PatientName).value_or("") == raw);
+    }
+    {  // ISO_IR 6 declared; bytes that happen to form UTF-8 are not UTF-8 text either.
+        Dataset ds;
+        (void)ds.set_string(tags::SpecificCharacterSet, VR::CS, "ISO_IR 6");
+        Element e;
+        e.tag = 0x00081030;
+        e.vr = VR::LO;
+        const std::string raw = "caf\xC3\xA9";
+        e.value = Bytes::copy_of(raw.data(), raw.size());
+        ds.put(std::move(e));
+        std::string json;
+        REQUIRE(web::dataset_to_json(ds, json).is_ok());
+        CHECK(json.find("caf" + fffd + fffd) != std::string::npos);
+        web::ModelWriteOptions strict;
+        strict.strict_charset = true;
+        std::string out;
+        CHECK(!web::dataset_to_json(ds, out, strict).is_ok());
+    }
+    {  // Declared character sets still decode: ISO_IR 100 and ISO_IR 192.
+        Dataset ds;
+        (void)ds.set_string(tags::SpecificCharacterSet, VR::CS, "ISO_IR 100");
+        Element e;
+        e.tag = tags::PatientName;
+        e.vr = VR::PN;
+        const std::string raw = "M\xFCller";
+        e.value = Bytes::copy_of(raw.data(), raw.size());
+        ds.put(std::move(e));
+        std::string json;
+        REQUIRE(web::dataset_to_json(ds, json).is_ok());
+        CHECK(json.find("M\xC3\xBCller") != std::string::npos);
+    }
 }

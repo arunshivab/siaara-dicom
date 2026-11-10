@@ -742,6 +742,7 @@ private:
         stored.vr = VR::SQ;
         for (const auto& p : parts.value()) {
             std::uint16_t reason = 0, warn = 0;
+            bool quarantined = false;  // kept outside the archive: not retrievable
             std::string cls, inst, st_uid, se_uid;
             const std::string* pct = p.content_type();
             if (pct) {
@@ -750,7 +751,7 @@ private:
             }
             if (!reason) {
                 const Bytes bytes = Bytes::copy_of(p.body.data(), p.body.size());
-                auto f = read_part10(bytes);
+                auto f = read_part10(bytes, network_read_options());
                 if (!f) {
                     reason = failure::CannotUnderstand;
                 } else {
@@ -763,8 +764,15 @@ private:
                     // R-116: a part that was not read completely is refused, or stored exactly as
                     // received and flagged - never rewritten (a part without a preamble could only
                     // be stored rewritten, so that one is refused under both policies).
-                    else if (!f->complete() &&
-                             (cfg_.incomplete_policy == IncompletePolicy::Refuse || !f->had_preamble))
+                    else if (!f->complete() && cfg_.incomplete_policy == IncompletePolicy::Quarantine && store_.quarantine) {
+                        reason = store_.quarantine(f.value(), bytes, std::string());
+                        if (!reason) {
+                            quarantined = true;
+                            if (cfg_.quarantine_response == QuarantineResponse::Warning) warn = kQuarantineWarningStatus;
+                            else reason = failure::CannotUnderstand;
+                        }
+                    } else if (!f->complete() &&
+                               (cfg_.incomplete_policy != IncompletePolicy::AcceptAsReceived || !f->had_preamble))
                         reason = failure::CannotUnderstand;
                     else {
                         reason = store_.store(f.value(), bytes);
@@ -782,10 +790,12 @@ private:
                 (void)item.set_uint16(webtags::FailureReason, reason);
                 failed.items.push_back(std::move(item));
             } else {
-                if (common_study.empty()) common_study = st_uid;
-                else if (common_study != st_uid) one_study = false;
-                (void)item.set_string(webtags::RetrieveURL, VR::UR,
-                                      base_url_ + "/studies/" + st_uid + "/series/" + se_uid + "/instances/" + inst);
+                if (!quarantined) {
+                    if (common_study.empty()) common_study = st_uid;
+                    else if (common_study != st_uid) one_study = false;
+                    (void)item.set_string(webtags::RetrieveURL, VR::UR,
+                                          base_url_ + "/studies/" + st_uid + "/series/" + se_uid + "/instances/" + inst);
+                }
                 if (warn) {
                     (void)item.set_uint16(webtags::WarningReason, warn);
                     any_warning = true;

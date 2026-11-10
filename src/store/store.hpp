@@ -170,7 +170,9 @@ public:
     Result<AddOutcome> add_file(const std::string& utf8_path, DuplicatePolicy policy = DuplicatePolicy::Keep,
                                 AddMode mode = AddMode::Copy);
     // Buffers are always copied into the store (raw data sets are re-written as Part 10 files).
-    Result<AddOutcome> add_buffer(const Bytes& data, DuplicatePolicy policy = DuplicatePolicy::Keep);
+    // `extra_flags`: index flags the caller knows and the header scan cannot (kIncompleteRead).
+    Result<AddOutcome> add_buffer(const Bytes& data, DuplicatePolicy policy = DuplicatePolicy::Keep,
+                                  std::uint32_t extra_flags = 0);
 
     // Bulk-indexes records of files kept in place (as AddMode::Reference, without reading the
     // files): each record needs SopInstanceUid, SeriesInstanceUid, StudyInstanceUid and an

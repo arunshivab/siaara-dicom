@@ -492,7 +492,9 @@ enum {
     SIAARA_IDXF_PIXEL_SPACING = 1 << 7,
     SIAARA_IDXF_SLICE_THICKNESS = 1 << 8,
     SIAARA_IDXF_REFERENCED = 1 << 9,      /* store: indexed in place, not copied */
-    SIAARA_IDXF_PIXEL_OFFSET = 1 << 10    /* pixel_data_offset / _length are valid file offsets */
+    SIAARA_IDXF_PIXEL_OFFSET = 1 << 10,   /* pixel_data_offset / _length are valid file offsets */
+    SIAARA_IDXF_INCOMPLETE = 1 << 11      /* store: the instance arrived incomplete and was kept exactly as received
+                                             (SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED, or released from quarantine) */
 };
 
 enum {
@@ -567,7 +569,48 @@ typedef struct siaara_store_options {
      * (STORE_PERMISSIONS_TIGHTENED / STORE_PERMISSIONS_WIDE). Not checked on Windows. (This field
      * was reserved0, set to 0.) */
     uint32_t keep_permissions;
+    /* The quarantine area (<root>/quarantine; SIAARA_INCOMPLETE_QUARANTINE): caps on what it may
+     * hold. Past them an incomplete instance is refused (C-STORE 0xA700, STOW-RS Failure Reason 0xA700). */
+    uint64_t quarantine_max_bytes; /* 0 = 4 GiB */
+    uint32_t quarantine_max_items; /* 0 = 10000 */
+    uint32_t reserved1;            /* set to 0 */
 } siaara_store_options;
+
+/* ---- quarantine (R-116). Instances that arrived incomplete under SIAARA_INCOMPLETE_QUARANTINE are
+ * kept exactly as received in <root>/quarantine (owner-only), outside the index: no query and no
+ * retrieve returns them, and Storage Commitment answers "not committed" for them. An item is
+ * identified by the SHA-256 of its bytes (the same bytes arriving again are one item). */
+typedef struct siaara_quarantine_record {
+    uint32_t struct_size;          /* set to sizeof(siaara_quarantine_record) */
+    uint32_t read_loss;            /* SIAARA_READ_* loss bits */
+    int64_t time;                  /* seconds since the Unix epoch (UTC) */
+    uint64_t size;                 /* bytes */
+    char id[65];                   /* SHA-256, 64 hex digits */
+    char source[16];               /* "C-STORE", "C-GET", "STOW-RS", "WADO-RS" */
+    char calling_ae[17];           /* "" for DICOMweb */
+    char peer[64];                 /* network address when known */
+    char sop_class_uid[65];        /* "" when not readable */
+    char sop_instance_uid[65];
+    char warning[256];             /* the first read warning (a fixed code and offsets; no patient data) */
+    char reserved[4];
+} siaara_quarantine_record;
+/* Number of items and their total size (either pointer may be NULL). Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, uint32_t* items,
+                                                                   uint64_t* bytes);
+/* The record of item `index` (0 = newest). SIAARA_ERR_NOT_FOUND past the end. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_store* store, uint32_t index,
+                                                                 siaara_quarantine_record* out);
+/* The bytes of an item, exactly as received (array buffer rules: cap 0 reports *needed). */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_store* store, const char* id,
+                                                                   uint8_t* buf, size_t cap, size_t* needed);
+/* Moves an item to the archive: the bytes are stored unchanged (policy SIAARA_DUP_*) and indexed
+ * with SIAARA_IDXF_INCOMPLETE; the item then leaves the quarantine. An item without a Part 10
+ * preamble cannot be stored unchanged: SIAARA_ERR_UNSUPPORTED, the item stays. *outcome (may be
+ * NULL): SIAARA_ADD_*. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, const char* id, int32_t policy,
+                                                                     int32_t* outcome);
+/* Deletes an item (bytes and record). */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, const char* id);
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
 enum { SIAARA_ADD_COPY = 0, SIAARA_ADD_REFERENCE = 1 };
@@ -1926,8 +1969,18 @@ typedef struct siaara_scp_options {
                                         do not fit are dropped by the same policy as a full queue (R-109) */
     int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_*: a received C-STORE data set that could not be read
                                         completely (truncated, bytes skipped, recovered by a heuristic) */
+    int32_t quarantine_response;     /* SIAARA_QUARANTINE_ANSWER_*: what the sender of a quarantined instance is told */
+    const struct siaara_incomplete_override* incomplete_overrides; /* the policy for particular calling AEs */
+    uint32_t incomplete_override_count;
     uint32_t reserved2;              /* set to 0 */
 } siaara_scp_options;
+
+/* incomplete_policy for one calling AE (others get siaara_scp_options.incomplete_policy). */
+typedef struct siaara_incomplete_override {
+    uint32_t struct_size;            /* sizeof(siaara_incomplete_override) */
+    int32_t policy;                  /* SIAARA_INCOMPLETE_* */
+    const char* calling_ae;
+} siaara_incomplete_override;
 
 /* What a receiver does with a data set whose read was not complete (siaara_read_report loss bits):
  * the Storage SCP (siaara_scp_options), C-GET (siaara_get_options), the STOW-RS server
@@ -1938,8 +1991,19 @@ typedef struct siaara_scp_options {
  *   (store_transfer_syntax is skipped) and never rewritten - and flagged: SIAARA_SCP_STORED with
  *   read_loss != 0, STOW-RS Warning Reason 0xB006, the retrieve report.
  * A part without a Part 10 preamble that is incomplete is refused under both: storing it would
- * need a rewrite. SIAARA_INCOMPLETE_DEFAULT (0) is REFUSE. */
-enum { SIAARA_INCOMPLETE_DEFAULT = 0, SIAARA_INCOMPLETE_REFUSE = 1, SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2 };
+ * need a rewrite.
+ * QUARANTINE: the bytes are kept exactly as received in the store's quarantine area
+ *   (siaara_store_quarantine_*): outside the index, so nothing returns them until an operator
+ *   releases or deletes them. The sender is told per quarantine_response: WARNING (C-STORE status
+ *   0xB007, STOW-RS Warning Reason 0xB007 and no Retrieve URL) or FAILURE (0xC000); a full
+ *   quarantine gives 0xA700. Event SIAARA_SCP_QUARANTINED. Without a store (a C-GET into a folder
+ *   only) the instance is refused.
+ * SIAARA_INCOMPLETE_DEFAULT (0) is REFUSE; SIAARA_QUARANTINE_ANSWER_DEFAULT (0) is WARNING. */
+enum {
+    SIAARA_INCOMPLETE_DEFAULT = 0, SIAARA_INCOMPLETE_REFUSE = 1, SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2,
+    SIAARA_INCOMPLETE_QUARANTINE = 3
+};
+enum { SIAARA_QUARANTINE_ANSWER_DEFAULT = 0, SIAARA_QUARANTINE_ANSWER_WARNING = 1, SIAARA_QUARANTINE_ANSWER_FAILURE = 2 };
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
 
@@ -2571,7 +2635,9 @@ enum {
     SIAARA_SCP_REFUSED = 12,         /* a request refused by a service allow-list or limit: command_field, sop_class_uid */
     SIAARA_SCP_UID_CHANGED = 13,     /* a C-GET / C-MOVE sub-operation needed lossy compression, which gave the
                                         instance a new SOP Instance UID: original_sop_instance_uid -> sop_instance_uid */
-    SIAARA_SCP_IAN = 14              /* Instance Availability Notification received: dataset */
+    SIAARA_SCP_IAN = 14,             /* Instance Availability Notification received: dataset */
+    SIAARA_SCP_QUARANTINED = 15      /* an incomplete C-STORE data set was kept in the quarantine (read_loss);
+                                        dimse_status is what the sender was told */
 };
 
 /* Services, for siaara_scp_acl. */
@@ -2974,7 +3040,7 @@ typedef struct siaara_web_server_options {
     uint32_t min_response_rate;      /* bytes per second a client must read, averaged over 30 s windows;
                                         0 = 1024. Slower: the connection is closed */
     int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for STOW-RS parts */
-    uint32_t reserved0;              /* set to 0 */
+    int32_t quarantine_response;     /* SIAARA_QUARANTINE_ANSWER_* */
 } siaara_web_server_options;
 
 /* Starts the server; store must outlive it. Caller owns *out: free with siaara_web_server_free
@@ -3038,7 +3104,8 @@ typedef struct siaara_web_retrieve_report {
     uint32_t incomplete_accepted;    /* kept exactly as received although the read was not complete */
     uint32_t rewritten;              /* kept, but the part had no Part 10 preamble: it was written as a new
                                         Part 10 file (file meta added, the data set re-encoded as read) */
-    uint32_t reserved0;
+    uint32_t quarantined;            /* incomplete parts kept in the store's quarantine (counted in failed too:
+                                        they are not in the archive) */
 } siaara_web_retrieve_report;
 
 /* As siaara_web_wado_retrieve_to, with the receive policy and a report (may be NULL). A part is

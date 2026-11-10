@@ -18,6 +18,7 @@
 #include "core/status.hpp"
 #include "dict/dictionary.hpp"
 #include "net/tls.hpp"
+#include "store/quarantine.hpp"
 #include "store/store.hpp"
 #include "volume/volume.hpp"
 #include "web/client.hpp"
@@ -169,6 +170,8 @@ struct siaara_web_client {
 
 struct siaara_store {
     std::unique_ptr<siaara::store::Store> store;
+    // R-116: instances that arrived incomplete under IncompletePolicy::Quarantine.
+    std::unique_ptr<siaara::store::Quarantine> quarantine;
     siaara::capi::LiveHandle live_{};
     // R-150: servers that use the store (siaara_scp_start(_ex), siaara_web_server_start) attach
     // to it. siaara_store_free while one is attached does not free the store under the server's

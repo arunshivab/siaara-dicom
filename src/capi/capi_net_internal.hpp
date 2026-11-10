@@ -89,9 +89,23 @@ inline siaara_status incomplete_policy(std::int32_t v, IncompletePolicy& out) {
         case SIAARA_INCOMPLETE_DEFAULT: out = kDefaultIncompletePolicy; return SIAARA_OK;
         case SIAARA_INCOMPLETE_REFUSE: out = IncompletePolicy::Refuse; return SIAARA_OK;
         case SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED: out = IncompletePolicy::AcceptAsReceived; return SIAARA_OK;
+        case SIAARA_INCOMPLETE_QUARANTINE: out = IncompletePolicy::Quarantine; return SIAARA_OK;
         default: return set_error(Errc::InvalidArgument, "unknown incomplete_policy");
     }
 }
+inline siaara_status quarantine_response(std::int32_t v, QuarantineResponse& out) {
+    switch (v) {
+        case SIAARA_QUARANTINE_ANSWER_DEFAULT: out = kDefaultQuarantineResponse; return SIAARA_OK;
+        case SIAARA_QUARANTINE_ANSWER_WARNING: out = QuarantineResponse::Warning; return SIAARA_OK;
+        case SIAARA_QUARANTINE_ANSWER_FAILURE: out = QuarantineResponse::Failure; return SIAARA_OK;
+        default: return set_error(Errc::InvalidArgument, "unknown quarantine_response");
+    }
+}
+// Keeps a received instance (Part 10 bytes exactly as they will be released) in the quarantine
+// of `store`. Returns 0, 0xA700 when the quarantine is full, 0x0110 otherwise.
+std::uint16_t quarantine_bytes(siaara_store* store, const Bytes& bytes, const char* source, const std::string& calling_ae,
+                               const std::string& peer, const std::string& sop_class, const std::string& sop_instance,
+                               std::uint32_t read_loss, const std::string& warning);
 // DicomFile::ReadLoss bits -> SIAARA_READ_* bits.
 inline std::uint32_t read_loss_bits(std::uint32_t loss) noexcept {
     return (loss & DicomFile::kReadBytesSkipped ? static_cast<std::uint32_t>(SIAARA_READ_BYTES_SKIPPED) : 0u) |

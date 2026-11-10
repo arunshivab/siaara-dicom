@@ -1352,3 +1352,221 @@ TEST_CASE("io/sec4 R-133 Windows: atomic replace through the creating handle, re
     CHECK_EQ(temp_files_in(dir), 0u);
 }
 #endif
+
+// ---------------------------------------------------------------- R-116: quarantine
+namespace {
+std::vector<siaara_quarantine_record> quarantine_list(const siaara_store* store) {
+    std::vector<siaara_quarantine_record> out;
+    uint32_t n = 0;
+    if (siaara_store_quarantine_count(store, &n, nullptr) != SIAARA_OK) return out;
+    for (uint32_t i = 0; i < n; ++i) {
+        siaara_quarantine_record r;
+        std::memset(&r, 0, sizeof r);
+        r.struct_size = sizeof r;
+        if (siaara_store_quarantine_get(store, i, &r) == SIAARA_OK) out.push_back(r);
+    }
+    return out;
+}
+}  // namespace
+
+TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the archive; release, delete, commitment") {
+    const DicomFile whole = make_image("2.25.57001", "2.25.57900", "2.25.57901", true);
+    std::vector<std::uint8_t> cut = dataset_bytes(make_image("2.25.57002", "2.25.57900", "2.25.57901", true));
+    cut.resize(cut.size() - 60);
+    std::vector<std::uint8_t> cut2 = dataset_bytes(make_image("2.25.57003", "2.25.57900", "2.25.57901", true));
+    cut2.resize(cut2.size() - 30);
+    const auto dir = temp_dir("quarantine");
+    StoreOpen st(dir / "store");
+    Events ev;
+    siaara_scp_options o = scp_options("Q_SCP");
+    o.incomplete_policy = SIAARA_INCOMPLETE_QUARANTINE;
+    // One calling AE is refused instead, another accepted as received (per-AE override).
+    siaara_incomplete_override ov[2];
+    std::memset(ov, 0, sizeof ov);
+    ov[0].struct_size = ov[1].struct_size = sizeof(siaara_incomplete_override);
+    ov[0].calling_ae = "STRICT_AE";
+    ov[0].policy = SIAARA_INCOMPLETE_REFUSE;
+    ov[1].calling_ae = "LAX_AE";
+    ov[1].policy = SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED;
+    o.incomplete_overrides = ov;
+    o.incomplete_override_count = 2;
+    siaara_scp_services sv = services();
+    sv.storage = sv.find = sv.commitment = sv.get = 1;
+    sv.commitment_report_mode = SIAARA_COMMIT_REPORT_SAME;
+    siaara_scp* scp = nullptr;
+    REQUIRE(siaara_scp_start_ex(&o, &sv, st.store, on_event, &ev, &scp) == SIAARA_OK);
+    const auto port = static_cast<std::uint16_t>(port_of(scp));
+    // Default caller: quarantined, answered with the warning status; not in the archive.
+    CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.57002", cut), 0xB007);
+    CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.57001", dataset_bytes(whole)), 0x0000);
+    CHECK(st.instances() == 1);
+    REQUIRE(ev.wait_for(SIAARA_SCP_QUARANTINED, 1));
+    const auto qe = ev.of(SIAARA_SCP_QUARANTINED);
+    CHECK_EQ(qe[0].status, 0xB007u);
+    CHECK((qe[0].read_loss & SIAARA_READ_INPUT_TRUNCATED) != 0);
+    auto items = quarantine_list(st.store);
+    REQUIRE(items.size() == 1);
+    CHECK(std::string(items[0].sop_instance_uid) == "2.25.57002");
+    CHECK(std::string(items[0].calling_ae) == "S4_SCU");
+    CHECK(std::string(items[0].source) == "C-STORE");
+    CHECK(std::strlen(items[0].id) == 64);
+    CHECK((items[0].read_loss & SIAARA_READ_INPUT_TRUNCATED) != 0);
+    CHECK(items[0].time > 1700000000);
+    // The same bytes again: one item (dedupe by SHA-256).
+    CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.57002", cut), 0xB007);
+    CHECK(quarantine_list(st.store).size() == 1);
+    // The bytes are exactly what arrived (after the file meta the release would store).
+    size_t need = 0;
+    REQUIRE(siaara_store_quarantine_bytes(st.store, items[0].id, nullptr, 0, &need) == SIAARA_OK);
+    CHECK(need == items[0].size);
+    std::vector<uint8_t> got(need);
+    REQUIRE(siaara_store_quarantine_bytes(st.store, items[0].id, got.data(), got.size(), &need) == SIAARA_OK);
+    REQUIRE(got.size() > cut.size());
+    CHECK(std::memcmp(got.data() + got.size() - cut.size(), cut.data(), cut.size()) == 0);
+    // The quarantine area is owner-only.
+#if !defined(_WIN32)
+    for (const auto& e : std::filesystem::recursive_directory_iterator(dir / "store" / "quarantine"))
+        CHECK((std::filesystem::status(e.path()).permissions() &
+               (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) == std::filesystem::perms::none);
+#endif
+    // Per-AE overrides.
+    {
+        net::Scu scu(scu_cfg(port, "Q_SCP", "STRICT_AE"));
+        scu.add_context(kMR, {std::string(ts::ExplicitVRLittleEndian)});
+        REQUIRE(scu.connect().is_ok());
+        net::Association* a = scu.association();
+        const std::uint16_t mid = a->next_message_id();
+        REQUIRE(net::send_dimse_raw(*a, a->find_context(kMR)->id, net::make_c_store_rq(mid, kMR, "2.25.57003"), cut2.data(),
+                                    cut2.size())
+                    .is_ok());
+        auto r = net::receive_dimse(*a, 5000);
+        REQUIRE(r.is_ok());
+        CHECK_EQ(r->message.command.status.value_or(0), 0xC000);  // refused for this AE
+        (void)scu.release();
+    }
+    CHECK(quarantine_list(st.store).size() == 1);
+    // C-FIND does not return the quarantined instance; Storage Commitment does not commit it.
+    siaara_dimse_peer p = peer(port, "Q_SCP");
+    {
+        const char* classes[] = {kMR, kMR};
+        const char* instances[] = {"2.25.57001", "2.25.57002"};
+        uint16_t reasons[2] = {0xFFFF, 0xFFFF};
+        siaara_dimse_result r = result();
+        CHECK(siaara_dimse_commit(&p, classes, instances, 2, 5000, nullptr, reasons, &r) == SIAARA_ERR_REJECTED);
+        CHECK_EQ(reasons[0], 0);
+        CHECK_EQ(reasons[1], 0x0112);  // no such object instance: quarantined is not committed
+    }
+    // Release: stored unchanged, flagged incomplete in the index, gone from the quarantine.
+    int32_t outcome = -1;
+    REQUIRE(siaara_store_quarantine_release(st.store, items[0].id, SIAARA_DUP_KEEP, &outcome) == SIAARA_OK);
+    CHECK(outcome == SIAARA_ADD_ADDED);
+    CHECK(quarantine_list(st.store).empty());
+    CHECK(st.instances() == 2);
+    {
+        bool flagged = false, same = false;
+        for (const auto& e : std::filesystem::recursive_directory_iterator(dir / "store")) {
+            if (!e.is_regular_file() || e.file_size() != got.size()) continue;
+            auto b = io::read_file(e.path().string());
+            same = same || (b && std::memcmp(b->data(), got.data(), got.size()) == 0);
+        }
+        CHECK(same);
+        siaara_store_filter f;
+        std::memset(&f, 0, sizeof f);
+        f.struct_size = sizeof f;
+        f.level = SIAARA_LEVEL_INSTANCE;
+        f.sop_instance_uid = "2.25.57002";
+        siaara_store_result* res = nullptr;
+        if (siaara_store_query(st.store, &f, &res) == SIAARA_OK && res) {
+            siaara_index_record rec;
+            std::memset(&rec, 0, sizeof rec);
+            rec.struct_size = sizeof rec;
+            std::vector<char> text(8192);
+            size_t text_need = 0;
+            if (siaara_store_result_get(res, 0, &rec, text.data(), text.size(), &text_need) == SIAARA_OK)
+                flagged = (rec.flags & SIAARA_IDXF_INCOMPLETE) != 0;
+            siaara_store_result_free(res);
+        }
+        CHECK(flagged);
+    }
+    CHECK(siaara_store_quarantine_release(st.store, items[0].id, SIAARA_DUP_KEEP, nullptr) == SIAARA_ERR_NOT_FOUND);
+    // Delete.
+    CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.57003", cut2), 0xB007);
+    items = quarantine_list(st.store);
+    REQUIRE(items.size() == 1);
+    CHECK(siaara_store_quarantine_delete(st.store, items[0].id) == SIAARA_OK);
+    CHECK(quarantine_list(st.store).empty());
+    CHECK(siaara_store_quarantine_delete(st.store, items[0].id) == SIAARA_ERR_NOT_FOUND);
+    CHECK(siaara_store_quarantine_delete(st.store, "../../etc/passwd") == SIAARA_ERR_NOT_FOUND);
+    siaara_scp_free(scp);
+}
+
+TEST_CASE("net2: sec4 R-116 quarantine caps, the FAILURE answer, and survival across a reopen") {
+    std::vector<std::uint8_t> cut_a = dataset_bytes(make_image("2.25.58001", "2.25.58900", "2.25.58901", true));
+    cut_a.resize(cut_a.size() - 60);
+    std::vector<std::uint8_t> cut_b = dataset_bytes(make_image("2.25.58002", "2.25.58900", "2.25.58901", true));
+    cut_b.resize(cut_b.size() - 60);
+    const auto dir = temp_dir("quarantine_caps");
+    const std::string root = (dir / "store").string();
+    siaara_store_options so;
+    std::memset(&so, 0, sizeof so);
+    so.struct_size = sizeof so;
+    so.create = 1;
+    so.quarantine_max_items = 1;
+    siaara_store* store = nullptr;
+    REQUIRE(siaara_store_open(root.c_str(), root.size(), &so, &store) == SIAARA_OK);
+    Events ev;
+    siaara_scp_options o = scp_options("Q_SCP");
+    o.incomplete_policy = SIAARA_INCOMPLETE_QUARANTINE;
+    o.quarantine_response = SIAARA_QUARANTINE_ANSWER_FAILURE;
+    siaara_scp* scp = nullptr;
+    REQUIRE(siaara_scp_start(&o, store, on_event, &ev, &scp) == SIAARA_OK);
+    const auto port = static_cast<std::uint16_t>(port_of(scp));
+    CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.58001", cut_a), 0xC000);  // quarantined, answered as a failure
+    CHECK(quarantine_list(store).size() == 1);
+    CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.58002", cut_b), 0xA700);  // the item cap: refused, nothing kept
+    CHECK(quarantine_list(store).size() == 1);
+    REQUIRE(ev.wait_for(SIAARA_SCP_QUARANTINED, 1));
+    REQUIRE(ev.wait_for(SIAARA_SCP_STORE_FAILED, 1));
+    siaara_scp_free(scp);
+    siaara_store_free(store);
+    // The quarantine is on disk: a new handle lists the item.
+    so.quarantine_max_items = 0;
+    so.quarantine_max_bytes = 64;  // a byte cap smaller than any instance
+    REQUIRE(siaara_store_open(root.c_str(), root.size(), &so, &store) == SIAARA_OK);
+    const auto items = quarantine_list(store);
+    REQUIRE(items.size() == 1);
+    CHECK(std::string(items[0].sop_instance_uid) == "2.25.58001");
+    siaara_scp_options o2 = scp_options("Q_SCP");
+    o2.incomplete_policy = SIAARA_INCOMPLETE_QUARANTINE;
+    REQUIRE(siaara_scp_start(&o2, store, nullptr, nullptr, &scp) == SIAARA_OK);
+    CHECK_EQ(raw_store(static_cast<std::uint16_t>(port_of(scp)), "Q_SCP", kMR, "2.25.58002", cut_b), 0xA700);  // byte cap
+    siaara_scp_free(scp);
+    siaara_store_free(store);
+}
+
+// ---------------------------------------------------------------- R-111 in window lists
+TEST_CASE("net2: sec4 window lists with very many values are read in one pass") {
+    // 60,000 windows: the per-index getters made this quadratic (minutes); one pass is milliseconds.
+    constexpr int kWindows = 60000;
+    std::string centers, widths;
+    for (int i = 0; i < kWindows; ++i) {
+        centers += (i ? "\\" : "") + std::to_string(40 + i % 7);
+        widths += (i ? "\\" : "") + std::to_string(300 + i % 11);
+    }
+    DicomFile f = make_image("2.25.59001", "2.25.59900", "2.25.59901", true);
+    f.transfer_syntax = std::string(ts::ImplicitVRLittleEndian);  // 32-bit lengths: the lists pass 64 KiB
+    (void)f.dataset.set_string(0x00281050, VR::DS, centers);
+    (void)f.dataset.set_string(0x00281051, VR::DS, widths);
+    const auto bytes = part10(f);
+    siaara_file* cf = nullptr;
+    REQUIRE(siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &cf) == SIAARA_OK);
+    siaara_frame* frame = nullptr;
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(siaara_frame_open(cf, 0, &frame) == SIAARA_OK);
+    uint32_t count = 0;
+    CHECK(siaara_voi_count(frame, &count) == SIAARA_OK);
+    CHECK_EQ(count, static_cast<uint32_t>(kWindows));
+    CHECK(ms_since(t0) < 5000);
+    siaara_frame_free(frame);
+    siaara_file_free(cf);
+}

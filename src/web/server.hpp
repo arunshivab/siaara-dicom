@@ -77,6 +77,9 @@ struct Store {
     std::function<Result<Bytes>(const StoredInstance&)> open;
     // Stores one received instance; returns 0 on success or a STOW-RS failure reason.
     std::function<std::uint16_t(const DicomFile& file, const Bytes& part10)> store;
+    // Keeps an incomplete part outside the archive (IncompletePolicy::Quarantine); `peer` is the
+    // client's address when known. Returns 0, or a failure reason (0xA700 when full).
+    std::function<std::uint16_t(const DicomFile& file, const Bytes& part, const std::string& peer)> quarantine;
 };
 
 struct DicomwebServerConfig {
@@ -101,6 +104,11 @@ struct DicomwebServerConfig {
     // incomplete is refused under both (it could only be stored rewritten). A complete part
     // without a preamble is stored as a new Part 10 file and reported with Warning Reason 0xB000.
     IncompletePolicy incomplete_policy = kDefaultIncompletePolicy;
+    // Quarantine (needs Store::quarantine, else Refuse): the part's bytes are kept outside the
+    // archive; the response lists the instance in the Referenced SOP Sequence with Warning Reason
+    // 0xB007 and no Retrieve URL (Warning), or in the Failed SOP Sequence with 0xC000 (Failure).
+    // A full quarantine gives Failure Reason 0xA700.
+    QuarantineResponse quarantine_response = kDefaultQuarantineResponse;
     multipart::Limits multipart;
     // Access control: return false to answer 401. Default: everything allowed.
     // Off loopback, start() requires TLS plus authorize or client certificates

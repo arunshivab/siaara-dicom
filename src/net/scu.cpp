@@ -448,7 +448,7 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
         rq.raw = m.data;
         rq.spool = m.spool;
         Result<DicomFile> ds = m.discarded ? Result<DicomFile>(Status(Errc::LimitExceeded, "discarded"))
-                               : m.has_data ? read_dataset_report(m.data, m.transfer_syntax)
+                               : m.has_data ? read_dataset_report(m.data, m.transfer_syntax, network_read_options())
                                             : Result<DicomFile>(DicomFile{});
         if (m.discarded) {
             st = dimse_status::OutOfResources;  // R-074: spool disk quota or free-space floor
@@ -462,7 +462,14 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
             std::string note;
             st = check_store_uids(rq, cfg_.strict_store_uids, note);
             // R-116: an incomplete data set is refused, or handed on flagged and as received.
-            if (st == dimse_status::Success && rq.read_loss != 0 && cfg_.incomplete_policy == IncompletePolicy::Refuse)
+            const bool quarantine = cfg_.incomplete_policy == IncompletePolicy::Quarantine && cfg_.on_quarantine;
+            if (st == dimse_status::Success && rq.read_loss != 0 && quarantine) {
+                const std::uint16_t kept = cfg_.on_quarantine(rq);
+                st = kept != dimse_status::Success ? kept
+                     : cfg_.quarantine_response == QuarantineResponse::Warning ? kQuarantineWarningStatus
+                                                                               : dimse_status::CannotUnderstand;
+            } else if (st == dimse_status::Success && rq.read_loss != 0 &&
+                       cfg_.incomplete_policy != IncompletePolicy::AcceptAsReceived)
                 st = dimse_status::CannotUnderstand;
             else if (st == dimse_status::Success)
                 st = on_instance ? on_instance(rq) : dimse_status::Success;

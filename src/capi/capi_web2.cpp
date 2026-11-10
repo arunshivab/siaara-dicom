@@ -123,6 +123,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_se
         if (has(offsetof(siaara_web_server_options, incomplete_policy) + sizeof(int32_t)))
             if (siaara_status ps = capi::incomplete_policy(o->incomplete_policy, cfg.incomplete_policy); ps != SIAARA_OK)
                 return ps;
+        if (has(offsetof(siaara_web_server_options, quarantine_response) + sizeof(int32_t)))
+            if (siaara_status ps = capi::quarantine_response(o->quarantine_response, cfg.quarantine_response); ps != SIAARA_OK)
+                return ps;
         auto h = std::make_unique<siaara_web_server>();
         h->attach_store(store);
         h->authorize = o->authorize;
@@ -143,8 +146,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_se
         capi::StoreQrOptions qo;
         qo.max_find_results = static_cast<std::uint32_t>(cfg.max_qido_results) + 1u;
         const auto policy = o->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
-        if (Status s = h->server.start(cfg, capi::dicomweb_store(*store->store, policy, o->read_only != 0, qo)); !s)
-            return fail(s);
+        web::Store backend = capi::dicomweb_store(*store->store, policy, o->read_only != 0, qo);
+        if (o->read_only == 0)
+            backend.quarantine = [store](const siaara::DicomFile& f, const siaara::Bytes& part, const std::string& peer) -> std::uint16_t {
+                return capi::quarantine_bytes(store, part, "STOW-RS", std::string(), peer,
+                                              f.dataset.get_string(siaara::tags::SOPClassUID).value_or(""),
+                                              f.dataset.get_string(siaara::tags::SOPInstanceUID).value_or(""), f.read_loss,
+                                              f.warnings.empty() ? std::string() : f.warnings.front());
+            };
+        if (Status s = h->server.start(cfg, std::move(backend)); !s) return fail(s);
         capi::log(SIAARA_LOG_INFO, false, "DICOMweb server listening on port " + std::to_string(h->server.port()));
         *out = h.release();
         return ok();
@@ -239,7 +249,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_c
             if (s) {
                 bytes = siaara::Bytes::copy_of(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
                 // The whole part is read: only that shows whether it is complete (R-116).
-                auto f = siaara::read_part10(bytes);
+                auto f = siaara::read_part10(bytes, siaara::network_read_options());
                 if (!f) {
                     s = f.error();
                 } else {
@@ -254,7 +264,19 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_c
                                          is(siaara::tags::SOPInstanceUID, instance))) {
                         ++rep.uid_mismatch;
                         s = Status(Errc::Rejected, "response part is not from the requested study / series / instance");
-                    } else if (loss && (incomplete == siaara::IncompletePolicy::Refuse || raw)) {
+                    } else if (loss && incomplete == siaara::IncompletePolicy::Quarantine && store) {
+                        // Kept outside the archive: not stored, so it counts as failed as well.
+                        const std::uint16_t kept = capi::quarantine_bytes(
+                            store, bytes, "WADO-RS", std::string(), std::string(),
+                            f->dataset.get_string(siaara::tags::SOPClassUID).value_or(""), uid, f->read_loss,
+                            f->warnings.empty() ? std::string() : f->warnings.front());
+                        if (kept == 0) ++rep.quarantined;
+                        else ++rep.incomplete_refused;
+                        s = Status(kept == 0xA700 ? Errc::LimitExceeded : Errc::Rejected,
+                                   std::string(siaara::net::kIncompleteInput) +
+                                       (kept == 0 ? ": the response part was not read completely; quarantined"
+                                                  : ": the response part was not read completely; the quarantine did not take it"));
+                    } else if (loss && (incomplete != siaara::IncompletePolicy::AcceptAsReceived || raw)) {
                         // Never stored rewritten; refused unless it can be kept exactly as received.
                         ++rep.incomplete_refused;
                         s = Status(Errc::Rejected,

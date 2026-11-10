@@ -113,6 +113,7 @@ internal static class C
     public const int SIAARA_IDXF_SLICE_THICKNESS = 1 << 8;
     public const int SIAARA_IDXF_REFERENCED = 1 << 9;
     public const int SIAARA_IDXF_PIXEL_OFFSET = 1 << 10;
+    public const int SIAARA_IDXF_INCOMPLETE = 1 << 11;
     public const int SIAARA_LEVEL_PATIENT = 0;
     public const int SIAARA_LEVEL_STUDY = 1;
     public const int SIAARA_LEVEL_SERIES = 2;
@@ -338,6 +339,10 @@ internal static class C
     public const int SIAARA_INCOMPLETE_DEFAULT = 0;
     public const int SIAARA_INCOMPLETE_REFUSE = 1;
     public const int SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2;
+    public const int SIAARA_INCOMPLETE_QUARANTINE = 3;
+    public const int SIAARA_QUARANTINE_ANSWER_DEFAULT = 0;
+    public const int SIAARA_QUARANTINE_ANSWER_WARNING = 1;
+    public const int SIAARA_QUARANTINE_ANSWER_FAILURE = 2;
     public const int SIAARA_SCP_STORED = 0;
     public const int SIAARA_SCP_STORE_FAILED = 1;
     public const int SIAARA_SCP_ECHO = 2;
@@ -423,6 +428,7 @@ internal static class C
     public const int SIAARA_SCP_REFUSED = 12;
     public const int SIAARA_SCP_UID_CHANGED = 13;
     public const int SIAARA_SCP_IAN = 14;
+    public const int SIAARA_SCP_QUARANTINED = 15;
     public const int SIAARA_SVC_VERIFICATION = 0;
     public const int SIAARA_SVC_STORAGE = 1;
     public const int SIAARA_SVC_FIND = 2;
@@ -467,6 +473,18 @@ internal struct FixedArray4OfByte
     private byte _element0;
 }
 
+[InlineArray(16)]
+internal struct FixedArray16OfByte
+{
+    private byte _element0;
+}
+
+[InlineArray(17)]
+internal struct FixedArray17OfByte
+{
+    private byte _element0;
+}
+
 [InlineArray(20)]
 internal struct FixedArray20OfByte
 {
@@ -475,6 +493,12 @@ internal struct FixedArray20OfByte
 
 [InlineArray(32)]
 internal struct FixedArray32OfByte
+{
+    private byte _element0;
+}
+
+[InlineArray(64)]
+internal struct FixedArray64OfByte
 {
     private byte _element0;
 }
@@ -713,6 +737,27 @@ internal struct siaara_store_options
     public ulong min_free_disk_bytes;
     public uint file_mode;
     public uint keep_permissions;
+    public ulong quarantine_max_bytes;
+    public uint quarantine_max_items;
+    public uint reserved1;
+}
+
+/// <summary>siaara_quarantine_record (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_quarantine_record
+{
+    public uint struct_size;
+    public uint read_loss;
+    public long time;
+    public ulong size;
+    public FixedArray65OfByte id;
+    public FixedArray16OfByte source;
+    public FixedArray17OfByte calling_ae;
+    public FixedArray64OfByte peer;
+    public FixedArray65OfByte sop_class_uid;
+    public FixedArray65OfByte sop_instance_uid;
+    public FixedArray256OfByte warning;
+    public FixedArray4OfByte reserved;
 }
 
 /// <summary>siaara_store_filter (blittable, C layout).</summary>
@@ -1344,7 +1389,19 @@ internal struct siaara_scp_options
     public uint reserved1;
     public ulong event_queue_max_bytes;
     public int incomplete_policy;
+    public int quarantine_response;
+    public nint incomplete_overrides;
+    public uint incomplete_override_count;
     public uint reserved2;
+}
+
+/// <summary>siaara_incomplete_override (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_incomplete_override
+{
+    public uint struct_size;
+    public int policy;
+    public nint calling_ae;
 }
 
 /// <summary>siaara_scp_event (blittable, C layout).</summary>
@@ -1785,7 +1842,7 @@ internal struct siaara_web_server_options
     public int response_timeout_ms;
     public uint min_response_rate;
     public int incomplete_policy;
-    public uint reserved0;
+    public int quarantine_response;
 }
 
 /// <summary>siaara_web_limits (blittable, C layout).</summary>
@@ -1826,7 +1883,7 @@ internal struct siaara_web_retrieve_report
     public uint uid_mismatch;
     public uint incomplete_accepted;
     public uint rewritten;
-    public uint reserved0;
+    public uint quarantined;
 }
 
 /// <summary>siaara_web_stow_options (blittable, C layout).</summary>
@@ -2063,6 +2120,26 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_extract_index_memory")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_extract_index_memory(byte* data, nuint size, siaara_index_record* @out, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_quarantine_count(nint store, uint* items, ulong* bytes);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_quarantine_get(nint store, uint index, siaara_quarantine_record* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_bytes")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_quarantine_bytes(nint store, byte* id, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_release")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_quarantine_release(nint store, byte* id, int policy, int* outcome);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_delete")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_quarantine_delete(nint store, byte* id);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_open")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -3263,6 +3340,47 @@ internal static unsafe class Native
         fixed (byte* p_buf = buf)
         fixed (nuint* p_needed = &needed)
             return Raw.siaara_extract_index_memory((byte*)p_data, (nuint)data.Length, p_out, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_store_quarantine_count(nint store, out uint items, out ulong bytes)
+    {
+        items = default;
+        bytes = default;
+        fixed (uint* p_items = &items)
+        fixed (ulong* p_bytes = &bytes)
+            return Raw.siaara_store_quarantine_count(store, p_items, p_bytes);
+    }
+
+    internal static int siaara_store_quarantine_get(nint store, uint index, ref siaara_quarantine_record @out)
+    {
+        fixed (siaara_quarantine_record* p_out = &@out)
+            return Raw.siaara_store_quarantine_get(store, index, p_out);
+    }
+
+    internal static int siaara_store_quarantine_bytes(nint store, ReadOnlySpan<byte> id, Span<byte> buf, out nuint needed)
+    {
+        if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
+        needed = default;
+        fixed (byte* p_id = id)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_store_quarantine_bytes(store, (byte*)p_id, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_store_quarantine_release(nint store, ReadOnlySpan<byte> id, int policy, out int outcome)
+    {
+        if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
+        outcome = default;
+        fixed (byte* p_id = id)
+        fixed (int* p_outcome = &outcome)
+            return Raw.siaara_store_quarantine_release(store, (byte*)p_id, policy, p_outcome);
+    }
+
+    internal static int siaara_store_quarantine_delete(nint store, ReadOnlySpan<byte> id)
+    {
+        if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
+        fixed (byte* p_id = id)
+            return Raw.siaara_store_quarantine_delete(store, (byte*)p_id);
     }
 
     internal static int siaara_store_open(ReadOnlySpan<byte> utf8_root, in siaara_store_options options, out nint @out)

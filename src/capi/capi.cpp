@@ -1198,6 +1198,12 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t 
         if (!s) return fail(s.error());
         auto handle = std::make_unique<siaara_store>();
         handle->store = std::move(s).value();
+        st::QuarantineLimits ql;
+        if (options && options->struct_size >= offsetof(siaara_store_options, quarantine_max_items) + sizeof(uint32_t)) {
+            if (options->quarantine_max_bytes) ql.max_bytes = options->quarantine_max_bytes;
+            if (options->quarantine_max_items) ql.max_items = options->quarantine_max_items;
+        }
+        handle->quarantine = std::make_unique<st::Quarantine>(handle->store->root(), ql);
         // R-135: permissions wider than asked for, tightened or left as they are.
         for (const std::string& note : handle->store->open_notes()) siaara::capi::log(SIAARA_LOG_WARNING, false, note);
         *out = handle.release();

@@ -156,6 +156,25 @@ internal static class StructLayouts
             r.Add("F siaara_store_options min_free_disk_bytes " + Offset(ref s, ref s.min_free_disk_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options file_mode " + Offset(ref s, ref s.file_mode).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options keep_permissions " + Offset(ref s, ref s.keep_permissions).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options quarantine_max_bytes " + Offset(ref s, ref s.quarantine_max_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options quarantine_max_items " + Offset(ref s, ref s.quarantine_max_items).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options reserved1 " + Offset(ref s, ref s.reserved1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_quarantine_record);
+            r.Add("S siaara_quarantine_record " + Unsafe.SizeOf<siaara_quarantine_record>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record read_loss " + Offset(ref s, ref s.read_loss).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record time " + Offset(ref s, ref s.time).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record size " + Offset(ref s, ref s.size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record id " + Offset(ref s, ref s.id).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record source " + Offset(ref s, ref s.source).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record calling_ae " + Offset(ref s, ref s.calling_ae).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record peer " + Offset(ref s, ref s.peer).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record sop_class_uid " + Offset(ref s, ref s.sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record warning " + Offset(ref s, ref s.warning).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record reserved " + Offset(ref s, ref s.reserved).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_store_filter);
@@ -713,7 +732,17 @@ internal static class StructLayouts
             r.Add("F siaara_scp_options reserved1 " + Offset(ref s, ref s.reserved1).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options event_queue_max_bytes " + Offset(ref s, ref s.event_queue_max_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options incomplete_policy " + Offset(ref s, ref s.incomplete_policy).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options quarantine_response " + Offset(ref s, ref s.quarantine_response).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options incomplete_overrides " + Offset(ref s, ref s.incomplete_overrides).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options incomplete_override_count " + Offset(ref s, ref s.incomplete_override_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options reserved2 " + Offset(ref s, ref s.reserved2).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_incomplete_override);
+            r.Add("S siaara_incomplete_override " + Unsafe.SizeOf<siaara_incomplete_override>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_incomplete_override struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_incomplete_override policy " + Offset(ref s, ref s.policy).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_incomplete_override calling_ae " + Offset(ref s, ref s.calling_ae).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_event);
@@ -1108,7 +1137,7 @@ internal static class StructLayouts
             r.Add("F siaara_web_server_options response_timeout_ms " + Offset(ref s, ref s.response_timeout_ms).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_server_options min_response_rate " + Offset(ref s, ref s.min_response_rate).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_server_options incomplete_policy " + Offset(ref s, ref s.incomplete_policy).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_web_server_options reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options quarantine_response " + Offset(ref s, ref s.quarantine_response).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_web_limits);
@@ -1143,7 +1172,7 @@ internal static class StructLayouts
             r.Add("F siaara_web_retrieve_report uid_mismatch " + Offset(ref s, ref s.uid_mismatch).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_retrieve_report incomplete_accepted " + Offset(ref s, ref s.incomplete_accepted).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_retrieve_report rewritten " + Offset(ref s, ref s.rewritten).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_web_retrieve_report reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_retrieve_report quarantined " + Offset(ref s, ref s.quarantined).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_web_stow_options);
@@ -1167,6 +1196,7 @@ internal static class StructLayouts
         r.Add("siaara_render_options " + Marshal.SizeOf<siaara_render_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_index_record " + Marshal.SizeOf<siaara_index_record>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_store_options " + Marshal.SizeOf<siaara_store_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_quarantine_record " + Marshal.SizeOf<siaara_quarantine_record>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_store_filter " + Marshal.SizeOf<siaara_store_filter>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_store_verify_report " + Marshal.SizeOf<siaara_store_verify_report>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_store_stats " + Marshal.SizeOf<siaara_store_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1204,6 +1234,7 @@ internal static class StructLayouts
         r.Add("siaara_dimse_result " + Marshal.SizeOf<siaara_dimse_result>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_get_options " + Marshal.SizeOf<siaara_get_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_options " + Marshal.SizeOf<siaara_scp_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_incomplete_override " + Marshal.SizeOf<siaara_incomplete_override>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_event " + Marshal.SizeOf<siaara_scp_event>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_stats " + Marshal.SizeOf<siaara_scp_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_repair_options " + Marshal.SizeOf<siaara_repair_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));

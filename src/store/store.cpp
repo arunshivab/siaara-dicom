@@ -1026,9 +1026,11 @@ struct Store::Impl {
         return Status::ok();
     }
 
-    Result<AddOutcome> add_bytes(const Bytes& src, DuplicatePolicy policy, AddMode mode, const std::string& ref_path) {
+    Result<AddOutcome> add_bytes(const Bytes& src, DuplicatePolicy policy, AddMode mode, const std::string& ref_path,
+                                 std::uint32_t extra_flags = 0) {
         IndexRecord rec;
         if (Status s = extract_index(src, rec); !s) return s;
+        rec.flags |= extra_flags;
         Bytes data = src;
         if (mode == AddMode::Copy && !(rec.flags & kHadPreamble)) {
             // Raw data set: store a proper Part 10 file.
@@ -1040,6 +1042,7 @@ struct Store::Impl {
             const std::uint8_t* q = holder->data();
             data = Bytes(std::shared_ptr<const void>(holder, holder.get()), q, holder->size());
             if (Status s = extract_index(data, rec); !s) return s;
+            rec.flags |= extra_flags;
         }
         const std::string uid = rec[Str::SopInstanceUid];
         if (uid.empty()) return Status(Errc::Malformed, "instance has no SOP Instance UID");
@@ -1306,8 +1309,8 @@ Result<AddOutcome> Store::add_file(const std::string& utf8_path, DuplicatePolicy
     return impl_->add_bytes(*bytes, policy, mode, ref);
 }
 
-Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy) {
-    return impl_->add_bytes(data, policy, AddMode::Copy, {});
+Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy, std::uint32_t extra_flags) {
+    return impl_->add_bytes(data, policy, AddMode::Copy, {}, extra_flags & kIncompleteRead);
 }
 
 Result<std::size_t> Store::add_records(const std::vector<IndexRecord>& records) {
