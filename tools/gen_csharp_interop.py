@@ -60,6 +60,11 @@ ARRAY_RULES = {
     "siaara_web_wado_frames": {"frames": ("count", "count", 1, False),
                                "transfer_syntaxes": ("count", "ts_count", 1, False)},
     "siaara_web_wado_retrieve": {"transfer_syntaxes": ("count", "ts_count", 1, False)},
+    "siaara_scp_set_worklist": {"items": ("count", "count", 1, False)},
+    "siaara_dimse_store_files_ex": {"paths": ("count", "count", 1, False), "lens": ("count", "count", 1, True)},
+    "siaara_dimse_commit_ex": {"sop_classes": ("count", "count", 1, False), "sop_instances": ("count", "count", 1, False),
+                               "failure_reasons": ("count", "count", 1, True)},
+    "siaara_web_wado_retrieve_to": {"transfer_syntaxes": ("count", "ts_count", 1, False)},
 }
 LEN_NAME = re.compile(r"(^|_)(len|size|count)$")
 CS_KEYWORDS = {"out", "params", "ref", "in", "base", "object", "string", "event", "fixed", "checked", "lock"}

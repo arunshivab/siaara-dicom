@@ -120,6 +120,8 @@ internal static class StructLayouts
             r.Add("F siaara_store_options compact_min_records " + Offset(ref s, ref s.compact_min_records).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options max_total_bytes " + Offset(ref s, ref s.max_total_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options min_free_disk_bytes " + Offset(ref s, ref s.min_free_disk_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options file_mode " + Offset(ref s, ref s.file_mode).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_store_filter);
@@ -695,6 +697,8 @@ internal static class StructLayouts
             r.Add("F siaara_scp_options spool_threshold " + Offset(ref s, ref s.spool_threshold).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options spool_max_total_bytes " + Offset(ref s, ref s.spool_max_total_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options spool_min_free_disk_bytes " + Offset(ref s, ref s.spool_min_free_disk_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options event_queue_limit " + Offset(ref s, ref s.event_queue_limit).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options reserved1 " + Offset(ref s, ref s.reserved1).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_event);
@@ -710,6 +714,14 @@ internal static class StructLayouts
             r.Add("F siaara_scp_event uid_mismatch " + Offset(ref s, ref s.uid_mismatch).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_event command_sop_class_uid " + Offset(ref s, ref s.command_sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_event command_sop_instance_uid " + Offset(ref s, ref s.command_sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event original_sop_instance_uid " + Offset(ref s, ref s.original_sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event transaction_uid " + Offset(ref s, ref s.transaction_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event destination_ae " + Offset(ref s, ref s.destination_ae).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event dataset " + Offset(ref s, ref s.dataset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event completed " + Offset(ref s, ref s.completed).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event failed " + Offset(ref s, ref s.failed).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event warning " + Offset(ref s, ref s.warning).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event command_field " + Offset(ref s, ref s.command_field).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_stats);
@@ -723,6 +735,13 @@ internal static class StructLayouts
             r.Add("F siaara_scp_stats store_failures " + Offset(ref s, ref s.store_failures).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_stats echoes " + Offset(ref s, ref s.echoes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_stats bytes_received " + Offset(ref s, ref s.bytes_received).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats events_dropped " + Offset(ref s, ref s.events_dropped).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats finds " + Offset(ref s, ref s.finds).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats retrieves " + Offset(ref s, ref s.retrieves).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats sub_operations " + Offset(ref s, ref s.sub_operations).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats mpps " + Offset(ref s, ref s.mpps).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats commitments " + Offset(ref s, ref s.commitments).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_stats refused " + Offset(ref s, ref s.refused).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_repair_options);
@@ -738,6 +757,150 @@ internal static class StructLayouts
             r.Add("F siaara_repair_options overwrite " + Offset(ref s, ref s.overwrite).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_repair_options uid_seed " + Offset(ref s, ref s.uid_seed).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_repair_options uid_seed_len " + Offset(ref s, ref s.uid_seed_len).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_ae_entry);
+            r.Add("S siaara_ae_entry " + Unsafe.SizeOf<siaara_ae_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_ae_entry struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_ae_entry port " + Offset(ref s, ref s.port).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_ae_entry ae_title " + Offset(ref s, ref s.ae_title).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_ae_entry host " + Offset(ref s, ref s.host).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_ae_entry tls " + Offset(ref s, ref s.tls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_ae_entry reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_scp_acl);
+            r.Add("S siaara_scp_acl " + Unsafe.SizeOf<siaara_scp_acl>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_acl struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_acl service " + Offset(ref s, ref s.service).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_acl calling_aes " + Offset(ref s, ref s.calling_aes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_acl count " + Offset(ref s, ref s.count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_acl reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_scp_services);
+            r.Add("S siaara_scp_services " + Unsafe.SizeOf<siaara_scp_services>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services storage " + Offset(ref s, ref s.storage).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services find " + Offset(ref s, ref s.find).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services move " + Offset(ref s, ref s.move).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services get " + Offset(ref s, ref s.get).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services worklist " + Offset(ref s, ref s.worklist).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services mpps " + Offset(ref s, ref s.mpps).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services commitment " + Offset(ref s, ref s.commitment).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services commitment_report_mode " + Offset(ref s, ref s.commitment_report_mode).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services commitment_reports " + Offset(ref s, ref s.commitment_reports).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services ups " + Offset(ref s, ref s.ups).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services instance_availability " + Offset(ref s, ref s.instance_availability).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services allow_lossy " + Offset(ref s, ref s.allow_lossy).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services storage_sop_classes " + Offset(ref s, ref s.storage_sop_classes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services storage_sop_class_count " + Offset(ref s, ref s.storage_sop_class_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services transfer_syntax_count " + Offset(ref s, ref s.transfer_syntax_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services transfer_syntaxes " + Offset(ref s, ref s.transfer_syntaxes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services store_transfer_syntax " + Offset(ref s, ref s.store_transfer_syntax).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services ae_table " + Offset(ref s, ref s.ae_table).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services ae_count " + Offset(ref s, ref s.ae_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services max_find_results " + Offset(ref s, ref s.max_find_results).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services outbound_tls " + Offset(ref s, ref s.outbound_tls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services max_retrieve_instances " + Offset(ref s, ref s.max_retrieve_instances).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services relational " + Offset(ref s, ref s.relational).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services fuzzy_person_names " + Offset(ref s, ref s.fuzzy_person_names).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services combined_datetime " + Offset(ref s, ref s.combined_datetime).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services worklist_cb " + Offset(ref s, ref s.worklist_cb).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services worklist_user " + Offset(ref s, ref s.worklist_user).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services max_worklist_items " + Offset(ref s, ref s.max_worklist_items).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services max_mpps_instances " + Offset(ref s, ref s.max_mpps_instances).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services max_commitment_items " + Offset(ref s, ref s.max_commitment_items).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services acl_count " + Offset(ref s, ref s.acl_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services acls " + Offset(ref s, ref s.acls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_qr_keys);
+            r.Add("S siaara_qr_keys " + Unsafe.SizeOf<siaara_qr_keys>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys return_keys " + Offset(ref s, ref s.return_keys).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys patient_id " + Offset(ref s, ref s.patient_id).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys patient_name " + Offset(ref s, ref s.patient_name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys patient_birth_date " + Offset(ref s, ref s.patient_birth_date).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys patient_sex " + Offset(ref s, ref s.patient_sex).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys study_instance_uid " + Offset(ref s, ref s.study_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys study_date " + Offset(ref s, ref s.study_date).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys study_time " + Offset(ref s, ref s.study_time).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys accession_number " + Offset(ref s, ref s.accession_number).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys study_id " + Offset(ref s, ref s.study_id).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys study_description " + Offset(ref s, ref s.study_description).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys referring_physician " + Offset(ref s, ref s.referring_physician).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys modalities_in_study " + Offset(ref s, ref s.modalities_in_study).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys series_instance_uid " + Offset(ref s, ref s.series_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys modality " + Offset(ref s, ref s.modality).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys series_number " + Offset(ref s, ref s.series_number).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys series_description " + Offset(ref s, ref s.series_description).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys sop_class_uid " + Offset(ref s, ref s.sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_keys instance_number " + Offset(ref s, ref s.instance_number).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_qr_options);
+            r.Add("S siaara_qr_options " + Unsafe.SizeOf<siaara_qr_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_options flags " + Offset(ref s, ref s.flags).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_options accepted_flags " + Offset(ref s, ref s.accepted_flags).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_qr_options max_matches " + Offset(ref s, ref s.max_matches).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_commit_options);
+            r.Add("S siaara_commit_options " + Unsafe.SizeOf<siaara_commit_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_commit_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_commit_options wait_ms " + Offset(ref s, ref s.wait_ms).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_commit_options receiver " + Offset(ref s, ref s.receiver).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_commit_options same_association_ms " + Offset(ref s, ref s.same_association_ms).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_commit_options transaction_uid " + Offset(ref s, ref s.transaction_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_commit_options transaction_uid_out " + Offset(ref s, ref s.transaction_uid_out).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_n_request);
+            r.Add("S siaara_n_request " + Unsafe.SizeOf<siaara_n_request>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request command_field " + Offset(ref s, ref s.command_field).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request abstract_syntax " + Offset(ref s, ref s.abstract_syntax).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request sop_class_uid " + Offset(ref s, ref s.sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request type_id " + Offset(ref s, ref s.type_id).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request attribute_count " + Offset(ref s, ref s.attribute_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request attribute_tags " + Offset(ref s, ref s.attribute_tags).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request dataset " + Offset(ref s, ref s.dataset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request propose_scp_role " + Offset(ref s, ref s.propose_scp_role).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_n_request reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_web_server_options);
+            r.Add("S siaara_web_server_options " + Unsafe.SizeOf<siaara_web_server_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options port " + Offset(ref s, ref s.port).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options bind_address " + Offset(ref s, ref s.bind_address).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options base_path " + Offset(ref s, ref s.base_path).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options public_base_url " + Offset(ref s, ref s.public_base_url).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options tls " + Offset(ref s, ref s.tls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options require_client_certificate " + Offset(ref s, ref s.require_client_certificate).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options allow_insecure_remote " + Offset(ref s, ref s.allow_insecure_remote).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options read_only " + Offset(ref s, ref s.read_only).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options duplicate_policy " + Offset(ref s, ref s.duplicate_policy).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options authorize " + Offset(ref s, ref s.authorize).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options authorize_user " + Offset(ref s, ref s.authorize_user).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options cors_allow_origin " + Offset(ref s, ref s.cors_allow_origin).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options max_connections " + Offset(ref s, ref s.max_connections).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options max_qido_results " + Offset(ref s, ref s.max_qido_results).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options max_body_bytes " + Offset(ref s, ref s.max_body_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_web_limits);
+            r.Add("S siaara_web_limits " + Unsafe.SizeOf<siaara_web_limits>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_limits struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_limits read_timeout_ms " + Offset(ref s, ref s.read_timeout_ms).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_limits max_body " + Offset(ref s, ref s.max_body).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_limits body_timeout_ms " + Offset(ref s, ref s.body_timeout_ms).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_limits max_parts " + Offset(ref s, ref s.max_parts).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_limits max_part_bytes " + Offset(ref s, ref s.max_part_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         return r;
     }
@@ -794,6 +957,15 @@ internal static class StructLayouts
         r.Add("siaara_scp_event " + Marshal.SizeOf<siaara_scp_event>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_stats " + Marshal.SizeOf<siaara_scp_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_repair_options " + Marshal.SizeOf<siaara_repair_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_ae_entry " + Marshal.SizeOf<siaara_ae_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_scp_acl " + Marshal.SizeOf<siaara_scp_acl>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_scp_services " + Marshal.SizeOf<siaara_scp_services>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_qr_keys " + Marshal.SizeOf<siaara_qr_keys>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_qr_options " + Marshal.SizeOf<siaara_qr_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_commit_options " + Marshal.SizeOf<siaara_commit_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_n_request " + Marshal.SizeOf<siaara_n_request>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_web_server_options " + Marshal.SizeOf<siaara_web_server_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_web_limits " + Marshal.SizeOf<siaara_web_limits>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         return r;
     }
 }

@@ -134,6 +134,13 @@ struct Url {
 Result<Url> parse_url(std::string_view url);
 
 // ---------------------------------------------------------------- connection
+// Streaming of a response body (client side): the head of the final response, then the body in
+// pieces as it arrives (Limits::max_body does not apply; the consumer bounds what it keeps).
+struct BodySink {
+    std::function<Status(const Response& head)> on_head;
+    std::function<Status(std::string_view piece)> on_body;
+};
+
 class Connection {
 public:
     Connection(std::unique_ptr<net::Transport> t, const Limits& limits);
@@ -156,6 +163,9 @@ public:
     int suggested_status() const noexcept { return suggested_; }
     // `request_method` decides whether a body follows (HEAD).
     Result<Response> read_response(std::string_view request_method);
+    // While set, read_response streams the body to `sink` (Response::body stays empty).
+    void set_sink(BodySink* sink) noexcept { sink_ = sink; }
+    void set_limits(const Limits& l) noexcept { lim_ = l; }
 
     Status write_request(const Request& rq);
     // Adds Content-Length (and Connection: close when `close`). Omits the body for HEAD.
@@ -190,6 +200,8 @@ private:
     std::shared_ptr<BodyBudget> budget_;
     std::string budget_peer_;
     std::uint64_t reserved_ = 0;
+    BodySink* sink_ = nullptr;
+    Status flush_sink(std::string& out, bool all);
 
     Status fill(int timeout_ms);
     Status fill_once(int timeout_ms);
@@ -219,6 +231,10 @@ public:
     // connection is reused; if it turns out to be stale before any response byte arrived, the
     // request is retried once on a new connection.
     Result<Response> send(const Request& rq);
+    // As send(), streaming the response body to `sink` (retried only before its head was seen).
+    Result<Response> send_streaming(const Request& rq, BodySink& sink);
+    // Limits for later requests (a connection kept open is closed so that they apply).
+    void set_limits(const Limits& limits);
     void close() noexcept;
     // Wakes a send() blocked in another thread: the open connection is shut down and that call
     // fails. Later calls open a new connection.
@@ -237,7 +253,7 @@ private:
     std::unique_ptr<Connection> conn_;
     std::mutex conn_mu_;  // conn_ changes and interrupt() (the connection itself is used by one thread)
     std::atomic<bool> interrupted_{false};
-    Result<Response> attempt(const Request& rq, bool& sent_on_reused, bool& got_bytes);
+    Result<Response> attempt(const Request& rq, bool& sent_on_reused, bool& got_bytes, BodySink* sink = nullptr);
 };
 
 // ---------------------------------------------------------------- server

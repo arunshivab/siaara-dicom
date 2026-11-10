@@ -462,6 +462,7 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
         StoreRequest rq;
         rq.calling_ae = c.a.calling_ae();
         rq.called_ae = c.a.called_ae();
+        rq.peer_address = c.a.peer_address();
         rq.sop_class_uid = m.command.affected_sop_class_uid;
         rq.sop_instance_uid = m.command.affected_sop_instance_uid;
         rq.transfer_syntax = m.transfer_syntax;
@@ -525,6 +526,7 @@ Status ScpServer::do_find(Ctx& c, const Message& m) {
     if (!ident) return send_dimse(c.a, m.context_id, make_response(m.command, dimse_status::CannotUnderstand));
     QueryRequest q;
     q.calling_ae = c.a.calling_ae();
+    q.peer_address = c.a.peer_address();
     q.sop_class_uid = m.command.affected_sop_class_uid;
     q.message_id = *m.command.message_id;
     q.priority = m.command.priority.value_or(0);
@@ -566,6 +568,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
     if (!ident) return send_dimse(c.a, pcid, make_response(m.command, dimse_status::CannotUnderstand));
     QueryRequest q;
     q.calling_ae = c.a.calling_ae();
+    q.peer_address = c.a.peer_address();
     q.sop_class_uid = m.command.affected_sop_class_uid;
     q.message_id = *m.command.message_id;
     q.priority = m.command.priority.value_or(0);
@@ -578,14 +581,19 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
     std::optional<MoveDestination> dest;
     if (!is_get) {
         if (h_.resolve_move_destination) dest = h_.resolve_move_destination(q.move_destination);
-        if (!dest) return send_dimse(c.a, pcid, make_response(m.command, dimse_status::MoveDestinationUnknown));
+        if (!dest) {
+            if (h_.on_retrieve_done) h_.on_retrieve_done(q, is_get, dimse_status::MoveDestinationUnknown, 0, 0, 0);
+            return send_dimse(c.a, pcid, make_response(m.command, dimse_status::MoveDestinationUnknown));
+        }
         if (dest->ae_title.empty()) dest->ae_title = q.move_destination;
     }
     std::vector<RetrieveItem> items;
-    const std::uint16_t hs = handler(q, items);
-    if (hs != dimse_status::Success) return send_dimse(c.a, pcid, make_response(m.command, hs));
-    if (items.size() > 0xFFFF)
-        return send_dimse(c.a, pcid, make_response(m.command, dimse_status::OutOfResourcesSubOps));
+    std::uint16_t hs = handler(q, items);
+    if (hs == dimse_status::Success && items.size() > 0xFFFF) hs = dimse_status::OutOfResourcesSubOps;
+    if (hs != dimse_status::Success) {
+        if (h_.on_retrieve_done) h_.on_retrieve_done(q, is_get, hs, 0, 0, 0);
+        return send_dimse(c.a, pcid, make_response(m.command, hs));
+    }
     const auto total = static_cast<std::uint16_t>(items.size());
 
     // Load headers to learn SOP classes and transfer syntaxes (needed to propose sub-association contexts).
@@ -624,6 +632,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         sc.timeouts = cfg_.timeouts;
         sc.limits = cfg_.limits;
         sc.tls = cfg_.move_tls;
+        if (dest->tls) sc.tls.enabled = *dest->tls;
         sc.transcode_params = cfg_.transcode_params;
         sub = std::make_unique<Scu>(sc);
         std::vector<std::pair<std::string, std::string>> seen;
@@ -687,13 +696,20 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
             // C-STORE sub-operation on this association, on a context where the requestor is SCP.
             const NegotiatedContext* spc = nullptr;
             std::vector<std::uint8_t> body;
+            codec::TranscodeReport report;
             for (const NegotiatedContext* k :
                  store_contexts(c.a, l.sop_class, f->transfer_syntax, true, true, cfg_.transcode_params))
-                if (encode_for_transfer_syntax(*f, k->transfer_syntax, cfg_.transcode_params, body)) {
+                if (encode_for_transfer_syntax(*f, k->transfer_syntax, cfg_.transcode_params, body, &report)) {
                     spc = k;
                     break;
                 }
             if (spc) {
+                // R-093: a lossy transcode gave the image a new SOP Instance UID; send that one.
+                if (!report.new_sop_instance_uid.empty() && report.new_sop_instance_uid != l.sop_instance) {
+                    if (h_.on_sop_instance_uid_changed)
+                        h_.on_sop_instance_uid_changed(q.calling_ae, l.sop_instance, report.new_sop_instance_uid);
+                    l.sop_instance = report.new_sop_instance_uid;
+                }
                 {
                     const std::uint16_t smid = c.a.next_message_id();
                     const Command srq = make_c_store_rq(smid, l.sop_class, l.sop_instance);
@@ -732,7 +748,13 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
                 }
             }
         } else if (f) {
-            Result<std::uint16_t> r = sub->store(*f, q.calling_ae, q.message_id);
+            StoreSent sent;
+            Result<std::uint16_t> r = sub->store(*f, q.calling_ae, q.message_id, &sent);
+            if (sent.uid_changed) {
+                if (h_.on_sop_instance_uid_changed)
+                    h_.on_sop_instance_uid_changed(q.calling_ae, l.sop_instance, sent.sop_instance_uid);
+                l.sop_instance = sent.sop_instance_uid;
+            }
             if (r) st = *r;
             else if (!sub->connected()) {
                 // Sub-association lost: everything left fails.
@@ -775,9 +797,11 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         sub_guard.scu = nullptr;
         (void)sub->release();
     }
+    const std::uint16_t final_status =
+        cancelled ? dimse_status::Cancel : final_retrieve_status(total, completed, failed, warning);
+    if (h_.on_retrieve_done) h_.on_retrieve_done(q, is_get, final_status, completed, failed, warning);
     if (c.dead || c.release_pending) return Status::ok();
-    Command fin = make_response(m.command, cancelled ? dimse_status::Cancel
-                                                     : final_retrieve_status(total, completed, failed, warning));
+    Command fin = make_response(m.command, final_status);
     fin.completed = completed;
     fin.failed = failed;
     fin.warning = warning;

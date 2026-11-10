@@ -294,7 +294,8 @@ private:
 
 struct StoreOutcome {
     std::string path;
-    std::string sop_instance;
+    std::string sop_instance;           // as sent
+    std::string original_sop_instance;  // the file's own, when a lossy transcode changed it (R-093)
     std::uint16_t status = 0xFFFF;
     Status error;  // set when the instance could not be sent at all
 };
@@ -337,6 +338,14 @@ struct ServiceSet {
     std::function<std::optional<MoveDestination>(const std::string& ae)> resolve_ae;
     // Propose SCP/SCU role selection (requestor = SCP) when opening those associations.
     bool propose_role_reversal = true;
+    // Admission of every request this set would serve (allow-lists, limits): return Success to
+    // serve it, or the status to answer it with (e.g. 0x0124 Refused: Not Authorized).
+    std::function<std::uint16_t(const std::string& calling_ae, const Command& rq)> admit;
+    // After a UPS request was answered: (calling AE, request, the status sent).
+    std::function<void(const std::string& calling_ae, const Command& rq, std::uint16_t status)> on_ups_served;
+    // After a Storage Commitment request was decided: the result and whether the report reached
+    // the requestor (on its association or a new one).
+    std::function<void(const CommitmentRequest& rq, const CommitmentResult& result, bool delivered)> on_commitment_done;
 };
 
 // Abstract syntaxes the service set adds to an SCP's presentation context policy.
@@ -347,6 +356,7 @@ struct ServiceContext {
     const ScpConfig& cfg;
     std::function<void(const std::string&)> log;
     bool release_pending = false;  // set when the peer asked to release while a service waited
+    std::uint16_t last_status = 0; // status of the last response sent through the service set
 };
 
 enum class ServiceOutcome { NotHandled, Handled, Failed };

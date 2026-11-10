@@ -33,6 +33,7 @@ struct ServiceSet;  // net/services.hpp
 
 struct QueryRequest {
     std::string calling_ae;
+    std::string peer_address;       // the requestor's network address
     std::string sop_class_uid;      // the information model (abstract syntax)
     std::uint16_t message_id = 0;
     std::uint16_t priority = 0;
@@ -53,6 +54,9 @@ struct MoveDestination {
     std::string host;
     std::uint16_t port = 0;
     std::string ae_title;  // defaults to the requested destination AE when empty
+    // TLS for associations to this AE: nullopt follows ScpConfig::move_tls.enabled; true uses
+    // ScpConfig::move_tls (with enabled forced on), false plain TCP.
+    std::optional<bool> tls = std::nullopt;
 };
 
 struct ScpHandlers {
@@ -74,6 +78,14 @@ struct ScpHandlers {
     // User identity negotiation: return false to reject the association. `response` is sent back
     // when the requestor asked for a positive response.
     std::function<bool(const UserIdentityRq&, std::vector<std::uint8_t>& response)> on_identity;
+    // A C-GET / C-MOVE sub-operation sent an instance under a new SOP Instance UID because a
+    // lossy transcode was needed (R-093): (calling AE, the instance's own UID, the UID sent).
+    std::function<void(const std::string& calling_ae, const std::string& original_uid, const std::string& sent_uid)>
+        on_sop_instance_uid_changed;
+    // After a C-MOVE / C-GET: the request, the final status and the sub-operation counts.
+    std::function<void(const QueryRequest&, bool is_get, std::uint16_t status, std::uint16_t completed,
+                       std::uint16_t failed, std::uint16_t warning)>
+        on_retrieve_done;
     // Diagnostics (AE titles, addresses, statuses and errors only; never patient data).
     std::function<void(const std::string&)> log;
     // Storage Commitment, MPPS, UPS, Instance Availability and other services (net/services.hpp).

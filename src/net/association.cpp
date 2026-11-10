@@ -155,7 +155,11 @@ std::vector<NegotiatedContext> negotiate_contexts(const AssociateRq& rq, const s
         if (!pol) {
             n.result = pc_result::AbstractSyntaxNotSupported;
         } else {
-            for (const std::string& ts : pol->transfer_syntaxes)
+            const RoleSelection* role = find_role(rq.user.roles, pc.abstract_syntax);
+            const bool scp_only = role && role->scp_role && !role->scu_role;
+            const std::vector<std::string>& accepted =
+                scp_only && !pol->scp_role_transfer_syntaxes.empty() ? pol->scp_role_transfer_syntaxes : pol->transfer_syntaxes;
+            for (const std::string& ts : accepted)
                 if (contains(pc.transfer_syntaxes, ts)) {
                     n.transfer_syntax = ts;
                     break;

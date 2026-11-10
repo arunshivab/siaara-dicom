@@ -23,6 +23,7 @@ namespace siaara::net {
 struct StoreRequest {
     std::string calling_ae;
     std::string called_ae;
+    std::string peer_address;  // the requestor's network address (SCP side; empty for C-GET)
     std::string sop_class_uid;
     std::string sop_instance_uid;
     std::string transfer_syntax;
@@ -39,6 +40,19 @@ struct StoreRequest {
     // the command's. A spooled file (whose meta was written from the command) is not offered then.
     bool uid_mismatch = false;
     std::string command_sop_class_uid, command_sop_instance_uid;
+    // Set when the receiver converted the instance lossily and that gave it a new SOP Instance
+    // UID (now in sop_instance_uid and the data set): the UID it arrived with (R-093).
+    std::string original_sop_instance_uid;
+};
+
+// What Scu::store sent (R-093): a lossy transcode on the way gives the instance a new SOP
+// Instance UID, which the C-STORE command carries; the caller learns the mapping here.
+struct StoreSent {
+    std::string sop_instance_uid;           // as sent (command and data set)
+    std::string original_sop_instance_uid;  // the file's own; differs only when uid_changed
+    std::string transfer_syntax;            // of the presentation context used
+    bool uid_changed = false;
+    bool lossy = false;                     // this transfer applied lossy compression
 };
 
 // Compares the command's Affected SOP Class / Instance UIDs (already in rq.sop_class_uid /
@@ -124,8 +138,10 @@ public:
 
     // ---- services. The returned value is the final DIMSE status of the operation.
     Result<std::uint16_t> echo();
+    // `sent` (may be null) receives the UID and transfer syntax used (R-093).
     Result<std::uint16_t> store(const DicomFile& file, std::string_view move_originator_ae = {},
-                                std::optional<std::uint16_t> move_originator_message_id = std::nullopt);
+                                std::optional<std::uint16_t> move_originator_message_id = std::nullopt,
+                                StoreSent* sent = nullptr);
     Result<std::uint16_t> store_file(const std::string& path);
     // `on_result` is called for every pending response; returning false sends C-CANCEL.
     Result<FindResult> find(std::string_view sop_class, const Dataset& identifier,

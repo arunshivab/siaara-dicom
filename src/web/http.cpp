@@ -640,8 +640,16 @@ Status Connection::read_headers(Headers& h) {
     }
 }
 
+// Streaming: hands what `out` holds to the sink once it is large (or `all`).
+Status Connection::flush_sink(std::string& out, bool all) {
+    if (!sink_ || out.empty() || (!all && out.size() < (256u << 10))) return Status::ok();
+    Status s = sink_->on_body ? sink_->on_body(out) : Status::ok();
+    out.clear();
+    return s;
+}
+
 Status Connection::read_exact(std::uint64_t n, std::string& out) {
-    if (n > lim_.max_body) return Status(Errc::LimitExceeded, "body too large");
+    if (n > lim_.max_body && !sink_) return Status(Errc::LimitExceeded, "body too large");
     if (n > SIZE_MAX / 2) return Status(Errc::LimitExceeded, "body too large");
     // The body is charged to the server budget as its bytes arrive (R-057): a declared length the
     // peer never sends costs nothing.
@@ -664,6 +672,7 @@ Status Connection::read_exact(std::uint64_t n, std::string& out) {
             out.append(buf_, pos_, take);
             pos_ += take;
             left -= take;
+            if (Status fs = flush_sink(out, false); !fs) return fs;
             continue;
         }
         if (Status st = fill(lim_.read_timeout_ms); !st) {
@@ -671,7 +680,7 @@ Status Connection::read_exact(std::uint64_t n, std::string& out) {
             return st;
         }
     }
-    return Status::ok();
+    return flush_sink(out, true);
 }
 
 Status Connection::read_chunked(std::string& body) {
@@ -697,7 +706,7 @@ Status Connection::read_chunked(std::string& body) {
         if (!rest.empty() && rest[0] != ';') return Status(Errc::Malformed, "invalid chunk size");
         if (size == 0) break;
         std::uint64_t total = 0;
-        if (!checked_add(body.size(), size, total) || total > lim_.max_body)
+        if (!sink_ && (!checked_add(body.size(), size, total) || total > lim_.max_body))
             return Status(Errc::LimitExceeded, "body too large");
         if (Status st = read_exact(size, body); !st) return st;
         if (Status st = read_line(lim_.max_chunk_line, line, lim_.read_timeout_ms, any); !st) return st;
@@ -713,7 +722,7 @@ Status Connection::read_to_close(std::string& body) {
         if (pos_ < buf_.size()) {
             const std::size_t take = buf_.size() - pos_;
             std::uint64_t total = 0;
-            if (!checked_add(body.size(), take, total) || total > lim_.max_body)
+            if (!sink_ && (!checked_add(body.size(), take, total) || total > lim_.max_body))
                 return Status(Errc::LimitExceeded, "body too large");
             if (budget_) {
                 if (!budget_->take(take, budget_peer_)) return Status(Errc::Rejected, "server body budget exhausted");
@@ -721,10 +730,11 @@ Status Connection::read_to_close(std::string& body) {
             }
             body.append(buf_, pos_, take);
             pos_ = buf_.size();
+            if (Status fs = flush_sink(body, false); !fs) return fs;
         }
         Status st = fill(lim_.read_timeout_ms);
         if (!st) {
-            if (st.message == "connection closed") return Status::ok();
+            if (st.message == "connection closed") return flush_sink(body, true);
             return st;
         }
     }
@@ -912,6 +922,8 @@ Result<Response> Connection::read_response(std::string_view request_method) {
         std::uint64_t len = 0;
         int hint = 0;
         if (Status st = framing_of(rs.headers, false, f, len, hint); !st) return st;
+        if (sink_ && sink_->on_head)
+            if (Status st = sink_->on_head(rs); !st) return st;
         Status bs = Status::ok();
         if (f == Framing::Length) bs = read_exact(len, rs.body);
         else if (f == Framing::Chunked) bs = read_chunked(rs.body);
@@ -1013,7 +1025,7 @@ void Client::interrupt() noexcept {
     if (conn_ && conn_->is_open()) conn_->transport().shutdown();
 }
 
-Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_bytes) {
+Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_bytes, BodySink* sink) {
     reused = conn_ && conn_->is_open();
     got_bytes = false;
     if (!reused) {
@@ -1033,7 +1045,9 @@ Result<Response> Client::attempt(const Request& rq, bool& reused, bool& got_byte
         close();
         return st;
     }
+    conn_->set_sink(sink);
     auto rs = conn_->read_response(rq.method);
+    if (conn_) conn_->set_sink(nullptr);
     if (!rs) {
         // A stale keep-alive connection fails before any response byte; tell the caller.
         got_bytes = rs.error().code != Errc::NetworkError;
@@ -1051,6 +1065,28 @@ Result<Response> Client::send(const Request& rq) {
     if (!r && interrupted_.load()) return Status(Errc::Cancelled, "http: request interrupted");
     if (!r && reused && !got_bytes) return attempt(rq, reused, got_bytes);
     return r;
+}
+
+Result<Response> Client::send_streaming(const Request& rq, BodySink& sink) {
+    interrupted_.store(false);
+    bool head_seen = false;
+    BodySink wrap;
+    wrap.on_head = [&](const Response& h) -> Status {
+        head_seen = true;
+        return sink.on_head ? sink.on_head(h) : Status::ok();
+    };
+    wrap.on_body = sink.on_body;
+    bool reused = false, got_bytes = false;
+    auto r = attempt(rq, reused, got_bytes, &wrap);
+    if (!r && interrupted_.load()) return Status(Errc::Cancelled, "http: request interrupted");
+    if (!r && reused && !got_bytes && !head_seen) r = attempt(rq, reused, got_bytes, &wrap);
+    if (!r && interrupted_.load()) return Status(Errc::Cancelled, "http: request interrupted");
+    return r;
+}
+
+void Client::set_limits(const Limits& limits) {
+    lim_ = limits;
+    close();
 }
 
 // ---------------------------------------------------------------- server

@@ -2,6 +2,8 @@
 #include "web/client.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -120,6 +122,17 @@ std::string weight_text(std::size_t i) {
     return "0." + std::to_string(w / 100);
 }
 
+std::string retrieve_accept(const std::vector<std::string>& tss) {
+    std::string accept;
+    if (tss.empty()) return "multipart/related; type=\"application/dicom\"";
+    for (std::size_t i = 0; i < tss.size(); ++i) {
+        if (i) accept += ", ";
+        accept += "multipart/related; type=\"application/dicom\"; transfer-syntax=" + http::quote_if_needed(tss[i]);
+        accept += "; q=" + weight_text(i);
+    }
+    return accept;
+}
+
 }  // namespace
 
 Result<std::vector<Dataset>> DicomwebClient::qido(std::string path, const QidoParams& q) {
@@ -194,17 +207,7 @@ Result<std::vector<std::string>> DicomwebClient::retrieve_raw(std::string_view s
                                                               std::string_view instance,
                                                               const std::vector<std::string>& tss) {
     if (study.empty() || (!instance.empty() && series.empty())) return Status(Errc::InvalidArgument, "incomplete UID path");
-    std::string accept;
-    if (tss.empty()) {
-        accept = "multipart/related; type=\"application/dicom\"";
-    } else {
-        for (std::size_t i = 0; i < tss.size(); ++i) {
-            if (i) accept += ", ";
-            accept += "multipart/related; type=\"application/dicom\"; transfer-syntax=" + http::quote_if_needed(tss[i]);
-            accept += "; q=" + weight_text(i);
-        }
-    }
-    auto parts = multipart_get(url_.path + uid_path(study, series, instance), accept);
+    auto parts = multipart_get(url_.path + uid_path(study, series, instance), retrieve_accept(tss));
     if (!parts) return parts.take_error();
     std::vector<std::string> out;
     for (auto& p : parts.value()) {
@@ -213,6 +216,81 @@ Result<std::vector<std::string>> DicomwebClient::retrieve_raw(std::string_view s
         out.push_back(std::move(p.data));
     }
     return out;
+}
+
+Status DicomwebClient::retrieve_stream(
+    std::string_view study, std::string_view series, std::string_view instance, const std::vector<std::string>& tss,
+    std::uint64_t max_part_bytes,
+    const std::function<Status(const std::string& content_type, std::string_view data)>& on_part,
+    const std::function<bool(std::uint64_t bytes, std::uint64_t total)>& on_progress) {
+    if (!init_) return init_;
+    if (study.empty() || (!instance.empty() && series.empty())) return Status(Errc::InvalidArgument, "incomplete UID path");
+    if (!on_part) return Status(Errc::InvalidArgument, "on_part must be set");
+    http::Request rq;
+    rq.method = "GET";
+    rq.target = url_.path + uid_path(study, series, instance);
+    rq.headers.push_back({"Accept", retrieve_accept(tss)});
+    if (cfg_.authorization) {
+        std::string a = cfg_.authorization();
+        if (!a.empty()) rq.headers.push_back({"Authorization", std::move(a)});
+    }
+    std::optional<multipart::StreamParser> parser;
+    std::string single, single_type, root_type;
+    std::uint64_t bytes = 0, total = 0;
+    bool is_multipart = false;
+    http::BodySink sink;
+    sink.on_head = [&](const http::Response& h) -> Status {
+        if (Status st = check_status(h); !st) return st;
+        if (const std::string* cl = http::find_header(h.headers, "Content-Length")) {
+            std::uint64_t v = 0;
+            for (char c : *cl) {
+                if (c < '0' || c > '9' || v > (UINT64_MAX - 9) / 10) {
+                    v = 0;
+                    break;
+                }
+                v = v * 10 + static_cast<std::uint64_t>(c - '0');
+            }
+            total = v;
+        }
+        const std::string* ct = http::find_header(h.headers, "Content-Type");
+        if (!ct) return h.status == 204 ? Status::ok() : Status(Errc::Malformed, "response without Content-Type");
+        auto mt = http::parse_media_type(*ct);
+        if (!mt) return Status(Errc::Malformed, "response with an invalid Content-Type");
+        if (!mt->is("multipart", "related")) {
+            single_type = *ct;
+            return Status::ok();
+        }
+        const std::string* boundary = mt->param("boundary");
+        if (!boundary) return Status(Errc::Malformed, "multipart response without boundary");
+        if (const std::string* t = mt->param("type")) root_type = *t;
+        is_multipart = true;
+        parser.emplace(*boundary, cfg_.multipart, max_part_bytes, [&](const multipart::Part& p) -> Status {
+            const std::string* pct = p.content_type();
+            return on_part(pct ? *pct : root_type, p.body);
+        });
+        return Status::ok();
+    };
+    sink.on_body = [&](std::string_view piece) -> Status {
+        bytes += piece.size();
+        if (on_progress && !on_progress(bytes, total)) return Status(Errc::Cancelled, "cancelled");
+        if (is_multipart) return parser->feed(piece);
+        if (single.size() + piece.size() > max_part_bytes) return Status(Errc::LimitExceeded, "response too large");
+        single.append(piece.data(), piece.size());
+        return Status::ok();
+    };
+    auto rs = http_->send_streaming(rq, sink);
+    if (!rs) return rs.take_error();
+    if (Status st = check_status(*rs); !st) return st;
+    if (rs->status == 204) return Status::ok();
+    if (is_multipart) return parser->finish();
+    if (!single_type.empty()) return on_part(single_type, single);
+    return Status::ok();
+}
+
+void DicomwebClient::set_limits(const http::Limits& limits, const multipart::Limits& multipart_limits) {
+    cfg_.limits = limits;
+    cfg_.multipart = multipart_limits;
+    if (http_) http_->set_limits(limits);
 }
 
 Result<std::vector<DicomFile>> DicomwebClient::retrieve(std::string_view study, std::string_view series,
