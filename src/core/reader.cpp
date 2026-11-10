@@ -1,5 +1,6 @@
 #include "core/reader.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -223,15 +224,10 @@ public:
                         pixel_rep_ = load_le16(e.value.data()) == 0 ? 0 : 1;
                     if (opt_.private_dictionary && !syn.big_endian && tag_is_private(tag) &&
                         tag_element(tag) >= 0x0010 && tag_element(tag) <= 0x00FF && vr_is_string(e.vr)) {
-                        std::string v(e.value.as_chars());
-                        bool found = false;
-                        for (auto& c : creators)
-                            if (c.first == tag) {
-                                c.second = std::move(v);
-                                found = true;
-                                break;
-                            }
-                        if (!found) creators.emplace_back(tag, std::move(v));
+                        auto it = std::find_if(creators.begin(), creators.end(),
+                                               [tag](const auto& c) { return c.first == tag; });
+                        if (it != creators.end()) it->second.assign(e.value.as_chars());
+                        else creators.emplace_back(tag, std::string(e.value.as_chars()));
                     }
                     if (Status s = advance_to(vend, tag); !s) return s;
                 }
