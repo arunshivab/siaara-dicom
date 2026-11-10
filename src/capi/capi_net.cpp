@@ -1140,12 +1140,12 @@ siaara_status propose_store(net::Scu& scu, const std::vector<std::pair<std::stri
         }
         classes.insert(cls);
     }
-    for (const std::string& cls : classes) {
-        bool have = false;
-        for (const auto& [c2, t2] : seen)
-            if (c2 == cls && t2 == siaara::ts::ExplicitVRLittleEndian) have = true;
-        if (!have) scu.add_context(cls, net::native_transfer_syntaxes());
-    }
+    // B1: a context with the native transfer syntaxes for EVERY SOP class - also when the file
+    // is Explicit VR Little Endian already. PS3.5 10.1: Implicit VR Little Endian is offered for
+    // every abstract syntax; an Implicit-only peer accepts it there and store() converts on send.
+    // (It used to be left out for a class whose file was Explicit VR LE, so such a file could
+    // not be sent to an Implicit-only peer.)
+    for (const std::string& cls : classes) scu.add_context(cls, net::native_transfer_syntaxes());
     // And the compressed syntaxes the transcoder can write, so a peer that accepts only those (a
     // lossy-only archive, for instance) still gets the instance: the lossless ones, and with
     // allow_lossy_transcode the lossy ones in a context of their own (R-093 keeps the UIDs
@@ -1174,6 +1174,11 @@ std::string sop_class_of(const siaara::DicomFile& f) {
 
 extern "C++" {
 namespace siaara::capi::dimse {
+
+siaara_status propose_store_contexts(net::Scu& scu, const std::vector<std::pair<std::string, std::string>>& class_ts,
+                                     bool allow_lossy) {
+    return propose_store(scu, class_ts, allow_lossy);
+}
 
 void copy_uid(char (&dst)[65], const std::string& v) {
     const std::size_t n = std::min<std::size_t>(v.size(), sizeof dst - 1);

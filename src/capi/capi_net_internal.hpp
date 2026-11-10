@@ -78,6 +78,11 @@ void scp_handle_options(const siaara_scp_options* o, siaara_scp& h);
 // The Verification and Storage handlers of siaara_scp_start (events, counters, the store).
 void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd);
 
+// The presentation contexts siaara_dimse_store* propose for files of the given (SOP class,
+// transfer syntax) pairs: per pair the file's own syntax; per SOP class the native syntaxes
+// (always: PS3.5 10.1), the lossless transcode targets and, when allowed, the lossy ones.
+siaara_status propose_store_contexts(net::Scu& scu, const std::vector<std::pair<std::string, std::string>>& class_ts,
+                                     bool allow_lossy);
 }  // namespace siaara::capi::dimse
 
 namespace siaara::capi {
