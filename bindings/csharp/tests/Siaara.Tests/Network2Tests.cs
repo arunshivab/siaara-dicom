@@ -74,6 +74,8 @@ internal static class Network2Tests
             CheckEq(r.Failed, 1);
             CheckEq(files.Count, 2);
             Check(files[0].Sent && files[0].Lossy && files[0].UidChanged);
+            CheckEq(files[0].LossyHistory, LossyHistory.Aligned);
+            CheckEq(files[1].LossyHistory, LossyHistory.NotApplicable);
             CheckEq(files[0].OriginalSopInstanceUid, "2.25.900");
             Check(files[0].SopInstanceUid != "2.25.900");
             CheckEq(files[0].TransferSyntaxUid, DicomTransferSyntaxes.JPEGBaseline8Bit);

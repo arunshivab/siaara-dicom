@@ -19,7 +19,11 @@
 //   - Rows, Columns, Bits Allocated, Bits Stored, High Bit, Pixel Representation and Number of
 //     Frames are never changed.
 //   - When lossy compression is applied, Lossy Image Compression (0028,2110) becomes "01" and one
-//     value is appended to Lossy Image Compression Ratio (0028,2112) and Method (0028,2114).
+//     value is appended to Lossy Image Compression Ratio (0028,2112) and Method (0028,2114), which
+//     are parallel lists (one value per lossy step). When the source lists do not have the same
+//     number of values see LossyHistory: a missing earlier Method value is filled in only when the
+//     source's own lossy transfer syntax proves it; otherwise only the Ratio is appended and the
+//     mismatch is reported. Nothing is guessed.
 //     Once "01" it stays "01": decompressing lossy data, or re-encoding it losslessly, never claims
 //     the pixel data is lossless again.
 #pragma once
@@ -68,6 +72,18 @@ struct TranscodeParams {
     image::FrameOptions frames;
 };
 
+// What a lossy transcode did with the history lists Lossy Image Compression Ratio (0028,2112) and
+// Method (0028,2114), which hold one value per lossy step in the same order (PS3.3 C.7.6.1.1.5.1).
+enum class LossyHistory {
+    NotApplicable,  // no lossy compression was applied: both attributes are untouched
+    Aligned,        // the source had as many Ratio as Method values (or neither): one appended to each
+    MethodFilled,   // the source had one more Ratio than Method value and its own lossy transfer
+                    // syntax proves the method of that step: that Method value was filled in, then
+                    // one value appended to each (TranscodeReport::lossy_method_filled)
+    Misaligned,     // any other mismatch: the Ratio was appended, Method was left exactly as it
+                    // was (the method of this step is not recorded in it; nothing is guessed)
+};
+
 struct TranscodeReport {
     bool pixel_data_recoded = false;  // frames were decoded and encoded again
     bool lossy_applied = false;       // this transcode applied lossy compression
@@ -75,6 +91,11 @@ struct TranscodeReport {
     std::uint64_t encoded_bytes = 0;  // total encoded frame bytes (encapsulated targets)
     std::uint64_t native_bytes = 0;   // total decoded frame bytes
     std::string new_sop_instance_uid; // set when a lossy transcode gave the image a new UID
+    LossyHistory lossy_history = LossyHistory::NotApplicable;
+    std::string lossy_method_filled;  // MethodFilled: the defined term written for the earlier step
+    // MethodFilled / Misaligned: "LOSSY_METHOD_FILLED: ..." / "LOSSY_HISTORY_MISALIGNED: ..." with
+    // the value counts found, what was written and why. Empty otherwise.
+    std::string lossy_history_note;
 };
 
 // Transfer syntaxes the transcoder can write / read pixel data in.

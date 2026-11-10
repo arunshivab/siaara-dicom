@@ -1034,6 +1034,9 @@ void outcome_set(siaara_store_outcome* o, const std::string& sop_class, const ne
         o->flags |= SIAARA_STORE_SENT;
         if (sent.uid_changed) o->flags |= SIAARA_STORE_UID_CHANGED;
         if (sent.lossy) o->flags |= SIAARA_STORE_LOSSY;
+        if (sent.lossy_history == siaara::codec::LossyHistory::MethodFilled) o->flags |= SIAARA_STORE_LOSSY_METHOD_FILLED;
+        if (sent.lossy_history == siaara::codec::LossyHistory::Misaligned)
+            o->flags |= SIAARA_STORE_LOSSY_HISTORY_MISALIGNED;
         copy_uid(o->transfer_syntax, sent.transfer_syntax);
     } else {
         o->error = static_cast<siaara_status>(r.error().code);

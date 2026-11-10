@@ -405,6 +405,21 @@ internal static class StructLayouts
             r.Add("F siaara_transcode_params keep_uid_on_lossy " + Offset(ref s, ref s.keep_uid_on_lossy).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
+            var s = default(siaara_transcode_report);
+            r.Add("S siaara_transcode_report " + Unsafe.SizeOf<siaara_transcode_report>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report pixel_data_recoded " + Offset(ref s, ref s.pixel_data_recoded).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report lossy_applied " + Offset(ref s, ref s.lossy_applied).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report source_lossy " + Offset(ref s, ref s.source_lossy).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report lossy_history " + Offset(ref s, ref s.lossy_history).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report encoded_bytes " + Offset(ref s, ref s.encoded_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report native_bytes " + Offset(ref s, ref s.native_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report new_sop_instance_uid " + Offset(ref s, ref s.new_sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report lossy_method_filled " + Offset(ref s, ref s.lossy_method_filled).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transcode_report lossy_history_note " + Offset(ref s, ref s.lossy_history_note).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
             var s = default(siaara_volume_options);
             r.Add("S siaara_volume_options " + Unsafe.SizeOf<siaara_volume_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_volume_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1098,6 +1113,7 @@ internal static class StructLayouts
         r.Add("siaara_rt_roi_info " + Marshal.SizeOf<siaara_rt_roi_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_rt_dose_info " + Marshal.SizeOf<siaara_rt_dose_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_transcode_params " + Marshal.SizeOf<siaara_transcode_params>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_transcode_report " + Marshal.SizeOf<siaara_transcode_report>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_volume_options " + Marshal.SizeOf<siaara_volume_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_volume_properties " + Marshal.SizeOf<siaara_volume_properties>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_transfer_function " + Marshal.SizeOf<siaara_transfer_function>().ToString(System.Globalization.CultureInfo.InvariantCulture));

@@ -19,6 +19,10 @@ internal static class C
     public const int SIAARA_OFFSET_TABLE_BASIC = 1;
     public const int SIAARA_OFFSET_TABLE_EXTENDED = 2;
     public const int SIAARA_OFFSET_TABLE_EMPTY = 3;
+    public const int SIAARA_LOSSY_HISTORY_NOT_APPLICABLE = 0;
+    public const int SIAARA_LOSSY_HISTORY_ALIGNED = 1;
+    public const int SIAARA_LOSSY_HISTORY_METHOD_FILLED = 2;
+    public const int SIAARA_LOSSY_HISTORY_MISALIGNED = 3;
     public const int SIAARA_OK = 0;
     public const int SIAARA_ERR_INVALID_ARGUMENT = 1;
     public const int SIAARA_ERR_IO = 2;
@@ -424,6 +428,8 @@ internal static class C
     public const int SIAARA_STORE_UID_CHANGED = 2;
     public const int SIAARA_STORE_LOSSY = 4;
     public const int SIAARA_STORE_INCOMPLETE_INPUT = 8;
+    public const int SIAARA_STORE_LOSSY_METHOD_FILLED = 16;
+    public const int SIAARA_STORE_LOSSY_HISTORY_MISALIGNED = 32;
     public const int SIAARA_N_EVENT_REPORT = 0x0100;
     public const int SIAARA_N_GET = 0x0110;
     public const int SIAARA_N_SET = 0x0120;
@@ -470,6 +476,12 @@ internal struct FixedArray128OfByte
 
 [InlineArray(256)]
 internal struct FixedArray256OfByte
+{
+    private byte _element0;
+}
+
+[InlineArray(419)]
+internal struct FixedArray419OfByte
 {
     private byte _element0;
 }
@@ -969,6 +981,23 @@ internal struct siaara_transcode_params
     public int chroma_subsampling;
     public int offset_table;
     public int keep_uid_on_lossy;
+}
+
+/// <summary>siaara_transcode_report (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_transcode_report
+{
+    public uint struct_size;
+    public int pixel_data_recoded;
+    public int lossy_applied;
+    public int source_lossy;
+    public int lossy_history;
+    public uint reserved0;
+    public ulong encoded_bytes;
+    public ulong native_bytes;
+    public FixedArray65OfByte new_sop_instance_uid;
+    public FixedArray20OfByte lossy_method_filled;
+    public FixedArray419OfByte lossy_history_note;
 }
 
 /// <summary>siaara_volume_options (blittable, C layout).</summary>
@@ -2144,6 +2173,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_file_transcode")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_file_transcode(nint file, byte* ts_uid, siaara_transcode_params* @params);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_transcode_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_transcode_ex(nint file, byte* ts_uid, siaara_transcode_params* @params, siaara_transcode_report* report);
 
     [LibraryImport(Library, EntryPoint = "siaara_volume_build")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -3517,6 +3550,15 @@ internal static unsafe class Native
         fixed (byte* p_ts_uid = ts_uid)
         fixed (siaara_transcode_params* p_params = &@params)
             return Raw.siaara_file_transcode(file, (byte*)p_ts_uid, p_params);
+    }
+
+    internal static int siaara_file_transcode_ex(nint file, ReadOnlySpan<byte> ts_uid, in siaara_transcode_params @params, ref siaara_transcode_report report)
+    {
+        if (!ts_uid.IsEmpty && ts_uid.IndexOf((byte)0) < 0) throw new ArgumentException("ts_uid must be NUL-terminated", nameof(ts_uid));
+        fixed (byte* p_ts_uid = ts_uid)
+        fixed (siaara_transcode_params* p_params = &@params)
+        fixed (siaara_transcode_report* p_report = &report)
+            return Raw.siaara_file_transcode_ex(file, (byte*)p_ts_uid, p_params, p_report);
     }
 
     internal static int siaara_volume_build(ReadOnlySpan<nint> utf8_paths, ReadOnlySpan<nuint> path_lens, uint count, in siaara_volume_options options, out nint @out)

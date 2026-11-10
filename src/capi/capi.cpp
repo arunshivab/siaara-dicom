@@ -2045,38 +2045,89 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara
 // ---------------------------------------------------------------- transcoding (codec/transcode.hpp)
 #include "codec/transcode.hpp"
 
+namespace {
+
+template <std::size_t N>
+void report_text(char (&dst)[N], const std::string& v) {
+    const std::size_t n = std::min<std::size_t>(v.size(), N - 1);
+    std::memcpy(dst, v.data(), n);
+    dst[n] = '\0';
+}
+
+siaara_status transcode_impl(siaara_file* file, const char* ts_uid, const siaara_transcode_params* params,
+                             siaara_transcode_report* report) {
+    std::uint32_t report_size = 0;
+    std::uint32_t caller_size = 0;
+    if (report) {
+        report_size = report->struct_size;
+        if (report_size < 2 * sizeof(uint32_t) || report_size > 0x10000u)
+            return fail(Errc::InvalidArgument, "report struct_size not set");
+        caller_size = report_size;
+        report_size = std::min<std::uint32_t>(report_size, sizeof(siaara_transcode_report));
+        std::memset(report, 0, report_size);
+        report->struct_size = caller_size;
+    }
+    if (!file || !ts_uid) return fail(Errc::InvalidArgument, "file and ts_uid must not be NULL");
+    siaara::codec::TranscodeParams p;
+    if (params) {
+        if (params->struct_size < sizeof(uint32_t) + 7 * sizeof(int32_t))
+            return fail(Errc::InvalidArgument, "struct_size too small");
+        if (params->quality) p.quality = params->quality;
+        p.lossy = params->lossy != 0;
+        if (params->near_lossless) p.near_lossless = params->near_lossless;
+        p.allow_lossy = params->allow_lossy != 0;
+        if (params->predictor) p.predictor = params->predictor;
+        p.chroma_subsampling = params->chroma_subsampling;
+        switch (params->offset_table) {
+            case SIAARA_OFFSET_TABLE_AUTO: p.offset_table = siaara::codec::OffsetTableMode::Auto; break;
+            case SIAARA_OFFSET_TABLE_BASIC: p.offset_table = siaara::codec::OffsetTableMode::Basic; break;
+            case SIAARA_OFFSET_TABLE_EXTENDED: p.offset_table = siaara::codec::OffsetTableMode::Extended; break;
+            case SIAARA_OFFSET_TABLE_EMPTY: p.offset_table = siaara::codec::OffsetTableMode::Empty; break;
+            default: return fail(Errc::InvalidArgument, "unknown offset_table");
+        }
+        if (params->struct_size >= offsetof(siaara_transcode_params, keep_uid_on_lossy) + sizeof(int32_t)) {
+            if (params->keep_uid_on_lossy != 0 && params->keep_uid_on_lossy != 1)
+                return fail(Errc::InvalidArgument, "keep_uid_on_lossy must be 0 or 1");
+            p.keep_uid_on_lossy = params->keep_uid_on_lossy == 1;
+        }
+    }
+    siaara::codec::TranscodeReport rep;
+    if (Status s = siaara::codec::transcode_file(file->file, ts_uid, p, &rep); !s) return fail(s);
+    if (report) {
+        siaara_transcode_report r{};
+        r.struct_size = caller_size;
+        r.pixel_data_recoded = rep.pixel_data_recoded ? 1 : 0;
+        r.lossy_applied = rep.lossy_applied ? 1 : 0;
+        r.source_lossy = rep.source_lossy ? 1 : 0;
+        switch (rep.lossy_history) {
+            case siaara::codec::LossyHistory::NotApplicable: r.lossy_history = SIAARA_LOSSY_HISTORY_NOT_APPLICABLE; break;
+            case siaara::codec::LossyHistory::Aligned: r.lossy_history = SIAARA_LOSSY_HISTORY_ALIGNED; break;
+            case siaara::codec::LossyHistory::MethodFilled: r.lossy_history = SIAARA_LOSSY_HISTORY_METHOD_FILLED; break;
+            case siaara::codec::LossyHistory::Misaligned: r.lossy_history = SIAARA_LOSSY_HISTORY_MISALIGNED; break;
+        }
+        r.encoded_bytes = rep.encoded_bytes;
+        r.native_bytes = rep.native_bytes;
+        report_text(r.new_sop_instance_uid, rep.new_sop_instance_uid);
+        report_text(r.lossy_method_filled, rep.lossy_method_filled);
+        report_text(r.lossy_history_note, rep.lossy_history_note);
+        std::memcpy(report, &r, report_size);
+    }
+    return ok();
+}
+
+}  // namespace
+
 extern "C" {
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, const char* ts_uid,
                                                            const siaara_transcode_params* params) {
-    return guarded([&]() -> siaara_status {
-        if (!file || !ts_uid) return fail(Errc::InvalidArgument, "file and ts_uid must not be NULL");
-        siaara::codec::TranscodeParams p;
-        if (params) {
-            if (params->struct_size < sizeof(uint32_t) + 7 * sizeof(int32_t))
-                return fail(Errc::InvalidArgument, "struct_size too small");
-            if (params->quality) p.quality = params->quality;
-            p.lossy = params->lossy != 0;
-            if (params->near_lossless) p.near_lossless = params->near_lossless;
-            p.allow_lossy = params->allow_lossy != 0;
-            if (params->predictor) p.predictor = params->predictor;
-            p.chroma_subsampling = params->chroma_subsampling;
-            switch (params->offset_table) {
-                case SIAARA_OFFSET_TABLE_AUTO: p.offset_table = siaara::codec::OffsetTableMode::Auto; break;
-                case SIAARA_OFFSET_TABLE_BASIC: p.offset_table = siaara::codec::OffsetTableMode::Basic; break;
-                case SIAARA_OFFSET_TABLE_EXTENDED: p.offset_table = siaara::codec::OffsetTableMode::Extended; break;
-                case SIAARA_OFFSET_TABLE_EMPTY: p.offset_table = siaara::codec::OffsetTableMode::Empty; break;
-                default: return fail(Errc::InvalidArgument, "unknown offset_table");
-            }
-            if (params->struct_size >= offsetof(siaara_transcode_params, keep_uid_on_lossy) + sizeof(int32_t)) {
-                if (params->keep_uid_on_lossy != 0 && params->keep_uid_on_lossy != 1)
-                    return fail(Errc::InvalidArgument, "keep_uid_on_lossy must be 0 or 1");
-                p.keep_uid_on_lossy = params->keep_uid_on_lossy == 1;
-            }
-        }
-        if (Status s = siaara::codec::transcode_file(file->file, ts_uid, p); !s) return fail(s);
-        return ok();
-    });
+    return guarded([&]() -> siaara_status { return transcode_impl(file, ts_uid, params, nullptr); });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode_ex(siaara_file* file, const char* ts_uid,
+                                                              const siaara_transcode_params* params,
+                                                              siaara_transcode_report* report) {
+    return guarded([&]() -> siaara_status { return transcode_impl(file, ts_uid, params, report); });
 }
 
 }  // extern "C"

@@ -552,6 +552,44 @@ TEST_CASE("10b 4.3: outcomes carry the UID sent after a lossy C-STORE; commitmen
     CHECK(std::string(one[0].original_sop_instance_uid) == "2.25.10115");
     siaara_file_free(cf);
 
+    // Lossy history (owner decision 2026-11-10): the outcome says what the transcode on the way did
+    // with the Ratio / Method lists. Aligned above: neither flag.
+    CHECK((one[0].flags & (SIAARA_STORE_LOSSY_METHOD_FILLED | SIAARA_STORE_LOSSY_HISTORY_MISALIGNED)) == 0u);
+    {
+        // Uncompressed with one Ratio value and no Method: nothing proves the earlier method.
+        DicomFile mis = mr8("2.25.10116");
+        (void)mis.dataset.set_string(0x00282110, VR::CS, "01");
+        (void)mis.dataset.set_string(0x00282112, VR::DS, "7");
+        const auto mb = bytes_of(mis);
+        siaara_file* mf = nullptr;
+        REQUIRE(siaara_file_open_memory(mb.data(), mb.size(), nullptr, &mf) == SIAARA_OK);
+        one = outcomes(1);
+        r = result();
+        CHECK(siaara_dimse_store_report(&p, mf, nullptr, one.data(), &r) == SIAARA_OK);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY) != 0);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY_HISTORY_MISALIGNED) != 0);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY_METHOD_FILLED) == 0);
+        siaara_file_free(mf);
+        // JPEG-LS near-lossless with one Ratio value and no Method: the syntax proves ISO_14495_1.
+        DicomFile fill = mr8("2.25.10117");
+        codec::TranscodeParams tp;
+        tp.lossy = true;
+        tp.keep_uid_on_lossy = true;
+        REQUIRE(codec::transcode_file(fill, "1.2.840.10008.1.2.4.81", tp).is_ok());
+        (void)fill.dataset.remove(0x00282114);
+        const auto fb = bytes_of(fill);
+        siaara_file* ff = nullptr;
+        REQUIRE(siaara_file_open_memory(fb.data(), fb.size(), nullptr, &ff) == SIAARA_OK);
+        one = outcomes(1);
+        r = result();
+        CHECK(siaara_dimse_store_report(&p, ff, nullptr, one.data(), &r) == SIAARA_OK);
+        CHECK(std::string(one[0].transfer_syntax) == kJpegBaseline);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY) != 0);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY_METHOD_FILLED) != 0);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY_HISTORY_MISALIGNED) == 0);
+        siaara_file_free(ff);
+    }
+
     // Outcome elements must be set up.
     outs = outcomes(1);
     outs[0].struct_size = 4;

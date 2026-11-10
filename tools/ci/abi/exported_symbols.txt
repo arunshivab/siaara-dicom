@@ -87,6 +87,7 @@ siaara_file_read_report
 siaara_file_save
 siaara_file_save_ex
 siaara_file_transcode
+siaara_file_transcode_ex
 siaara_file_transfer_syntax
 siaara_file_warning
 siaara_file_warning_code

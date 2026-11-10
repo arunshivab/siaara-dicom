@@ -1104,6 +1104,48 @@ typedef struct siaara_transcode_params {
 SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode(siaara_file* file, const char* ts_uid,
                                                            const siaara_transcode_params* params);
 
+/* What a lossy transcode did with the history lists Lossy Image Compression Ratio (0028,2112) and
+ * Method (0028,2114), which hold one value per lossy step in the same order (PS3.3
+ * C.7.6.1.1.5.1). Nothing is guessed: a missing earlier Method value is filled in only when the
+ * source's own coding proves it. */
+#define SIAARA_LOSSY_HISTORY_NOT_APPLICABLE 0 /* no lossy compression applied: both untouched */
+#define SIAARA_LOSSY_HISTORY_ALIGNED 1        /* the source had as many Ratio as Method values (or
+                                                 neither): one value appended to each */
+#define SIAARA_LOSSY_HISTORY_METHOD_FILLED 2  /* LOSSY_METHOD_FILLED: the source had one more Ratio
+                                                 than Method value and its pixel data was lossy
+                                                 coded in JPEG baseline/extended (.50/.51:
+                                                 ISO_10918_1), JPEG-LS near-lossless (.81:
+                                                 ISO_14495_1), JPEG 2000 (.91: ISO_15444_1) or
+                                                 HTJ2K (.203: ISO_15444_15); that Method value
+                                                 was filled in (lossy_method_filled), then one
+                                                 value appended to each */
+#define SIAARA_LOSSY_HISTORY_MISALIGNED 3     /* LOSSY_HISTORY_MISALIGNED: any other mismatch (source
+                                                 not lossy coded, a gap of 2 or more, more Method
+                                                 than Ratio values): the Ratio was appended, Method
+                                                 was left exactly as it was */
+
+typedef struct siaara_transcode_report {
+    uint32_t struct_size;         /* set to sizeof(siaara_transcode_report) */
+    int32_t pixel_data_recoded;   /* 0/1: frames were decoded and encoded again */
+    int32_t lossy_applied;        /* 0/1: this transcode applied lossy compression */
+    int32_t source_lossy;         /* 0/1: the source was lossy already (attribute or codestream) */
+    int32_t lossy_history;        /* SIAARA_LOSSY_HISTORY_* */
+    uint32_t reserved0;
+    uint64_t encoded_bytes;       /* total encoded frame bytes (encapsulated targets) */
+    uint64_t native_bytes;        /* total decoded frame bytes */
+    char new_sop_instance_uid[65]; /* the new UID a lossy transcode gave the image, else "" */
+    char lossy_method_filled[20]; /* METHOD_FILLED: the defined term written for the earlier step */
+    char lossy_history_note[419]; /* METHOD_FILLED / MISALIGNED: "LOSSY_METHOD_FILLED: ..." or
+                                     "LOSSY_HISTORY_MISALIGNED: ..." with the value counts found, what
+                                     was written and why (NUL-terminated, cut when longer); else "" */
+} siaara_transcode_report;
+
+/* As siaara_file_transcode, filling *report (may be NULL; struct_size must be set, a smaller
+ * struct_size gets the fields that fit). On failure *report is zeroed except struct_size. */
+SIAARA_API siaara_status SIAARA_CALL siaara_file_transcode_ex(siaara_file* file, const char* ts_uid,
+                                                              const siaara_transcode_params* params,
+                                                              siaara_transcode_report* report);
+
 /* ---------------------------------------------------------------- volumes and 3D views */
 /* A volume is a dense voxel grid built from the instances of one series (or one enhanced
  * multi-frame object), sorted along the slice normal, with the Modality LUT / Rescale applied per
@@ -2646,7 +2688,13 @@ enum {
     SIAARA_STORE_SENT = 1,              /* a C-STORE request was sent; dimse_status is the peer's answer */
     SIAARA_STORE_UID_CHANGED = 2,       /* lossy compression gave the instance a new SOP Instance UID (R-093) */
     SIAARA_STORE_LOSSY = 4,             /* this transfer applied lossy compression */
-    SIAARA_STORE_INCOMPLETE_INPUT = 8   /* not sent: the file was not read completely (allow_incomplete = 0) */
+    SIAARA_STORE_INCOMPLETE_INPUT = 8,  /* not sent: the file was not read completely (allow_incomplete = 0) */
+    SIAARA_STORE_LOSSY_METHOD_FILLED = 16,      /* the lossy transcode on the way filled in a missing earlier
+                                                   Lossy Image Compression Method value proven by the file's
+                                                   own transfer syntax (SIAARA_LOSSY_HISTORY_METHOD_FILLED) */
+    SIAARA_STORE_LOSSY_HISTORY_MISALIGNED = 32  /* the file's Ratio / Method lists did not match and could not
+                                                   be aligned: Ratio appended, Method left as it was
+                                                   (SIAARA_LOSSY_HISTORY_MISALIGNED) */
 };
 typedef struct siaara_store_outcome {
     uint32_t struct_size;            /* set to sizeof(siaara_store_outcome) in every element */
