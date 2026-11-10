@@ -11,3 +11,5 @@ obj/
 .vscode/
 build-*/
 __pycache__/
+stage/
+dist/

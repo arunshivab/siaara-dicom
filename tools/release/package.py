@@ -5,8 +5,19 @@
         --stage stage/siaara-0.1.0-linux-x64 --version 0.1.0 --platform linux-x64 \
         --commit $(git rev-parse HEAD) --out dist
 
-Adds to the staged tree: NOTICE (the license is to be decided; no LICENSE file is invented), the
-README, and the SBOM (siaara.spdx.json, describing every other file). Then writes to --out:
+Adds to the staged tree:
+  LICENSE                the repository's licence file (NOTICE instead when there is none)
+  README.md, SECURITY.md, CHANGELOG.md
+  docs/                  the documents a consumer of the binaries needs (CONSUMER_DOCS below);
+                         internal documents (building, fuzzing, releasing, architecture) stay out
+  examples/              the C and C# example sources of docs/GETTING_STARTED.md
+  siaara.spdx.json       the SBOM, describing every other file
+Nothing under data/ is packaged by default. data/private-tags (the extraction from vendor DICOM
+Conformance Statements that the compiled-in private dictionary is generated from, about 51 MB) is
+added only with --include-private-tag-sources; whether it may be distributed is the owner's
+decision (docs/RELEASE_CHECKLIST.md). The dictionary itself is part of the library either way and
+is described by docs/PRIVATE_DICTIONARY.md, which is always packaged.
+Then writes to --out:
   siaara-<version>-<platform>.tar.gz   (.zip for windows-*): sorted entries, owner 0/0, fixed
                                         permissions, every timestamp = SOURCE_DATE_EPOCH
   siaara-<version>-<platform>.spdx.json
@@ -29,14 +40,32 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 
 NOTICE = """SIAARA DICOM Toolkit {version}
 
-License: to be decided. The project has not chosen a license yet; until a LICENSE file is
-published in the source repository, no license is granted by this package. Contact the
-copyright holder before redistributing.
+No LICENSE file was present in the source repository when this package was made: no licence is
+granted by this package. Contact the copyright holder before using or redistributing it.
 
-Source: https://github.com/arunshivab/siaara-dicom (commit {commit})
+Source commit: {commit}
 SBOM: siaara.spdx.json (SPDX 2.3) lists the files of this package, the toolkit's components,
 the data generated from published standards, and the operating-system libraries used at run time.
 """
+
+# Documents shipped in docs/ of every package (the consumer documentation).
+CONSUMER_DOCS = ("README.md", "GETTING_STARTED.md", "CONFORMANCE.md", "NETWORKING.md", "DATA_ACCESS.md",
+                 "VALIDATION.md", "PRIVATE_DICTIONARY.md", "capi-notes.md")
+ROOT_DOCS = ("README.md", "SECURITY.md", "CHANGELOG.md")
+# Example sources shipped in examples/ (build outputs are never copied).
+EXAMPLE_SKIP_DIRS = {"bin", "obj", "build", ".vs"}
+# The one switch for the vendor-derived source data: data/private-tags -> data/private-tags.
+PRIVATE_TAG_SOURCES = os.path.join("data", "private-tags")
+
+
+def copy_tree(src, dst, skip_dirs=()):
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
+        rel = os.path.relpath(dirpath, src)
+        target = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(target, exist_ok=True)
+        for n in sorted(filenames):
+            shutil.copyfile(os.path.join(dirpath, n), os.path.join(target, n))
 
 
 def sha256(path):
@@ -118,6 +147,9 @@ def main():
     ap.add_argument("--platform", required=True)
     ap.add_argument("--commit", default="NOASSERTION")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--include-private-tag-sources", action="store_true",
+                    help="also package data/private-tags (the extraction from vendor DICOM Conformance "
+                         "Statements). Off by default: nothing from data/ ships. Owner decision.")
     args = ap.parse_args()
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
     name = "siaara-%s-%s" % (args.version, args.platform)
@@ -129,9 +161,22 @@ def main():
     if not license_files:
         with open(os.path.join(args.stage, "NOTICE"), "w", encoding="utf-8", newline="\n") as f:
             f.write(NOTICE.format(version=args.version, commit=args.commit))
-    for doc in ("README.md", "SECURITY.md"):
+    for doc in ROOT_DOCS:
         if os.path.exists(os.path.join(ROOT, doc)):
             shutil.copyfile(os.path.join(ROOT, doc), os.path.join(args.stage, doc))
+    os.makedirs(os.path.join(args.stage, "docs"), exist_ok=True)
+    for doc in CONSUMER_DOCS:
+        src = os.path.join(ROOT, "docs", doc)
+        if not os.path.exists(src):
+            sys.exit("package.py: docs/%s is missing (CONSUMER_DOCS)" % doc)
+        shutil.copyfile(src, os.path.join(args.stage, "docs", doc))
+    if os.path.isdir(os.path.join(ROOT, "examples")):
+        copy_tree(os.path.join(ROOT, "examples"), os.path.join(args.stage, "examples"), EXAMPLE_SKIP_DIRS)
+    if args.include_private_tag_sources:
+        copy_tree(os.path.join(ROOT, PRIVATE_TAG_SOURCES), os.path.join(args.stage, PRIVATE_TAG_SOURCES))
+        print("package.py: data/private-tags (vendor conformance statement extraction) IS in this package")
+    else:
+        print("package.py: nothing from data/ is packaged (default; --include-private-tag-sources adds data/private-tags)")
 
     sbom_tmp = os.path.join(args.out, name + ".spdx.json")
     stage_sbom = os.path.join(args.stage, "siaara.spdx.json")
