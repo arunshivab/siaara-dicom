@@ -66,6 +66,8 @@ public sealed class UserPrefs
 
     /// <summary>Overlay templates per modality ("*" = default).</summary>
     public IDictionary<string, OverlayTemplateSetting> OverlayTemplates { get; init; } = new Dictionary<string, OverlayTemplateSetting>();
+    /// <summary>Network nodes and our receiver (no passwords or tokens: those are in the secret store).</summary>
+    public Network.NetworkSetting Network { get; init; } = new();
 }
 
 /// <summary>Source-generated JSON metadata (trimming-safe, no reflection).</summary>

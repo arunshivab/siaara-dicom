@@ -57,6 +57,9 @@ public sealed class AppPaths
     /// <summary>Folder of the one-shot launch pages the browser is opened on (owner-only; each page is deleted after use).</summary>
     public string LaunchFolder => Path.Combine(BaseFolder, "launch");
 
+    /// <summary>Folder of the network nodes' secrets (owner-only; never in settings.json).</summary>
+    public string SecretsFolder => Path.Combine(BaseFolder, "secrets");
+
     /// <summary>Creates the base folder and the app's own sub-folders for the current user only (0700 / owner-only ACL).
     /// Existing folders keep their permissions; <see cref="AccessWarning"/> reports them when they are wider.</summary>
     public void EnsureCreated()
@@ -66,6 +69,7 @@ public sealed class AppPaths
         Platform.OwnerOnly.CreateDirectory(Path.GetDirectoryName(AuditFile)!);
         Platform.OwnerOnly.CreateDirectory(AnnotationFolder);
         Platform.OwnerOnly.CreateDirectory(LaunchFolder);
+        Platform.OwnerOnly.CreateDirectory(SecretsFolder);
     }
 
     /// <summary>
