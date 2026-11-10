@@ -110,6 +110,18 @@ jobs:
             LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_shared
             build-consumer/consumer_static
           fi
+      - name: The shipped examples build against the installed package and run
+        run: |
+          prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
+          cmake -S examples -B build-examples ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build-examples --config Release
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PATH="$prefix/bin:$PATH" ctest --test-dir build-examples -C Release --output-on-failure --no-tests=error
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            DYLD_LIBRARY_PATH="$prefix/lib" ctest --test-dir build-examples -C Release --output-on-failure --no-tests=error
+          else
+            LD_LIBRARY_PATH="$prefix/lib" ctest --test-dir build-examples -C Release --output-on-failure --no-tests=error
+          fi
       - name: The installed pkg-config file works (Linux x64 and ARM64)
         if: runner.os == 'Linux' && !matrix.multilib
         run: |

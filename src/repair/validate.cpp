@@ -36,6 +36,9 @@ public:
         f.module = std::move(module);
         out_.push_back(std::move(f));
     }
+    // True once the findings cap is reached: nothing more can be added, so loops over many items
+    // (frames) stop instead of checking on for nothing (R-171).
+    bool full() const noexcept { return out_.size() >= max_; }
 
 private:
     std::vector<Finding>& out_;
@@ -141,6 +144,7 @@ struct DictChecker {
         }
         if (e.is_sequence()) {
             for (std::size_t i = 0; i < e.items.size(); ++i) {
+                if (sink.full()) break;  // R-171
                 Path ip = here;
                 ip.back().item = static_cast<std::int32_t>(i);
                 dataset(e.items[i], ip, &cs, false);
@@ -655,6 +659,7 @@ struct IodChecker {
         const bool fg = &parent == &top && (seq.tag == Tag{0x52009229u} || seq.tag == Tag{0x52009230u});
         ancestors.push_back(&parent);
         for (std::size_t i = 0; i < seq.items.size(); ++i) {
+            if (sink.full()) break;  // R-171: nothing more can be reported
             Path ip = here;
             ip.back().item = static_cast<std::int32_t>(i);
             if (fg) fg_items.push_back(&seq.items[i]);
@@ -707,6 +712,7 @@ void check_functional_groups(const IodReq& iod, const Dataset& ds, Sink& sink, c
         return p;
     };
     for (const ModuleReq& m : iod.functional_groups) {
+        if (sink.full()) return;  // R-171
         if (!m.attributes || m.attributes->empty()) continue;
         const std::string name = std::string(m.name) + " Functional Group Macro";
         auto present_in = [&](const Dataset& item) {
@@ -724,6 +730,9 @@ void check_functional_groups(const IodReq& iod, const Dataset& ds, Sink& sink, c
         if (in_shared) check(*shared, kShared, 0);
         std::size_t missing = 0, first_missing = 0;
         for (std::size_t i = 0; i < frames; ++i) {
+            // R-171: with the findings cap reached nothing found in the remaining frames could
+            // be reported (the "missing in N frames" finding below included).
+            if (sink.full()) return;
             if (present_in(pf->items[i])) {
                 check(pf->items[i], kPerFrame, i);
             } else if (missing++ == 0) {

@@ -54,7 +54,9 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
 - DICOMweb client and server: QIDO-RS, WADO-RS (instances, metadata, frames, bulk data),
   WADO-URI, STOW-RS.
 - Safe defaults: an SCP accepts only listed calling AE titles; incomplete data received is
-  quarantined; resource limits on every input; allow-lists per service.
+  quarantined (checked against the quarantine's caps before it is copied, and streamed to disk);
+  resource limits on every input; allow-lists per service. A DICOMweb retrieve that has to
+  decode is sized before it is sent (413 up front) and decoding draws on a server-wide budget.
 
 **Storage and media**
 - A local instance store with an index, duplicate policies, quota, verification and rebuild, and
@@ -89,8 +91,26 @@ Stated plainly, so that nobody finds them by surprise.
 **Behaviour to know**
 - **MPPS and UPS state is held in memory** unless the product configures a state folder
   (`state_folder`); without one it is lost when the SCP stops.
+- **Incomplete-data policies: five of seven are available.** `QUARANTINE` (the default),
+  `REFUSE`, `REFUSE_KEEP_COPY` and `ACCEPT_AS_RECEIVED` for receivers, plus the sender-side
+  `allow_incomplete`. `TIERED_BY_DAMAGE` and `REPAIR_ON_RECEIPT` are not built yet, and STOW-RS
+  has no per-client policy (one policy per server; the Storage SCP has per-calling-AE overrides).
+- **Files zero-padded to a block size now carry read loss.** A file followed by a run of zero
+  bytes (some archives and media pad files to a block size) is read, and the bytes after the
+  data set are reported as not read: such a file is refused by a save unless incomplete saves
+  are allowed, strict mode rejects it, and when received over the network it goes to the
+  receive policy (quarantine by default).
 - One recovery heuristic of the file reader (overlong element lengths as written by some GE
-  systems) is on, in a narrowed form, for local file reads and off for all network input.
+  systems) is on, in a narrowed form, for local file reads and off for all network input. It can
+  misread a non-conformant file whose bytes happen to look like that length error; every such
+  read is flagged (`SIAARA_READ_RECOVERED`, warning `ELEMENT_LENGTH_RECOVERED`), is never saved
+  or sent as if whole unless explicitly allowed, and the heuristic can be switched off
+  (`recover_overlong_lengths`).
+- A Segmentation object that states a false frame count can cost up to about 15 seconds and
+  336 MB before it is rejected.
+- 3D rendering and volume resampling cannot be cancelled once started.
+- New UIDs are not fork-safe: a process that calls `fork()` and creates UIDs in both parent and
+  child without an `exec` can produce the same UID twice.
 - **Memory-mapped files and files that shrink.** A file that is memory-mapped (larger than
   256 MiB by default, or opened with `SIAARA_OPEN_MAP`; also files a store references in place,
   and header-only folder scans) and is shortened by another process while mapped can end the

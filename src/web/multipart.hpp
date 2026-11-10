@@ -48,13 +48,15 @@ public:
 private:
     enum class State { Preamble, Delimiter, Part, Done, Failed };
     Status step();
+    void consume(std::size_t n);
     std::string dash_;
     Limits limits_;
     std::uint64_t max_part_;
     std::function<Status(const Part&)> on_part_;
     std::string buf_;
-    std::size_t scanned_ = 0;
-    bool at_line_start_ = true;  // whether buf_[0] follows a line end (or is the start of the stream)
+    std::size_t off_ = 0;      // bytes of buf_ already consumed (see consume())
+    std::size_t scanned_ = 0;  // bytes of the unconsumed part already searched for a delimiter
+    bool at_line_start_ = true;  // whether the first unconsumed byte follows a line end (or starts the stream)
     std::size_t parts_ = 0;
     State state_ = State::Preamble;
 };

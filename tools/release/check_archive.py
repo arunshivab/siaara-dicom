@@ -6,12 +6,14 @@
 Fails when something a consumer needs is missing (header, shared and static library, CMake package
 files, pkg-config file on Unix, the command-line tools, LICENSE, the consumer documents, the
 examples, the SBOM) or when something that must not ship is inside (tests, fuzz corpora, internal
-documents, build trees, anything under data/ unless --allow-private-tag-sources). Other files
+documents, build trees, anything under data/ unless --allow-private-tag-sources, and any entry
+that is a symbolic link, a hard link or a special file). Other files
 given on the command line (.spdx.json, .sha256) are ignored, so a shell glob may be passed.
 --list prints every entry with its size.
 """
 import argparse
 import fnmatch
+import stat
 import sys
 import tarfile
 import zipfile
@@ -26,11 +28,33 @@ FORBIDDEN = ["tests/*", "fuzz/*", "app/*", "bindings/*", "src/*", "tools/*", "bu
 
 
 def entries(path):
+    """(regular files as (name, size), entries that are neither a regular file nor a folder)."""
+    odd = []
     if path.endswith(".zip"):
         with zipfile.ZipFile(path) as z:
-            return [(i.filename, i.file_size) for i in z.infolist() if not i.filename.endswith("/")]
+            files = []
+            for i in z.infolist():
+                if i.filename.endswith("/"):
+                    continue
+                # Unix mode in the high 16 bits of external_attr: a symbolic link is S_IFLNK.
+                mode = (i.external_attr >> 16) & 0xFFFF
+                if mode and stat.S_IFMT(mode) not in (stat.S_IFREG, 0):
+                    odd.append("%s (%s)" % (i.filename, "symbolic link" if stat.S_ISLNK(mode) else "special file"))
+                    continue
+                files.append((i.filename, i.file_size))
+            return files, odd
     with tarfile.open(path) as t:
-        return [(m.name, m.size) for m in t.getmembers() if m.isreg()]
+        files = []
+        for m in t.getmembers():
+            if m.isreg():
+                files.append((m.name, m.size))
+            elif m.issym():
+                odd.append("%s (symbolic link to %s)" % (m.name, m.linkname))
+            elif m.islnk():
+                odd.append("%s (hard link to %s)" % (m.name, m.linkname))
+            elif not m.isdir():
+                odd.append("%s (special file)" % m.name)
+        return files, odd
 
 
 def main():
@@ -43,7 +67,9 @@ def main():
     archives = [f for f in args.files if f.endswith((".tar.gz", ".zip"))]
     if len(archives) != 1:
         sys.exit("check_archive.py: expected exactly one archive, got %r" % archives)
-    items = entries(archives[0])
+    items, odd = entries(archives[0])
+    if not items:
+        sys.exit("check_archive.py: the archive holds no regular file")
     top = items[0][0].split("/")[0]
     rel = {}
     for name, size in items:
@@ -65,6 +91,9 @@ def main():
     else:
         need += ["lib/libsiaara.so", "lib/libsiaara_static.a", "lib/pkgconfig/siaara.pc"]
     problems = ["missing: " + n for n in need if n not in rel]
+    # R-184: a release archive holds regular files and folders only. A symbolic or hard link can
+    # point outside the unpacked tree, and it hides what is really shipped from the checks here.
+    problems += ["not a regular file (links and special files must not ship): " + o for o in odd]
     for name in sorted(rel):
         if any(fnmatch.fnmatch(name, pat) for pat in FORBIDDEN):
             problems.append("must not ship: " + name)

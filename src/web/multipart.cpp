@@ -211,66 +211,86 @@ Status StreamParser::feed(std::string_view data) {
     return s;
 }
 
+// R-183: consumed bytes are skipped with a read offset and removed from the buffer only now and
+// then (when they are at least half of it), so one large buffer holding very many small parts is
+// handled in linear time - erasing the front of the buffer for every part was quadratic.
+void StreamParser::consume(std::size_t n) {
+    off_ += n;
+    constexpr std::size_t kCompactAt = 4096;
+    if (off_ == buf_.size()) {
+        buf_.clear();
+        off_ = 0;
+    } else if (off_ >= kCompactAt && off_ >= buf_.size() - off_) {
+        buf_.erase(0, off_);
+        off_ = 0;
+    }
+}
+
 Status StreamParser::step() {
     if (!valid_boundary(std::string_view(dash_).substr(2), limits_.max_boundary))
         return Status(Errc::Malformed, "multipart: invalid boundary");
     for (;;) {
+        // The unconsumed bytes. Taken again after every consume(): that may move the buffer.
+        std::string_view v = std::string_view(buf_).substr(off_);
         if (state_ == State::Preamble) {
             bool need_more = false;
-            const std::size_t p = find_delimiter_stream(buf_, dash_, 0, at_line_start_, need_more);
+            const std::size_t p = find_delimiter_stream(v, dash_, 0, at_line_start_, need_more);
             if (p == std::string_view::npos) {
                 // Keep only what may still begin the first delimiter, and remember whether the
                 // kept bytes start a line.
-                if (buf_.size() > dash_.size() + 2) {
-                    const std::size_t cut = buf_.size() - dash_.size() - 2;
-                    at_line_start_ = buf_[cut - 1] == '\n';
-                    buf_.erase(0, cut);
+                if (v.size() > dash_.size() + 2) {
+                    const std::size_t cut = v.size() - dash_.size() - 2;
+                    at_line_start_ = v[cut - 1] == '\n';
+                    consume(cut);
                 }
                 return Status::ok();
             }
-            buf_.erase(0, p);
+            consume(p);
+            v = std::string_view(buf_).substr(off_);
             state_ = State::Delimiter;
         }
         if (state_ == State::Delimiter) {
-            // buf_ starts with the dash-boundary.
+            // v starts with the dash-boundary.
             std::size_t after = dash_.size();
-            if (buf_.size() < after + 2) return Status::ok();
-            if (buf_.compare(after, 2, "--") == 0) {
+            if (v.size() < after + 2) return Status::ok();
+            if (v.compare(after, 2, "--") == 0) {
                 state_ = State::Done;
                 buf_.clear();
+                off_ = 0;
                 return Status::ok();
             }
-            while (after < buf_.size() && (buf_[after] == ' ' || buf_[after] == '\t')) ++after;
+            while (after < v.size() && (v[after] == ' ' || v[after] == '\t')) ++after;
             if (after - dash_.size() > limits_.max_delimiter_padding)
                 return Status(Errc::Malformed, "multipart: bad delimiter line");
-            if (buf_.size() < after + 2) return Status::ok();
-            if (buf_.compare(after, 2, "\r\n") == 0) after += 2;
-            else if (buf_[after] == '\n') after += 1;
+            if (v.size() < after + 2) return Status::ok();
+            if (v.compare(after, 2, "\r\n") == 0) after += 2;
+            else if (v[after] == '\n') after += 1;
             else return Status(Errc::Malformed, "multipart: bad delimiter line");
-            buf_.erase(0, after);
+            consume(after);
+            v = std::string_view(buf_).substr(off_);
             scanned_ = 0;
             state_ = State::Part;
         }
         if (state_ == State::Part) {
             const std::size_t from = scanned_ > dash_.size() + 2 ? scanned_ - dash_.size() - 2 : 0;
             bool need_more = false;
-            // The part's content starts right after a delimiter line, so buf_[0] is a line start.
-            const std::size_t next = find_delimiter_stream(buf_, dash_, from, true, need_more);
+            // The part's content starts right after a delimiter line, so v[0] is a line start.
+            const std::size_t next = find_delimiter_stream(v, dash_, from, true, need_more);
             if (next == std::string_view::npos) {
-                scanned_ = buf_.size();
-                if (buf_.size() > max_part_ + dash_.size() + limits_.max_part_header_bytes + 4)
+                scanned_ = v.size();
+                if (v.size() > max_part_ + dash_.size() + limits_.max_part_header_bytes + 4)
                     return Status(Errc::LimitExceeded, "multipart: part too large");
                 return Status::ok();
             }
             std::size_t end = next;
-            if (end >= 2 && buf_[end - 2] == '\r' && buf_[end - 1] == '\n') end -= 2;
-            else if (end >= 1 && buf_[end - 1] == '\n') end -= 1;
+            if (end >= 2 && v[end - 2] == '\r' && v[end - 1] == '\n') end -= 2;
+            else if (end >= 1 && v[end - 1] == '\n') end -= 1;
             if (++parts_ > limits_.max_parts) return Status(Errc::LimitExceeded, "multipart: too many parts");
             Part part;
-            if (Status ps = parse_part(std::string_view(buf_).substr(0, end), limits_, part); !ps) return ps;
+            if (Status ps = parse_part(v.substr(0, end), limits_, part); !ps) return ps;
             if (part.body.size() > max_part_) return Status(Errc::LimitExceeded, "multipart: part too large");
             if (Status cs = on_part_(part); !cs) return cs;
-            buf_.erase(0, next);
+            consume(next);
             state_ = State::Delimiter;
         }
         if (state_ == State::Done || state_ == State::Failed) return Status::ok();

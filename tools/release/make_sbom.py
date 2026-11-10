@@ -81,8 +81,12 @@ def own_license():
 # Loaded on demand (never linked), per OS.
 ON_DEMAND = {
     "linux": [("libcrypto.so.3", "System OpenSSL 3, loaded with dlopen when TLS is first used"),
-              ("libssl.so.3", "System OpenSSL 3, loaded with dlopen when TLS is first used")],
-    "windows": [("ncrypt.dll", "CNG key storage, loaded with LoadLibraryEx from System32 for TLS client keys")],
+              ("libssl.so.3", "System OpenSSL 3, loaded with dlopen when TLS is first used"),
+              ("libvulkan.so.1", "System Vulkan loader, loaded with dlopen when GPU rendering is first asked for "
+                                 "(optional: without it rendering stays on the CPU)")],
+    "windows": [("ncrypt.dll", "CNG key storage, loaded with LoadLibraryEx from System32 for TLS client keys"),
+                ("vulkan-1.dll", "System Vulkan loader, loaded with LoadLibraryEx from System32 when GPU rendering is "
+                                 "first asked for (optional: without it rendering stays on the CPU)")],
     "macos": [],
 }
 
