@@ -117,8 +117,16 @@ std::wstring full_path_of(const std::wstring& w) {
     return full;
 }
 
-// How long one write_file_atomic call keeps retrying a replace that fails with a sharing error.
-constexpr DWORD kReplaceRetryBudgetMs = 5000;
+// How long one write_file_atomic call keeps retrying a replace that fails with a sharing error
+// (R-133: it may run on an association thread, so the wait is short).
+constexpr DWORD kReplaceRetryBudgetMs = 1000;
+
+// A target with the read-only attribute cannot be replaced: that ERROR_ACCESS_DENIED does not go
+// away, so it is not retried.
+bool target_is_read_only(const std::wstring& full) {
+    const DWORD a = GetFileAttributesW(full.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY) != 0;
+}
 
 // Opens the finished temporary file again for the rename: DELETE access only and full sharing, so
 // that while this handle exists (it ends up naming the target for a moment) readers that share
@@ -170,9 +178,18 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
     std::uint64_t volume = 0, index = 0;
     Status st = f.write(data, size);
     if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
-    if (st && !f.identity(volume, index)) st = Status(Errc::IoError, "cannot identify the temporary file");
+    const bool have_identity = st && f.identity(volume, index);
+    // R-133: the handle the rename goes through is taken from the open file itself (no second
+    // lookup by name, so no identity check that FAT / exFAT / some network shares fail), before
+    // the writing handle is closed. INVALID_HANDLE_VALUE when the file system cannot do it.
+    HANDLE rename_handle = st ? f.reopen_for_rename() : INVALID_HANDLE_VALUE;
     if (!f.close() && st) st = Status(Errc::IoError, "close failed");
+    const auto close_rename_handle = [&rename_handle] {
+        if (rename_handle != INVALID_HANDLE_VALUE) CloseHandle(rename_handle);
+        rename_handle = INVALID_HANDLE_VALUE;
+    };
     if (!st) {
+        close_rename_handle();
         DeleteFileW(wtmp.c_str());
         return Status(Errc::IoError, "write failed");
     }
@@ -182,35 +199,52 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
     // always names one whole file. Without POSIX renames (before Windows 10 1607, FAT, some network
     // shares) MoveFileExW does the replace. Either way another writer's rename at the same moment,
     // or a reader that did not share delete, makes the replace fail briefly with a sharing error:
-    // retry, within a bounded time.
+    // retry, within a short bounded time. Whatever happens, the temporary file (which may hold
+    // patient data) is removed when the write fails.
     bool posix = true;
     DWORD e = ERROR_SUCCESS;
     DWORD waited_ms = 0;
     for (unsigned attempt = 0;; ++attempt) {
         if (posix) {
-            HANDLE h = reopen_for_rename(wtmp, volume, index);
+            HANDLE h = rename_handle;
+            bool by_name = false;
             if (h == INVALID_HANDLE_VALUE) {
-                e = GetLastError();
-            } else {
-                e = posix_rename_by_handle(h, full, replace);
-                CloseHandle(h);
+                // No handle from the open file: open the temporary file by name and make sure it
+                // is the one written above. Where the file system gives no usable identity the
+                // rename goes by name instead (the name is unpredictable and was created
+                // exclusively by this call).
+                h = have_identity ? reopen_for_rename(wtmp, volume, index) : INVALID_HANDLE_VALUE;
+                by_name = true;
+                if (h == INVALID_HANDLE_VALUE) {
+                    posix = false;
+                    continue;
+                }
             }
+            e = posix_rename_by_handle(h, full, replace);
+            if (by_name) CloseHandle(h);
             if (posix_rename_unsupported(e)) {
                 posix = false;
                 continue;
             }
         } else {
+            close_rename_handle();
             const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
             e = MoveFileExW(wtmp.c_str(), full.c_str(), flags) ? ERROR_SUCCESS : GetLastError();
         }
-        if (e == ERROR_SUCCESS) return Status::ok();
+        if (e == ERROR_SUCCESS) {
+            close_rename_handle();
+            return Status::ok();
+        }
+        if (e == ERROR_ACCESS_DENIED && target_is_read_only(full)) break;  // will not go away
         if (!is_sharing_error(e) || waited_ms >= kReplaceRetryBudgetMs) break;
         const DWORD pause = std::min<DWORD>(DWORD{1} << std::min(attempt, 5u), 25);  // 1, 2, 4 ... 25 ms
         Sleep(pause);
         waited_ms += pause;
     }
-    if (e != ERROR_FILE_INVALID) DeleteFileW(wtmp.c_str());
+    close_rename_handle();
+    DeleteFileW(wtmp.c_str());  // always: a failed write leaves nothing behind
     if (!replace && (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS)) return Status(Errc::Rejected, "file exists");
+    if (e == ERROR_ACCESS_DENIED && target_is_read_only(full)) return Status(Errc::IoError, "the target file is read-only");
     return Status(Errc::IoError, "rename failed");
 }
 

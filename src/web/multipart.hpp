@@ -57,6 +57,10 @@ private:
     State state_ = State::Preamble;
 };
 
+// A new random boundary ("siaara-" plus 32 characters from a 62-letter alphabet): for bodies that
+// are streamed, where the parts cannot be searched for it first (a clash has probability 62^-32).
+std::string make_boundary();
+
 // Builds a body. The boundary is chosen so that it occurs in no part.
 class Writer {
 public:

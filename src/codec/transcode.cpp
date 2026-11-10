@@ -170,6 +170,17 @@ Status mark_derived(Dataset& out, TranscodeReport& rep, std::string_view method,
         const std::size_t bs = v.find('\\');
         const std::string rest = bs == std::string::npos ? std::string() : v.substr(bs);
         if (Status s = out.set_string(0x00080008, VR::CS, "DERIVED" + rest); !s) return s;
+    } else {
+        // T-P3-11: the source had no Image Type (it is Type 3 in e.g. Secondary Capture), so
+        // nothing in the new image would say it is derived. Both values are required once the
+        // attribute is present (PS3.3 C.7.6.1.1.2): value 1 DERIVED (pixel values derived from
+        // another image), value 2 SECONDARY (created after the initial patient examination, which
+        // a lossy re-compression is). This adds an attribute to the new, derived image only (it
+        // has its own SOP Instance UID); the source is never changed.
+        if (Status s = out.set_string(0x00080008, VR::CS, "DERIVED\\SECONDARY"); !s) return s;
+        rep.image_type_added = true;
+        rep.derivation_note = "IMAGE_TYPE_ADDED: the source had no Image Type (0008,0008); the derived image got "
+                              "DERIVED\\SECONDARY";
     }
     return Status::ok();
 }

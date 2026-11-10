@@ -1189,15 +1189,43 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t 
                 if (options->file_mode > 07777u) return fail(Errc::InvalidArgument, "file_mode must be a POSIX mode (0 .. 07777)");
                 o.file_mode = options->file_mode;
             }
+            if (has(offsetof(siaara_store_options, keep_permissions) + sizeof(uint32_t))) {
+                if (options->keep_permissions > 1) return fail(Errc::InvalidArgument, "keep_permissions must be 0 or 1");
+                o.tighten_permissions = options->keep_permissions == 0;
+            }
         }
         auto s = st::Store::open(std::string(root, root_len), o);
         if (!s) return fail(s.error());
-        *out = new siaara_store{std::move(s).value()};
+        auto handle = std::make_unique<siaara_store>();
+        handle->store = std::move(s).value();
+        st::QuarantineLimits ql;
+        st::QuarantineLimits rl;
+        if (options && options->struct_size >= offsetof(siaara_store_options, quarantine_max_items) + sizeof(uint32_t)) {
+            if (options->quarantine_max_bytes) ql.max_bytes = options->quarantine_max_bytes;
+            if (options->quarantine_max_items) ql.max_items = options->quarantine_max_items;
+        }
+        if (options && options->struct_size >= offsetof(siaara_store_options, rejected_when_full) + sizeof(uint32_t)) {
+            if (options->quarantine_when_full > 1 || options->rejected_when_full > 1)
+                return fail(Errc::InvalidArgument, "quarantine_when_full / rejected_when_full: SIAARA_AREA_FULL_*");
+            ql.evict_oldest = options->quarantine_when_full == SIAARA_AREA_FULL_EVICT_OLDEST;
+            rl.evict_oldest = options->rejected_when_full == SIAARA_AREA_FULL_EVICT_OLDEST;
+            if (options->rejected_max_bytes) rl.max_bytes = options->rejected_max_bytes;
+            if (options->rejected_max_items) rl.max_items = options->rejected_max_items;
+        }
+        handle->quarantine = std::make_unique<st::Quarantine>(handle->store->root(), ql);
+        handle->rejected = std::make_unique<st::Quarantine>(handle->store->root(), rl, "rejected");
+        // R-135: permissions wider than asked for, tightened or left as they are.
+        for (const std::string& note : handle->store->open_notes()) siaara::capi::log(SIAARA_LOG_WARNING, false, note);
+        *out = handle.release();
         return ok();
     });
 }
 
-SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) SIAARA_NOEXCEPT { delete store; }
+SIAARA_API void SIAARA_CALL siaara_store_free(siaara_store* store) SIAARA_NOEXCEPT {
+    // R-150: while an SCP or a DICOMweb server still uses the store, the free is deferred until
+    // that server is freed (never a use-after-free on the server's threads).
+    if (store && siaara::capi::store_free_now(store)) delete store;
+}
 
 SIAARA_API siaara_status SIAARA_CALL siaara_store_add_file(siaara_store* store, const char* path, size_t path_len,
                                                            int32_t policy, int32_t mode, int32_t* outcome) {

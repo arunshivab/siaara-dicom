@@ -189,11 +189,26 @@ public:
                         if (tag_group(e.tag) != 0x0072 || tag_element(e.tag) < 0x005E || tag_element(e.tag) > 0x0083 ||
                             e.tag == kSelectorCodeSequenceValue || e.is_sequence())
                             continue;
-                        const std::size_t k = c.value_multiplicity(e.tag);
-                        for (std::size_t i = 0; i < k && i < (1u << 16); ++i) {
-                            std::optional<std::string> s = charset::vr_uses_character_set(e.vr) ? charset::get_utf8(c, e.tag, i, &cs_)
-                                                                                                : c.get_string(e.tag, i);
+                        // Decoded once and split once (R-111), at most 65,536 values. Non-text VRs keep
+                        // the per-value getter (binary values are indexed, not scanned).
+                        constexpr std::size_t kMaxCellValues = 1u << 16;
+                        const std::size_t vm = c.value_multiplicity(e.tag);
+                        if (vm <= 1) {
+                            // No value, or one (LT / ST / UT text may itself hold backslashes).
+                            std::optional<std::string> s = vm == 0 ? std::nullopt
+                                                           : charset::vr_uses_character_set(e.vr) ? charset::get_utf8(c, e.tag, 0, &cs_)
+                                                                                                  : c.get_string(e.tag, 0);
                             if (s) cell.values.push_back(*s);
+                        } else if (charset::vr_uses_character_set(e.vr)) {
+                            if (const auto all = charset::get_utf8_all(c, e.tag, &cs_))
+                                for (std::string_view v : split_all_values(*all, kMaxCellValues)) cell.values.emplace_back(v);
+                        } else if (vr_is_string(e.vr)) {
+                            if (const auto raw = c.get_raw_string(e.tag))
+                                for (std::string_view v : split_all_values(*raw, kMaxCellValues))
+                                    cell.values.emplace_back(trim_value(v, e.vr));
+                        } else {
+                            for (std::size_t i = 0; i < vm && i < kMaxCellValues; ++i)
+                                if (auto s = c.get_string(e.tag, i)) cell.values.push_back(*s);
                         }
                         break;
                     }

@@ -1,0 +1,5 @@
+b
+--b
+A: 1
+
+no close

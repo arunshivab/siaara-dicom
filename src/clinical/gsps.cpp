@@ -147,6 +147,8 @@ std::vector<SoftcopyVoi> read_voi(const Dataset& d, std::vector<std::string>& wa
         }
         if (c && w) {
             const std::size_t n = std::min(c->size(), w->size());
+            std::vector<std::string_view> explanations;  // split once, not once per window (R-111)
+            if (const auto raw = item.get_raw_string(kWindowExplanation)) explanations = split_all_values(*raw, n);
             for (std::size_t k = 0; k < n; ++k) {
                 if (!image::window_valid((*c)[k], (*w)[k], fn)) {
                     warnings.emplace_back("Softcopy VOI window with an invalid width ignored");
@@ -156,7 +158,7 @@ std::vector<SoftcopyVoi> read_voi(const Dataset& d, std::vector<std::string>& wa
                 win.center = (*c)[k];
                 win.width = (*w)[k];
                 win.function = fn;
-                if (auto e = item.get_string(kWindowExplanation, k)) win.explanation = *e;
+                if (k < explanations.size()) win.explanation = std::string(trim_value(explanations[k], VR::LO));
                 v.windows.push_back(std::move(win));
             }
         }

@@ -141,6 +141,9 @@ public:
     Status write_all(const std::uint8_t* data, std::size_t n, int timeout_ms) override;
     Result<bool> wait_readable(int timeout_ms) override;
     void shutdown() noexcept override;
+    void set_write_deadline(const std::chrono::steady_clock::time_point* deadline) noexcept override {
+        if (inner_) inner_->set_write_deadline(deadline);
+    }
     void close() noexcept override;
     bool is_open() const noexcept override;
     std::string peer_address() const override;

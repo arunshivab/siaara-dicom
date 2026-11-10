@@ -494,7 +494,7 @@ Status dataset_to_xml(const Dataset& ds, std::string& out, const ModelWriteOptio
     out.append(kNamespace);
     out.append("\" xml:space=\"preserve\">");
     Encoder enc(out, opt);
-    if (Status st = enc.dataset(ds, Charset::Utf8, 0); !st) return st;
+    if (Status st = enc.dataset(ds, Charset::Ascii, 0); !st) return st;
     out.append("</NativeDicomModel>\n");
     return Status::ok();
 }

@@ -9,8 +9,8 @@
 #   fuzz_<target>_replay  replay executable (any compiler).
 set(SIAARA_FUZZ_TARGETS
   part10 codec_rle codec_jpeg codec_jpegls codec_j2k codec_inflate frames_render charset
-  pdu assoc dimse http multipart json xml dicom_json dicom_xml dicomdir store_journal deid
-  clinical values)
+  pdu assoc dimse http multipart multipart_stream json xml dicom_json dicom_xml dicomdir store_journal
+  deid clinical values)
 set(SIAARA_FUZZ_TARGETS ${SIAARA_FUZZ_TARGETS} PARENT_SCOPE)
 
 set(SIAARA_FUZZ_WARN ${SIAARA_WARN})

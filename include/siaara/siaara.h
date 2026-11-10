@@ -63,6 +63,8 @@ enum {
     SIAARA_ERR_REJECTED = 13,
     SIAARA_ERR_CANCELLED = 14,
     SIAARA_ERR_BUFFER_TOO_SMALL = 15,
+    SIAARA_ERR_ADDRESS_IN_USE = 16, /* siaara_scp_start(_ex) / siaara_web_server_start: the port is taken;
+                                       the message names the port */
     SIAARA_ERR_INTERNAL = 99
 };
 
@@ -490,7 +492,9 @@ enum {
     SIAARA_IDXF_PIXEL_SPACING = 1 << 7,
     SIAARA_IDXF_SLICE_THICKNESS = 1 << 8,
     SIAARA_IDXF_REFERENCED = 1 << 9,      /* store: indexed in place, not copied */
-    SIAARA_IDXF_PIXEL_OFFSET = 1 << 10    /* pixel_data_offset / _length are valid file offsets */
+    SIAARA_IDXF_PIXEL_OFFSET = 1 << 10,   /* pixel_data_offset / _length are valid file offsets */
+    SIAARA_IDXF_INCOMPLETE = 1 << 11      /* store: the instance arrived incomplete and was kept exactly as received
+                                             (SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED, or released from quarantine) */
 };
 
 enum {
@@ -559,8 +563,68 @@ typedef struct siaara_store_options {
      * (e.g. 0640); folders get it plus the matching search bits, and on Windows the folders and
      * files inherit the parent folder's permissions. */
     uint32_t file_mode;
-    uint32_t reserved0;            /* set to 0 */
+    /* An existing store whose index or data folder is open to group / others beyond file_mode (made
+     * by an older version, or copied): 0 (default): on POSIX the extra permission bits are removed
+     * when this user owns the folder; 1: left as they are. Either way a warning is logged
+     * (STORE_PERMISSIONS_TIGHTENED / STORE_PERMISSIONS_WIDE). Not checked on Windows. (This field
+     * was reserved0, set to 0.) */
+    uint32_t keep_permissions;
+    /* The quarantine area (<root>/quarantine; SIAARA_INCOMPLETE_QUARANTINE): caps on what it may
+     * hold. Past them an incomplete instance is refused (C-STORE 0xA700, STOW-RS Failure Reason 0xA700). */
+    uint64_t quarantine_max_bytes; /* 0 = 4 GiB */
+    uint32_t quarantine_max_items; /* 0 = 10000 */
+    uint32_t quarantine_when_full; /* SIAARA_AREA_FULL_*: 0 (default) refuse the new item; 1 evict the oldest items */
+    /* The "rejected" area (<root>/rejected; SIAARA_INCOMPLETE_REFUSE_KEEP_COPY): its own caps. */
+    uint64_t rejected_max_bytes;   /* 0 = 4 GiB */
+    uint32_t rejected_max_items;   /* 0 = 10000 */
+    uint32_t rejected_when_full;   /* SIAARA_AREA_FULL_*; default refuse (the copy is then not kept) */
 } siaara_store_options;
+enum { SIAARA_AREA_FULL_REFUSE = 0, SIAARA_AREA_FULL_EVICT_OLDEST = 1 };
+/* The two areas of the siaara_store_quarantine_* functions. */
+enum { SIAARA_AREA_QUARANTINE = 0, SIAARA_AREA_REJECTED = 1 };
+
+/* ---- quarantine (R-116). Instances that arrived incomplete under SIAARA_INCOMPLETE_QUARANTINE are
+ * kept exactly as received in <root>/quarantine (owner-only), outside the index: no query and no
+ * retrieve returns them, and Storage Commitment answers "not committed" for them. An item is
+ * identified by the SHA-256 of its bytes (the same bytes arriving again are one item).
+ * SIAARA_INCOMPLETE_REFUSE_KEEP_COPY keeps copies of refused instances the same way in a second
+ * area, <root>/rejected. Every function takes the area (SIAARA_AREA_*). */
+typedef struct siaara_quarantine_record {
+    uint32_t struct_size;          /* set to sizeof(siaara_quarantine_record) */
+    uint32_t read_loss;            /* SIAARA_READ_* loss bits */
+    int64_t time;                  /* seconds since the Unix epoch (UTC) */
+    uint64_t size;                 /* bytes */
+    char id[65];                   /* SHA-256, 64 hex digits */
+    char source[16];               /* "C-STORE", "C-GET", "STOW-RS", "WADO-RS" */
+    char calling_ae[17];           /* "" for DICOMweb */
+    char peer[64];                 /* network address when known */
+    char sop_class_uid[65];        /* "" when not readable */
+    char sop_instance_uid[65];
+    char warning[256];             /* the first read warning (a fixed code and offsets; no patient data) */
+    int32_t area;                  /* SIAARA_AREA_* */
+} siaara_quarantine_record;
+/* Number of items and their total size (either pointer may be NULL). Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, int32_t area,
+                                                                   uint32_t* items, uint64_t* bytes);
+/* The record of item `index` (0 = newest). SIAARA_ERR_NOT_FOUND past the end. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_store* store, int32_t area,
+                                                                 uint32_t index, siaara_quarantine_record* out);
+/* The bytes of an item, exactly as received (array buffer rules: cap 0 reports *needed). */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_store* store, int32_t area,
+                                                                   const char* id, uint8_t* buf, size_t cap,
+                                                                   size_t* needed);
+/* Moves an item to the archive: the bytes are stored unchanged (policy SIAARA_DUP_*) and indexed
+ * with SIAARA_IDXF_INCOMPLETE; the item then leaves the quarantine. An item without a Part 10
+ * preamble cannot be stored unchanged: SIAARA_ERR_UNSUPPORTED, the item stays. *outcome (may be
+ * NULL): SIAARA_ADD_*. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, int32_t area, const char* id,
+                                                                     int32_t policy, int32_t* outcome);
+/* Deletes an item (bytes and record). */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, int32_t area, const char* id);
+/* Writes an item's bytes, unchanged, to folder/<id>.dcm (owner-only, replaced atomically); the
+ * item stays where it is. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_export(const siaara_store* store, int32_t area,
+                                                                    const char* id, const char* folder);
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
 enum { SIAARA_ADD_COPY = 0, SIAARA_ADD_REFERENCE = 1 };
@@ -1773,7 +1837,30 @@ typedef struct siaara_dimse_result {
     uint32_t remaining;              /* as reported by the peer (C-MOVE / C-GET), or files left */
     uint32_t matches;                /* C-FIND responses */
     uint32_t current;                /* progress callbacks: index of the item just handled */
+    /* Written only when struct_size covers them: why no association was established (all 0 otherwise). */
+    int32_t connect_failure;         /* SIAARA_CONNECT_* */
+    uint32_t reject_result;          /* A-ASSOCIATE-RJ (PS3.8 9.3.4): 1 rejected-permanent, 2 rejected-transient */
+    uint32_t reject_source;          /* 1 service-user, 2 service-provider (ACSE), 3 service-provider (presentation) */
+    uint32_t reject_reason;          /* with source 1: 1 no reason given, 2 application context name not
+                                        supported, 3 calling AE title not recognized, 7 called AE title not
+                                        recognized; source 2: 1 no reason, 2 protocol version not supported;
+                                        source 3: 1 temporary congestion, 2 local limit exceeded */
 } siaara_dimse_result;
+
+/* siaara_dimse_result.connect_failure: at which step an SCU call failed to get its association.
+ * The return value stays SIAARA_ERR_NETWORK / _TIMEOUT / _REJECTED / _CANCELLED as before. */
+enum {
+    SIAARA_CONNECT_OK = 0,           /* the association was established (or the call failed earlier / later) */
+    SIAARA_CONNECT_RESOLVE = 1,      /* the host name did not resolve */
+    SIAARA_CONNECT_REFUSED = 2,      /* connection refused: nothing listens on that port */
+    SIAARA_CONNECT_TIMEOUT = 3,      /* no TCP connection within connect_timeout_ms */
+    SIAARA_CONNECT_TLS = 4,          /* TLS setup or handshake failed (certificate, protocol, no TLS on the peer) */
+    SIAARA_CONNECT_REJECTED = 5,     /* A-ASSOCIATE-RJ: see reject_result / reject_source / reject_reason */
+    SIAARA_CONNECT_ACSE_TIMEOUT = 6, /* connected, but no answer to the association request in acse_timeout_ms */
+    SIAARA_CONNECT_CLOSED = 7,       /* the peer closed or aborted during the negotiation */
+    SIAARA_CONNECT_CANCELLED = 8,    /* the cancel token was set while connecting */
+    SIAARA_CONNECT_OTHER = 99        /* unreachable network, local failure ... (see siaara_last_error) */
+};
 
 /* Progress during C-MOVE / C-GET (every pending response) and C-STORE of several files (every
  * file). Called on the calling thread. Return 0 to continue, non-zero to cancel (C-CANCEL for
@@ -1810,7 +1897,10 @@ typedef struct siaara_get_options {
                                         <SOP Instance UID>.dcm is left unchanged (logged as a warning) */
     siaara_store* store;             /* received instances are added here (may be NULL) */
     const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL),
-                                        owner-only (mode 0600 / owner-only DACL) */
+                                        owner-only (mode 0600 / owner-only DACL). On Windows a file that
+                                        replaces an existing one takes this owner-only DACL, not the DACL of
+                                        the replaced file or of the folder (grant access on the files or use
+                                        a store opened with file_mode where others must read them) */
     const char* const* sop_classes;  /* storage SOP classes to accept; NULL: the toolkit's list */
     uint32_t sop_class_count;
     int32_t native_only;             /* 0/1: propose only uncompressed transfer syntaxes */
@@ -1818,6 +1908,8 @@ typedef struct siaara_get_options {
     int32_t strict_store_uids;       /* 0/1: refuse (0xA900) an instance whose C-STORE command UIDs differ from
                                         (0008,0016)/(0008,0018) of its data set; 0: keep it under the data set's
                                         UIDs and log a warning */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for received instances (default: quarantine in
+                                        options->store, answered 0xB007; refused 0xC000 without a store) */
 } siaara_get_options;
 
 /* C-GET; the instances arrive on the same association. options->store or ->folder is required. */
@@ -1887,7 +1979,58 @@ typedef struct siaara_scp_options {
     uint64_t spool_min_free_disk_bytes; /* free space the spool leaves; 0 = default (64 MiB). Below: 0xA700 */
     uint32_t event_queue_limit;      /* events queued for the callback; 0 = 1024 (see siaara_scp_callback) */
     uint32_t reserved1;              /* set to 0 */
+    uint64_t event_queue_max_bytes;  /* data sets held by queued events, approximate; 0 = 64 MiB. Events that
+                                        do not fit are dropped by the same policy as a full queue (R-109) */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_*: a received C-STORE data set that could not be read
+                                        completely (truncated, bytes skipped, recovered by a heuristic) */
+    int32_t quarantine_response;     /* SIAARA_QUARANTINE_ANSWER_*: what the sender of a quarantined instance is told */
+    const struct siaara_incomplete_override* incomplete_overrides; /* the policy for particular calling AEs */
+    uint32_t incomplete_override_count;
+    uint32_t incomplete_warning_status; /* the WARNING answer; 0 = 0xB007 (0xB000 and 0xB006 are the other
+                                        standard choices) */
+    uint32_t incomplete_failure_status; /* the FAILURE answer, also for REFUSE and REFUSE_KEEP_COPY; 0 = 0xC000
+                                        (e.g. 0xA900) */
+    uint32_t reserved2;              /* set to 0 */
 } siaara_scp_options;
+
+/* incomplete_policy for one calling AE (others get siaara_scp_options.incomplete_policy). */
+typedef struct siaara_incomplete_override {
+    uint32_t struct_size;            /* sizeof(siaara_incomplete_override) */
+    int32_t policy;                  /* SIAARA_INCOMPLETE_* */
+    const char* calling_ae;
+} siaara_incomplete_override;
+
+/* What a receiver does with a data set whose read was not complete (siaara_read_report loss bits):
+ * the Storage SCP (siaara_scp_options, per calling AE with incomplete_overrides), C-GET
+ * (siaara_get_options), the STOW-RS server (siaara_web_server_options) and
+ * siaara_web_wado_retrieve_to_ex share this one policy. Whatever the choice, incomplete data is
+ * never transcoded and never rewritten.
+ * REFUSE: nothing is kept - the FAILURE answer (C-STORE incomplete_failure_status, 0xC000;
+ *   SIAARA_SCP_STORE_FAILED with read_loss; STOW-RS Failure Reason; a retrieved part counted failed).
+ * ACCEPT_AS_RECEIVED ("accept, flagged"): the bytes are stored exactly as they arrived in the
+ *   archive, indexed with SIAARA_IDXF_INCOMPLETE; SIAARA_SCP_STORED with read_loss != 0; the
+ *   sender gets the answer chosen with quarantine_response (default WARNING: C-STORE 0xB007;
+ *   STOW-RS Warning Reason 0xB006).
+ * QUARANTINE (the default): the bytes are kept exactly as received in the store's quarantine
+ *   area (siaara_store_quarantine_*), outside the index, so nothing returns them until an
+ *   operator releases or deletes them; SIAARA_SCP_QUARANTINED; the sender gets the
+ *   quarantine_response answer (WARNING 0xB007 / STOW-RS Warning Reason 0xB007 and no Retrieve
+ *   URL, FAILURE, or SUCCESS). A full quarantine gives 0xA700 (or evicts the oldest items:
+ *   siaara_store_options.quarantine_when_full). Without a store to quarantine in (a C-GET into
+ *   a folder only) the instance is refused.
+ * REFUSE_KEEP_COPY: answered like REFUSE, and a copy is kept in the store's "rejected" area for
+ *   diagnosis (SIAARA_AREA_REJECTED; best effort, its own caps).
+ * A STOW-RS / WADO-RS part without a Part 10 preamble that is incomplete is never stored in the
+ * archive (that would need a rewrite): ACCEPT_AS_RECEIVED refuses it.
+ * SIAARA_INCOMPLETE_DEFAULT (0) is QUARANTINE; SIAARA_QUARANTINE_ANSWER_DEFAULT (0) is WARNING. */
+enum {
+    SIAARA_INCOMPLETE_DEFAULT = 0, SIAARA_INCOMPLETE_REFUSE = 1, SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2,
+    SIAARA_INCOMPLETE_QUARANTINE = 3, SIAARA_INCOMPLETE_REFUSE_KEEP_COPY = 4
+};
+enum {
+    SIAARA_QUARANTINE_ANSWER_DEFAULT = 0, SIAARA_QUARANTINE_ANSWER_WARNING = 1, SIAARA_QUARANTINE_ANSWER_FAILURE = 2,
+    SIAARA_QUARANTINE_ANSWER_SUCCESS = 3
+};
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
 
@@ -1916,6 +2059,14 @@ typedef struct siaara_scp_event {
     uint32_t failed;
     uint32_t warning;
     uint32_t command_field;          /* DIMSE command field of the request (0x0020 C-FIND, 0x0140 N-CREATE ...) */
+    /* Present when struct_size covers them. */
+    uint64_t association_id;         /* the association the event belongs to: unique among the associations of
+                                        this process run (never 0 for a request; 0 when not tied to one) */
+    uint32_t read_loss;              /* SIAARA_READ_* loss bits of the received data set. SIAARA_SCP_STORED with
+                                        a value != 0: stored exactly as received under
+                                        SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED. SIAARA_SCP_STORE_FAILED with a
+                                        value != 0: refused because it was incomplete */
+    uint32_t reserved0;
 } siaara_scp_event;
 
 /* Called after each event, in order, from one dispatcher thread of the SCP (never concurrently
@@ -2511,7 +2662,9 @@ enum {
     SIAARA_SCP_REFUSED = 12,         /* a request refused by a service allow-list or limit: command_field, sop_class_uid */
     SIAARA_SCP_UID_CHANGED = 13,     /* a C-GET / C-MOVE sub-operation needed lossy compression, which gave the
                                         instance a new SOP Instance UID: original_sop_instance_uid -> sop_instance_uid */
-    SIAARA_SCP_IAN = 14              /* Instance Availability Notification received: dataset */
+    SIAARA_SCP_IAN = 14,             /* Instance Availability Notification received: dataset */
+    SIAARA_SCP_QUARANTINED = 15      /* an incomplete C-STORE data set was kept in the quarantine (read_loss);
+                                        dimse_status is what the sender was told */
 };
 
 /* Services, for siaara_scp_acl. */
@@ -2528,7 +2681,10 @@ typedef struct siaara_ae_entry {
     uint32_t port;                   /* 1..65535 */
     const char* ae_title;
     const char* host;                /* name or address */
-    int32_t tls;                     /* 0/1: associations to it use TLS (siaara_scp_services.outbound_tls) */
+    int32_t tls;                     /* 0/1: associations to it use TLS (siaara_scp_services.outbound_tls). With 1
+                                        and no outbound_tls the default client settings apply (system trust
+                                        store, host name check): a peer with a private certificate is then
+                                        refused, never contacted in plain text */
     uint32_t reserved0;              /* set to 0 */
 } siaara_ae_entry;
 
@@ -2546,7 +2702,9 @@ typedef struct siaara_scp_acl {
 } siaara_scp_acl;
 
 /* Modality Worklist SCP fed by the application. For each C-FIND the toolkit calls the callback
- * (on the association's thread; several associations may call it at once) with the identifier;
+ * (on a helper thread, while the association's thread waits for it up to
+ * siaara_scp_services.worklist_timeout_ms without progress; several associations may call it at
+ * once; worklist_user must stay valid until every call has returned) with the identifier;
  * the callback passes candidate scheduled procedure steps to emit() - every one, or a
  * pre-filtered set - and returns the final status (0 = Success). The toolkit applies the C-FIND
  * matching rules (PS3.4 C.2.2.2 and K.6, including Scheduled Procedure Step Sequence matching)
@@ -2573,11 +2731,15 @@ typedef struct siaara_scp_services {
     int32_t get;                     /* 0/1: C-GET from the store */
     int32_t worklist;                /* 0/1: Modality Worklist (worklist_cb, else siaara_scp_set_worklist) */
     int32_t mpps;                    /* 0/1: MPPS SCP (N-CREATE / N-SET; F.7.2.2 state rules; siaara_scp_mpps_get) */
-    int32_t commitment;              /* 0/1: Storage Commitment Push Model SCP, decided from the store */
+    int32_t commitment;              /* 0/1: Storage Commitment Push Model SCP, decided from the store. Every AE
+                                        allowed to use it learns which SOP Instance UIDs the store holds:
+                                        limit it with an allow-list (acls) */
     int32_t commitment_report_mode;  /* SIAARA_COMMIT_REPORT_* */
     int32_t commitment_reports;      /* 0/1: receive Storage Commitment reports sent on new associations (the
                                         SCU role; siaara_dimse_commit_ex with this SCP as receiver) */
-    int32_t ups;                     /* 0/1: UPS Push / Pull / Watch / Query SCP (in memory; events to subscribers) */
+    int32_t ups;                     /* 0/1: UPS Push / Pull / Watch / Query SCP (events to subscribers; in memory,
+                                        or kept in state_folder). DIMSE-N commands may name the UPS Push SOP
+                                        Class (PS3.4 CC.2) or the negotiated one */
     int32_t instance_availability;   /* 0/1: Instance Availability Notification SCP (events only) */
     int32_t allow_lossy;             /* 0/1: store_transfer_syntax and C-GET / C-MOVE transcodes may be lossy */
     /* ---- storage */
@@ -2601,7 +2763,8 @@ typedef struct siaara_scp_services {
     void* worklist_user;
     uint32_t max_worklist_items;     /* 0 = 10000 */
     /* ---- MPPS, commitment */
-    uint32_t max_mpps_instances;     /* 0 = 10000; more N-CREATEs get 0xA700 */
+    uint32_t max_mpps_instances;     /* IN PROGRESS instances; 0 = 10000; more N-CREATEs get 0xA700 (finished
+                                        ones: max_finished_instances) */
     uint32_t max_commitment_items;   /* per request; 0 = 10000; larger requests fail every item (Failure Reason
                                         0x0213 Resource Limitation) */
     /* ---- allow-lists */
@@ -2613,7 +2776,37 @@ typedef struct siaara_scp_services {
                                         siaara_file_read_report) is refused: that sub-operation fails and is
                                         logged, the peer never gets less than the file holds. 1: send what was
                                         read (as siaara_dimse_peer.allow_incomplete) */
+    /* ---- appended (security review 4); read only when struct_size includes them */
+    uint32_t max_service_dataset_bytes; /* largest N-service data set or Q/R identifier accepted, enforced while
+                                        it arrives; 0 = 4 MiB. Larger: the association is aborted (R-109) */
+    uint32_t max_ups_items;          /* UPS workitems not yet COMPLETED / CANCELED; 0 = 10000; more: 0xA700 */
+    uint64_t max_state_bytes;        /* data sets held by the MPPS and by the UPS model, each; 0 = 256 MiB.
+                                        Finished instances are evicted oldest first to make room; then 0xA700 */
+    uint32_t max_finished_instances; /* COMPLETED / DISCONTINUED MPPS instances and final UPS workitems kept;
+                                        0 = 10000; the oldest are evicted first (R-119). max_mpps_instances
+                                        counts only IN PROGRESS instances */
+    uint32_t max_ups_subscribers;    /* receiving AEs per workitem; 0 = 16; more: 0xA700 (R-117) */
+    const char* state_folder;        /* NULL: MPPS instances and UPS workitems live in memory only. Else a folder
+                                        (created owner-only) where each is kept in an owner-only file, written
+                                        atomically, and reloaded by the next siaara_scp_start_ex */
+    int32_t bind_updates_to_creator; /* 0 (default) / 1: MPPS N-SET and N-SET of a SCHEDULED UPS only from the
+                                        AE that created the instance; others get 0x0124 (R-131) */
+    int32_t worklist_timeout_ms;     /* worklist_cb must return within this; 0 = 30000. Past it the C-FIND ends
+                                        with 0x0110 and the association goes on (the callback keeps running on
+                                        a helper thread; a second query waits for it) (R-130) */
+    const struct siaara_move_acl* move_acls; /* C-MOVE destinations per calling AE (R-129); NULL: any ae_table entry */
+    uint32_t move_acl_count;
+    uint32_t reserved0;              /* set to 0 */
 } siaara_scp_services;
+
+/* The destinations one calling AE may name in C-MOVE. A calling AE without an entry may name any
+ * ae_table entry; a destination outside the list is answered 0xA801. */
+typedef struct siaara_move_acl {
+    uint32_t struct_size;            /* sizeof(siaara_move_acl) */
+    uint32_t count;                  /* 0: this AE may not move anywhere */
+    const char* calling_ae;
+    const char* const* destination_aes;
+} siaara_move_acl;
 
 /* Starts an SCP with the services enabled in `services` on one port (Verification always), with
  * every limit and check of siaara_scp_start (allowed peers, per-peer limits, lifetime, spool,
@@ -2866,6 +3059,15 @@ typedef struct siaara_web_server_options {
     uint32_t max_connections;        /* 0 = 32 */
     uint32_t max_qido_results;       /* 0 = 10000 */
     uint64_t max_body_bytes;         /* STOW-RS request body; 0 = 256 MiB */
+    /* ---- appended (security review 4); read only when struct_size includes them */
+    uint64_t max_response_bytes;     /* a retrieve whose stored instances are larger in total is answered 413
+                                        before anything is read; 0 = 1 GiB */
+    int32_t response_timeout_ms;     /* the whole response must be written within this; 0 = 10 minutes, -1 = no
+                                        limit (R-120) */
+    uint32_t min_response_rate;      /* bytes per second a client must read, averaged over 30 s windows;
+                                        0 = 1024. Slower: the connection is closed */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for STOW-RS parts */
+    int32_t quarantine_response;     /* SIAARA_QUARANTINE_ANSWER_* */
 } siaara_web_server_options;
 
 /* Starts the server; store must outlive it. Caller owns *out: free with siaara_web_server_free
@@ -2904,6 +3106,45 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_clie
                                                                  siaara_store* store, int32_t policy, const char* folder,
                                                                  siaara_web_progress_callback cb, void* user,
                                                                  uint32_t* stored, uint32_t* failed);
+
+typedef struct siaara_web_retrieve_options {
+    uint32_t struct_size;            /* sizeof(siaara_web_retrieve_options) */
+    int32_t duplicate_policy;        /* SIAARA_DUP_* for the store and the folder */
+    siaara_store* store;             /* parts are added here (may be NULL when folder is set) */
+    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm, owner-only (may be NULL) */
+    const char* const* transfer_syntaxes; /* as for siaara_web_wado_retrieve; NULL: the default */
+    uint32_t transfer_syntax_count;
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_*: a part that cannot be read completely */
+    int32_t allow_other_uids;        /* 0 (default): a part whose Study / Series / SOP Instance UID is not the
+                                        one requested is not kept (counted in uid_mismatch and failed).
+                                        1: keep whatever the server sends */
+    uint32_t reserved0;              /* set to 0 */
+} siaara_web_retrieve_options;
+
+typedef struct siaara_web_retrieve_report {
+    uint32_t struct_size;            /* set to sizeof(siaara_web_retrieve_report) */
+    uint32_t stored;                 /* parts kept */
+    uint32_t failed;                 /* parts not kept (including the two counts below) */
+    uint32_t incomplete_refused;     /* not kept: the part could not be read completely (REFUSE, or a part
+                                        without a Part 10 preamble, which could only be stored rewritten) */
+    uint32_t uid_mismatch;           /* not kept: not the requested study / series / instance */
+    uint32_t incomplete_accepted;    /* kept exactly as received although the read was not complete */
+    uint32_t rewritten;              /* kept, but the part had no Part 10 preamble: it was written as a new
+                                        Part 10 file (file meta added, the data set re-encoded as read) */
+    uint32_t quarantined;            /* incomplete parts kept in the store's quarantine (counted in failed too:
+                                        they are not in the archive) */
+} siaara_web_retrieve_report;
+
+/* As siaara_web_wado_retrieve_to, with the receive policy and a report (may be NULL). A part is
+ * checked first, then written to the folder, then added to the store; when the store refuses it
+ * the file just written is removed again (unless it already existed and was kept), so a failed
+ * part leaves nothing behind (R-152). siaara_web_wado_retrieve_to is this call with the default
+ * options (incomplete parts refused, UIDs checked). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_client* client, const char* study_uid,
+                                                                    const char* series_uid, const char* instance_uid,
+                                                                    const siaara_web_retrieve_options* options,
+                                                                    siaara_web_progress_callback cb, void* user,
+                                                                    siaara_web_retrieve_report* report);
 
 
 typedef struct siaara_web_stow_options {

@@ -71,17 +71,18 @@ Charset charset_of(const Dataset& ds, Charset inherited, std::string& name_out) 
         if (i) name_out.push_back('\\');
         name_out.append(values[i]);
     }
-    if (values.empty()) return Charset::Utf8;  // default repertoire (ASCII)
+    if (values.empty()) return Charset::Ascii;  // default repertoire
     if (values.size() == 1) {
         const auto v = values[0];
-        if (v.empty() || v == "ISO_IR 6" || v == "ISO_IR 192" || v == "ISO 2022 IR 6") return Charset::Utf8;
+        if (v.empty() || v == "ISO_IR 6" || v == "ISO 2022 IR 6") return Charset::Ascii;
+        if (v == "ISO_IR 192") return Charset::Utf8;
         if (v == "ISO_IR 100" || v == "ISO 2022 IR 100") return Charset::Latin1;
         return Charset::Other;
     }
     // Code extensions: only the trivial "ISO 2022 IR 6" combinations are handled.
     for (const auto v : values)
         if (!v.empty() && v != "ISO 2022 IR 6") return Charset::Other;
-    return Charset::Utf8;
+    return Charset::Ascii;
 }
 
 bool vr_is_charset_text(VR vr) noexcept {
@@ -119,6 +120,7 @@ bool to_utf8(std::string_view raw, Charset cs, bool strict, std::string& out) {
         case Charset::Latin1:
             for (char c : raw) json::append_code_point(out, static_cast<unsigned char>(c));
             return true;
+        case Charset::Ascii:
         case Charset::Other:
             if (is_ascii(raw)) { out.append(raw); return true; }
             if (strict) return false;

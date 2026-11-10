@@ -27,6 +27,7 @@ enum class Errc : int {
     Rejected = 13,
     Cancelled = 14,
     BufferTooSmall = 15,
+    AddressInUse = 16,  // a listening port is already in use (SCP / web server start)
     Internal = 99,
 };
 

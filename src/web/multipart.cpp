@@ -128,16 +128,21 @@ void Writer::add(std::string_view content_type, std::string_view data, http::Hea
     items_.push_back(std::move(it));
 }
 
-std::string Writer::finish() {
+std::string make_boundary() {
     static std::atomic<std::uint64_t> counter{0};
     std::random_device rd;
     std::mt19937_64 gen((static_cast<std::uint64_t>(rd()) << 32) ^ rd() ^
                         static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
                         (counter.fetch_add(1) * 0x9E3779B97F4A7C15ull));
     static constexpr char kChars[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    std::string b = "siaara-";
+    for (int i = 0; i < 32; ++i) b.push_back(kChars[static_cast<std::size_t>(gen() % 62u)]);
+    return b;
+}
+
+std::string Writer::finish() {
     for (int attempt = 0; attempt < 64; ++attempt) {
-        std::string b = "siaara-";
-        for (int i = 0; i < 32; ++i) b.push_back(kChars[static_cast<std::size_t>(gen() % 62u)]);
+        std::string b = make_boundary();
         bool clash = false;
         for (const auto& it : items_)
             if (it.data.find(b) != std::string::npos) { clash = true; break; }

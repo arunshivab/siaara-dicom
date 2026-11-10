@@ -289,7 +289,16 @@ Association::Association(std::unique_ptr<Transport> t, bool requestor, const Tim
         lim_.max_receive_pdu = static_cast<std::uint32_t>(std::min<std::uint64_t>(lim_.pdu.max_pdu_length, 0xFFFFFFFFu));
     // Strict: P-DATA-TF PDUs are held to the maximum length we advertise (PS3.8 D.1, R-034).
     if (lim_.enforce_max_receive_pdu) lim_.pdu.max_pdata_length = lim_.max_receive_pdu;
+    static std::atomic<std::uint64_t> next_id{1};
+    id_ = next_id.fetch_add(1, std::memory_order_relaxed);
 }
+
+namespace {
+thread_local std::uint64_t t_association_id = 0;
+}
+std::uint64_t current_association_id() noexcept { return t_association_id; }
+AssociationIdScope::AssociationIdScope(std::uint64_t id) noexcept : previous_(t_association_id) { t_association_id = id; }
+AssociationIdScope::~AssociationIdScope() { t_association_id = previous_; }
 
 Association::~Association() {
     if (state_ != S::Sta1 && transport_ && transport_->is_open()) {
@@ -581,6 +590,24 @@ bool Association::data_pending(int timeout_ms) {
     return r && *r;
 }
 
+namespace {
+// Command Field (0000,0100) of a command set (Implicit VR Little Endian, PS3.7 6.3.1), or 0.
+std::uint16_t command_field_of(const Bytes& command) noexcept {
+    const std::uint8_t* p = command.data();
+    std::size_t n = command.size();
+    while (n >= 8) {
+        const std::uint16_t group = load_le16(p), element = load_le16(p + 2);
+        const std::uint32_t len = load_le32(p + 4);
+        if (len > n - 8) return 0;
+        if (group == 0x0000 && element == 0x0100) return len >= 2 ? load_le16(p + 8) : std::uint16_t{0};
+        if (group != 0x0000) return 0;
+        p += 8 + static_cast<std::size_t>(len);
+        n -= 8 + static_cast<std::size_t>(len);
+    }
+    return 0;
+}
+}  // namespace
+
 Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_dataset) {
     return receive(timeout_ms, has_dataset, nullptr, {});
 }
@@ -603,6 +630,8 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
     bool discarding = false;            // over the spool quota: drain the data set, keep nothing
     std::uint64_t discarded_bytes = 0;
     bool started = false;
+    const SpoolConfig* const store_spool = spool;
+    bool is_store = true;  // decided from the command set once it is complete (R-109)
     while (true) {
         UlEvent evt = E::Evt18;
         Result<Pdu> r = next_pdu(started ? to_.dimse_ms : std::max(to_.dimse_ms, 1), evt);
@@ -636,7 +665,10 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                 msg.context_id = v.context_id;
             }
             // With a spool, the in-memory part never needs to exceed the spool threshold.
+            // R-109: only C-STORE data sets may be large (and spooled); every other data set is
+            // bounded by max_service_dataset_size while it arrives.
             const std::uint64_t cap = phase == Phase::Command ? lim_.max_command_size
+                                      : !is_store ? lim_.max_service_dataset_size
                                       : spool ? std::max(lim_.max_dataset_size, spool->threshold)
                                               : lim_.max_dataset_size;
             // Over the disk quota or free-space floor (R-074): the rest of the data set is read and
@@ -702,6 +734,8 @@ Result<Received> Association::receive(int timeout_ms, const HasDatasetFn& has_da
                     return Status(Errc::Malformed, "invalid command set: " + hd.error().message);
                 }
                 msg.has_data = *hd;
+                is_store = command_field_of(msg.command) == 0x0001;  // C-STORE-RQ
+                spool = is_store ? store_spool : nullptr;
                 if (msg.has_data) phase = Phase::Data;
                 else complete = true;
             } else if (discarding) {

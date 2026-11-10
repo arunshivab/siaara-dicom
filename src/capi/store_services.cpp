@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -122,10 +123,6 @@ store::Level store_level(int l) {
     }
 }
 
-bool has_wildcard_or_list(std::string_view v) {
-    return v.find_first_of("*?\\") != std::string_view::npos;
-}
-
 std::vector<std::string> split_values(std::string_view v) {
     std::vector<std::string> out;
     std::size_t start = 0;
@@ -192,19 +189,39 @@ Dataset matching_keys(const Dataset& id, int level) {
     return m;
 }
 
-// Index rows at `level` that may match (a superset; query_matches decides), with exact keys
-// pushed down to the store's indexes. One store query per value of a UID list.
-Result<std::vector<IndexRecord>> candidates(const store::Store& s, const Dataset& id, int level) {
+// R-128: the most values a list-of-UIDs key may hold.
+constexpr std::size_t kMaxUidListValues = 10000;
+// R-115: index rows are fetched from the store in pages of this size.
+constexpr std::size_t kCandidatePage = 5000;
+
+enum class Visit { Done, Stopped, Failed, TooManyUids };
+
+// Visits the index rows at `level` that may match (a superset; query_matches decides), without
+// ever holding more than one page of them (R-115): single-value keys - wild cards and date ranges
+// included, where the store matches them itself - are pushed down to the store's indexes, and the
+// rows are read page by page until `visit` returns false. A list of UIDs gives one indexed
+// lookup per UID (at most kMaxUidListValues, R-128); `uid_key` then receives that key's tag: the
+// rows are exactly the listed ones, so the caller need not match that key again.
+Visit visit_candidates(const store::Store& s, const Dataset& id, int level, Tag* uid_key,
+                       const std::function<bool(IndexRecord&)>& visit) {
+    if (uid_key) *uid_key = 0;
     store::QueryFilter base;
     base.level = store_level(level);
-    const auto exact = [&](Tag t, int at) -> std::optional<std::string> {
+    base.want_total = false;
+    const auto single = [&](Tag t, int at) -> std::optional<std::string> {
         if (at > level) return std::nullopt;
         auto v = id.get_string(t);
-        if (!v || v->empty() || has_wildcard_or_list(*v)) return std::nullopt;
+        if (!v || v->empty() || v->find('\\') != std::string::npos) return std::nullopt;
         return v;
     };
-    if (auto v = exact(0x00100020, kPatient)) base.patient_id = *v;
-    if (auto v = exact(0x00080050, kStudy)) base.accession_number = *v;
+    // Exact values use the store's indexes; a wild card narrows the walk (the store's own
+    // matching of these two is not stricter than PS3.4 C.2.2.2.4, and query_matches has the last word).
+    if (auto v = single(0x00100020, kPatient)) base.patient_id = *v;
+    if (auto v = single(0x00080050, kStudy)) base.accession_number = *v;
+    // Study Date: a single date or a range (C.2.2.2.5), as the store's own filter reads it.
+    std::string study_date;
+    if (auto v = single(0x00080020, kStudy))
+        if (v->find_first_not_of("0123456789-") == std::string::npos) study_date = *v;
     // The lowest-level UID key drives the lookup; a list of UIDs gives one query per UID.
     struct UidKey {
         Tag tag;
@@ -214,43 +231,63 @@ Result<std::vector<IndexRecord>> candidates(const store::Store& s, const Dataset
     const UidKey uid_keys[] = {{0x00080018, kImage, &store::QueryFilter::sop_instance_uid},
                                {0x0020000E, kSeries, &store::QueryFilter::series_uid},
                                {0x0020000D, kStudy, &store::QueryFilter::study_uid}};
-    std::vector<store::QueryFilter> filters;
+    std::vector<std::string> uids;
+    std::string store::QueryFilter::*uid_field = nullptr;
     for (const UidKey& k : uid_keys) {
-        if (k.at > level || !filters.empty()) continue;
+        if (k.at > level || uid_field) continue;
         const auto raw = id.get_raw_string(k.tag);
         if (!raw) continue;
-        const std::vector<std::string> uids = split_values(*raw);
-        if (uids.empty()) continue;
-        for (const std::string& u : uids) {
-            if (u.find_first_of("*?") != std::string::npos) {
-                filters.clear();
-                break;
-            }
-            store::QueryFilter f = base;
-            f.*(k.field) = u;
-            filters.push_back(std::move(f));
-        }
+        std::vector<std::string> list = split_values(*raw);
+        if (list.empty()) continue;
+        if (list.size() > kMaxUidListValues) return Visit::TooManyUids;
+        bool wild = false;
+        for (const std::string& u : list) wild = wild || u.find_first_of("*?") != std::string::npos;
+        if (wild) continue;
+        uids = std::move(list);
+        uid_field = k.field;
+        if (uid_key) *uid_key = k.tag;
     }
-    if (filters.empty()) filters.push_back(base);
-    std::vector<IndexRecord> out;
-    std::set<std::string> seen;
-    for (const store::QueryFilter& f : filters) {
-        auto r = s.query(f);
-        if (!r) return r.take_error();
-        for (IndexRecord& row : r->rows) {
-            // The same row through two UIDs of a list: once.
-            std::string key;
-            switch (level) {
-                case kPatient: key = store::Store::patient_key(row); break;
-                case kStudy: key = row[Str::StudyInstanceUid]; break;
-                case kSeries: key = row[Str::SeriesInstanceUid]; break;
-                default: key = row[Str::SopInstanceUid]; break;
+    std::set<std::string> seen;  // the same row through two UIDs of a list: once
+    const auto run = [&](store::QueryFilter f, bool with_date) -> Visit {
+        if (with_date) f.study_date = study_date;
+        f.limit = kCandidatePage;
+        for (f.offset = 0;; f.offset += kCandidatePage) {
+            auto r = s.query(f);
+            if (!r) return Visit::Failed;
+            for (IndexRecord& row : r->rows) {
+                if (uids.size() > 1) {
+                    std::string key;
+                    switch (level) {
+                        case kPatient: key = store::Store::patient_key(row); break;
+                        case kStudy: key = row[Str::StudyInstanceUid]; break;
+                        case kSeries: key = row[Str::SeriesInstanceUid]; break;
+                        default: key = row[Str::SopInstanceUid]; break;
+                    }
+                    if (!seen.insert(std::move(key)).second) continue;
+                }
+                if (!visit(row)) return Visit::Stopped;
             }
-            if (filters.size() > 1 && !seen.insert(key).second) continue;
-            out.push_back(std::move(row));
+            if (r->rows.size() < kCandidatePage) return Visit::Done;
         }
+    };
+    // A date the store's filter does not accept is simply not pushed down.
+    const auto run_checked = [&](const store::QueryFilter& f) -> Visit {
+        if (!study_date.empty()) {
+            store::QueryFilter probe = f;
+            probe.study_date = study_date;
+            probe.limit = 1;
+            if (s.query(probe)) return run(f, true);
+        }
+        return run(f, false);
+    };
+    if (!uid_field) return run_checked(base);
+    for (const std::string& u : uids) {
+        store::QueryFilter f = base;
+        f.*uid_field = u;
+        const Visit v = run_checked(f);
+        if (v != Visit::Done) return v;
     }
-    return out;
+    return Visit::Done;
 }
 
 void decode_text(Dataset& ds, const charset::CharacterSet& inherited) {
@@ -292,21 +329,38 @@ std::uint16_t store_find(const store::Store& s, std::string_view sop_class, cons
         c != net::dimse_status::Success)
         return c;
     const Dataset id = identifier_utf8(identifier);
-    const Dataset keys = matching_keys(id, *level);
-    auto rows = candidates(s, id, *level);
-    if (!rows) return net::dimse_status::ProcessingFailure;
+    Dataset keys = matching_keys(id, *level);
     const std::string level_text = identifier.get_string(kQueryRetrieveLevel).value_or("");
-    for (const IndexRecord& r : *rows) {
+    std::uint16_t status = net::dimse_status::Success;
+    Tag uid_key = 0;
+    bool first = true;
+    // R-115: the index is walked page by page and the walk ends with the response that passes
+    // max_find_results; the whole table is never copied.
+    const Visit v = visit_candidates(s, id, *level, &uid_key, [&](IndexRecord& r) -> bool {
+        if (first) {
+            first = false;
+            if (uid_key != 0) (void)keys.remove(uid_key);  // R-128: the rows are exactly the listed UIDs
+        }
         const Dataset cand = candidate(r, *level, opt);
-        if (!net::query_matches(keys, cand, mo)) continue;
-        if (sent >= opt.max_find_results) return net::dimse_status::OutOfResources;
+        if (!net::query_matches(keys, cand, mo)) return true;
+        if (sent >= opt.max_find_results) {
+            status = net::dimse_status::OutOfResources;
+            return false;
+        }
         Dataset rsp = net::query_response(id, cand);
         (void)rsp.set_string(kQueryRetrieveLevel, VR::CS, level_text);
         (void)rsp.set_string(tags::SpecificCharacterSet, VR::CS, "ISO_IR 192");
-        if (!emit(rsp)) return net::dimse_status::Success;
+        // T-P3-2 (PS3.4 C.4.1.1.3.2): a response carries Retrieve AE Title (0008,0054) or the
+        // Storage Media File-Set ID / UID; this SCP has no file-sets, so every response names the
+        // AE the instances can be retrieved from, whether or not the key was requested.
+        if (!opt.retrieve_ae.empty()) (void)rsp.set_string(kRetrieveAeTitle, VR::AE, opt.retrieve_ae);
+        if (!emit(rsp)) return false;
         ++sent;
-    }
-    return net::dimse_status::Success;
+        return true;
+    });
+    if (v == Visit::Failed) return net::dimse_status::ProcessingFailure;
+    if (v == Visit::TooManyUids) return net::dimse_status::OutOfResources;
+    return status;
 }
 
 std::uint16_t store_retrieve(const store::Store& s, std::string_view sop_class, const Dataset& identifier,
@@ -321,10 +375,9 @@ std::uint16_t store_retrieve(const store::Store& s, std::string_view sop_class, 
             c != net::dimse_status::Success)
             return c;
     const Dataset id = identifier_utf8(identifier);
-    const Dataset keys = matching_keys(id, *level);
-    auto rows = candidates(s, id, *level);
-    if (!rows) return net::dimse_status::ProcessingFailure;
+    Dataset keys = matching_keys(id, *level);
     std::set<std::string> seen;
+    std::uint16_t status = net::dimse_status::Success;
     const auto add = [&](const IndexRecord& inst) -> bool {
         if (!seen.insert(inst[Str::SopInstanceUid]).second) return true;
         if (items.size() >= opt.max_retrieve_instances) return false;
@@ -333,31 +386,48 @@ std::uint16_t store_retrieve(const store::Store& s, std::string_view sop_class, 
         items.push_back(std::move(it));
         return true;
     };
-    for (const IndexRecord& r : *rows) {
-        if (!net::query_matches(keys, candidate(r, *level, opt), net::MatchOptions{})) continue;
-        std::vector<IndexRecord> insts;
-        if (*level == kImage) {
-            insts.push_back(r);
-        } else {
-            store::QueryFilter f;
-            f.level = store::Level::Instance;
-            if (*level == kSeries) f.series_uid = r[Str::SeriesInstanceUid];
-            else if (*level == kStudy) f.study_uid = r[Str::StudyInstanceUid];
-            else f.patient_id = r[Str::PatientId];
-            if (*level == kPatient && f.patient_id.empty()) f.patient_name = r[Str::PatientName];
-            auto q = s.query(f);
-            if (!q) return net::dimse_status::ProcessingFailure;
-            const std::string pkey = *level == kPatient ? store::Store::patient_key(r) : std::string();
-            for (IndexRecord& x : q->rows)
-                if (*level != kPatient || store::Store::patient_key(x) == pkey) insts.push_back(std::move(x));
+    Tag uid_key = 0;
+    bool first = true;
+    // R-115: rows page by page; the instances of each match are read with a limit of what the
+    // retrieve may still take, so no more than max_retrieve_instances + 1 rows are ever copied.
+    const Visit v = visit_candidates(s, id, *level, &uid_key, [&](IndexRecord& r) -> bool {
+        if (first) {
+            first = false;
+            if (uid_key != 0) (void)keys.remove(uid_key);
         }
-        for (const IndexRecord& x : insts)
-            if (!add(x)) {
-                items.clear();
-                return net::dimse_status::OutOfResourcesMatches;
+        if (!net::query_matches(keys, candidate(r, *level, opt), net::MatchOptions{})) return true;
+        if (*level == kImage) {
+            if (!add(r)) status = net::dimse_status::OutOfResourcesMatches;
+            return status == net::dimse_status::Success;
+        }
+        store::QueryFilter f;
+        f.level = store::Level::Instance;
+        f.want_total = false;
+        if (*level == kSeries) f.series_uid = r[Str::SeriesInstanceUid];
+        else if (*level == kStudy) f.study_uid = r[Str::StudyInstanceUid];
+        else f.patient_id = r[Str::PatientId];
+        if (*level == kPatient && f.patient_id.empty()) f.patient_name = r[Str::PatientName];
+        const std::string pkey = *level == kPatient ? store::Store::patient_key(r) : std::string();
+        f.limit = kCandidatePage;
+        for (f.offset = 0;; f.offset += kCandidatePage) {
+            auto q = s.query(f);
+            if (!q) {
+                status = net::dimse_status::ProcessingFailure;
+                return false;
             }
-    }
-    return net::dimse_status::Success;
+            for (const IndexRecord& x : q->rows)
+                if ((*level != kPatient || store::Store::patient_key(x) == pkey) && !add(x)) {
+                    status = net::dimse_status::OutOfResourcesMatches;
+                    return false;
+                }
+            if (q->rows.size() < kCandidatePage) break;
+        }
+        return true;
+    });
+    if (v == Visit::Failed) status = net::dimse_status::ProcessingFailure;
+    if (v == Visit::TooManyUids) status = net::dimse_status::OutOfResourcesMatches;
+    if (status != net::dimse_status::Success) items.clear();
+    return status;
 }
 
 Status make_qr_identifier(int level, const QrKeyValues& keys, Dataset& ds) {
@@ -428,20 +498,29 @@ web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool r
             return Status(Errc::IoError, "search failed");
         return Status::ok();
     };
-    w.retrieve = [sp](const web::InstanceKey& k, std::vector<Bytes>& out) -> Status {
+    // R-110: the instances under a key from the index - path, size and transfer syntax - without
+    // opening a file. The server answers 413 from the sizes, then maps one file at a time.
+    w.locate = [sp](const web::InstanceKey& k, std::vector<web::StoredInstance>& out) -> Status {
         store::QueryFilter f;
         f.level = store::Level::Instance;
         f.study_uid = k.study;
         f.series_uid = k.series;
         f.sop_instance_uid = k.instance;
-        auto r = sp->query(f);
-        if (!r) return r.take_error();
-        if (r->rows.empty()) return Status(Errc::NotFound, "not found");
-        for (const IndexRecord& row : r->rows) {
-            if (row[Str::StudyInstanceUid] != k.study) continue;
-            auto b = io::read_file(row[Str::FilePath]);
-            if (!b) return b.take_error();
-            out.push_back(std::move(b.value()));
+        f.want_total = false;
+        f.limit = kCandidatePage;
+        for (f.offset = 0;; f.offset += kCandidatePage) {
+            auto r = sp->query(f);
+            if (!r) return r.take_error();
+            for (const IndexRecord& row : r->rows) {
+                if (row[Str::StudyInstanceUid] != k.study) continue;
+                if (out.size() >= 65535) return Status(Errc::LimitExceeded, "too many instances");
+                web::StoredInstance inst;
+                inst.path = row[Str::FilePath];
+                inst.size = row.file_size;
+                inst.transfer_syntax = row[Str::TransferSyntaxUid];
+                out.push_back(std::move(inst));
+            }
+            if (r->rows.size() < kCandidatePage) break;
         }
         if (out.empty()) return Status(Errc::NotFound, "not found");
         return Status::ok();

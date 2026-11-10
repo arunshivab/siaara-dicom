@@ -11,6 +11,7 @@
 
 #include "codec/transcode.hpp"
 #include "core/dataset.hpp"
+#include "core/incomplete_policy.hpp"
 #include "core/status.hpp"
 #include "net/association.hpp"
 #include "net/dimse.hpp"
@@ -43,6 +44,12 @@ struct StoreRequest {
     // Set when the receiver converted the instance lossily and that gave it a new SOP Instance
     // UID (now in sop_instance_uid and the data set): the UID it arrived with (R-093).
     std::string original_sop_instance_uid;
+    // R-116: the read of the received data set was not complete (DicomFile::ReadLoss bits; 0 when
+    // complete) and the receiver's IncompletePolicy accepted it as received: `raw` must be stored
+    // exactly as it is (it is never transcoded) and the receiver should flag the instance.
+    std::uint32_t read_loss = 0;
+    std::uint64_t read_loss_offset = 0;
+    std::string read_warning;  // the first read warning (a fixed code and offsets; no patient data)
 };
 
 // What Scu::store sent (R-093): a lossy transcode on the way gives the instance a new SOP
@@ -108,12 +115,33 @@ struct ScuConfig {
     // C-STORE of a DicomFile whose read was not complete (truncated, bytes skipped, header-only):
     // refused with Errc::Rejected ("INCOMPLETE_INPUT", net/store_support.hpp check_sendable) unless set.
     bool allow_incomplete = false;
+    // C-GET: a received data set whose read was not complete (R-116): refused (0xC000, the
+    // sub-operation fails) or handed to on_instance as received, flagged in StoreRequest::read_loss.
+    IncompletePolicy incomplete_policy = kDefaultIncompletePolicy;
+    // IncompletePolicy::Quarantine for C-GET: keeps the instance outside the archive and returns
+    // Success, or a failure status. Unset: such an instance is refused.
+    std::function<std::uint16_t(const StoreRequest&)> on_quarantine;
+    QuarantineResponse quarantine_response = kDefaultQuarantineResponse;
     std::optional<SpoolConfig> spool;                       // C-GET: receive large instances to disk
     // C-GET sub-operations whose command UIDs differ from the data set's: refuse (0xA900) instead of
     // accepting them under the data set's UIDs with StoreRequest::uid_mismatch (R-073).
     bool strict_store_uids = false;
     std::optional<AsyncWindow> async_window;                // propose an Asynchronous Operations Window
     std::vector<ExtendedNegotiation> extended_negotiation;  // SOP Class Extended Negotiation items
+};
+
+// Why Scu::connect() failed (the Status carries the text).
+enum class ConnectFailure : std::uint8_t {
+    None,
+    Resolve,         // the host name did not resolve
+    Refused,         // TCP connection refused: nothing listens on the port
+    ConnectTimeout,  // no TCP connection within timeouts.connect_ms
+    Tls,             // TLS setup or handshake failed
+    Rejected,        // A-ASSOCIATE-RJ (the result / source / reason are in the AssociateRj)
+    AcseTimeout,     // connected, but no answer to the A-ASSOCIATE-RQ within timeouts.acse_ms
+    Closed,          // the peer closed or aborted during the negotiation
+    Cancelled,       // interrupt()
+    Other,
 };
 
 class Scu {
@@ -139,6 +167,14 @@ public:
     // Uses an already connected transport (TLS later); otherwise as connect().
     Status connect_over(std::unique_ptr<Transport> t, AssociateRj* rj = nullptr);
     bool connected() const noexcept { return assoc_ && assoc_->established(); }
+    // Why the last connect() / connect_over() failed.
+    ConnectFailure connect_failure() const noexcept { return failure_; }
+    // From any thread, at any time in the life of the Scu: ends a connect() in progress (TCP
+    // connect, TLS handshake, waiting for the A-ASSOCIATE response) with Errc::Cancelled, and
+    // wakes a blocked service call (which then fails). Later connect() calls fail at once.
+    void interrupt() noexcept;
+    bool interrupted() const noexcept;
+    struct Gate;  // internal: the transports of this Scu that interrupt() may shut down
     Association* association() noexcept { return assoc_.get(); }
     Status release();
     void abort();
@@ -181,6 +217,8 @@ private:
 
     ScuConfig cfg_;
     std::vector<ProposedContext> proposals_;
+    std::shared_ptr<Gate> gate_;
+    ConnectFailure failure_ = ConnectFailure::None;
     std::unique_ptr<Association> assoc_;
 };
 

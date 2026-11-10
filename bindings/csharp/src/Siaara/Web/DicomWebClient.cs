@@ -9,6 +9,39 @@ using Siaara.Interop;
 
 namespace Siaara.Web;
 
+/// <summary>Destination and receive policy of <see cref="DicomWebClient.RetrieveToWithReport"/> (siaara_web_retrieve_options).</summary>
+public sealed class DicomWebRetrieveOptions
+{
+    /// <summary>Destination store, or null.</summary>
+    public DicomStore? Store { get; init; }
+    /// <summary>Destination folder (files are written as &lt;SOP Instance UID&gt;.dcm, owner-only), or null.</summary>
+    public string? Folder { get; init; }
+    /// <summary>Replace instances / files already present.</summary>
+    public bool ReplaceDuplicates { get; init; }
+    /// <summary>Acceptable transfer syntaxes, or null.</summary>
+    public IReadOnlyList<string>? TransferSyntaxes { get; init; }
+    /// <summary>What happens to a part that cannot be read completely. Default: not kept.</summary>
+    public Network.IncompletePolicy IncompletePolicy { get; init; }
+    /// <summary>Keep parts whose Study / Series / SOP Instance UID is not the one requested (default false: not kept).</summary>
+    public bool AllowOtherUids { get; init; }
+}
+
+/// <summary>What a streaming retrieve did with the parts (siaara_web_retrieve_report).</summary>
+/// <param name="Outcome">Ok when every part was kept.</param>
+/// <param name="Stored">Parts kept.</param>
+/// <param name="Failed">Parts not kept (including the two counts that follow).</param>
+/// <param name="IncompleteRefused">Not kept: the part could not be read completely.</param>
+/// <param name="UidMismatch">Not kept: not the requested study / series / instance.</param>
+/// <param name="IncompleteAccepted">Kept exactly as received although the read was not complete.</param>
+/// <param name="Rewritten">Kept, but the part had no Part 10 preamble and was written as a new Part 10 file.</param>
+/// <param name="Message">The library's message when parts were not kept.</param>
+public sealed record DicomWebRetrieveReport(SiaaraErrorCode Outcome, int Stored, int Failed, int IncompleteRefused, int UidMismatch,
+                                            int IncompleteAccepted, int Rewritten, string Message)
+{
+    /// <summary>Incomplete parts kept in the store's quarantine (counted in Failed too: they are not in the archive).</summary>
+    public int Quarantined { get; init; }
+}
+
 /// <summary>QIDO-RS search level.</summary>
 public enum QidoLevel
 {
@@ -524,6 +557,76 @@ public sealed class DicomWebClient : IDisposable
                     GCHandle.ToIntPtr(gc), out uint stored, out uint failed);
                 Status.Check(st);
                 return ((int)stored, (int)failed);
+            }
+        }
+        finally
+        {
+            if (added)
+            {
+                store!.Handle.DangerousRelease();
+            }
+            gc.Free();
+        }
+    }
+
+    /// <summary>
+    /// The streaming WADO-RS retrieve with the receive policy and a report (siaara_web_wado_retrieve_to_ex):
+    /// each part is checked (is it what was asked for, was it read completely), written to the folder, then
+    /// added to the store; a part the store refuses leaves no file behind.
+    /// </summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <param name="options">Destination and policy.</param>
+    /// <param name="progress">Parts handled, bytes received and total after every part (optional).</param>
+    /// <returns>What happened to the parts. <see cref="DicomWebRetrieveReport.Outcome"/> is Ok when every part was kept.</returns>
+    public DicomWebRetrieveReport RetrieveToWithReport(string studyInstanceUid, string? seriesInstanceUid, string? sopInstanceUid,
+        DicomWebRetrieveOptions options, IProgress<DicomWebTransferProgress>? progress = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(studyInstanceUid);
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.Store is null && options.Folder is null)
+        {
+            throw new ArgumentException("A store or a folder is required.", nameof(options));
+        }
+        using var mem = new NativeAllocations();
+        nint[] ts = Syntaxes(mem, options.TransferSyntaxes);
+        var sink = new TransferSink(progress);
+        GCHandle gc = GCHandle.Alloc(sink);
+        bool added = false;
+        DicomStore? store = options.Store;
+        store?.Handle.DangerousAddRef(ref added);
+        try
+        {
+            var o = new siaara_web_retrieve_options
+            {
+                struct_size = StructSize.Of<siaara_web_retrieve_options>(),
+                duplicate_policy = options.ReplaceDuplicates ? C.SIAARA_DUP_REPLACE : C.SIAARA_DUP_KEEP,
+                store = store is null ? 0 : store.Handle.DangerousGetHandle(),
+                folder = mem.Utf8(options.Folder),
+                transfer_syntaxes = ts.Length == 0 ? 0 : mem.Array<nint>(ts),
+                transfer_syntax_count = (uint)ts.Length,
+                incomplete_policy = (int)options.IncompletePolicy,
+                allow_other_uids = options.AllowOtherUids ? 1 : 0,
+            };
+            var r = new siaara_web_retrieve_report { struct_size = StructSize.Of<siaara_web_retrieve_report>() };
+            lock (_gate)
+            {
+                using var l = new HandleLease(_handle);
+                int st = Native.siaara_web_wado_retrieve_to_ex(l.Pointer, Status.Utf8Z(studyInstanceUid), Status.Utf8Z(seriesInstanceUid),
+                    Status.Utf8Z(sopInstanceUid), in o, Callbacks.WebProgressPointer, GCHandle.ToIntPtr(gc), ref r);
+                string message = st == C.SIAARA_OK ? string.Empty : Status.LastMessage();
+                if (st == C.SIAARA_ERR_CANCELLED)
+                {
+                    throw new OperationCanceledException(message);
+                }
+                // Parts that were not kept are in the report; other failures (HTTP, network) throw.
+                if (st != C.SIAARA_OK && r.failed == 0)
+                {
+                    throw new SiaaraException((SiaaraErrorCode)st, message);
+                }
+                return new DicomWebRetrieveReport((SiaaraErrorCode)st, (int)r.stored, (int)r.failed, (int)r.incomplete_refused,
+                    (int)r.uid_mismatch, (int)r.incomplete_accepted, (int)r.rewritten, message) { Quarantined = (int)r.quarantined };
             }
         }
         finally

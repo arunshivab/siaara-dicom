@@ -640,6 +640,14 @@ void seeds_multipart() {
     emit("multipart", "three_parts.txt", w.boundary() + "\n" + body);
     emit("multipart", "simple.txt", std::string("b\n--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n"));
     emit("multipart", "preamble.txt", std::string("bnd\npreamble\r\n--bnd\r\n\r\n\r\n--bnd\r\nA: b\r\n\r\ny\r\n--bnd--\r\nepilogue"));
+    // The incremental parser (R-132): a byte that seeds the split points, then the same layout.
+    emit("multipart_stream", "three_parts.txt", "S" + w.boundary() + "\n" + body);
+    emit("multipart_stream", "simple.txt", std::string("Sb\n--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n"));
+    emit("multipart_stream", "preamble.txt",
+         std::string("Sbnd\npreamble\r\n--bnd\r\n\r\n\r\n--bnd\r\nA: b\r\n\r\ny\r\n--bnd--\r\nepilogue"));
+    emit("multipart_stream", "near_delimiters.txt",
+         std::string("\x07" "b\n--b\r\nContent-Type: application/dicom\r\n\r\n--bx\r\n--b-\r\n\r\n--b\r\n\r\n\r\n--b--\r\ntail"));
+    emit("multipart_stream", "truncated.txt", std::string("\x01" "b\n--b\r\nA: 1\r\n\r\nno close"));
 }
 
 Dataset rich_dataset() {

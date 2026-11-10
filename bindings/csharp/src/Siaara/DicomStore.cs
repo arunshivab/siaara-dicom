@@ -9,6 +9,30 @@ using Siaara.Interop;
 
 namespace Siaara;
 
+/// <summary>The areas of a store that hold instances which arrived incomplete (SIAARA_AREA_*).</summary>
+public enum QuarantineArea
+{
+    /// <summary>Kept for a decision: release to the archive or delete.</summary>
+    Quarantine = C.SIAARA_AREA_QUARANTINE,
+    /// <summary>Copies of refused instances, for diagnosis.</summary>
+    Rejected = C.SIAARA_AREA_REJECTED,
+}
+
+/// <summary>One item of a quarantine area (siaara_quarantine_record). No patient data beyond the UIDs.</summary>
+/// <param name="Id">SHA-256 of the bytes (hex).</param>
+/// <param name="Area">Which area.</param>
+/// <param name="Time">When it was kept.</param>
+/// <param name="Source">"C-STORE", "C-GET", "STOW-RS" or "WADO-RS".</param>
+/// <param name="CallingAeTitle">The sender's AE title (empty for DICOMweb).</param>
+/// <param name="PeerAddress">Network address when known.</param>
+/// <param name="SopClassUid">SOP Class UID when readable.</param>
+/// <param name="SopInstanceUid">SOP Instance UID when readable.</param>
+/// <param name="Size">Bytes.</param>
+/// <param name="ReadLoss">SIAARA_READ_* loss bits.</param>
+/// <param name="Warning">The first read warning.</param>
+public sealed record QuarantineItem(string Id, QuarantineArea Area, DateTimeOffset Time, string Source, string CallingAeTitle,
+                                    string PeerAddress, string SopClassUid, string SopInstanceUid, long Size, int ReadLoss, string Warning);
+
 /// <summary>Options for opening a store (siaara_store_options).</summary>
 public sealed record DicomStoreOptions
 {
@@ -525,6 +549,90 @@ public sealed class DicomStore : IDisposable
         {
             ExceptionDispatchInfo.Capture(e).Throw();
         }
+    }
+
+    // ------------------------------------------------------------------ quarantine (R-116)
+    private static string Fixed(ReadOnlySpan<byte> bytes)
+    {
+        int n = bytes.IndexOf((byte)0);
+        return System.Text.Encoding.UTF8.GetString(n < 0 ? bytes : bytes[..n]);
+    }
+
+    /// <summary>The items of the quarantine (incomplete instances kept outside the archive) or of the "rejected"
+    /// area (copies of refused instances), newest first.</summary>
+    /// <param name="area">Which area.</param>
+    /// <returns>The records.</returns>
+    public IReadOnlyList<QuarantineItem> QuarantineList(QuarantineArea area = QuarantineArea.Quarantine)
+    {
+        using var l = new HandleLease(_handle);
+        Status.Check(Native.siaara_store_quarantine_count(l.Pointer, (int)area, out uint n, out _));
+        var list = new List<QuarantineItem>((int)n);
+        for (uint i = 0; i < n; i++)
+        {
+            var r = new siaara_quarantine_record { struct_size = StructSize.Of<siaara_quarantine_record>() };
+            int st = Native.siaara_store_quarantine_get(l.Pointer, (int)area, i, ref r);
+            if (st == C.SIAARA_ERR_NOT_FOUND)
+            {
+                break;  // removed meanwhile
+            }
+            Status.Check(st);
+            list.Add(new QuarantineItem(Fixed(r.id), area, DateTimeOffset.FromUnixTimeSeconds(r.time), Fixed(r.source), Fixed(r.calling_ae),
+                Fixed(r.peer), Fixed(r.sop_class_uid), Fixed(r.sop_instance_uid), (long)r.size, (int)r.read_loss, Fixed(r.warning)));
+        }
+        return list;
+    }
+
+    /// <summary>The bytes of an item, exactly as received.</summary>
+    /// <param name="id">The item's id (SHA-256).</param>
+    /// <param name="area">Which area.</param>
+    /// <returns>The bytes.</returns>
+    public byte[] QuarantineBytes(string id, QuarantineArea area = QuarantineArea.Quarantine)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        using var l = new HandleLease(_handle);
+        byte[] idz = System.Text.Encoding.UTF8.GetBytes(id + "\0");
+        Status.Check(Native.siaara_store_quarantine_bytes(l.Pointer, (int)area, idz, default, out nuint needed));
+        var buf = new byte[(int)needed];
+        if (buf.Length != 0)
+        {
+            Status.Check(Native.siaara_store_quarantine_bytes(l.Pointer, (int)area, idz, buf, out _));
+        }
+        return buf;
+    }
+
+    /// <summary>Moves an item to the archive: stored unchanged and flagged incomplete in the index.</summary>
+    /// <param name="id">The item's id.</param>
+    /// <param name="replaceDuplicates">Replace an instance already in the archive.</param>
+    /// <param name="area">Which area.</param>
+    public void QuarantineRelease(string id, bool replaceDuplicates = false, QuarantineArea area = QuarantineArea.Quarantine)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        using var l = new HandleLease(_handle);
+        Status.Check(Native.siaara_store_quarantine_release(l.Pointer, (int)area, System.Text.Encoding.UTF8.GetBytes(id + "\0"),
+            replaceDuplicates ? C.SIAARA_DUP_REPLACE : C.SIAARA_DUP_KEEP, out _));
+    }
+
+    /// <summary>Writes an item's bytes, unchanged, to folder/&lt;id&gt;.dcm; the item stays.</summary>
+    /// <param name="id">The item's id.</param>
+    /// <param name="folder">Destination folder.</param>
+    /// <param name="area">Which area.</param>
+    public void QuarantineExport(string id, string folder, QuarantineArea area = QuarantineArea.Quarantine)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        ArgumentException.ThrowIfNullOrEmpty(folder);
+        using var l = new HandleLease(_handle);
+        Status.Check(Native.siaara_store_quarantine_export(l.Pointer, (int)area, System.Text.Encoding.UTF8.GetBytes(id + "\0"),
+            System.Text.Encoding.UTF8.GetBytes(folder + "\0")));
+    }
+
+    /// <summary>Deletes an item.</summary>
+    /// <param name="id">The item's id.</param>
+    /// <param name="area">Which area.</param>
+    public void QuarantineDelete(string id, QuarantineArea area = QuarantineArea.Quarantine)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        using var l = new HandleLease(_handle);
+        Status.Check(Native.siaara_store_quarantine_delete(l.Pointer, (int)area, System.Text.Encoding.UTF8.GetBytes(id + "\0")));
     }
 
     /// <summary>Closes the store (removes the callback first).</summary>

@@ -14,7 +14,9 @@
 // ServiceSet that is plugged into ScpServer through ScpHandlers::services.
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -23,6 +25,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "core/dataset.hpp"
@@ -89,7 +92,8 @@ constexpr std::uint16_t UpsEventsNotSupported = 0xC315;
 std::string make_uid();
 
 // Does a presentation context negotiated for `abstract_syntax` carry messages of `sop_class`?
-// True for the same class and for the print SOP classes inside a Print Management Meta SOP Class.
+// True for the same class, for the print SOP classes inside a Print Management Meta SOP Class, and
+// for the UPS Push SOP Class on a context negotiated for any UPS SOP class (PS3.4 CC.2).
 bool context_covers(std::string_view abstract_syntax, std::string_view sop_class) noexcept;
 
 // ===================================================================== query matching (C.2.2.2)
@@ -176,18 +180,66 @@ Result<Scu::NResponse> mpps_create(Scu& scu, std::string instance_uid, const Dat
 Result<Scu::NResponse> mpps_set(Scu& scu, const std::string& instance_uid, const Dataset& modifications);
 Result<Scu::NResponse> send_instance_availability(Scu& scu, const Dataset& notification, std::string instance_uid = {});
 
+// Limits of the in-memory N-service models (R-109, R-119). A request that would pass one is
+// answered 0xA700 (Refused: Out of Resources); nothing is stored then.
+struct ServiceStateLimits {
+    std::size_t max_items = 10000;                 // MPPS: IN PROGRESS instances; UPS: workitems not yet final
+    std::size_t max_finished = 10000;              // finished instances kept (oldest evicted first)
+    std::uint64_t max_bytes = 256ull << 20;        // all data sets held, approximate
+    std::size_t max_subscribers_per_item = 16;     // UPS: receiving AEs per workitem (R-117)
+    std::size_t max_global_subscribers = 64;       // UPS: global subscribers
+    std::size_t max_pending_events = 4096;         // UPS: event reports waiting to be taken
+    // Updates (N-SET, state changes) only from the AE that created the instance (R-131); others
+    // are answered 0x0124 (Refused: Not Authorized). Off by default: the standard does not
+    // require it (PS3.4 F.7.2, CC.2.6) and a second performer may legitimately update a UPS.
+    bool bind_to_creator = false;
+};
+
+// The approximate memory a data set holds (value bytes plus a fixed cost per element), used for
+// the byte budgets above.
+std::uint64_t approximate_size(const Dataset& ds) noexcept;
+
 // An MPPS SCP model enforcing PS3.4 F.7.2.2: created IN PROGRESS, modifiable until COMPLETED or
-// DISCONTINUED, no duplicates.
+// DISCONTINUED, no duplicates. Only IN PROGRESS instances count against max_items; finished ones
+// are kept up to max_finished and the byte budget, the oldest evicted first (R-119).
+// With a state folder (set_state_folder) every instance is kept in an owner-only file there and
+// reloaded on the next start; without one the model lives in memory only.
 class MppsStore {
 public:
-    std::uint16_t create(const std::string& uid, const Dataset& attributes);
-    std::uint16_t set(const std::string& uid, const Dataset& modifications);
+    MppsStore() = default;
+    explicit MppsStore(const ServiceStateLimits& limits) : lim_(limits) {}
+    // Persists to `folder` (created owner-only when missing) and loads what it holds. Call before
+    // serving. Files that cannot be read are skipped and counted (skipped_files()).
+    Status set_state_folder(const std::string& folder);
+    std::uint16_t create(const std::string& uid, const Dataset& attributes, const std::string& calling_ae = {});
+    std::uint16_t set(const std::string& uid, const Dataset& modifications, const std::string& calling_ae = {});
     std::optional<Dataset> get(const std::string& uid) const;
     std::size_t size() const;
+    std::size_t in_progress() const;
+    std::uint64_t bytes() const;
+    std::size_t skipped_files() const;
 
 private:
+    struct Item {
+        Dataset ds;
+        std::string creator;
+        std::uint64_t bytes = 0;
+        std::uint64_t finished_seq = 0;  // 0: IN PROGRESS
+    };
+    bool make_room(std::uint64_t need, const std::string& keep);
+    void evict_finished_over_cap();
+    Status save(const std::string& uid, const Item& it) const;
+    void erase_file(const std::string& uid) const;
+
     mutable std::mutex mu_;
-    std::map<std::string, Dataset> items_;
+    ServiceStateLimits lim_;
+    std::map<std::string, Item> items_;
+    std::map<std::uint64_t, std::string> finished_;  // finished_seq -> uid (oldest first)
+    std::uint64_t next_seq_ = 1;
+    std::size_t in_progress_ = 0;
+    std::uint64_t bytes_ = 0;
+    std::string folder_;
+    std::size_t skipped_ = 0;
 };
 
 // ===================================================================== UPS (Annex CC)
@@ -205,22 +257,34 @@ constexpr std::string_view Canceled = "CANCELED";
 constexpr std::string_view Completed = "COMPLETED";
 }  // namespace ups_state
 
-// An in-memory UPS SCP (UPS Push/Pull/Watch/Query provider and UPS Event sender).
+// A UPS SCP (UPS Push/Pull/Watch/Query provider and UPS Event sender), bounded by
+// ServiceStateLimits (R-109): workitems that are not final count against max_items, final ones
+// (COMPLETED / CANCELED) are kept up to max_finished and the byte budget, oldest evicted first
+// (never while a subscriber holds a deletion lock on them). In memory by default; with a state
+// folder every workitem and the global subscriptions are kept in owner-only files and reloaded.
 class UpsProvider {
 public:
     UpsProvider() = default;
+    explicit UpsProvider(const ServiceStateLimits& limits) : lim_(limits) {}
+    Status set_state_folder(const std::string& folder);
 
-    std::uint16_t create(const std::string& uid, const Dataset& attributes);
-    std::uint16_t set(const std::string& uid, const Dataset& modifications);
+    std::uint16_t create(const std::string& uid, const Dataset& attributes, const std::string& calling_ae = {});
+    std::uint16_t set(const std::string& uid, const Dataset& modifications, const std::string& calling_ae = {});
     std::uint16_t get(const std::string& uid, const std::optional<std::vector<Tag>>& attributes, Dataset& out) const;
-    std::uint16_t change_state(const std::string& uid, std::string_view state, const std::string& transaction_uid);
+    std::uint16_t change_state(const std::string& uid, std::string_view state, const std::string& transaction_uid,
+                               const std::string& calling_ae = {});
     std::uint16_t request_cancel(const std::string& uid, const std::string& requesting_ae, const Dataset& info);
     // uid may be one of the global subscription instances.
     std::uint16_t subscribe(const std::string& uid, const std::string& ae, bool deletion_lock);
     std::uint16_t unsubscribe(const std::string& uid, const std::string& ae);
     std::uint16_t suspend_global(const std::string& ae);
-    std::vector<Dataset> find(const Dataset& identifier, const MatchOptions& opt = {}) const;
+    // At most `max_results` matches (0: no cap); *more is set when further ones matched.
+    std::vector<Dataset> find(const Dataset& identifier, const MatchOptions& opt = {}, std::size_t max_results = 0,
+                              bool* more = nullptr) const;
     std::optional<std::string> state(const std::string& uid) const;
+    std::size_t size() const;
+    std::uint64_t bytes() const;
+    std::size_t skipped_files() const;
     // Event reports produced by the operations so far, per receiving AE (drained).
     std::vector<std::pair<std::string, UpsEventReport>> take_events();
     // Hook to let a performer refuse cancellation requests (default: accept).
@@ -231,19 +295,39 @@ private:
         Dataset ds;
         std::string state;
         std::string transaction_uid;
+        std::string creator;
         std::set<std::string> subscribers;
+        std::set<std::string> locks;  // subscribers holding a deletion lock
+        std::uint64_t bytes = 0;
+        std::uint64_t finished_seq = 0;
     };
     void queue_state_report(const std::string& uid, const Item& it, const std::set<std::string>& to);
+    void queue_event(const std::string& ae, UpsEventReport ev);
     std::set<std::string> watchers(const Item& it) const;
+    bool make_room(std::uint64_t need, const std::string& keep);
+    void finish(const std::string& uid, Item& it);
+    void evict_finished_over_cap();
+    Status save(const std::string& uid, const Item& it) const;
+    void save_globals() const;
+    void erase_file(const std::string& uid) const;
 
     mutable std::mutex mu_;
+    ServiceStateLimits lim_;
     std::map<std::string, Item> items_;
+    std::map<std::uint64_t, std::string> finished_;
+    std::uint64_t next_seq_ = 1;
+    std::size_t open_items_ = 0;
+    std::uint64_t bytes_ = 0;
     std::set<std::string> global_;        // global subscribers
     std::set<std::string> suspended_;     // global subscription suspended for new instances
     std::vector<std::pair<std::string, UpsEventReport>> events_;
+    std::string folder_;
+    std::size_t skipped_ = 0;
 };
 
-// SCU helpers (each uses the context accepted for the given UPS SOP class).
+// SCU helpers. Each uses the presentation context accepted for the given UPS SOP class; the
+// Requested / Affected SOP Class UID in the DIMSE-N command is always that of the UPS Push SOP
+// Class, as PS3.4 CC.2 requires ("all UPSs are created as instances of the UPS Push SOP Class").
 Result<Scu::NResponse> ups_create(Scu& scu, std::string uid, const Dataset& attributes);   // UPS Push
 Result<Scu::NResponse> ups_get(Scu& scu, std::string_view sop_class, const std::string& uid,
                                const std::vector<Tag>& attributes = {});
@@ -317,6 +401,8 @@ enum class CommitmentReportMode {
     SameThenNew,      // same association; a new one if that fails
 };
 
+class EventSender;
+
 struct ServiceSet {
     // Storage Commitment SCP: decides the result of each request.
     std::function<CommitmentResult(const CommitmentRequest&)> on_commitment;
@@ -346,6 +432,66 @@ struct ServiceSet {
     // After a Storage Commitment request was decided: the result and whether the report reached
     // the requestor (on its association or a new one).
     std::function<void(const CommitmentRequest& rq, const CommitmentResult& result, bool delivered)> on_commitment_done;
+    // The AE an MPPS / UPS update came from is passed to the models when they bind updates to
+    // the creator (ServiceStateLimits::bind_to_creator).
+    // UPS C-FIND responses per request; more matches end the query with 0xA700 (R-109).
+    std::size_t max_ups_find_results = 10000;
+    // Event reports that need a new association (Storage Commitment results, UPS events) are sent
+    // by one sender thread with a bounded queue and short timeouts (R-117), started and stopped by
+    // the ScpServer the set is plugged into; its outbound associations are aborted by stop().
+    // Without a server (sender unset) they are sent synchronously, as before.
+    std::shared_ptr<EventSender> sender;
+    std::size_t max_queued_event_jobs = 256;  // jobs waiting for the sender; more are dropped and logged
+    Timeouts event_timeouts = [] {
+        Timeouts t;
+        t.connect_ms = 5000;
+        t.acse_ms = 5000;
+        t.artim_ms = 5000;
+        t.dimse_ms = 10000;
+        t.write_ms = 10000;
+        return t;
+    }();
+};
+
+// One event report to send on a new association (the context is negotiated for
+// `abstract_syntax`; the command carries `sop_class`).
+struct EventToSend {
+    std::string abstract_syntax;
+    std::string sop_class;
+    std::string instance;
+    std::uint16_t event_type = 1;
+    Dataset info;
+};
+
+// The sender thread of a ServiceSet (R-117).
+class EventSender {
+public:
+    struct Job {
+        std::string ae;
+        std::vector<EventToSend> events;
+        std::function<void(const Status&)> done;  // called on the sender thread (may be empty)
+    };
+    EventSender(const ServiceSet& set, const ScpConfig& cfg, std::function<void(const std::string&)> log);
+    ~EventSender();
+    EventSender(const EventSender&) = delete;
+    EventSender& operator=(const EventSender&) = delete;
+    // False when the queue is full or the sender is stopping (the job is not run; `done` is not called).
+    bool post(Job job);
+    // Aborts the association in progress, drops what is queued and joins the thread. Idempotent.
+    void stop();
+    std::size_t queued() const;
+
+private:
+    void run();
+    const ServiceSet& set_;
+    ScpConfig cfg_;
+    std::function<void(const std::string&)> log_;
+    mutable std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<Job> queue_;
+    Scu* current_ = nullptr;  // under mu_
+    bool stopping_ = false;
+    std::thread thread_;
 };
 
 // Abstract syntaxes the service set adds to an SCP's presentation context policy.

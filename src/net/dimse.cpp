@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdint>
 
+#include "core/incomplete_policy.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -504,8 +505,7 @@ Result<DimseReceived> receive_dimse(Association& a, int timeout_ms, const SpoolC
 
 Result<Dataset> decode_message_dataset(const Message& m) {
     if (!m.has_data) return Dataset{};
-    ReadOptions opt;
-    return read_dataset(m.data, m.transfer_syntax, opt);
+    return read_dataset(m.data, m.transfer_syntax, network_read_options());
 }
 
 Status build_proposals(const std::vector<ProposedContext>& proposals, AssociateRq& rq) {

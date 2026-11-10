@@ -146,7 +146,10 @@ public:
         if (w.empty()) return Status(Errc::InvalidArgument, "path is not valid UTF-8");
         OwnerOnlySecurity sec;
         if (!sec.get()) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
-        h_ = CreateFileW(w.c_str(), GENERIC_WRITE, 0, sec.get(), CREATE_NEW,
+        // FILE_SHARE_DELETE: reopen_for_rename() below needs it (a second handle with DELETE
+        // access to this same open file). Reading and writing by others stay excluded while the
+        // file is written; the owner-only DACL decides who could open it at all.
+        h_ = CreateFileW(w.c_str(), GENERIC_WRITE, FILE_SHARE_DELETE, sec.get(), CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (h_ == INVALID_HANDLE_VALUE) {
             const DWORD e = GetLastError();
@@ -205,6 +208,17 @@ public:
 #endif
     }
 #if defined(_WIN32)
+    // R-133: a second handle to this same open file, with DELETE access only and full sharing,
+    // for renaming it into place after close(). ReOpenFile goes through the open file, not
+    // through its name, so the handle cannot name another file and needs no identity check; with
+    // only DELETE access and full sharing it does not keep readers from opening the target in
+    // the moment it names it. INVALID_HANDLE_VALUE when the file system cannot do it (the caller
+    // then opens the file by name). The caller closes the handle.
+    HANDLE reopen_for_rename() const noexcept {
+        if (h_ == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+        return ReOpenFile(h_, DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     // The file's identity (volume serial number and file index), to recognise it when it is
     // opened again by name; false when unknown.
     bool identity(std::uint64_t& volume, std::uint64_t& index) const noexcept {

@@ -15,6 +15,11 @@
 #include <unordered_set>
 #include <utility>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include "core/dataset.hpp"
 #include "core/io.hpp"
 #include "core/reader.hpp"
@@ -696,6 +701,7 @@ struct Store::Impl {
     mutable std::mutex writer;  // serialises changes; also guards `counters` and `generation`
     std::mutex cb_mutex;
     EventCallback callback;
+    std::vector<std::string> open_notes;  // R-135: set by open(), read-only afterwards
 
     fs::path abs_path(const Instance& in) const {
         if (in.flags & kReferenced) return u8path(in.path);
@@ -1020,9 +1026,11 @@ struct Store::Impl {
         return Status::ok();
     }
 
-    Result<AddOutcome> add_bytes(const Bytes& src, DuplicatePolicy policy, AddMode mode, const std::string& ref_path) {
+    Result<AddOutcome> add_bytes(const Bytes& src, DuplicatePolicy policy, AddMode mode, const std::string& ref_path,
+                                 std::uint32_t extra_flags = 0) {
         IndexRecord rec;
         if (Status s = extract_index(src, rec); !s) return s;
+        rec.flags |= extra_flags;
         Bytes data = src;
         if (mode == AddMode::Copy && !(rec.flags & kHadPreamble)) {
             // Raw data set: store a proper Part 10 file.
@@ -1034,6 +1042,7 @@ struct Store::Impl {
             const std::uint8_t* q = holder->data();
             data = Bytes(std::shared_ptr<const void>(holder, holder.get()), q, holder->size());
             if (Status s = extract_index(data, rec); !s) return s;
+            rec.flags |= extra_flags;
         }
         const std::string uid = rec[Str::SopInstanceUid];
         if (uid.empty()) return Status(Errc::Malformed, "instance has no SOP Instance UID");
@@ -1206,6 +1215,44 @@ struct Store::Impl {
 Store::Store(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Store::~Store() = default;
 
+const std::vector<std::string>& Store::open_notes() const noexcept { return impl_->open_notes; }
+
+namespace {
+// R-135: is the folder open to group / others beyond what file_mode asks for? Tighten or report.
+void check_folder_permissions(const fs::path& dir, const char* role, const StoreOptions& opt,
+                              std::vector<std::string>& notes) {
+#if defined(_WIN32)
+    (void)dir;
+    (void)role;
+    (void)opt;
+    (void)notes;
+#else
+    struct stat sb {};
+    if (::stat(dir.c_str(), &sb) != 0) return;
+    const mode_t want = opt.file_mode == 0 ? mode_t{0700}
+                                           : static_cast<mode_t>((opt.file_mode & 0777u) | ((opt.file_mode & 0444u) >> 2));
+    const mode_t have = sb.st_mode & 0777;
+    const mode_t extra = have & static_cast<mode_t>(~want) & 0077;
+    if (extra == 0) return;
+    const auto octal = [](mode_t m) {
+        std::string t = "0000";
+        t[1] = static_cast<char>('0' + ((m >> 6) & 7));
+        t[2] = static_cast<char>('0' + ((m >> 3) & 7));
+        t[3] = static_cast<char>('0' + (m & 7));
+        return t;
+    };
+    const mode_t tightened = have & static_cast<mode_t>(~extra);
+    if (opt.tighten_permissions && sb.st_uid == ::geteuid() && ::chmod(dir.c_str(), tightened) == 0) {
+        notes.push_back(std::string("STORE_PERMISSIONS_TIGHTENED: the ") + role + " folder was open to group / others (mode " +
+                        octal(have) + "); it is now " + octal(tightened));
+    } else {
+        notes.push_back(std::string("STORE_PERMISSIONS_WIDE: the ") + role + " folder is open to group / others (mode " +
+                        octal(have) + ", expected " + octal(want) + "); it was not changed");
+    }
+#endif
+}
+}  // namespace
+
 const std::string& Store::root() const noexcept { return impl_->root_utf8; }
 
 Result<std::unique_ptr<Store>> Store::open(const std::string& utf8_root, const StoreOptions& opt) {
@@ -1234,6 +1281,8 @@ Result<std::unique_ptr<Store>> Store::open(const std::string& utf8_root, const S
         return Status(Errc::IoError, "cannot create index folder");
     if (Status d = create_private_dirs(impl->data_dir, opt.file_mode); !d)
         return Status(Errc::IoError, "cannot create data folder");
+    check_folder_permissions(impl->index_dir, "index", opt, impl->open_notes);
+    check_folder_permissions(impl->data_dir, "data", opt, impl->open_notes);
     Status s = impl->load();
     if (!s) {
         if (!opt.rebuild_if_corrupt || (s.code != Errc::Malformed && s.code != Errc::Unsupported)) return s;
@@ -1260,8 +1309,8 @@ Result<AddOutcome> Store::add_file(const std::string& utf8_path, DuplicatePolicy
     return impl_->add_bytes(*bytes, policy, mode, ref);
 }
 
-Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy) {
-    return impl_->add_bytes(data, policy, AddMode::Copy, {});
+Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy, std::uint32_t extra_flags) {
+    return impl_->add_bytes(data, policy, AddMode::Copy, {}, extra_flags & kIncompleteRead);
 }
 
 Result<std::size_t> Store::add_records(const std::vector<IndexRecord>& records) {
