@@ -294,6 +294,13 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_c
                     } else if (loss && (incomplete != siaara::IncompletePolicy::AcceptAsReceived || raw)) {
                         // Never stored rewritten; refused unless it can be kept exactly as received.
                         ++rep.incomplete_refused;
+                        // REFUSE_KEEP_COPY: a copy for diagnosis in the "rejected" area (best
+                        // effort), as the Storage SCP and the STOW-RS server keep one.
+                        if (incomplete == siaara::IncompletePolicy::RefuseKeepCopy && store)
+                            (void)capi::quarantine_bytes(store, bytes, "WADO-RS", std::string(), std::string(),
+                                                         f->dataset.get_string(siaara::tags::SOPClassUID).value_or(""), uid,
+                                                         f->read_loss, f->warnings.empty() ? std::string() : f->warnings.front(),
+                                                         true);
                         s = Status(Errc::Rejected,
                                    std::string(siaara::net::kIncompleteInput) + ": the response part was not read completely" +
                                        (f->warnings.empty() ? std::string() : " (" + f->warnings.front() + ")"));
@@ -321,7 +328,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_c
                 }
             }
             if (s && store) {
-                auto r = store->store->add_buffer(bytes, pol, 0, st::network_extract_options());
+                // B2: accepted although incomplete: flagged in the index (SIAARA_IDXF_INCOMPLETE).
+                auto r = store->store->add_buffer(bytes, pol, loss ? st::kIncompleteRead : 0u, st::network_extract_options());
                 if (!r) {
                     s = r.error();
                     // R-152: a part the store refused leaves no file behind.

@@ -870,7 +870,13 @@ private:
                     }
                     else {
                         reason = store_.store(f.value(), bytes);
-                        if (!reason && !f->complete()) warn = warning::ElementsDiscarded;
+                        // Accepted although incomplete: the answer for kept instances is the
+                        // quarantine_response option (WARNING: Warning Reason 0xB006; SUCCESS: no
+                        // warning; FAILURE: listed as failed with 0xC000 although it is stored).
+                        if (!reason && !f->complete()) {
+                            if (cfg_.quarantine_response == QuarantineResponse::Warning) warn = warning::ElementsDiscarded;
+                            else if (cfg_.quarantine_response == QuarantineResponse::Failure) reason = kIncompleteFailureStatus;
+                        }
                         // A complete data set without a Part 10 preamble is stored as a new
                         // Part 10 file (file meta added): say so.
                         else if (!reason && !f->had_preamble) warn = warning::CoercionOfDataElements;

@@ -2087,9 +2087,12 @@ typedef struct siaara_incomplete_override {
  * REFUSE: nothing is kept - the FAILURE answer (C-STORE incomplete_failure_status, 0xC000;
  *   SIAARA_SCP_STORE_FAILED with read_loss; STOW-RS Failure Reason; a retrieved part counted failed).
  * ACCEPT_AS_RECEIVED ("accept, flagged"): the bytes are stored exactly as they arrived in the
- *   archive, indexed with SIAARA_IDXF_INCOMPLETE; SIAARA_SCP_STORED with read_loss != 0; the
- *   sender gets the answer chosen with quarantine_response (default WARNING: C-STORE 0xB007;
- *   STOW-RS Warning Reason 0xB006).
+ *   archive, indexed with SIAARA_IDXF_INCOMPLETE (Storage SCP, C-GET receive, STOW-RS server,
+ *   siaara_web_wado_retrieve_to_ex); SIAARA_SCP_STORED with read_loss != 0 and, as dimse_status,
+ *   the status the sender was answered with; the sender gets the answer chosen with
+ *   quarantine_response (default WARNING: C-STORE 0xB007, STOW-RS Warning Reason 0xB006; SUCCESS:
+ *   0x0000 / no Warning Reason; FAILURE: incomplete_failure_status / the instance listed in the
+ *   Failed SOP Sequence with 0xC000 - although it is stored).
  * QUARANTINE (the default): the bytes are kept exactly as received in the store's quarantine
  *   area (siaara_store_quarantine_*), outside the index, so nothing returns them until an
  *   operator releases or deletes them; SIAARA_SCP_QUARANTINED; the sender gets the
@@ -3239,7 +3242,12 @@ typedef struct siaara_web_retrieve_report {
  * checked first, then written to the folder, then added to the store; when the store refuses it
  * the file just written is removed again (unless it already existed and was kept), so a failed
  * part leaves nothing behind (R-152). siaara_web_wado_retrieve_to is this call with the default
- * options (incomplete parts refused, UIDs checked). */
+ * options: UIDs checked, and the default incomplete policy - with a store an incomplete part is
+ * QUARANTINED (kept in the store's quarantine area, not in the archive or the folder, and counted
+ * as failed); without a store (folder only) there is no quarantine area and it is refused.
+ * SIAARA_INCOMPLETE_REFUSE_KEEP_COPY keeps a copy of a refused part in the store's "rejected"
+ * area; SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED stores it unchanged, indexed with
+ * SIAARA_IDXF_INCOMPLETE. */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_client* client, const char* study_uid,
                                                                     const char* series_uid, const char* instance_uid,
                                                                     const siaara_web_retrieve_options* options,

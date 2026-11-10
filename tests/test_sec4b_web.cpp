@@ -17,6 +17,9 @@
 #include "core/writer.hpp"
 #include "net/socket.hpp"
 #include "siaara/siaara.h"
+#include "capi/capi_internal.hpp"
+#include "store/index.hpp"
+#include "store/store.hpp"
 #include "test.hpp"
 #include "web/client.hpp"
 #include "web/dicom_json.hpp"
@@ -93,6 +96,21 @@ struct StoreOpen {
         return st.instances;
     }
 };
+
+// The index flags of an instance (0xFFFFFFFF when it is not in the index).
+std::uint32_t index_flags(const siaara_store* s, const std::string& sop) {
+    store::QueryFilter f;
+    f.level = store::Level::Instance;
+    f.sop_instance_uid = sop;
+    auto r = s->store->query(f);
+    return r && !r->rows.empty() ? r->rows[0].flags : 0xFFFFFFFFu;
+}
+
+std::uint32_t area_items(const siaara_store* s, int32_t area) {
+    uint32_t n = 0;
+    (void)siaara_store_quarantine_count(s, area, &n, nullptr);
+    return n;
+}
 
 siaara_web_server_options server_options() {
     siaara_web_server_options o;
@@ -269,6 +287,8 @@ TEST_CASE("web/sec4 R-116 STOW-RS refuses an incomplete part by default, or stor
         REQUIRE(ok->items.size() == 1);
         CHECK_EQ(ok->items[0].get_int(0x00081196).value_or(0), 0xB006);
         CHECK(st.instances() == 1);
+        // B2: flagged in the index, as the Storage SCP does.
+        CHECK((index_flags(st.store, "2.25.62002") & store::kIncompleteRead) != 0);
         bool same = false;
         for (const auto& e : std::filesystem::recursive_directory_iterator(dir / "store")) {
             if (!e.is_regular_file() || e.file_size() != cut.size()) continue;
@@ -283,6 +303,39 @@ TEST_CASE("web/sec4 R-116 STOW-RS refuses an incomplete part by default, or stor
         REQUIRE(rs2.is_ok());
         CHECK_EQ(rs2->status, 409);
         CHECK(st.instances() == 1);
+        siaara_web_server_free(ws);
+    }
+    // The answer for an ACCEPTED incomplete part follows quarantine_response (P3-1): SUCCESS -
+    // 200 and no Warning Reason; FAILURE - listed as failed with 0xC000 although it is stored.
+    for (const int32_t answer : {SIAARA_QUARANTINE_ANSWER_SUCCESS, SIAARA_QUARANTINE_ANSWER_FAILURE}) {
+        const auto dir = temp_dir("r116stow_answer");
+        StoreOpen st(dir / "store");
+        siaara_web_server_options o = server_options();
+        o.incomplete_policy = SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED;
+        o.quarantine_response = answer;
+        siaara_web_server* ws = nullptr;
+        REQUIRE(siaara_web_server_start(&o, st.store, &ws) == SIAARA_OK);
+        uint32_t port = 0;
+        REQUIRE(siaara_web_server_port(ws, &port) == SIAARA_OK);
+        auto rs = stow(static_cast<std::uint16_t>(port), {cut});
+        REQUIRE(rs.is_ok());
+        auto body = web::dataset_from_json(rs->body);
+        REQUIRE(body.is_ok());
+        CHECK(st.instances() == 1);
+        CHECK((index_flags(st.store, "2.25.62002") & store::kIncompleteRead) != 0);
+        if (answer == SIAARA_QUARANTINE_ANSWER_SUCCESS) {
+            CHECK_EQ(rs->status, 200);
+            const Element* ok = body->find(0x00081199);
+            REQUIRE(ok != nullptr);
+            REQUIRE(ok->items.size() == 1);
+            CHECK(!ok->items[0].contains(0x00081196));
+        } else {
+            CHECK_EQ(rs->status, 409);
+            const Element* bad = body->find(0x00081198);
+            REQUIRE(bad != nullptr);
+            REQUIRE(bad->items.size() == 1);
+            CHECK_EQ(bad->items[0].get_int(0x00081197).value_or(0), 0xC000);
+        }
         siaara_web_server_free(ws);
     }
     {  // Default (QUARANTINE): kept outside the archive; Warning Reason 0xB007 and no Retrieve URL.
@@ -367,10 +420,42 @@ TEST_CASE("web/sec4 R-116 R-152 retrieve-to-store applies the incomplete policy 
         CHECK_EQ(rep.failed, 0u);
         CHECK_EQ(rep.incomplete_accepted, 1u);
         CHECK_EQ(rep.rewritten, 0u);
+        // B2: the incomplete instance is flagged in the index; the complete one is not.
+        CHECK((index_flags(dest.store, "2.25.63002") & store::kIncompleteRead) != 0);
+        CHECK((index_flags(dest.store, "2.25.63001") & store::kIncompleteRead) == 0);
         auto kept = io::read_file((std::filesystem::path(folder) / "2.25.63002.dcm").string());
         REQUIRE(kept.is_ok());
         REQUIRE(kept->size() == cut.size());
         CHECK(std::memcmp(kept->data(), cut.data(), cut.size()) == 0);
+    }
+    {  // REFUSE_KEEP_COPY (P3-3): refused, with a copy of the bytes in the "rejected" area.
+        StoreOpen dest(dir / "dest_keep");
+        siaara_web_retrieve_options ro;
+        std::memset(&ro, 0, sizeof ro);
+        ro.struct_size = sizeof ro;
+        ro.store = dest.store;
+        ro.transfer_syntaxes = as_stored;
+        ro.transfer_syntax_count = 1;
+        ro.incomplete_policy = SIAARA_INCOMPLETE_REFUSE_KEEP_COPY;
+        siaara_web_retrieve_report rep;
+        std::memset(&rep, 0, sizeof rep);
+        rep.struct_size = sizeof rep;
+        CHECK(siaara_web_wado_retrieve_to_ex(wc, "2.25.63900", nullptr, nullptr, &ro, nullptr, nullptr, &rep) != SIAARA_OK);
+        CHECK_EQ(rep.stored, 1u);
+        CHECK_EQ(rep.incomplete_refused, 1u);
+        CHECK(dest.instances() == 1);
+        CHECK_EQ(area_items(dest.store, SIAARA_AREA_QUARANTINE), 0u);
+        REQUIRE(area_items(dest.store, SIAARA_AREA_REJECTED) == 1u);
+        siaara_quarantine_record qr;
+        std::memset(&qr, 0, sizeof qr);
+        qr.struct_size = sizeof qr;
+        REQUIRE(siaara_store_quarantine_get(dest.store, SIAARA_AREA_REJECTED, 0, &qr) == SIAARA_OK);
+        CHECK(std::string(qr.source) == "WADO-RS");
+        CHECK_EQ(qr.size, cut.size());
+        std::vector<std::uint8_t> kept(cut.size());
+        size_t need = 0;
+        REQUIRE(siaara_store_quarantine_bytes(dest.store, SIAARA_AREA_REJECTED, qr.id, kept.data(), kept.size(), &need) == SIAARA_OK);
+        CHECK(kept == cut);
     }
     siaara_web_client_free(wc);
     siaara_web_server_free(ws);
