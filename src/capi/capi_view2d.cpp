@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "capi/capi_internal.hpp"
+#include "modules/data.hpp"
 #include "clinical/gsps.hpp"
 #include "image/color.hpp"
 #include "image/frames.hpp"
@@ -728,6 +729,21 @@ SIAARA_API siaara_status SIAARA_CALL siaara_pstate_applies(const siaara_pstate* 
     return guarded([&]() -> siaara_status {
         if (!ps || !out || (!sop_instance_uid && len)) return fail(Errc::InvalidArgument, "bad argument");
         *out = ps->ps.references_image(std::string_view(sop_instance_uid ? sop_instance_uid : "", len), frame_1based) ? 1 : 0;
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_frame_pixel_value(const siaara_frame* frame, uint32_t column, uint32_t row,
+                                                              uint32_t sample, siaara_pixel_value* out) {
+    return guarded([&]() -> siaara_status {
+        if (!frame || !out || out->struct_size < sizeof(siaara_pixel_value))
+            return fail(Errc::InvalidArgument, "frame and out (with struct_size) must be set");
+        const img::PixelInfo& pi = frame->img->info();
+        const bool modality = pi.samples_per_pixel == 1 && pi.kind == img::SampleKind::Integer;
+        auto v = siaara::modules::pixel_value(frame->file.dataset, pi, frame->pixels, modality ? &frame->modality : nullptr,
+                                              column, row, sample);
+        if (!v) return fail(v.error());
+        capi::fill_pixel_value(v.value(), frame->index, column, row, sample, out);
         return ok();
     });
 }

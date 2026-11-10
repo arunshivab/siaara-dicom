@@ -69,6 +69,12 @@ VR implicit_vr(Tag tag) noexcept {
 
 std::size_t entry_count() noexcept { return std::size(kEntries) + std::size(kMaskedEntries); }
 
+const Entry* entry_at(std::size_t index) noexcept {
+    if (index < std::size(kEntries)) return &kEntries[index];
+    index -= std::size(kEntries);
+    return index < std::size(kMaskedEntries) ? &kMaskedEntries[index] : nullptr;
+}
+
 const UidEntry* lookup_uid(std::string_view uid) noexcept {
     auto it = std::lower_bound(std::begin(kUids), std::end(kUids), uid,
                                [](const UidEntry& e, std::string_view u) { return e.uid < u; });

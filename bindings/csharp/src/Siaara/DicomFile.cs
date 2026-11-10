@@ -79,7 +79,7 @@ public sealed record DicomReadReport
 /// A parsed DICOM Part 10 file (siaara_file). Owns its data sets. Thread safety follows the C API:
 /// many threads may read one file at once; changes need exclusive access.
 /// </summary>
-public sealed class DicomFile : IDisposable
+public sealed partial class DicomFile : IDisposable
 {
     private readonly FileHandle _handle;
     private DicomDataset? _dataset;

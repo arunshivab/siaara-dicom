@@ -362,6 +362,67 @@ internal static class C
     public const uint SIAARA_REPAIR_RESCUE = 1u << 6;
     public const uint SIAARA_REPAIR_DECOMPRESS = 1u << 7;
     public const uint SIAARA_REPAIR_STUDY = 1u << 8;
+    public const int SIAARA_MODULE_KIND_MODULE = 1;
+    public const int SIAARA_MODULE_KIND_MACRO = 2;
+    public const int SIAARA_MODULE_KIND_ITEM = 3;
+    public const int SIAARA_MODULE_KIND_TABLE = 4;
+    public const int SIAARA_MODULE_KIND_FUNCTIONAL_GROUPS = 5;
+    public const int SIAARA_ATTR_TYPE_NONE = 0;
+    public const int SIAARA_ATTR_TYPE_1 = 1;
+    public const int SIAARA_ATTR_TYPE_1C = 2;
+    public const int SIAARA_ATTR_TYPE_2 = 3;
+    public const int SIAARA_ATTR_TYPE_2C = 4;
+    public const int SIAARA_ATTR_TYPE_3 = 5;
+    public const int SIAARA_VALUE_EMPTY = 0;
+    public const int SIAARA_VALUE_TEXT = 1;
+    public const int SIAARA_VALUE_INTEGER = 2;
+    public const int SIAARA_VALUE_REAL = 3;
+    public const int SIAARA_VALUE_BINARY = 4;
+    public const int SIAARA_VALUE_SEQUENCE = 5;
+    public const int SIAARA_VALUE_TAG = 6;
+    public const int SIAARA_VALUE_ITEM = 7;
+    public const int SIAARA_UNITS_NONE = 0;
+    public const int SIAARA_UNITS_RESCALE_TYPE = 1;
+    public const int SIAARA_UNITS_MODALITY_LUT_TYPE = 2;
+    public const int SIAARA_UNITS_DOSE_UNITS = 3;
+    public const int SIAARA_UNITS_CT_HU = 4;
+    public const int SIAARA_UNITS_PET_UNITS = 5;
+    public const int SIAARA_WAVEFORM_LABEL = 0;
+    public const int SIAARA_WAVEFORM_STATUS = 1;
+    public const int SIAARA_WAVEFORM_UNITS_CODE = 2;
+    public const int SIAARA_WAVEFORM_UNITS_MEANING = 3;
+    public const int SIAARA_WAVEFORM_SOURCE_CODE = 4;
+    public const int SIAARA_WAVEFORM_SOURCE_SCHEME = 5;
+    public const int SIAARA_WAVEFORM_SOURCE_MEANING = 6;
+    public const int SIAARA_WAVEFORM_GROUP_LABEL = 7;
+    public const int SIAARA_NM_ENERGY_WINDOW = 1 << 0;
+    public const int SIAARA_NM_DETECTOR = 1 << 1;
+    public const int SIAARA_NM_PHASE = 1 << 2;
+    public const int SIAARA_NM_ROTATION = 1 << 3;
+    public const int SIAARA_NM_RR_INTERVAL = 1 << 4;
+    public const int SIAARA_NM_TIME_SLOT = 1 << 5;
+    public const int SIAARA_NM_SLICE = 1 << 6;
+    public const int SIAARA_NM_ANGULAR_VIEW = 1 << 7;
+    public const int SIAARA_NM_TIME_SLICE = 1 << 8;
+    public const int SIAARA_OBJECT_OTHER = 0;
+    public const int SIAARA_OBJECT_IMAGE = 1;
+    public const int SIAARA_OBJECT_RT_PLAN = 2;
+    public const int SIAARA_OBJECT_RT_DOSE = 3;
+    public const int SIAARA_OBJECT_RT_STRUCTURE_SET = 4;
+    public const int SIAARA_OBJECT_RT_IMAGE = 5;
+    public const int SIAARA_OBJECT_RT_TREATMENT_RECORD = 6;
+    public const int SIAARA_OBJECT_STRUCTURED_REPORT = 7;
+    public const int SIAARA_OBJECT_SEGMENTATION = 8;
+    public const int SIAARA_OBJECT_WAVEFORM = 9;
+    public const int SIAARA_OBJECT_PRESENTATION_STATE = 10;
+    public const int SIAARA_OBJECT_ENCAPSULATED_DOCUMENT = 11;
+    public const int SIAARA_OBJECT_REGISTRATION = 12;
+    public const int SIAARA_OBJECT_RAW_DATA = 13;
+    public const int SIAARA_OBJECT_SPECTROSCOPY = 14;
+    public const int SIAARA_OBJECT_SURFACE = 15;
+    public const int SIAARA_DICT_MATCH_NAME = 1 << 0;
+    public const int SIAARA_DICT_MATCH_KEYWORD = 1 << 1;
+    public const int SIAARA_DICT_INCLUDE_RETIRED = 1 << 2;
 }
 
 [InlineArray(3)]
@@ -378,6 +439,12 @@ internal struct FixedArray4OfByte
 
 [InlineArray(20)]
 internal struct FixedArray20OfByte
+{
+    private byte _element0;
+}
+
+[InlineArray(32)]
+internal struct FixedArray32OfByte
 {
     private byte _element0;
 }
@@ -416,6 +483,12 @@ internal struct FixedArray6OfDouble
 internal struct FixedArray9OfDouble
 {
     private double _element0;
+}
+
+[InlineArray(3)]
+internal struct FixedArray3OfLong
+{
+    private long _element0;
 }
 
 [InlineArray(3)]
@@ -1260,6 +1333,187 @@ internal struct siaara_repair_options
     public nuint uid_seed_len;
 }
 
+/// <summary>siaara_module_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_module_info
+{
+    public uint struct_size;
+    public uint index;
+    public int kind;
+    public uint attribute_count;
+    public nint name;
+    public nint table_id;
+    public nint class_name;
+}
+
+/// <summary>siaara_module_attribute (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_module_attribute
+{
+    public uint struct_size;
+    public uint tag;
+    public uint mask;
+    public int type;
+    public int item_module;
+    public int retired;
+    public nint keyword;
+    public nint vr;
+    public nint vm;
+}
+
+/// <summary>siaara_path_value (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_path_value
+{
+    public uint struct_size;
+    public uint tag;
+    public FixedArray4OfByte vr;
+    public uint vm;
+    public int kind;
+    public int value_index;
+    public uint item_count;
+    public int has_integer;
+    public int has_real;
+    public uint reserved0;
+    public long integer;
+    public double real;
+    public ulong byte_length;
+}
+
+/// <summary>siaara_pixel_value (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_pixel_value
+{
+    public uint struct_size;
+    public uint frame;
+    public uint column;
+    public uint row;
+    public uint sample;
+    public int sample_kind;
+    public long stored;
+    public double stored_real;
+    public int has_modality;
+    public int modality_lut;
+    public int dose_grid_scaling;
+    public int units_source;
+    public double modality_value;
+    public double rescale_slope;
+    public double rescale_intercept;
+    public FixedArray32OfByte units;
+}
+
+/// <summary>siaara_volume_sample (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_volume_sample
+{
+    public uint struct_size;
+    public int inside;
+    public int interpolation;
+    public int reserved0;
+    public FixedArray3OfDouble patient;
+    public FixedArray3OfDouble index;
+    public FixedArray3OfLong voxel;
+    public double value;
+}
+
+/// <summary>siaara_waveform_group (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_waveform_group
+{
+    public uint struct_size;
+    public uint channels;
+    public uint samples;
+    public uint bits_allocated;
+    public double sampling_frequency;
+    public FixedArray4OfByte sample_interpretation;
+    public int has_padding;
+    public long padding_value;
+    public int has_time_offset;
+    public int has_trigger_time_offset;
+    public double time_offset;
+    public double trigger_time_offset;
+    public uint data_samples;
+    public uint reserved0;
+}
+
+/// <summary>siaara_waveform_channel (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_waveform_channel
+{
+    public uint struct_size;
+    public uint bits_stored;
+    public int has_channel_number;
+    public int channel_number;
+    public int has_sensitivity;
+    public int has_correction;
+    public int has_baseline;
+    public int has_time_skew;
+    public double sensitivity;
+    public double correction;
+    public double baseline;
+    public double time_skew;
+    public int has_sample_skew;
+    public int has_offset;
+    public double sample_skew;
+    public double offset;
+    public int has_filter_low;
+    public int has_filter_high;
+    public int has_notch;
+    public int reserved0;
+    public double filter_low;
+    public double filter_high;
+    public double notch;
+}
+
+/// <summary>siaara_nm_frame_index (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_nm_frame_index
+{
+    public uint struct_size;
+    public uint frame;
+    public uint present;
+    public uint in_pointer;
+    public uint energy_window;
+    public uint detector;
+    public uint phase;
+    public uint rotation;
+    public uint rr_interval;
+    public uint time_slot;
+    public uint slice;
+    public uint angular_view;
+    public uint time_slice;
+    public uint reserved0;
+}
+
+/// <summary>siaara_sop_class_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_sop_class_info
+{
+    public uint struct_size;
+    public int object_kind;
+    public int retired;
+    public int has_iod;
+    public nint name;
+    public nint keyword;
+    public nint iod_name;
+    public nint iod_table_id;
+}
+
+/// <summary>siaara_transfer_syntax_info (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_transfer_syntax_info
+{
+    public uint struct_size;
+    public int explicit_vr;
+    public int big_endian;
+    public int encapsulated;
+    public int lossy;
+    public int deflated;
+    public int retired;
+    public int reserved0;
+    public nint name;
+}
+
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
 internal static unsafe partial class Raw
 {
@@ -2054,6 +2308,114 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_repair_file")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_repair_file(byte* input_path, nuint input_len, byte* output_path, nuint output_len, siaara_repair_options* options, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_module_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_module_count(uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_module_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_module_get(uint index, siaara_module_info* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_module_find")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_module_find(byte* name, nuint len, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_module_attribute_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_module_attribute_get(uint module, uint index, siaara_module_attribute* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_module_present")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_module_present(nint file, byte* name, nuint len, int* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dataset_module_present")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dataset_module_present(nint ds, byte* name, nuint len, int* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_get_by_path")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_get_by_path(nint ds, byte* path, nuint len, siaara_path_value* @out, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_get_doubles_by_path")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_get_doubles_by_path(nint ds, byte* path, nuint len, double* buf, nuint cap, nuint* count);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dataset_by_path")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dataset_by_path(nint ds, byte* path, nuint len, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_file_pixel_value")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_file_pixel_value(nint file, uint frame, uint column, uint row, uint sample, siaara_pixel_value* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_frame_pixel_value")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_frame_pixel_value(nint frame, uint column, uint row, uint sample, siaara_pixel_value* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_volume_voxel")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_volume_voxel(nint volume, uint i, uint j, uint k, double* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_volume_value_at")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_volume_value_at(nint volume, double* patient, int interpolation, siaara_volume_sample* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_waveform_group_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_waveform_group_count(nint ds, uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_waveform_group_info")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_waveform_group_info(nint ds, uint group, siaara_waveform_group* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_waveform_channel_info")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_waveform_channel_info(nint ds, uint group, uint channel, siaara_waveform_channel* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_waveform_channel_string")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_waveform_channel_string(nint ds, uint group, uint channel, int which, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_waveform_samples")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_waveform_samples(nint ds, uint group, uint channel, int scaled, double* buf, nuint cap, nuint* count);
+
+    [LibraryImport(Library, EntryPoint = "siaara_waveform_raw_samples")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_waveform_raw_samples(nint ds, uint group, uint channel, long* buf, nuint cap, nuint* count);
+
+    [LibraryImport(Library, EntryPoint = "siaara_rt_control_point_source")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_rt_control_point_source(nint beam, uint cp, uint tag, uint* out_cp);
+
+    [LibraryImport(Library, EntryPoint = "siaara_rt_device_positions")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_rt_device_positions(nint beam, uint cp, byte* device_type, nuint len, int effective, double* buf, nuint cap, nuint* count, uint* out_cp);
+
+    [LibraryImport(Library, EntryPoint = "siaara_nm_frame_index_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_nm_frame_index_get(nint ds, uint frame, siaara_nm_frame_index* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_sop_class_info_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_sop_class_info_get(byte* uid, nuint len, siaara_sop_class_info* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_transfer_syntax_info_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_transfer_syntax_info_get(byte* uid, nuint len, siaara_transfer_syntax_info* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dict_count")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dict_count(uint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dict_entry_at")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dict_entry_at(uint index, siaara_dict_entry* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dict_search")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dict_search(byte* text, nuint len, byte* vr, int flags, uint* buf, nuint cap, nuint* count);
 
 }
 
@@ -3575,6 +3937,208 @@ internal static unsafe class Native
         fixed (byte* p_buf = buf)
         fixed (nuint* p_needed = &needed)
             return Raw.siaara_repair_file((byte*)p_input_path, (nuint)input_path.Length, (byte*)p_output_path, (nuint)output_path.Length, p_options, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_module_count(out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_module_count(p_out);
+    }
+
+    internal static int siaara_module_get(uint index, ref siaara_module_info @out)
+    {
+        fixed (siaara_module_info* p_out = &@out)
+            return Raw.siaara_module_get(index, p_out);
+    }
+
+    internal static int siaara_module_find(ReadOnlySpan<byte> name, out uint @out)
+    {
+        @out = default;
+        fixed (byte* p_name = name)
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_module_find((byte*)p_name, (nuint)name.Length, p_out);
+    }
+
+    internal static int siaara_module_attribute_get(uint module, uint index, ref siaara_module_attribute @out)
+    {
+        fixed (siaara_module_attribute* p_out = &@out)
+            return Raw.siaara_module_attribute_get(module, index, p_out);
+    }
+
+    internal static int siaara_module_present(nint file, ReadOnlySpan<byte> name, out int @out)
+    {
+        @out = default;
+        fixed (byte* p_name = name)
+        fixed (int* p_out = &@out)
+            return Raw.siaara_module_present(file, (byte*)p_name, (nuint)name.Length, p_out);
+    }
+
+    internal static int siaara_dataset_module_present(nint ds, ReadOnlySpan<byte> name, out int @out)
+    {
+        @out = default;
+        fixed (byte* p_name = name)
+        fixed (int* p_out = &@out)
+            return Raw.siaara_dataset_module_present(ds, (byte*)p_name, (nuint)name.Length, p_out);
+    }
+
+    internal static int siaara_get_by_path(nint ds, ReadOnlySpan<byte> path, ref siaara_path_value @out, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_path = path)
+        fixed (siaara_path_value* p_out = &@out)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_get_by_path(ds, (byte*)p_path, (nuint)path.Length, p_out, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_get_doubles_by_path(nint ds, ReadOnlySpan<byte> path, Span<double> buf, out nuint count)
+    {
+        count = default;
+        fixed (byte* p_path = path)
+        fixed (double* p_buf = buf)
+        fixed (nuint* p_count = &count)
+            return Raw.siaara_get_doubles_by_path(ds, (byte*)p_path, (nuint)path.Length, (double*)p_buf, (nuint)buf.Length, p_count);
+    }
+
+    internal static int siaara_dataset_by_path(nint ds, ReadOnlySpan<byte> path, out nint @out)
+    {
+        @out = 0;
+        fixed (byte* p_path = path)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_dataset_by_path(ds, (byte*)p_path, (nuint)path.Length, p_out);
+    }
+
+    internal static int siaara_file_pixel_value(nint file, uint frame, uint column, uint row, uint sample, ref siaara_pixel_value @out)
+    {
+        fixed (siaara_pixel_value* p_out = &@out)
+            return Raw.siaara_file_pixel_value(file, frame, column, row, sample, p_out);
+    }
+
+    internal static int siaara_frame_pixel_value(nint frame, uint column, uint row, uint sample, ref siaara_pixel_value @out)
+    {
+        fixed (siaara_pixel_value* p_out = &@out)
+            return Raw.siaara_frame_pixel_value(frame, column, row, sample, p_out);
+    }
+
+    internal static int siaara_volume_voxel(nint volume, uint i, uint j, uint k, out double @out)
+    {
+        @out = default;
+        fixed (double* p_out = &@out)
+            return Raw.siaara_volume_voxel(volume, i, j, k, p_out);
+    }
+
+    internal static int siaara_volume_value_at(nint volume, ReadOnlySpan<double> patient, int interpolation, ref siaara_volume_sample @out)
+    {
+        if (patient.Length < 3) throw new ArgumentException("patient needs 3 elements", nameof(patient));
+        fixed (double* p_patient = patient)
+        fixed (siaara_volume_sample* p_out = &@out)
+            return Raw.siaara_volume_value_at(volume, (double*)p_patient, interpolation, p_out);
+    }
+
+    internal static int siaara_waveform_group_count(nint ds, out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_waveform_group_count(ds, p_out);
+    }
+
+    internal static int siaara_waveform_group_info(nint ds, uint group, ref siaara_waveform_group @out)
+    {
+        fixed (siaara_waveform_group* p_out = &@out)
+            return Raw.siaara_waveform_group_info(ds, group, p_out);
+    }
+
+    internal static int siaara_waveform_channel_info(nint ds, uint group, uint channel, ref siaara_waveform_channel @out)
+    {
+        fixed (siaara_waveform_channel* p_out = &@out)
+            return Raw.siaara_waveform_channel_info(ds, group, channel, p_out);
+    }
+
+    internal static int siaara_waveform_channel_string(nint ds, uint group, uint channel, int which, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_waveform_channel_string(ds, group, channel, which, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_waveform_samples(nint ds, uint group, uint channel, int scaled, Span<double> buf, out nuint count)
+    {
+        count = default;
+        fixed (double* p_buf = buf)
+        fixed (nuint* p_count = &count)
+            return Raw.siaara_waveform_samples(ds, group, channel, scaled, (double*)p_buf, (nuint)buf.Length, p_count);
+    }
+
+    internal static int siaara_waveform_raw_samples(nint ds, uint group, uint channel, Span<long> buf, out nuint count)
+    {
+        count = default;
+        fixed (long* p_buf = buf)
+        fixed (nuint* p_count = &count)
+            return Raw.siaara_waveform_raw_samples(ds, group, channel, (long*)p_buf, (nuint)buf.Length, p_count);
+    }
+
+    internal static int siaara_rt_control_point_source(nint beam, uint cp, uint tag, out uint out_cp)
+    {
+        out_cp = default;
+        fixed (uint* p_out_cp = &out_cp)
+            return Raw.siaara_rt_control_point_source(beam, cp, tag, p_out_cp);
+    }
+
+    internal static int siaara_rt_device_positions(nint beam, uint cp, ReadOnlySpan<byte> device_type, int effective, Span<double> buf, out nuint count, out uint out_cp)
+    {
+        count = default;
+        out_cp = default;
+        fixed (byte* p_device_type = device_type)
+        fixed (double* p_buf = buf)
+        fixed (nuint* p_count = &count)
+        fixed (uint* p_out_cp = &out_cp)
+            return Raw.siaara_rt_device_positions(beam, cp, (byte*)p_device_type, (nuint)device_type.Length, effective, (double*)p_buf, (nuint)buf.Length, p_count, p_out_cp);
+    }
+
+    internal static int siaara_nm_frame_index_get(nint ds, uint frame, ref siaara_nm_frame_index @out)
+    {
+        fixed (siaara_nm_frame_index* p_out = &@out)
+            return Raw.siaara_nm_frame_index_get(ds, frame, p_out);
+    }
+
+    internal static int siaara_sop_class_info_get(ReadOnlySpan<byte> uid, ref siaara_sop_class_info @out)
+    {
+        fixed (byte* p_uid = uid)
+        fixed (siaara_sop_class_info* p_out = &@out)
+            return Raw.siaara_sop_class_info_get((byte*)p_uid, (nuint)uid.Length, p_out);
+    }
+
+    internal static int siaara_transfer_syntax_info_get(ReadOnlySpan<byte> uid, ref siaara_transfer_syntax_info @out)
+    {
+        fixed (byte* p_uid = uid)
+        fixed (siaara_transfer_syntax_info* p_out = &@out)
+            return Raw.siaara_transfer_syntax_info_get((byte*)p_uid, (nuint)uid.Length, p_out);
+    }
+
+    internal static int siaara_dict_count(out uint @out)
+    {
+        @out = default;
+        fixed (uint* p_out = &@out)
+            return Raw.siaara_dict_count(p_out);
+    }
+
+    internal static int siaara_dict_entry_at(uint index, ref siaara_dict_entry @out)
+    {
+        fixed (siaara_dict_entry* p_out = &@out)
+            return Raw.siaara_dict_entry_at(index, p_out);
+    }
+
+    internal static int siaara_dict_search(ReadOnlySpan<byte> text, ReadOnlySpan<byte> vr, int flags, Span<uint> buf, out nuint count)
+    {
+        if (!vr.IsEmpty && vr.IndexOf((byte)0) < 0) throw new ArgumentException("vr must be NUL-terminated", nameof(vr));
+        count = default;
+        fixed (byte* p_text = text)
+        fixed (byte* p_vr = vr)
+        fixed (uint* p_buf = buf)
+        fixed (nuint* p_count = &count)
+            return Raw.siaara_dict_search((byte*)p_text, (nuint)text.Length, (byte*)p_vr, flags, (uint*)p_buf, (nuint)buf.Length, p_count);
     }
 
 }

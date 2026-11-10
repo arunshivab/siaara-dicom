@@ -1,3 +1,11 @@
+# The named data layer (src/modules/module_tables.inc, bindings/csharp/.../Modules.g.cs) must match
+# tools/gen_modules.py run on PS3.3 / PS3.6 when the XML is available.
+set(SIAARA_NEMA_PART06 "" CACHE FILEPATH "PS3.6 DocBook XML (part06.xml) for the named data layer check")
+if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART03}" AND EXISTS "${SIAARA_NEMA_PART06}")
+  add_test(NAME named_modules_match_generator
+           COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/gen_modules.py
+                   ${SIAARA_NEMA_PART03} ${SIAARA_NEMA_PART06} --check)
+endif()
 # Test-only code may use the plain C stdio API; the library itself never does.
 # Integer-narrowing warnings inside std templates (C4244/C4267) are also relaxed for test code only;
 # the library itself keeps them as errors.
