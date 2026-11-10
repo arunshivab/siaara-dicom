@@ -109,13 +109,15 @@ dotnet run --project app/tests/Siaara.Viewer.Tests -c Release -- --quick       #
 dotnet run --project app/tests/Siaara.Viewer.Tests -c Release -- store import  # cases whose name starts so
 ```
 
-37 cases: interop (ABI, UTF-8 names), display formatting, settings, audit chain, PHI redactor,
+51 cases: interop (ABI, UTF-8 names), display formatting, settings, audit chain, PHI redactor,
 layouts, cine timing, scheduler, no-PackageReference check, store (paging, NO_TOTAL, date ranges,
 wildcards, live updates, delete by patient key), import (mixed folder, DICOMDIR with a missing file,
 cancel < 200 ms, duplicates, index in place), series (uneven spacing, stacks, multi-frame, lossy),
 rendering (file / explicit / full-range windows and invert byte-equal to the toolkit, overlays),
-measurements (mm, px, calibration, angle, undo / redo, ROI vs direct call, SUV with and without
-weight), transform vs `siaara_frame_map_point`, protocol (codec, flow control, back-pressure with a
+measurements (mm, px, calibration, angle, undo / redo, ROI labels, SUV with and without weight),
+the SUV / ROI golden file (64 PET data sets and 235 ROI cases computed by the toolkit's former
+`siaara_suv_factor` / `siaara_roi_stats_compute`; the app's code matches them exactly), M1.1 viewer
+features and the m1-review robustness fixes, transform vs `siaara_frame_map_point`, protocol (codec, flow control, back-pressure with a
 slow client, cine at its own rate with skipping), security against the real Kestrel host (loopback,
 launch / cookie, Host header, Origin on POST and WebSocket, unknown session), and an end-to-end
 `ClientWebSocket` session on `/ws/view` (frame size and format, state, no frame without an ack,
@@ -143,8 +145,16 @@ python3 app/tools/browser_check.py /usr/bin/google-chrome @/tmp/sv/instance.url 
 - Rendering: `DicomFrame` decoded once (`RenderCache`, LRU by bytes), rendered per viewport state.
   Gray images go as gray8 (one byte per pixel); the browser unpacks gray8 to RGBA for
   `putImageData` (a format unpack, not image processing).
-- Measurements: geometry in image pixels, numbers on the server (spacing, `roi_stats_compute` with
-  partial weighting, `suv_factor`), drawn by the browser from the vectors in the state message.
+- Measurements: geometry in image pixels, numbers on the server, drawn by the browser from the
+  vectors in the state message. ROI statistics and SUV are the app's own code (M1.2):
+  `Measure/Roi` (shapes, centre test and exact covered area of edge pixels, weighted statistics over
+  the frame's float32 modality values from `siaara_frame_decode`) and `Measure/Suv` (inputs read with
+  the generic getters and their source attributes recorded; QIBA scan reference time rules for
+  START / ADMIN / NONE decay correction, Corrected Image DECY / ATTN checks, series vs acquisition
+  time, injection date-time; LBM James and Janmahasatian, BSA Du Bois, IBW Devine; units BQML, CNTS
+  with the Philips private Activity Concentration Scale Factor (7053,xx09) "Philips PET Private Group"
+  (flagged), GML; the same 23 warnings as the toolkit had). `tests/.../Golden/suv-roi-golden.json`
+  holds the toolkit's results on the synthetic cases of `SuvRoiCases.cs`; the C# results equal them.
   Stored as JSON per user / SOP / frame, written atomically.
 - Data integrity: stored values are never changed. Display formatting ('^' in names, dates, ages)
   makes new strings for the screen only.

@@ -2,6 +2,8 @@
 
 using Siaara.Viewer.Core.Imaging;
 using Siaara.Viewer.Core.Measure;
+using Siaara.Viewer.Core.Measure.Roi;
+using Siaara.Viewer.Core.Measure.Suv;
 using Siaara.Viewer.Core.Samples;
 using Siaara.Viewer.Core.Text;
 using Siaara.Viewer.Core.Toolkit;
@@ -112,7 +114,7 @@ internal static class MeasureTests
             }
         });
 
-        T.Case("measure: ROI statistics equal the direct toolkit call", async () =>
+        T.Case("measure: ROI labels equal the app's ROI statistics on the toolkit's modality values", async () =>
         {
             using var env = new TestEnv("roi");
             string dir = env.Dir("in");
@@ -127,7 +129,7 @@ internal static class MeasureTests
                 IReadOnlyList<Annotation> a = await WaitAnnotationsAsync(s, 1).ConfigureAwait(false);
                 T.Require(a.Count == 1);
                 using TkFile f = TkFile.Open(s.GetViewport(0).CurrentImage!.Instance.FilePath, headersOnly: false);
-                TkRoiStats direct = f.ComputeRoi(0, TkRoiShape.Ellipse, [32, 28, 16, 12, 0], partialWeighting: true);
+                RoiStatistics direct = SuvRoiGoldenTests.ComputeRoi(f, 0, (int)RoiShapeKind.Ellipse, [32, 28, 16, 12, 0], partial: true);
                 T.Check(a[0].Label.StartsWith("Mean " + DisplayFormat.Number(direct.Mean, 1) + " HU", StringComparison.Ordinal));
                 T.Check(a[0].Label.Contains("SD " + DisplayFormat.Number(direct.StandardDeviation, 1), StringComparison.Ordinal));
                 T.Check(a[0].Label.Contains("Area " + DisplayFormat.Number(direct.AreaMm2!.Value, 1) + " mm²", StringComparison.Ordinal));
@@ -135,7 +137,7 @@ internal static class MeasureTests
                 s.SetTool(ViewerTool.Probe);
                 Drag(s, 33, 20, 33, 20);
                 a = await WaitAnnotationsAsync(s, 2).ConfigureAwait(false);
-                TkRoiStats px = f.ComputeRoi(0, TkRoiShape.Rectangle, [33, 20, 34, 21], partialWeighting: false);
+                RoiStatistics px = SuvRoiGoldenTests.ComputeRoi(f, 0, (int)RoiShapeKind.Rectangle, [33, 20, 34, 21], partial: false);
                 T.Check(a[1].Label.EndsWith(DisplayFormat.Number(px.Mean, 1) + " HU", StringComparison.Ordinal));
                 T.Note(a[1].Label);
             }
@@ -157,12 +159,12 @@ internal static class MeasureTests
                 IReadOnlyList<Annotation> a = await WaitAnnotationsAsync(s, 1).ConfigureAwait(false);
                 T.Require(a.Count == 1);
                 using TkFile f = TkFile.Open(s.GetViewport(0).CurrentImage!.Instance.FilePath, headersOnly: false);
-                TkSuv suv = f.ComputeSuv(0);
-                T.Require(suv.BodyWeightFactor is not null);
-                TkRoiStats st = f.ComputeRoi(0, TkRoiShape.Rectangle, [10, 10, 20, 20], true);
+                SuvResult suv = SuvCalculator.Compute(f.Dataset, 0);
+                T.Require(suv.BodyWeight is not null);
+                RoiStatistics st = SuvRoiGoldenTests.ComputeRoi(f, 0, (int)RoiShapeKind.Rectangle, [10, 10, 20, 20], true);
                 T.Near(st.Mean, 10000, 1e-6);
                 T.Check(a[0].Label.Contains("Bq/ml", StringComparison.Ordinal));
-                T.Check(a[0].Label.Contains("SUVbw mean " + DisplayFormat.Number(st.Mean * suv.BodyWeightFactor!.Value, 2), StringComparison.Ordinal));
+                T.Check(a[0].Label.Contains("SUVbw mean " + DisplayFormat.Number(st.Mean * suv.BodyWeight!.Value, 2), StringComparison.Ordinal));
                 T.Note(a[0].Label + (a[0].Warnings.Count > 0 ? "  warnings: " + string.Join("; ", a[0].Warnings) : ""));
             }
             (ViewerSession s2, FakeSink sink2) = await env.OpenAsync(Gen.StudyOf(env, "SUV2"), 32, 32).ConfigureAwait(false);

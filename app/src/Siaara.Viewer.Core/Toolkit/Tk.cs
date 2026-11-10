@@ -659,38 +659,6 @@ public sealed record TkPlane(double RowSpacing, double ColumnSpacing, TkSpacingS
 /// <param name="Bottom">Bottom edge.</param>
 public sealed record TkOrientation(string Left, string Right, string Top, string Bottom);
 
-/// <summary>ROI shape (image pixel coordinates; (0,0) = top-left corner of the first pixel).</summary>
-public enum TkRoiShape
-{
-    /// <summary>x0 y0 x1 y1.</summary>
-    Rectangle = 0,
-    /// <summary>cx cy rx ry angle.</summary>
-    Ellipse = 1,
-    /// <summary>cx cy r.</summary>
-    Circle = 2,
-    /// <summary>x y pairs.</summary>
-    Polygon = 3,
-    /// <summary>x y pairs.</summary>
-    Freehand = 4,
-}
-
-/// <summary>ROI statistics in modality units.</summary>
-/// <param name="Pixels">Pixels with weight.</param>
-/// <param name="Mean">Mean.</param>
-/// <param name="StandardDeviation">Population SD.</param>
-/// <param name="Min">Minimum.</param>
-/// <param name="Max">Maximum.</param>
-/// <param name="AreaPixels">Area in pixels.</param>
-/// <param name="AreaMm2">Area in mm2 or null.</param>
-/// <param name="Source">Spacing used for the area.</param>
-public sealed record TkRoiStats(long Pixels, double Mean, double StandardDeviation, double Min, double Max, double AreaPixels, double? AreaMm2,
-                                TkSpacingSource Source);
-
-/// <summary>SUV factor of a PET frame (SUVbw = value x BodyWeightFactor).</summary>
-/// <param name="BodyWeightFactor">Factor, or null when it cannot be computed.</param>
-/// <param name="Warnings">Plain-word warnings.</param>
-public sealed record TkSuv(double? BodyWeightFactor, IReadOnlyList<string> Warnings);
-
 /// <summary>Series sort warnings.</summary>
 [Flags]
 public enum TkSortWarnings
@@ -1070,71 +1038,6 @@ public sealed class TkFile : IDisposable
             return null;
         }
     }
-
-    /// <summary>ROI statistics of modality values (needs pixel data).</summary>
-    /// <param name="frame">Frame.</param>
-    /// <param name="shape">Shape.</param>
-    /// <param name="parameters">Shape parameters.</param>
-    /// <param name="partialWeighting">Weight edge pixels by covered area.</param>
-    /// <returns>Statistics.</returns>
-    public TkRoiStats ComputeRoi(int frame, TkRoiShape shape, ReadOnlySpan<double> parameters, bool partialWeighting)
-    {
-        try
-        {
-            RoiStatistics s = RoiStatistics.Compute(File, frame, (RoiShape)(int)shape, parameters, partialWeighting);
-            return new TkRoiStats(s.Pixels, s.Mean, s.StandardDeviation, s.Min, s.Max, s.AreaPixels, s.AreaSquareMillimetres,
-                (TkSpacingSource)(int)s.SpacingSource);
-        }
-        catch (SiaaraException e)
-        {
-            throw Tk.Wrap(e);
-        }
-    }
-
-    /// <summary>SUV body-weight factor of a PET frame.</summary>
-    /// <param name="frame">Frame.</param>
-    /// <returns>Factor and warnings.</returns>
-    public TkSuv ComputeSuv(int frame)
-    {
-        SuvFactors f = Tk.Call(() => SuvFactors.Compute(File, frame));
-        var w = new List<string>();
-        foreach (SuvWarnings flag in Enum.GetValues<SuvWarnings>())
-        {
-            if (flag != SuvWarnings.None && f.Warnings.HasFlag(flag))
-            {
-                w.Add(SuvWarningText(flag));
-            }
-        }
-        return new TkSuv(f.BodyWeight, w);
-    }
-
-    private static string SuvWarningText(SuvWarnings w) => w switch
-    {
-        SuvWarnings.MissingWeight => "patient weight missing",
-        SuvWarnings.MissingDose => "injected dose missing",
-        SuvWarnings.MissingHalfLife => "half-life missing",
-        SuvWarnings.MissingInjectionTime => "injection time missing",
-        SuvWarnings.MissingScanTime => "scan time missing",
-        SuvWarnings.InconsistentTimes => "times inconsistent",
-        SuvWarnings.CountsWithoutScale => "counts without a scale factor",
-        SuvWarnings.NotDecayCorrected => "not decay corrected",
-        SuvWarnings.NotAttenuationCorrected => "not attenuation corrected",
-        SuvWarnings.UnsupportedUnits => "units not supported",
-        SuvWarnings.SeriesAfterAcquisition => "series time after acquisition",
-        SuvWarnings.MissingHeight => "patient height missing",
-        SuvWarnings.MissingSex => "patient sex missing",
-        SuvWarnings.MidnightRollover => "midnight rollover assumed",
-        SuvWarnings.InjectionDateAssumed => "injection date assumed",
-        SuvWarnings.MissingUnits => "units missing",
-        SuvWarnings.ImplausibleValue => "implausible value",
-        SuvWarnings.AlreadySuv => "values are already SUV",
-        SuvWarnings.UnknownDecayCorrection => "unknown decay correction",
-        SuvWarnings.MultipleRadiopharmaceuticals => "several radiopharmaceuticals",
-        SuvWarnings.TimezoneMismatch => "time zone mismatch",
-        SuvWarnings.VendorFactorUsed => "vendor SUV factor used",
-        SuvWarnings.PerImageScanTime => "per-image scan time used",
-        _ => "SUV warning",
-    };
 
     /// <summary>Sorts files (null entries skipped) into display order.</summary>
     /// <param name="files">Header files.</param>

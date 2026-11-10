@@ -2147,14 +2147,14 @@ public sealed class ViewerSession : IDisposable
         };
     }
 
-    private TkSuv? SafeSuv(SeriesImage img)
+    // SUV factors from the header (the app's own computation, Measure/Suv); null when unreadable.
+    private static Measure.Suv.SuvResult? SafeSuv(SeriesImage img)
     {
         try
         {
-            using FileLease f = _svc.Cache.GetFullFile(img.Instance);
-            return f.File.ComputeSuv(img.Frame);
+            return Measure.Suv.SuvCalculator.Compute(img.Instance.Header.Dataset, img.Frame);
         }
-        catch (TkException)
+        catch (Exception e) when (e is TkException or ObjectDisposedException)
         {
             return null;
         }

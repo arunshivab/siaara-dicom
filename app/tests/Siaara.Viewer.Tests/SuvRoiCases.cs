@@ -1,9 +1,10 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 //
 // The synthetic inputs of the SUV / ROI golden file (Golden/suv-roi-golden.json): every case is
-// built in memory, deterministically, so the golden values (written once with the toolkit's
-// siaara_suv_factor / siaara_roi_stats_compute before those functions left the toolkit) can be
-// compared with the app's own C# implementation on exactly the same data sets.
+// built in memory, deterministically, so the golden values can be compared with the app's own C#
+// implementation on exactly the same data sets. The golden values were written once with the
+// toolkit's siaara_suv_factor / siaara_roi_stats_compute, before those functions left the toolkit,
+// by GoldenWriter.cs (see the git history of this folder, commit "app M1.2 (a)").
 
 using System.Globalization;
 using System.Runtime.InteropServices;

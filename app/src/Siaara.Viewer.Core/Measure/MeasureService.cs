@@ -1,6 +1,8 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 
 using System.Globalization;
+using Siaara.Viewer.Core.Measure.Roi;
+using Siaara.Viewer.Core.Measure.Suv;
 using Siaara.Viewer.Core.Text;
 using Siaara.Viewer.Core.Toolkit;
 
@@ -24,7 +26,7 @@ public sealed class MeasureContext
     /// <summary>Grayscale image (ROI statistics need it).</summary>
     public bool Monochrome { get; init; } = true;
     /// <summary>SUVbw factor for PET, or null.</summary>
-    public TkSuv? Suv { get; init; }
+    public SuvResult? Suv { get; init; }
     /// <summary>Frame index for ROI statistics.</summary>
     public int Frame { get; init; }
     /// <summary>Gives the full (pixel data) file for ROI statistics; null = no ROI statistics.</summary>
@@ -72,8 +74,8 @@ public sealed class MeasureContext
 
 /// <summary>
 /// Measurement numbers, computed on the server: lengths and angles from pixel spacing (pixels
-/// when the spacing source is NONE), ROI statistics through the toolkit's roi_stats_compute with
-/// partial-pixel weighting, SUVbw for PET.
+/// when the spacing source is NONE), ROI statistics with partial-pixel weighting (Measure/Roi, on
+/// the toolkit's float32 modality values) and SUVbw for PET (Measure/Suv), both the app's own code.
 /// </summary>
 public static class MeasureService
 {
@@ -174,7 +176,7 @@ public static class MeasureService
     /// <summary>The toolkit ROI shape and parameters of an ROI annotation, or null when it has too few points.</summary>
     /// <param name="a">Annotation.</param>
     /// <returns>Shape and parameters.</returns>
-    public static (TkRoiShape Shape, double[] Parameters)? RoiParameters(Annotation a)
+    public static (RoiShapeKind Shape, double[] Parameters)? RoiParameters(Annotation a)
     {
         ArgumentNullException.ThrowIfNull(a);
         switch (a.Kind)
@@ -182,48 +184,57 @@ public static class MeasureService
             case AnnotationKind.Rectangle when a.Count >= 2:
                 {
                     PointD p = a.At(0), q = a.At(1);
-                    return (TkRoiShape.Rectangle, [Math.Min(p.X, q.X), Math.Min(p.Y, q.Y), Math.Max(p.X, q.X), Math.Max(p.Y, q.Y)]);
+                    return (RoiShapeKind.Rectangle, [Math.Min(p.X, q.X), Math.Min(p.Y, q.Y), Math.Max(p.X, q.X), Math.Max(p.Y, q.Y)]);
                 }
             case AnnotationKind.Ellipse when a.Count >= 2:
                 {
                     PointD p = a.At(0), q = a.At(1);
-                    return (TkRoiShape.Ellipse, [(p.X + q.X) / 2, (p.Y + q.Y) / 2, Math.Abs(q.X - p.X) / 2, Math.Abs(q.Y - p.Y) / 2, 0]);
+                    return (RoiShapeKind.Ellipse, [(p.X + q.X) / 2, (p.Y + q.Y) / 2, Math.Abs(q.X - p.X) / 2, Math.Abs(q.Y - p.Y) / 2, 0]);
                 }
             case AnnotationKind.Circle when a.Count >= 2:
                 {
                     PointD c = a.At(0), e = a.At(1);
-                    return (TkRoiShape.Circle, [c.X, c.Y, Math.Sqrt(((e.X - c.X) * (e.X - c.X)) + ((e.Y - c.Y) * (e.Y - c.Y)))]);
+                    return (RoiShapeKind.Circle, [c.X, c.Y, Math.Sqrt(((e.X - c.X) * (e.X - c.X)) + ((e.Y - c.Y) * (e.Y - c.Y)))]);
                 }
             case AnnotationKind.Polygon when a.Count >= 3:
-                return (TkRoiShape.Polygon, [.. a.Points]);
+                return (RoiShapeKind.Polygon, [.. a.Points]);
             case AnnotationKind.Freehand when a.Count >= 3:
-                return (TkRoiShape.Freehand, [.. a.Points]);
+                return (RoiShapeKind.Freehand, [.. a.Points]);
             case AnnotationKind.Probe when a.Count >= 1:
                 {
                     double x = Math.Floor(a.At(0).X), y = Math.Floor(a.At(0).Y);
-                    return (TkRoiShape.Rectangle, [x, y, x + 1, y + 1]);
+                    return (RoiShapeKind.Rectangle, [x, y, x + 1, y + 1]);
                 }
             default:
                 return null;
         }
     }
 
-    private static TkRoiStats? Stats(Annotation a, MeasureContext ctx)
+    // ROI statistics with the app's own implementation (Measure/Roi) on the frame's float32 modality
+    // values from the toolkit. Null when the shape is invalid or the values cannot be read.
+    private static RoiStatistics? Stats(Annotation a, MeasureContext ctx)
     {
-        if (ctx.PixelFile is null || !ctx.Monochrome || RoiParameters(a) is not var (shape, prm))
+        if (ctx.PixelFile is null || !ctx.Monochrome || RoiParameters(a) is not var (kind, prm))
         {
             return null;
         }
-        if (shape == TkRoiShape.Rectangle && (prm[2] - prm[0] <= 0 || prm[3] - prm[1] <= 0))
+        if (kind == RoiShapeKind.Rectangle && (prm[2] - prm[0] <= 0 || prm[3] - prm[1] <= 0))
         {
             return null;
         }
         try
         {
+            RoiShape shape = RoiShape.FromParameters(kind, prm);
             using Imaging.FileLease f = ctx.PixelFile();
-            return f.File.ComputeRoi(ctx.Frame, shape, prm, partialWeighting: a.Kind != AnnotationKind.Probe);
+            if (f.File.PixelInfo is not { SamplesPerPixel: 1 } pi || ctx.Frame < 0 || ctx.Frame >= Math.Max(1, pi.Frames))
+            {
+                return null;
+            }
+            float[] values = f.File.DecodeModalityFloat32(ctx.Frame);
+            return RoiStatistics.Compute(values, pi.Rows, pi.Columns, shape, partial: a.Kind != AnnotationKind.Probe, ctx.RowSpacing, ctx.ColumnSpacing,
+                ctx.Source);
         }
-        catch (TkException)
+        catch (Exception e) when (e is TkException or ArgumentException or ObjectDisposedException)
         {
             return null;
         }
@@ -236,7 +247,7 @@ public static class MeasureService
         {
             return where;
         }
-        TkRoiStats? s = Stats(a, ctx);
+        RoiStatistics? s = Stats(a, ctx);
         if (s is null || s.Pixels == 0)
         {
             return where + " outside the image";
@@ -253,7 +264,7 @@ public static class MeasureService
             a.Warnings.Add("ROI statistics need a grayscale image");
             return "";
         }
-        TkRoiStats? s = Stats(a, ctx);
+        RoiStatistics? s = Stats(a, ctx);
         if (s is null)
         {
             return "";
@@ -268,17 +279,17 @@ public static class MeasureService
         return text;
     }
 
-    private static void AddSuv(Annotation a, MeasureContext ctx, TkRoiStats s, ref string text, bool meanOnly)
+    private static void AddSuv(Annotation a, MeasureContext ctx, RoiStatistics s, ref string text, bool meanOnly)
     {
         if (!string.Equals(ctx.Modality, "PT", StringComparison.Ordinal) || ctx.Suv is null)
         {
             return;
         }
-        foreach (string w in ctx.Suv.Warnings)
+        foreach (string w in ctx.Suv.WarningTexts)
         {
             a.Warnings.Add(w);
         }
-        if (ctx.Suv.BodyWeightFactor is double f)
+        if (ctx.Suv.BodyWeight is double f)
         {
             text += meanOnly
                 ? "  SUVbw " + DisplayFormat.Number(s.Mean * f, 2)
