@@ -263,7 +263,7 @@ Options around it (each default is one named constant in `src/core/incomplete_po
 | `quarantine_sender_share_percent` / `rejected_sender_share_percent` (`kDefaultQuarantineSenderSharePercent`) | 0 = no share limit | 1 .. 100: the share of the area's byte and item caps one sender (calling AE title; peer address for DICOMweb) may hold, so one sender cannot fill the area and lock the others out |
 | free-space floor of both areas (`siaara_store_options.min_free_disk_bytes`, `kDefaultQuarantineMinFreeDiskBytes`) | 64 MiB | an item that would leave less free space is refused (0xA700) before anything is written |
 | Storage Commitment for flagged instances (`kCommitFlaggedIncomplete`, compile-time) | committed | quarantined and rejected copies are never committed (they are not in the archive: Failure Reason 0x0112) |
-| network read recovery (`kRecoverOverlongLengthsNetwork`, compile-time) | off | the overlong-length recovery heuristic is not applied to data received over the network |
+| network read recovery (`kRecoverOverlongLengthsNetwork`, compile-time) | off | the overlong-length recovery heuristic is not applied to data received over the network: C-STORE / C-GET / C-MOVE data sets, STOW-RS parts, WADO-RS parts (the client's retrieve, `siaara_web_parts_open_file`, retrieve-to-store), and the store's own indexing and re-read of bytes that arrived that way (also on release from the quarantine). A local import (`siaara_store_add_file` / `_add_memory`) and a local open keep the local default (on) |
 
 Quarantine items are identified by the SHA-256 of their bytes (the same bytes arriving again are
 one item) and carry a small record: time, source, calling AE / peer address, SOP Class and
