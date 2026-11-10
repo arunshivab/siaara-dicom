@@ -17,6 +17,7 @@ jobs:
   build-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90   # a hung test fails the job with its log instead of running for 6 hours
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +41,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 1500
       - name: TLS tests with the 32-bit system OpenSSL (loaded at run time)
         if: matrix.multilib
         run: |
