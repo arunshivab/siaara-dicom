@@ -38,6 +38,14 @@ public sealed record DicomWebServerOptions
     public int MaxQidoResults { get; init; }
     /// <summary>STOW-RS request body limit; 0 = 256 MiB.</summary>
     public long MaxBodyBytes { get; init; }
+    /// <summary>A retrieve whose stored instances are larger in total is answered 413 before anything is read; 0 = 1 GiB.</summary>
+    public long MaxResponseBytes { get; init; }
+    /// <summary>The whole response must be written within this; default 10 minutes; a negative value = no limit.</summary>
+    public TimeSpan ResponseTimeout { get; init; }
+    /// <summary>Bytes per second a client must read (averaged over 30 s); 0 = 1024. Slower clients are disconnected.</summary>
+    public int MinResponseRate { get; init; }
+    /// <summary>What happens to a STOW-RS part that cannot be read completely. Default: refused (Failure Reason 0xC000).</summary>
+    public Network.IncompletePolicy IncompletePolicy { get; init; }
 }
 
 /// <summary>
@@ -83,6 +91,10 @@ public sealed class DicomWebServer : IDisposable
             max_connections = (uint)Math.Max(0, options.MaxConnections),
             max_qido_results = (uint)Math.Max(0, options.MaxQidoResults),
             max_body_bytes = (ulong)Math.Max(0, options.MaxBodyBytes),
+            max_response_bytes = (ulong)Math.Max(0, options.MaxResponseBytes),
+            response_timeout_ms = options.ResponseTimeout < TimeSpan.Zero ? -1 : (int)Math.Min(int.MaxValue, options.ResponseTimeout.TotalMilliseconds),
+            min_response_rate = (uint)Math.Max(0, options.MinResponseRate),
+            incomplete_policy = (int)options.IncompletePolicy,
         };
         if (options.Tls is not null)
         {

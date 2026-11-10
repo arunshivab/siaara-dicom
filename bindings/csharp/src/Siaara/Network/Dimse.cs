@@ -80,6 +80,67 @@ public sealed record DimsePeer
     }
 }
 
+/// <summary>Why an SCU call got no association (siaara_dimse_result.connect_failure).</summary>
+public enum ConnectFailure
+{
+    /// <summary>The association was established (or the call failed before or after connecting).</summary>
+    None = C.SIAARA_CONNECT_OK,
+    /// <summary>The host name did not resolve.</summary>
+    Resolve = C.SIAARA_CONNECT_RESOLVE,
+    /// <summary>Connection refused: nothing listens on that port.</summary>
+    Refused = C.SIAARA_CONNECT_REFUSED,
+    /// <summary>No TCP connection within the connect timeout.</summary>
+    Timeout = C.SIAARA_CONNECT_TIMEOUT,
+    /// <summary>TLS setup or handshake failed.</summary>
+    Tls = C.SIAARA_CONNECT_TLS,
+    /// <summary>A-ASSOCIATE-RJ: see RejectResult / RejectSource / RejectReason.</summary>
+    Rejected = C.SIAARA_CONNECT_REJECTED,
+    /// <summary>Connected, but no answer to the association request in time.</summary>
+    AcseTimeout = C.SIAARA_CONNECT_ACSE_TIMEOUT,
+    /// <summary>The peer closed or aborted during the negotiation.</summary>
+    Closed = C.SIAARA_CONNECT_CLOSED,
+    /// <summary>Cancelled while connecting.</summary>
+    Cancelled = C.SIAARA_CONNECT_CANCELLED,
+    /// <summary>Another failure (unreachable network, local failure).</summary>
+    Other = C.SIAARA_CONNECT_OTHER,
+}
+
+/// <summary>A C-STORE of several files was cancelled: what happened to each file up to then.</summary>
+public sealed class StoreCanceledException : OperationCanceledException
+{
+    /// <summary>Creates the exception.</summary>
+    public StoreCanceledException()
+    {
+    }
+
+    /// <summary>Creates the exception.</summary>
+    /// <param name="message">Message.</param>
+    public StoreCanceledException(string message)
+        : base(message)
+    {
+    }
+
+    /// <summary>Creates the exception.</summary>
+    /// <param name="message">Message.</param>
+    /// <param name="innerException">Cause.</param>
+    public StoreCanceledException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+
+    internal StoreCanceledException(string message, CancellationToken token, DimseResult result, IReadOnlyList<StoreOutcome> files)
+        : base(message, token)
+    {
+        Result = result;
+        Files = files;
+    }
+
+    /// <summary>The counts so far, with Outcome Cancelled.</summary>
+    public DimseResult? Result { get; }
+    /// <summary>One entry per path: sent files have their status; the others say Cancelled.</summary>
+    public IReadOnlyList<StoreOutcome> Files { get; } = [];
+}
+
 /// <summary>Outcome of a DIMSE operation (siaara_dimse_result).</summary>
 /// <param name="Outcome">Ok, or Rejected when the peer refused (DimseStatus says why) or some items failed.</param>
 /// <param name="DimseStatus">Final DIMSE status (0 = Success).</param>
@@ -95,7 +156,27 @@ public sealed record DimseResult(SiaaraErrorCode Outcome, int DimseStatus, int C
 {
     internal static DimseResult From(int status, in siaara_dimse_result r, string message) =>
         new((SiaaraErrorCode)status, (int)r.status, (int)r.completed, (int)r.failed, (int)r.warning, (int)r.remaining,
-            (int)r.matches, (int)r.current, message);
+            (int)r.matches, (int)r.current, message)
+        {
+            ConnectFailure = (ConnectFailure)r.connect_failure,
+            RejectResult = (int)r.reject_result,
+            RejectSource = (int)r.reject_source,
+            RejectReason = (int)r.reject_reason,
+        };
+
+    /// <summary>At which step the call failed to get its association (None when it had one).</summary>
+    public ConnectFailure ConnectFailure { get; init; }
+    /// <summary>A-ASSOCIATE-RJ result (PS3.8 9.3.4): 1 rejected-permanent, 2 rejected-transient; 0 when not rejected.</summary>
+    public int RejectResult { get; init; }
+    /// <summary>A-ASSOCIATE-RJ source: 1 service-user, 2 service-provider (ACSE), 3 service-provider (presentation).</summary>
+    public int RejectSource { get; init; }
+    /// <summary>A-ASSOCIATE-RJ reason. With source 1: 1 no reason given, 2 application context not supported,
+    /// 3 calling AE title not recognized, 7 called AE title not recognized.</summary>
+    public int RejectReason { get; init; }
+    /// <summary>True when the association was rejected because the called AE title is not recognized.</summary>
+    public bool CalledAeNotRecognized => ConnectFailure == ConnectFailure.Rejected && RejectSource == 1 && RejectReason == 7;
+    /// <summary>True when the association was rejected because the calling AE title is not recognized.</summary>
+    public bool CallingAeNotRecognized => ConnectFailure == ConnectFailure.Rejected && RejectSource == 1 && RejectReason == 3;
 
     /// <summary>True when the operation succeeded (with or without warnings).</summary>
     public bool IsSuccess => Outcome == SiaaraErrorCode.Ok;
@@ -209,6 +290,8 @@ public sealed record DimseGetOptions
     public bool NativeOnly { get; init; }
     /// <summary>Refuse (0xA900) sub-operations whose command UIDs differ from the data set's.</summary>
     public bool StrictStoreUids { get; init; }
+    /// <summary>What happens to a received instance that could not be read completely. Default: refused (0xC000).</summary>
+    public IncompletePolicy IncompletePolicy { get; init; }
     /// <summary>Storage SOP classes to accept; null = the toolkit's list.</summary>
     public IReadOnlyList<string>? SopClasses { get; init; }
 }
@@ -318,7 +401,8 @@ public sealed record NResponse(DimseResult Result, string SopInstanceUid, DicomF
 /// </summary>
 public static class Dimse
 {
-    private static DimseResult Run(DimsePeer peer, Func<siaara_dimse_peer, nint, (int Status, siaara_dimse_result R)> call, CancellationToken token)
+    private static DimseResult Run(DimsePeer peer, Func<siaara_dimse_peer, nint, (int Status, siaara_dimse_result R)> call, CancellationToken token,
+        bool cancelledAsResult = false)
     {
         ArgumentNullException.ThrowIfNull(peer);
         token.ThrowIfCancellationRequested();
@@ -327,13 +411,14 @@ public static class Dimse
         using var cancel = new NativeCancellation(token);
         (int st, siaara_dimse_result r) = call(p, cancel.Pointer);
         string msg = st == C.SIAARA_OK ? string.Empty : Status.LastMessage();
-        if (st == C.SIAARA_ERR_CANCELLED)
+        if (st == C.SIAARA_ERR_CANCELLED && !cancelledAsResult)
         {
             throw new OperationCanceledException(msg, token);
         }
-        if (st != C.SIAARA_OK && st != C.SIAARA_ERR_REJECTED)
+        if (st != C.SIAARA_OK && st != C.SIAARA_ERR_REJECTED && st != C.SIAARA_ERR_CANCELLED)
         {
-            throw new SiaaraException((SiaaraErrorCode)st, msg);
+            // Where the association attempt failed travels with the exception.
+            throw new SiaaraException((SiaaraErrorCode)st, msg) { ConnectFailure = (ConnectFailure)r.connect_failure };
         }
         return DimseResult.From(st, in r, msg);
     }
@@ -599,6 +684,7 @@ public static class Dimse
                     sop_class_count = (uint)(getOptions.SopClasses?.Count ?? 0),
                     native_only = getOptions.NativeOnly ? 1 : 0,
                     strict_store_uids = getOptions.StrictStoreUids ? 1 : 0,
+                    incomplete_policy = (int)getOptions.IncompletePolicy,
                 };
                 siaara_qr_options qo = NewQr(options);
                 DimseResult res = Run(peer, (p, c) =>
@@ -708,6 +794,8 @@ public static class Dimse
     /// <param name="progress">After every file (optional).</param>
     /// <param name="cancellationToken">Cancels.</param>
     /// <returns>The outcome (Rejected when some files were not stored) and one <see cref="StoreOutcome"/> per path.</returns>
+    /// <exception cref="StoreCanceledException">Cancelled: an <see cref="OperationCanceledException"/> that carries the
+    /// outcomes of the files sent before the cancel (the others say Cancelled).</exception>
     public static (DimseResult Result, IReadOnlyList<StoreOutcome> Files) StoreFilesWithOutcomes(DimsePeer peer,
         IReadOnlyList<string> paths, IProgress<DimseResult>? progress = null, CancellationToken cancellationToken = default)
     {
@@ -738,12 +826,17 @@ public static class Dimse
                 int st = Native.siaara_dimse_store_files_report(in p, ptrs, default, (uint)ptrs.Length, c,
                     Callbacks.DimseProgressPointer, GCHandle.ToIntPtr(gc), outs, ref r);
                 return (st, r);
-            }, cancellationToken);
+            }, cancellationToken, cancelledAsResult: true);
             sink.ThrowIfFailed();
             var files = new StoreOutcome[outs.Length];
             for (int i = 0; i < outs.Length; i++)
             {
                 files[i] = StoreOutcome.From(in outs[i]);
+            }
+            if (res.Outcome == SiaaraErrorCode.Cancelled)
+            {
+                // Still an OperationCanceledException, now with what was sent before the cancel.
+                throw new StoreCanceledException(res.Message, cancellationToken, res, files);
             }
             return (res, files);
         }

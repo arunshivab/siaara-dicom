@@ -49,7 +49,32 @@ public sealed record StorageScpOptions
     public long SpoolMinFreeDiskBytes { get; init; }
     /// <summary>Events queued for <see cref="StorageScp.Received"/> handlers; 0 = 1024. See the drop policy there.</summary>
     public int EventQueueLimit { get; init; }
+    /// <summary>Bytes of data sets held by queued events (approximate); 0 = 64 MiB. Events that do not fit are dropped
+    /// by the same policy as a full queue.</summary>
+    public long EventQueueMaxBytes { get; init; }
+    /// <summary>What happens to a received C-STORE data set that could not be read completely (truncated, bytes
+    /// skipped, recovered by a heuristic). Default: refused (status 0xC000), nothing stored.</summary>
+    public IncompletePolicy IncompletePolicy { get; init; }
 }
+
+/// <summary>What a receiver does with a data set whose read was not complete (SIAARA_INCOMPLETE_*): one policy
+/// for the Storage SCP, C-GET, the STOW-RS server and the streaming WADO-RS retrieve.</summary>
+public enum IncompletePolicy
+{
+    /// <summary>The library default: <see cref="Refuse"/>.</summary>
+    Default = C.SIAARA_INCOMPLETE_DEFAULT,
+    /// <summary>Nothing is stored: C-STORE status 0xC000, STOW-RS Failure Reason, a retrieved part counted as failed.</summary>
+    Refuse = C.SIAARA_INCOMPLETE_REFUSE,
+    /// <summary>The bytes are stored exactly as received - never transcoded or rewritten - and flagged
+    /// (ScpEvent.ReadLoss, STOW-RS Warning Reason, the retrieve report).</summary>
+    AcceptAsReceived = C.SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED,
+}
+
+/// <summary>The C-MOVE destinations one calling AE may name (siaara_move_acl). A calling AE without an entry may name
+/// any AE-table entry.</summary>
+/// <param name="CallingAeTitle">The calling AE.</param>
+/// <param name="DestinationAeTitles">The destinations it may name (empty: none).</param>
+public sealed record MoveAcl(string CallingAeTitle, IReadOnlyList<string> DestinationAeTitles);
 
 /// <summary>When the Storage Commitment SCP sends its report (siaara_scp_services.commitment_report_mode).</summary>
 public enum CommitmentReportMode
@@ -129,6 +154,26 @@ public sealed record ScpServiceOptions
     /// <summary>C-GET / C-MOVE sub-operations may send a stored file whose read was not complete (truncated
     /// input, skipped bytes, heuristic recovery). Default false: such a sub-operation fails and is logged.</summary>
     public bool AllowIncomplete { get; init; }
+    /// <summary>Largest N-service data set or Q/R identifier accepted (enforced while it arrives); 0 = 4 MiB.</summary>
+    public int MaxServiceDatasetBytes { get; init; }
+    /// <summary>UPS workitems not yet COMPLETED / CANCELED; 0 = 10000 (more: 0xA700).</summary>
+    public int MaxUpsItems { get; init; }
+    /// <summary>Bytes of data sets held by the MPPS and by the UPS model, each; 0 = 256 MiB.</summary>
+    public long MaxStateBytes { get; init; }
+    /// <summary>Finished MPPS instances and final UPS workitems kept (the oldest are evicted first); 0 = 10000.</summary>
+    public int MaxFinishedInstances { get; init; }
+    /// <summary>Receiving AEs per UPS workitem; 0 = 16.</summary>
+    public int MaxUpsSubscribers { get; init; }
+    /// <summary>Folder where MPPS instances and UPS workitems are kept (owner-only files) and reloaded on the next
+    /// start; null = in memory only.</summary>
+    public string? StateFolder { get; init; }
+    /// <summary>MPPS N-SET and N-SET of a SCHEDULED UPS only from the AE that created the instance (others: 0x0124).</summary>
+    public bool BindUpdatesToCreator { get; init; }
+    /// <summary>The worklist provider must return (or yield an item) within this; default 30 s. Past it the C-FIND
+    /// ends with 0x0110.</summary>
+    public TimeSpan WorklistTimeout { get; init; }
+    /// <summary>C-MOVE destinations per calling AE; null = any AE-table entry.</summary>
+    public IReadOnlyList<MoveAcl>? MoveAcls { get; init; }
     /// <summary>Storage SOP classes accepted; null = the toolkit's list.</summary>
     public IReadOnlyList<string>? StorageSopClasses { get; init; }
     /// <summary>Transfer syntaxes accepted for storage, preferred first; null = native (+ compressed with AcceptCompressed).</summary>
@@ -233,8 +278,61 @@ public sealed record ScpEvent(ScpEventKind Kind, int DimseStatus, string Calling
     public int Warning { get; init; }
     /// <summary>DIMSE command field of the request.</summary>
     public int CommandField { get; init; }
-    /// <summary>The event's data set (MPPS attributes, identifier, commitment data, ...) as DICOM JSON; null when none.</summary>
-    public string? DatasetJson { get; init; }
+    /// <summary>The association the event belongs to: unique among the associations of this process run
+    /// (0 when the event is not tied to one).</summary>
+    public long AssociationId { get; init; }
+    /// <summary>Read-loss bits (SIAARA_READ_*) of the received data set. Stored with a value other than 0: the
+    /// instance arrived incomplete and was kept exactly as received (IncompletePolicy.AcceptAsReceived);
+    /// StoreFailed with a value other than 0: it was refused because it was incomplete.</summary>
+    public int ReadLoss { get; init; }
+    /// <summary>True when the received data set was not read completely (see <see cref="ReadLoss"/>).</summary>
+    public bool Incomplete => ReadLoss != 0;
+    /// <summary>True when the event has a data set (<see cref="DatasetJson"/> is not null), without converting it.</summary>
+    public bool HasDataset => _dataset is not null;
+    /// <summary>The event's data set (MPPS attributes, identifier, commitment data, ...) as DICOM JSON; null when none.
+    /// The conversion runs on first use, not for every event: an event whose data set nobody reads costs no JSON.</summary>
+    public string? DatasetJson
+    {
+        get => _dataset?.Json;
+        init => _dataset = value is null ? null : new LazyDatasetJson(value);
+    }
+
+    private readonly LazyDatasetJson? _dataset;
+
+    internal LazyDatasetJson? LazyDataset
+    {
+        init => _dataset = value;
+    }
+}
+
+/// <summary>A data set captured during an SCP callback (a cheap native copy that shares the value bytes), converted to
+/// DICOM JSON on first use.</summary>
+internal sealed class LazyDatasetJson
+{
+    private readonly object _gate = new();
+    private DicomFile? _copy;
+    private string? _json;
+
+    internal LazyDatasetJson(string json) => _json = json;
+
+    internal LazyDatasetJson(DicomFile copy) => _copy = copy;
+
+    internal string? Json
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_copy is not null)
+                {
+                    _json = _copy.Dataset.ToJson();
+                    _copy.Dispose();
+                    _copy = null;
+                }
+                return _json;
+            }
+        }
+    }
 }
 
 /// <summary>Counters of a running SCP.</summary>
@@ -359,6 +457,8 @@ public sealed class StorageScp : IDisposable
             spool_max_total_bytes = UL(options.SpoolMaxTotalBytes),
             spool_min_free_disk_bytes = UL(options.SpoolMinFreeDiskBytes),
             event_queue_limit = U(options.EventQueueLimit),
+            event_queue_max_bytes = UL(options.EventQueueMaxBytes),
+            incomplete_policy = (int)options.IncompletePolicy,
         };
         if (options.Tls is not null)
         {
@@ -430,7 +530,32 @@ public sealed class StorageScp : IDisposable
                 acl_count = (uint)acls.Count,
                 acls = mem.Array<siaara_scp_acl>(acls.ToArray()),
                 allow_incomplete = services.AllowIncomplete ? 1 : 0,
+                max_service_dataset_bytes = U(services.MaxServiceDatasetBytes),
+                max_ups_items = U(services.MaxUpsItems),
+                max_state_bytes = UL(services.MaxStateBytes),
+                max_finished_instances = U(services.MaxFinishedInstances),
+                max_ups_subscribers = U(services.MaxUpsSubscribers),
+                state_folder = mem.Utf8(services.StateFolder),
+                bind_updates_to_creator = services.BindUpdatesToCreator ? 1 : 0,
+                worklist_timeout_ms = services.WorklistTimeout <= TimeSpan.Zero ? 0 : Ms(services.WorklistTimeout),
             };
+            if (services.MoveAcls is { Count: > 0 })
+            {
+                var moves = new siaara_move_acl[services.MoveAcls.Count];
+                for (int i = 0; i < moves.Length; i++)
+                {
+                    MoveAcl a = services.MoveAcls[i];
+                    moves[i] = new siaara_move_acl
+                    {
+                        struct_size = StructSize.Of<siaara_move_acl>(),
+                        calling_ae = mem.Utf8(a.CallingAeTitle),
+                        destination_aes = Strings(mem, a.DestinationAeTitles),
+                        count = (uint)a.DestinationAeTitles.Count,
+                    };
+                }
+                sv.move_acls = mem.Array<siaara_move_acl>(moves);
+                sv.move_acl_count = (uint)moves.Length;
+            }
             if (services.OutboundTls is not null)
             {
                 siaara_tls_options t = services.OutboundTls.ToNative(mem);
@@ -644,7 +769,10 @@ public sealed class StorageScp : IDisposable
                 Failed = e.Failed,
                 Warning = e.Warning,
                 CommandField = e.CommandField,
-                DatasetJson = DatasetJson(e.Dataset),
+                AssociationId = (long)e.AssociationId,
+                ReadLoss = (int)e.ReadLoss,
+                // The native data set is valid during this call only: keep a cheap copy, convert on demand.
+                LazyDataset = e.Dataset == 0 ? null : new LazyDatasetJson(Dimse.CloneDataset(e.Dataset)),
             });
         }
     }

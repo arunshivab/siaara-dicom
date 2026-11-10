@@ -39,6 +39,7 @@ internal static class C
     public const int SIAARA_ERR_REJECTED = 13;
     public const int SIAARA_ERR_CANCELLED = 14;
     public const int SIAARA_ERR_BUFFER_TOO_SMALL = 15;
+    public const int SIAARA_ERR_ADDRESS_IN_USE = 16;
     public const int SIAARA_ERR_INTERNAL = 99;
     public const int SIAARA_FILE_WARNING_GENERAL = 0;
     public const int SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1;
@@ -318,9 +319,22 @@ internal static class C
     public const int SIAARA_LOG_INFO = 1;
     public const int SIAARA_LOG_WARNING = 2;
     public const int SIAARA_LOG_ERROR = 3;
+    public const int SIAARA_CONNECT_OK = 0;
+    public const int SIAARA_CONNECT_RESOLVE = 1;
+    public const int SIAARA_CONNECT_REFUSED = 2;
+    public const int SIAARA_CONNECT_TIMEOUT = 3;
+    public const int SIAARA_CONNECT_TLS = 4;
+    public const int SIAARA_CONNECT_REJECTED = 5;
+    public const int SIAARA_CONNECT_ACSE_TIMEOUT = 6;
+    public const int SIAARA_CONNECT_CLOSED = 7;
+    public const int SIAARA_CONNECT_CANCELLED = 8;
+    public const int SIAARA_CONNECT_OTHER = 99;
     public const int SIAARA_QR_PATIENT_ROOT = 0;
     public const int SIAARA_QR_STUDY_ROOT = 1;
     public const int SIAARA_QR_WORKLIST = 2;
+    public const int SIAARA_INCOMPLETE_DEFAULT = 0;
+    public const int SIAARA_INCOMPLETE_REFUSE = 1;
+    public const int SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2;
     public const int SIAARA_SCP_STORED = 0;
     public const int SIAARA_SCP_STORE_FAILED = 1;
     public const int SIAARA_SCP_ECHO = 2;
@@ -691,7 +705,7 @@ internal struct siaara_store_options
     public ulong max_total_bytes;
     public ulong min_free_disk_bytes;
     public uint file_mode;
-    public uint reserved0;
+    public uint keep_permissions;
 }
 
 /// <summary>siaara_store_filter (blittable, C layout).</summary>
@@ -1272,6 +1286,10 @@ internal struct siaara_dimse_result
     public uint remaining;
     public uint matches;
     public uint current;
+    public int connect_failure;
+    public uint reject_result;
+    public uint reject_source;
+    public uint reject_reason;
 }
 
 /// <summary>siaara_get_options (blittable, C layout).</summary>
@@ -1286,6 +1304,7 @@ internal struct siaara_get_options
     public uint sop_class_count;
     public int native_only;
     public int strict_store_uids;
+    public int incomplete_policy;
 }
 
 /// <summary>siaara_scp_options (blittable, C layout).</summary>
@@ -1316,6 +1335,9 @@ internal struct siaara_scp_options
     public ulong spool_min_free_disk_bytes;
     public uint event_queue_limit;
     public uint reserved1;
+    public ulong event_queue_max_bytes;
+    public int incomplete_policy;
+    public uint reserved2;
 }
 
 /// <summary>siaara_scp_event (blittable, C layout).</summary>
@@ -1341,6 +1363,9 @@ internal struct siaara_scp_event
     public uint failed;
     public uint warning;
     public uint command_field;
+    public ulong association_id;
+    public uint read_loss;
+    public uint reserved0;
 }
 
 /// <summary>siaara_scp_stats (blittable, C layout).</summary>
@@ -1624,6 +1649,27 @@ internal struct siaara_scp_services
     public uint acl_count;
     public nint acls;
     public int allow_incomplete;
+    public uint max_service_dataset_bytes;
+    public uint max_ups_items;
+    public ulong max_state_bytes;
+    public uint max_finished_instances;
+    public uint max_ups_subscribers;
+    public nint state_folder;
+    public int bind_updates_to_creator;
+    public int worklist_timeout_ms;
+    public nint move_acls;
+    public uint move_acl_count;
+    public uint reserved0;
+}
+
+/// <summary>siaara_move_acl (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_move_acl
+{
+    public uint struct_size;
+    public uint count;
+    public nint calling_ae;
+    public nint destination_aes;
 }
 
 /// <summary>siaara_qr_keys (blittable, C layout).</summary>
@@ -1726,6 +1772,11 @@ internal struct siaara_web_server_options
     public uint max_connections;
     public uint max_qido_results;
     public ulong max_body_bytes;
+    public ulong max_response_bytes;
+    public int response_timeout_ms;
+    public uint min_response_rate;
+    public int incomplete_policy;
+    public uint reserved0;
 }
 
 /// <summary>siaara_web_limits (blittable, C layout).</summary>
@@ -1738,6 +1789,35 @@ internal struct siaara_web_limits
     public int body_timeout_ms;
     public uint max_parts;
     public ulong max_part_bytes;
+}
+
+/// <summary>siaara_web_retrieve_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_web_retrieve_options
+{
+    public uint struct_size;
+    public int duplicate_policy;
+    public nint store;
+    public nint folder;
+    public nint transfer_syntaxes;
+    public uint transfer_syntax_count;
+    public int incomplete_policy;
+    public int allow_other_uids;
+    public uint reserved0;
+}
+
+/// <summary>siaara_web_retrieve_report (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_web_retrieve_report
+{
+    public uint struct_size;
+    public uint stored;
+    public uint failed;
+    public uint incomplete_refused;
+    public uint uid_mismatch;
+    public uint incomplete_accepted;
+    public uint rewritten;
+    public uint reserved0;
 }
 
 /// <summary>siaara_web_stow_options (blittable, C layout).</summary>
@@ -2754,6 +2834,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_web_wado_retrieve_to")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_web_wado_retrieve_to(nint client, byte* study_uid, byte* series_uid, byte* instance_uid, byte** transfer_syntaxes, uint ts_count, nint store, int policy, byte* folder, delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int> cb, void* user, uint* stored, uint* failed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_wado_retrieve_to_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_wado_retrieve_to_ex(nint client, byte* study_uid, byte* series_uid, byte* instance_uid, siaara_web_retrieve_options* options, delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int> cb, void* user, siaara_web_retrieve_report* report);
 
     [LibraryImport(Library, EntryPoint = "siaara_web_stow_ex")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -4721,6 +4805,19 @@ internal static unsafe class Native
         fixed (uint* p_stored = &stored)
         fixed (uint* p_failed = &failed)
             return Raw.siaara_web_wado_retrieve_to(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_instance_uid, (byte**)p_transfer_syntaxes, ts_count, store, policy, (byte*)p_folder, (delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int>)cb, (void*)user, p_stored, p_failed);
+    }
+
+    internal static int siaara_web_wado_retrieve_to_ex(nint client, ReadOnlySpan<byte> study_uid, ReadOnlySpan<byte> series_uid, ReadOnlySpan<byte> instance_uid, in siaara_web_retrieve_options options, nint cb, nint user, ref siaara_web_retrieve_report report)
+    {
+        if (!study_uid.IsEmpty && study_uid.IndexOf((byte)0) < 0) throw new ArgumentException("study_uid must be NUL-terminated", nameof(study_uid));
+        if (!series_uid.IsEmpty && series_uid.IndexOf((byte)0) < 0) throw new ArgumentException("series_uid must be NUL-terminated", nameof(series_uid));
+        if (!instance_uid.IsEmpty && instance_uid.IndexOf((byte)0) < 0) throw new ArgumentException("instance_uid must be NUL-terminated", nameof(instance_uid));
+        fixed (byte* p_study_uid = study_uid)
+        fixed (byte* p_series_uid = series_uid)
+        fixed (byte* p_instance_uid = instance_uid)
+        fixed (siaara_web_retrieve_options* p_options = &options)
+        fixed (siaara_web_retrieve_report* p_report = &report)
+            return Raw.siaara_web_wado_retrieve_to_ex(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_instance_uid, p_options, (delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int>)cb, (void*)user, p_report);
     }
 
     internal static int siaara_web_stow_ex(nint client, nint file, ReadOnlySpan<byte> study_uid, in siaara_web_stow_options options)
