@@ -175,6 +175,15 @@ struct Events {
             return k >= n;
         });
     }
+    // Waits for an event of `kind` whose transaction UID is `txn` (other reports may arrive first).
+    bool wait_for_txn(int32_t kind, const std::string& txn, int ms = 8000) {
+        std::unique_lock<std::mutex> l(mu);
+        return cv.wait_for(l, std::chrono::milliseconds(ms), [&] {
+            for (const E& e : list)
+                if (e.kind == kind && e.txn == txn) return true;
+            return false;
+        });
+    }
     std::vector<E> of(int32_t kind) {
         std::lock_guard<std::mutex> l(mu);
         std::vector<E> out;
@@ -758,10 +767,8 @@ TEST_CASE("net2: Storage Commitment on the same association and on a new one") {
             r = result();
             CHECK(siaara_dimse_commit_ex(&p, &co, classes, insts, 2, nullptr, reasons, &r) == SIAARA_ERR_REJECTED);
             CHECK(std::strlen(txn) > 5);
-            REQUIRE(rev.wait_for(SIAARA_SCP_COMMIT_REPORT, 1));
-            bool matched = false;
-            for (const auto& e : rev.of(SIAARA_SCP_COMMIT_REPORT)) matched = matched || e.txn == txn;
-            CHECK(matched);
+            // The late report of the first (timed-out) request may arrive first; wait for this one.
+            CHECK(rev.wait_for_txn(SIAARA_SCP_COMMIT_REPORT, txn));
         }
         CHECK(r.completed == 1);
         CHECK(r.failed == 1);
