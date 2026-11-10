@@ -96,6 +96,8 @@ def main():
     st, h, body = request(authority, "GET", "/", {"Cookie": cookie})
     page = body.decode()
     print(f"GET / with cookie -> {st}, {len(body)} bytes, grid header present: {'Patient name' in page}, study UID in the page: {study in page}")
+    # M2: the study browser offers the source dropdown (Local store first) and the Network, Send and Activity buttons.
+    print("M2 controls in the page: source dropdown", b'class="source"' in body and b"Local store" in body, "| Network", b"btn network" in body, "| Send", b"btn send" in body, "| Activity", b"activity-toggle" in body)
     print(f"Content-Security-Policy: {h.get('Content-Security-Policy')}")
     st, _, _ = request(f"127.0.0.1:{port}", "GET", "/", {"Cookie": cookie})
     print(f"GET / with cookie but Host 127.0.0.1:<port> -> {st}")

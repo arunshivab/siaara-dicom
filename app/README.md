@@ -1,4 +1,4 @@
-# SIAARA Viewer (M1: local 2D viewer)
+# SIAARA Viewer (M1: local 2D viewer, M2: networking)
 
 Copyright (c) Sthraas Intelligence Pvt Ltd. Proprietary. Written for this project; no code is taken
 from any other viewer.
@@ -14,10 +14,13 @@ app/
   Siaara.Viewer.slnx          solution (app projects + the two binding projects)
   Directory.Build.props       net10.0, nullable, warnings as errors, AnalysisLevel latest-all, code style in build
   Directory.Build.targets     build check: fails if any project has a PackageReference
-  src/Siaara.Viewer.Core/     no UI: Toolkit (Tk.cs facade, ToolkitScheduler), Store, Import, Imaging, Viewing,
-                              Measure, Text, Settings, Audit (signed log, key store), Logging, Samples,
-                              Platform (owner-only files, peer-user check, *.localhost probe; all P/Invoke is here)
-  src/Siaara.Viewer.Web/      Razor class library: Pages (Browser, Viewer), Components, Streaming (/ws/view),
+  src/Siaara.Viewer.Core/     no UI: Toolkit (Tk.cs and Tk.Network.cs facade, ToolkitScheduler), Store, Import, Imaging,
+                              Viewing, Measure, Text, Settings, Audit (signed log, key store), Logging, Samples,
+                              Network (nodes, remote search, retrieve / send, receiver, activity list),
+                              Platform (owner-only files, peer-user check, *.localhost probe, secret store; all
+                              P/Invoke is here and in Audit)
+  src/Siaara.Viewer.Web/      Razor class library: Pages (Browser, Viewer), Components (incl. NetworkSheet, RemoteGrid,
+                              SendDialog, ActivityPanel), Streaming (/ws/view),
                               Security (launch secret, cookie, Host, Origin, peer), wwwroot/js/siaara-view.js, wwwroot/css/siaara.css
   src/Siaara.Viewer.Host/     siaara-viewer: ABI check, single instance, store, Kestrel 127.0.0.1:0, LaunchPages,
                               BrowserLauncher (A1 a)
@@ -26,8 +29,9 @@ app/
   tools/browser_check.py      drives headless Chrome over the DevTools protocol against a running host
 ```
 
-`Toolkit/Tk.cs` is the only file that names binding types; the rest of the app uses the app-owned
-types declared there (`TkStore`, `TkFile`, `TkFrame`, `RenderSpec`, ...).
+`Toolkit/Tk.cs` and `Toolkit/Tk.Network.cs` are the only files that name binding types; the rest of
+the app uses the app-owned types declared there (`TkStore`, `TkFile`, `TkFrame`, `RenderSpec`,
+`TkNet`, `TkScp`, `TkWebClient`, ...).
 
 ## Build
 
@@ -75,7 +79,7 @@ Zero downloads (owner decision b): the build never touches the network.
 ```
 dotnet app/src/Siaara.Viewer.Host/bin/Release/net10.0/siaara-viewer.dll [options]
   --data-dir DIR       per-user folder (default %LOCALAPPDATA%\Siaara, ~/Library/Application Support/Siaara,
-                       $XDG_DATA_HOME/siaara): settings.json, store/, logs/, audit/, annotations/, launch/
+                       $XDG_DATA_HOME/siaara): settings.json, store/, logs/, audit/, annotations/, launch/, secrets/
   --store DIR          image store (default: settings, then DIR/store)
   --import DIR         import a folder or a DICOMDIR at start (same path as the Import sheet)
   --no-browser         do not open a window
@@ -90,7 +94,8 @@ siaara-viewer --generate-samples DIR [--full]
 
 Start-up: ABI check ("toolkit version mismatch" and exit), single-instance lock (a second start
 opens the running instance's window and exits), store open (create, durable, rebuild if corrupt),
-Kestrel on 127.0.0.1 at a random port, then the window: Edge / Chrome / Chromium with `--app=FILE`
+Kestrel on 127.0.0.1 at a random port, the receiver (Storage SCP) if the user switched it on (see
+"Networking"), then the window: Edge / Chrome / Chromium with `--app=FILE`
 when found, else the default browser (`BrowserLauncher`, the only class that knows). FILE is the
 one-shot launch page described below, never an address with a secret.
 
@@ -210,6 +215,82 @@ one-shot launch page described below, never an address with a secret.
   Files of the earlier layout (`<user>/<UID>/...`) are still read, never for dot-only names, and
   the next save writes the new place.
 
+## Networking (M2)
+
+Everything on the network goes through the toolkit (DIMSE and DICOMweb, client and server side); the app decides
+what to ask and what to tell the user. Values that come from other systems (names, IDs, descriptions) are stored
+and kept exactly as received; only the screen formats them. Code: `Core/Network`, facade `Toolkit/Tk.Network.cs`.
+
+- **Nodes (study browser, Network).** DIMSE nodes: name, host, port, the node's AE title, our AE title, TLS,
+  retrieve method (C-GET default, or C-MOVE), move destination AE, three timeouts, maximum PDU, "allow lossy
+  compression on sending", "ask for storage confirmation". DICOMweb nodes: address (http / https), sign-in None /
+  Basic / Bearer, TLS trust. They are saved in `settings.json` (`network`, written atomically) after validation:
+  AE titles 1 to 16 characters without backslash, ports 1 to 65535, an http(s) address without user name, `?` or
+  `#`. A password or token is refused for a plain http address unless the host is this computer. **Test** does a
+  C-ECHO or a QIDO-RS search with `limit=1` and answers in plain words ("could not connect...", "the node refused
+  the connection (check both AE titles...)", "the server refused the request (check the user name...)").
+- **TLS.** There is no "skip certificate checks" control and the app never asks the toolkit for it (`TkTls` has no
+  such member). Trust comes from the operating system's store or a PEM file; an own identity is a PKCS#12 file.
+- **Secrets.** Passwords, tokens and PKCS#12 passwords are never in `settings.json`, the audit log or the app
+  log. `SecretStores.ForCurrentOs` keeps them, with the app's own P/Invoke: Windows, one file per secret wrapped by
+  CryptProtectData for the user (`secrets/<id>.dpapi`); macOS, generic passwords in the login keychain (service
+  `in.sthraas.siaara.viewer.secret`; encrypted files with a warning when the keychain cannot be used); Linux,
+  `secrets/<id>.sec` = AES-256-GCM (the id is authenticated, so a file copied under another name does not open)
+  with the key in `secrets/secret.key` (0600, folder 0700). As for the audit key, the Linux form is the weaker one:
+  it keeps secrets out of the settings file, its backups and other users' reach, not away from a program running
+  as the same user. A stored secret is never shown again; an empty box keeps it.
+- **Remote search.** The source dropdown of the study browser is "Local store" or a node; the same filter bar
+  applies. Study Root C-FIND at study level, or QIDO-RS; series are asked when a study row is expanded. The search
+  box means "name contains, or ID / accession number starts with", as locally, so a text search is three queries
+  whose answers are merged (two more per extra modality chip). Nothing is asked until there is a name, ID,
+  accession number or date ("Search without a filter" asks anyway). At most `network.searchCap` studies (200) are
+  listed; when more match, a banner says to narrow the search (C-FIND is ended with C-CANCEL, QIDO-RS with
+  `limit`). A new search cancels the one before. The **Local** column says none / partial / complete from the
+  store's image count against the node's (when the node does not report a count, "complete" cannot be shown).
+  QIDO-RS carries the search terms in the request address, as the standard defines; use https.
+- **Retrieve.** One activity row per study or series. C-GET stores into the local store on our own connection.
+  C-MOVE needs the receiver: when it is off, or would refuse the node's AE title, Retrieve says so and what to
+  change, before anything is sent. WADO-RS is streamed by the toolkit part by part into the store
+  (`siaara_web_wado_retrieve_to`, about one image in memory) with byte progress. **Open while arriving**: a viewer
+  session listens to the store's changes for its study; new images join the open series (headers of the new files
+  only are read, the series is sorted again, the viewport stays on the image it shows with its window, zoom and
+  pan), new series appear in the strip, and a study opened before its first image arrived fills in.
+- **Receiver (Storage SCP).** Off by default; settings in Network, Receiver settings: AE title, port (11112), listen
+  address (empty = every interface), allowed senders, TLS identity. It does not start with an empty list unless
+  "accept every AE title" is ticked; that tick shows a red warning and is audited (`scp.accept-any`, outcome
+  `intent`) before it is saved. Starting writes `scp.start` (intent) first and does not start when that cannot be
+  written. Received data: the toolkit refuses instances whose data set is incomplete and C-STORE requests whose
+  command UIDs differ from the data set's; compressed transfer syntaxes are accepted and kept as received.
+  Optional: let the allowed senders query and fetch from the local store (C-FIND / C-GET / C-MOVE served by the
+  toolkit from the store; C-MOVE destinations are the DIMSE nodes). Live counters on the Network sheet; arriving
+  images are one activity row per sender, closed after 5 quiet seconds and audited as `scp.receive`. The receiver
+  stops before the store closes (`scp.stop` precedes `app.stop`). **Firewall:** the receiver is the only listener
+  of the app that other computers can reach, and only when switched on; the operating system's firewall must allow
+  its port. The web pages stay on 127.0.0.1 whatever the receiver does (tested with the receiver on every interface).
+- **Send.** A local study to a node: C-STORE over one association with one outcome per file, or STOW-RS file by
+  file. A file that was not read completely (truncated, damaged) is not sent and counts as failed, unless the user
+  ticks "also send files that are truncated or damaged" for that one send (red warning; audited as `send`, outcome
+  `intent`, before the first byte; no audit entry, no send). When a lossy transcode on sending gave an image a new
+  SOP Instance UID, the row lists "... was sent as ...". Storage Commitment (per node, or per send): the request
+  goes out on its own association after the store; the report is awaited on it and, with the receiver on, also on
+  a new association from the node. The row then
+  says "The PACS confirmed storage of n image(s)", "k of n image(s) not committed by the PACS" (each with its
+  reason), or "The PACS did not confirm storage (...)"; a send that is not fully confirmed ends as "Done, with
+  problems". The app never says that anything is safe to delete.
+- **Activity panel.** Retrieve, send and receive rows with state, progress, speed (images/s, MB/s for WADO-RS),
+  plain-word errors, Cancel and Retry; the last 200 rows are kept in memory. At most 4 retrieve / send jobs run at
+  once, the rest wait. The panel is redrawn at most 10 times a second. Cancel: the row is "Cancelled" within one
+  second. A transfer in progress is aborted at once; a connection still in its opening handshake cannot be
+  interrupted in the toolkit, so it is abandoned and keeps its transfer slot until the handshake times out (there
+  are never more than 4 connections). Sign out locks the windows; transfers and the receiver go on until the app
+  stops.
+- **Audit (no query values, no secrets, no patient names).** `node.change` (add / update / delete; kind, name,
+  host, port, AE titles, TLS and sign-in kind, "secret: set / removed"), `scp.settings`, `scp.accept-any`,
+  `scp.start`, `scp.stop`, `scp.receive` (sender AE, address, stored, failed), `scp.rejected` (refused connections
+  and requests, counted, at most one entry in ten seconds), `search` (node, kind, level, matches, truncated),
+  `retrieve` (node, method, Study / Series Instance UID, completed, failed), `send` (node, method, UIDs, images,
+  sent, failed, uidChanged, commitment, allowIncomplete). The app log has counts only.
+
 ## Test
 
 ```
@@ -218,8 +299,8 @@ dotnet run --project app/tests/Siaara.Viewer.Tests -c Release -- --quick       #
 dotnet run --project app/tests/Siaara.Viewer.Tests -c Release -- store import  # cases whose name starts so
 ```
 
-70 cases: interop (ABI, UTF-8 names), display formatting, settings, audit chain, PHI redactor,
-layouts, cine timing, scheduler, no-PackageReference check, store (paging, NO_TOTAL, date ranges,
+80 cases: interop (ABI, UTF-8 names), display formatting, settings, audit chain, PHI redactor,
+layouts, cine timing, scheduler, no-PackageReference check, binding names only in `Toolkit/Tk*.cs`, store (paging, NO_TOTAL, date ranges,
 wildcards, live updates, delete by patient key), import (mixed folder, DICOMDIR with a missing file,
 cancel < 200 ms, duplicates, index in place), series (uneven spacing, stacks, multi-frame, lossy),
 rendering (file / explicit / full-range windows and invert byte-equal to the toolkit, overlays),
@@ -237,7 +318,20 @@ refused delete, settings changes; launch page (owner-only, no secret on the comm
 after use / at expiry / at exit), peer-user parsing for the three OSes and the real check of the
 running OS, a host that refuses another user's connection, alerts and their rate limit, host name
 and cookie, CSP, file modes and the folder warning, annotation folder names, per-run ids and
-session / connection limits, socket limits and malformed commands, sign out. Performance is
+session / connection limits, socket limits and malformed commands, sign out. Networking
+(`NetworkTests.cs`; every counterpart is our own toolkit in the same process, no outside tools: a
+second store with its own receiver serving Storage and Query/Retrieve, a toolkit receiver that also
+answers Storage Commitment, and the toolkit's DICOMweb server): node settings round-trip and
+validation, no secret in `settings.json` / audit / log, the secret store of the running OS; receiver
+off by default, start on a free port, echo, store, one activity row, unknown AE refused, accept-any
+only with the tick and audited first, stop / start, port in use; search (name, ID, accession, date,
+modality), cap, cancel, series, the Local column, C-GET of a series and a study (pixels equal to the
+archive's), C-MOVE refused in words without the receiver and done with it; send with a truncated and
+a damaged file, allow-incomplete, "k not committed", "did not confirm", cancel mid-way under a
+second; QIDO-RS / WADO-RS / STOW-RS with a bearer token and a wrong one; 4 transfers at once, at
+most 10 updates a second, 200 rows kept; a viewer that grows while images arrive and keeps its
+image; the real host with the receiver on every interface while the pages answer on 127.0.0.1 only,
+the receiver back after a restart, and no patient value or search text in any log. Performance is
 reported, not failing. Tests use only files the toolkit generates. The test client names the
 app's `*.localhost` host and connects to 127.0.0.1 itself, as a browser's resolver would.
 
@@ -248,6 +342,10 @@ dotnet .../siaara-viewer.dll --data-dir /tmp/sv --import SAMPLES/folder --no-bro
 python3 app/tools/smoke.py LAUNCH_URL STUDY_UID                      # the printed URL (single use); signs out at the end
 python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_FILE STUDY_UID /tmp/shots   # the printed launch page path
 ```
+
+`browser_check.py` also walks through the networking UI with the app talking to itself on 127.0.0.1
+(receiver on for one sender, a node pointing at it, Test, remote search, series, Retrieve, Send,
+validation and warning texts) and switches the receiver off again.
 
 ## How it works (short)
 
@@ -321,6 +419,18 @@ python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_FILE STUDY_UID 
   answer removes it).
 
 ## Still missing / not verified
+
+- Networking (M2), not verified: any TLS connection (DIMSE or https; the settings are passed to the toolkit, no test
+  here has certificates); the Windows DPAPI and macOS keychain forms of the secret store (compiled everywhere,
+  the round-trip test runs them on their own OS in CI); other vendors' archives (every test is our toolkit on both
+  ends; the toolkit's own cross-checks with DCMTK / pynetdicom / Orthanc are in `tests/crosscheck`); Storage
+  Commitment reports that arrive on a new association at the app's receiver (the path is wired, the in-process
+  archive answers on the request's association); a lossy transcode on sending (the "was sent as" line); Basic
+  sign-in against a real server (Bearer is tested); retrieves of thousands of images over a slow link.
+- Networking, by design or open: no instance-level search or single-image retrieve; no worklist, MPPS or print;
+  the receiver has no per-sender allow-list for Query/Retrieve beyond the list of allowed senders; DICOMweb sends
+  have no storage confirmation (the standard has none); an abandoned handshake keeps a transfer slot until it times
+  out; a remote text search is three queries per modality chip.
 
 - Security round 4, not run on the platform (compiled everywhere, pure parts unit-tested here on
   Linux): the Windows peer-user check (`GetExtendedTcpTable`, token SID), the macOS peer-user check

@@ -10,6 +10,10 @@
 # Then the round-4 security pieces: the page was reached through the one-shot launch page FILE (as the
 # host opens it), under the random *.localhost name; the viewer address holds no Study Instance UID; the
 # console shows no Content-Security-Policy violation; Sign out locks the window.
+# Then the M2 networking UI, with the app talking to itself over the loopback interface: the Network sheet (the
+# receiver switched on for one sender, a DICOM node pointing at that receiver, its Test button), the source dropdown,
+# a remote search with the Local column, series on expand, Retrieve and Send with their activity rows, and a
+# validation message.
 # Usage: browser_check.py CHROME_BINARY LAUNCH STUDY_UID OUT_DIR
 # LAUNCH is the path the host printed with --print-launch-file (preferred: the real launch page), a
 # launch URL, or @INSTANCE_FILE.
@@ -165,6 +169,107 @@ def m11(c, out):
     print("about box:", c.eval("(document.querySelector('.modal.about') || {}).innerText"))
     c.shot(f"{out}/11-about.png")
 
+def click(c, selector, wait=0.5):
+    ok = c.eval("(() => { const e = document.querySelector(" + json.dumps(selector) + "); if (!e) return false; e.click(); return true; })()")
+    time.sleep(wait)
+    return ok
+
+def fill(c, selector, value, wait=0.25):
+    """Sets a bound input or select the way a user's edit ends: value, then a change event."""
+    ok = c.eval("(() => { const e = document.querySelector(" + json.dumps(selector) + "); if (!e) return false; e.value = " + json.dumps(str(value))
+                + "; e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()")
+    time.sleep(wait)
+    return ok
+
+def wait_for(c, expr, seconds=15):
+    end = time.time() + seconds
+    while time.time() < end:
+        v = c.eval(expr)
+        if v:
+            return v
+        time.sleep(0.25)
+    return c.eval(expr)
+
+def m2(c, out):
+    """The networking UI against the app's own receiver on 127.0.0.1 (no other program involved)."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    print("M2: network button:", click(c, "button.network"))
+    print("M2: receiver before:", c.eval("(document.querySelector('.scp-status') || {}).innerText"))
+    click(c, "button.scp-edit")
+    # Saving "on" without any allowed sender is refused in plain words.
+    click(c, "input.scp-enabled", 0.2)
+    fill(c, "input.scp-port", port)
+    fill(c, "input.scp-bind", "127.0.0.1")
+    click(c, "button.save", 1.0)
+    print("M2: receiver without a sender:", c.eval("(document.querySelector('.scp-status') || {}).innerText"), "|", c.eval("(document.querySelector('.network-sheet .err') || {}).innerText"))
+    click(c, "button.scp-edit")
+    fill(c, "input.scp-allowed", "SELF")
+    c.eval("[...document.querySelectorAll('.network-sheet label')].find(l => l.textContent.includes('search and fetch')).querySelector('input').click()")
+    time.sleep(0.2)
+    print("M2: no 'skip certificate checks' control anywhere:", not c.eval("/skip|insecure|do not check|don't check/i.test(document.querySelector('.network-sheet').innerText)"))
+    click(c, "input.scp-any", 0.3)
+    print("M2: accept-any warning:", c.eval("(document.querySelector('.network-sheet .banner.danger') || {}).innerText"))
+    click(c, "input.scp-any", 0.3)
+    click(c, "button.save", 1.5)
+    print("M2: receiver after:", c.eval("(document.querySelector('.scp-status') || {}).innerText"))
+    # A node with a bad AE title: the form says what to correct and nothing is saved.
+    click(c, "button.add-dimse")
+    fill(c, "input.node-name", "Loop")
+    fill(c, "input.node-host", "127.0.0.1")
+    fill(c, "input.node-port", port)
+    fill(c, "input.node-called", "THIS_AE_TITLE_IS_TOO_LONG")
+    fill(c, "input.node-calling", "SELF")
+    click(c, "button.save", 0.8)
+    print("M2: validation:", c.eval("[...document.querySelectorAll('.problems li')].map(l => l.textContent)"))
+    fill(c, "input.node-called", "SIAARA")
+    click(c, "button.save", 1.0)
+    print("M2: nodes:", c.eval("[...document.querySelectorAll('table.nodes tbody tr')].map(r => r.innerText.replace(/\\s+/g, ' ').trim())"))
+    click(c, "button.node-test", 0.2)
+    print("M2: test result:", wait_for(c, "(document.querySelector('.node-test-result') || {}).innerText"))
+    c.shot(f"{out}/13-network.png")
+    click(c, "button.close")
+    # Remote search through the source dropdown.
+    node = c.eval("(() => { const o = [...document.querySelectorAll('select.source option')].find(o => o.textContent === 'Loop'); return o ? o.value : null; })()")
+    print("M2: node in the source dropdown:", bool(node))
+    fill(c, "select.source", node, 0.8)
+    print("M2: hint before a search:", c.eval("(document.querySelector('.remote tbody td') || {}).innerText"))
+    c.eval("(() => { const e = document.querySelector('input.search'); e.value = 'SAMPLE'; e.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    rows = wait_for(c, "[...document.querySelectorAll('.remote tbody tr')].filter(r => r.querySelector('.local')).map(r => r.innerText.replace(/\\s+/g, ' ').trim())")
+    print("M2: remote rows:", rows)
+    print("M2: status bar:", c.eval("(document.querySelector('.statusbar') || {}).innerText"))
+    click(c, ".remote button.expand", 0.2)
+    print("M2: series on expand:", wait_for(c, "[...document.querySelectorAll('.remote tr.sub')].map(r => r.innerText.replace(/\\s+/g, ' ').trim()).filter(t => t.startsWith('Series'))"))
+    c.shot(f"{out}/14-remote-search.png")
+    click(c, ".remote button.retrieve", 0.5)
+    print("M2: activity after Retrieve:", wait_for(c, "(() => { const j = [...document.querySelectorAll('.activity .job')].map(j => j.innerText.replace(/\\s+/g, ' ').trim()); return j.some(t => t.includes('Done')) ? j : null; })()"))
+    c.shot(f"{out}/15-activity.png")
+    click(c, ".activity .btn")
+    # Send a local study to the same node.
+    fill(c, "select.source", "", 1.0)
+    row = c.eval("(() => { const r = [...document.querySelectorAll('table.grid tbody tr')].find(t => t.textContent.includes('CT PHANTOM')); if (!r) return null; const b = r.getBoundingClientRect(); return [b.x + 20, b.y + b.height / 2]; })()")
+    if row:
+        c.mouse("mousePressed", row[0], row[1], "left", 1)
+        c.mouse("mouseReleased", row[0], row[1], "left", 0)
+        time.sleep(0.5)
+    print("M2: send button:", click(c, "button.send"))
+    click(c, "input.allow-incomplete", 0.3)
+    print("M2: incomplete-files warning:", c.eval("(document.querySelector('.modal .banner.danger') || {}).innerText"))
+    click(c, "input.allow-incomplete", 0.3)
+    click(c, "button.send-go", 0.5)
+    print("M2: activity after Send:", wait_for(c, "(() => { const j = [...document.querySelectorAll('.activity .job')].map(j => j.innerText.replace(/\\s+/g, ' ').trim()); return j.filter(t => t.startsWith('Send') && t.includes('Done')).length ? j : null; })()", 60))
+    c.shot(f"{out}/16-send.png")
+    click(c, ".activity .btn")
+    # Switch the receiver off again; the node stays.
+    click(c, "button.network")
+    click(c, "button.scp-edit")
+    click(c, "input.scp-enabled", 0.2)
+    click(c, "button.save", 1.5)
+    print("M2: receiver switched off:", c.eval("(document.querySelector('.scp-status') || {}).innerText"))
+    click(c, "button.close")
+
 def main():
     chrome, launch, study, out = sys.argv[1:5]
     if os.path.isfile(launch):
@@ -259,6 +364,13 @@ def main():
         # Sign out from the study browser: the window is locked and a reload is refused.
         c.call("Page.navigate", url=c.eval("location.origin") + "/")
         time.sleep(3)
+        before = len(c.events)
+        m2(c, out)
+        errors = [e for e in c.events[before:] if e.get("method") == "Runtime.exceptionThrown"
+                  or (e.get("method") == "Runtime.consoleAPICalled" and e["params"].get("type") == "error")]
+        print("M2: browser console errors:", len(errors))
+        for e in errors[:10]:
+            print("  ", json.dumps(e.get("params"))[:300])
         c.eval("document.querySelector('button.signout').click()")
         time.sleep(2)
         print("after Sign out:", c.eval("location.pathname + ' | ' + (document.querySelector('h1') || {}).textContent"))

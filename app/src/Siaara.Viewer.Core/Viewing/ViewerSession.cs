@@ -274,7 +274,11 @@ public sealed class ViewerSession : IDisposable
             var imageRows = rows.Where(r => r.Instances > 0).ToList();
             lock (_gate)
             {
-                Layout = LayoutModel.ForSeriesCount(imageRows.Count);
+                // A layout the user chose while the study was still being read stays.
+                if (!_layoutChosen)
+                {
+                    Layout = LayoutModel.ForSeriesCount(imageRows.Count);
+                }
                 _svc.Cache.MaxFullHandles = Math.Max(_svc.Cache.MaxFullHandles, Prefs.MaxFullHandlesPerViewport * Layout.Count);
             }
             RaiseUi();
@@ -356,6 +360,7 @@ public sealed class ViewerSession : IDisposable
 
     private readonly HashSet<string> _arrived = new(StringComparer.Ordinal);
     private bool _growing;
+    private bool _layoutChosen;
     private long _grown;
 
     /// <summary>How many images joined open series after the study was loaded (tests, status).</summary>
@@ -1941,6 +1946,7 @@ public sealed class ViewerSession : IDisposable
     {
         lock (_gate)
         {
+            _layoutChosen = true;
             Layout = LayoutModel.Of(layout.Rows, layout.Columns);
             if (ActiveViewport >= Layout.Count)
             {
@@ -2563,15 +2569,37 @@ public sealed class ViewerSession : IDisposable
     private Task SaveAsync(AnnotationDocument doc)
     {
         AnnotationDocument snapshot;
+        long order;
         lock (_gate)
         {
             snapshot = new AnnotationDocument { SopInstanceUid = doc.SopInstanceUid, Frame = doc.Frame, Annotations = [.. doc.Annotations.Select(a => a.Clone())] };
+            order = ++_saveOrder;
         }
-        return SaveAuditedAsync(snapshot);
+        return SaveAuditedAsync(snapshot, order);
+    }
+
+    // Saves run on a pool with several threads: two quick changes of one frame could be written in the wrong order
+    // and leave the older state on disk. Each snapshot carries its order; an older one never overwrites a newer one.
+    private readonly Lock _saveGate = new();
+    private readonly Dictionary<FrameKey, long> _savedOrder = [];
+    private long _saveOrder;
+
+    private void SaveInOrder(AnnotationDocument snapshot, long order)
+    {
+        var key = new FrameKey(snapshot.SopInstanceUid, snapshot.Frame);
+        lock (_saveGate)
+        {
+            if (_savedOrder.TryGetValue(key, out long written) && written > order)
+            {
+                return;
+            }
+            _svc.Annotations.Save(snapshot);
+            _savedOrder[key] = order;
+        }
     }
 
     // Every stored change of a frame's annotations is audited (R-127): which image, how many shapes; never their text.
-    private async Task SaveAuditedAsync(AnnotationDocument snapshot)
+    private async Task SaveAuditedAsync(AnnotationDocument snapshot, long order)
     {
         var fields = new Dictionary<string, string>
         {
@@ -2583,7 +2611,7 @@ public sealed class ViewerSession : IDisposable
         };
         try
         {
-            await _svc.Scheduler.RunAsync(WorkPool.StoreRead, _ => _svc.Annotations.Save(snapshot), _closedToken).ConfigureAwait(false);
+            await _svc.Scheduler.RunAsync(WorkPool.StoreRead, _ => SaveInOrder(snapshot, order), _closedToken).ConfigureAwait(false);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

@@ -24,6 +24,8 @@ public sealed class ScpService : IDisposable
     private readonly NetworkJobs _jobs;
     private readonly AuditLog? _audit;
     private readonly Lock _gate = new();
+    // One start, stop or settings change at a time (two windows may press the buttons together).
+    private readonly Lock _life = new();
     private readonly Dictionary<string, Row> _rows = new(StringComparer.Ordinal);
     private readonly Timer _timer;
     private TkScp? _scp;
@@ -127,11 +129,14 @@ public sealed class ScpService : IDisposable
     public void Apply(ScpSetting settings, string? tlsPassword = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        _nodes.SaveScp(settings, tlsPassword);
-        Stop();
-        if (settings.Enabled)
+        lock (_life)
         {
-            Start();
+            _nodes.SaveScp(settings, tlsPassword);
+            Stop();
+            if (settings.Enabled)
+            {
+                Start();
+            }
         }
     }
 
@@ -144,7 +149,10 @@ public sealed class ScpService : IDisposable
         ScpSetting s = _nodes.Current.Scp;
         try
         {
-            StartCore(s);
+            lock (_life)
+            {
+                StartCore(s);
+            }
             LastError = null;
         }
         catch (NetworkException e)
@@ -244,6 +252,18 @@ public sealed class ScpService : IDisposable
     /// <summary>Stops the receiver (running associations are aborted). Does nothing when it is not running.</summary>
     public void Stop()
     {
+        lock (_life)
+        {
+            if (!StopCore())
+            {
+                return;
+            }
+        }
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool StopCore()
+    {
         TkScp? scp;
         TkScpStats last;
         lock (_gate)
@@ -254,7 +274,7 @@ public sealed class ScpService : IDisposable
         }
         if (scp is null)
         {
-            return;
+            return false;
         }
         try
         {
@@ -281,7 +301,7 @@ public sealed class ScpService : IDisposable
             ["failed"] = last.StoreFailures.ToString(CultureInfo.InvariantCulture),
         });
         AppLog.Info("network", "receiver stopped");
-        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
     }
 
     // On the SCP's dispatcher thread: count and leave.
