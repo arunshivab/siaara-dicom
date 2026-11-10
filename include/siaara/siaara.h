@@ -204,6 +204,58 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup(uint32_t tag, siaara_dic
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyword, size_t len,
                                                                 siaara_dict_entry* out);
 
+/* Private dictionary, built only from vendor DICOM Conformance Statements (docs/PRIVATE_DICTIONARY.md).
+ * A key is the Private Creator string + group + the low byte of the element in the creator's
+ * block ((gggg,xxEE): EE). */
+enum {
+    SIAARA_PRIVATE_STATED = 0,   /* a document states the creator for this element */
+    SIAARA_PRIVATE_ASSUMED = 1,  /* creator assumed from a nearby declaration (lower confidence) */
+    SIAARA_PRIVATE_EXACT = 0,    /* creator matched as written (trailing spaces / NULs ignored) */
+    SIAARA_PRIVATE_FUZZY = 1     /* matched a spelling variant ignoring ASCII case and whitespace */
+};
+typedef struct siaara_private_dict_entry {
+    uint32_t struct_size;      /* set to sizeof(siaara_private_dict_entry) */
+    uint16_t group;
+    uint8_t element;           /* low byte of the element */
+    char vr[3];                /* "" when undecided (conflict, or no document states a VR) */
+    int32_t retired;           /* 1 when a document marks it retired */
+    int32_t conflict;          /* 1 when documents disagree on the VR (see siaara_dict_private_candidate) */
+    int32_t vm_conflict;       /* 1 when documents disagree on the VM (vm is "") */
+    int32_t confidence;        /* SIAARA_PRIVATE_STATED / SIAARA_PRIVATE_ASSUMED */
+    int32_t match;             /* SIAARA_PRIVATE_EXACT / SIAARA_PRIVATE_FUZZY */
+    uint32_t source_page;      /* primary source: physical PDF page */
+    uint32_t source_count;     /* documents that define this key */
+    uint32_t candidate_count;  /* VR candidates (siaara_dict_private_candidate) */
+    const char* creator;       /* the dictionary's spelling; static, NUL-terminated (as are all below) */
+    const char* keyword;       /* may be "" */
+    const char* name;          /* may be "" */
+    const char* vm;            /* "" when undecided or not stated */
+    const char* vendor;
+    const char* source_document;
+} siaara_private_dict_entry;
+
+typedef struct siaara_private_dict_candidate {
+    uint32_t struct_size;  /* set to sizeof(siaara_private_dict_candidate) */
+    char vr[3];
+    uint32_t page;         /* physical PDF page */
+    const char* document;  /* static, NUL-terminated */
+} siaara_private_dict_candidate;
+
+/* Looks up creator (UTF-8, len bytes, as stored in (gggg,00xx)) + group + element low byte. The
+ * exact creator is tried first, then its case/whitespace spelling variants. NotFound if unknown. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_private(const char* creator, size_t len, uint16_t group,
+                                                                uint8_t element_low_byte,
+                                                                siaara_private_dict_entry* out);
+/* Looks up the private data element `tag` (gggg,xxEE) of ds through its Private Creator (gggg,00xx). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_private_element(const siaara_dataset* ds, uint32_t tag,
+                                                                        siaara_private_dict_entry* out);
+/* Candidate `index` (0 .. candidate_count-1) of the entry found for creator + group + element: a
+ * VR conflict lists every (VR, document) pair, a decided VR has one candidate (the primary
+ * source), an entry whose documents state no VR has none. NotFound past the end. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dict_private_candidate(const char* creator, size_t len, uint16_t group,
+                                                                   uint8_t element_low_byte, uint32_t index,
+                                                                   siaara_private_dict_candidate* out);
+
 /* ---------------------------------------------------------------- pixel data */
 /* Image Pixel module of the file's main data set (PS3.3 C.7.6.3), validated. */
 typedef struct siaara_pixel_info {
@@ -299,7 +351,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
 enum {
     SIAARA_JSON_DEFAULT = 0,
     SIAARA_JSON_NUMBERS_AS_STRINGS = 1, /* DS and IS values as JSON strings */
-    SIAARA_JSON_STRICT_CHARSET = 2      /* fail instead of writing U+FFFD for unconvertible text */
+    SIAARA_JSON_STRICT_CHARSET = 2,     /* fail instead of writing U+FFFD for unconvertible text */
+    SIAARA_JSON_PRIVATE_NAMES = 4       /* add "keyword" / "name" to private attributes the private
+                                           dictionary knows (not PS3.18 members; readers ignore them) */
 };
 
 /* Encodes a data set as one DICOM JSON object (UTF-8, compact). Buffer rules as for strings:

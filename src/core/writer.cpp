@@ -160,10 +160,14 @@ private:
             else vr = VR::UN;
         }
         if (padded >= kUndefinedLength) return Status(Errc::LimitExceeded, "value too large", 0, e.tag);
+        // A VR the private dictionary gave an implicit VR element is for interpretation only: the
+        // element is saved as it was read, VR UN, in explicit VR syntaxes (ReadInfo::private_vr).
+        const VR pad_vr = vr;
+        if (dictionary_vr_only(e)) vr = VR::UN;
         header(e.tag, vr, static_cast<std::uint32_t>(padded));
         const std::size_t at = out_.size();
         out_.insert(out_.end(), e.value.data(), e.value.data() + len);
-        if (pad) out_.push_back(static_cast<std::uint8_t>(vr_pad_char(vr)));
+        if (pad) out_.push_back(static_cast<std::uint8_t>(vr_pad_char(pad_vr)));
         if (enc_.big_endian) swap_in_place(out_.data() + at, len, swap_unit(e.tag, vr, pixel_bits_));
         else if (enc_.pixel_big_endian && depth_ == 0 && e.tag == tags::PixelData && vr == VR::OW &&
                  (pixel_bits_ == 16 || pixel_bits_ == 32 || pixel_bits_ == 64))
@@ -180,6 +184,11 @@ private:
         return Status::ok();
     }
 
+    // The element's VR came from the private dictionary on an implicit VR read and is unchanged.
+    static bool dictionary_vr_only(const Element& e) noexcept {
+        return e.read.parsed && e.read.private_vr != VR::None && e.vr == e.read.private_vr;
+    }
+
     // Undefined length for this SQ? (see SequenceLengths in writer.hpp)
     bool sequence_undefined(const Element& e) const noexcept {
         switch (opt_.sequence_lengths) {
@@ -189,6 +198,8 @@ private:
         }
         // In implicit VR a reader needs the dictionary to see an explicit-length SQ as a sequence.
         const bool unknown_in_implicit = !enc_.explicit_vr && dict::implicit_vr(e.tag) != VR::SQ;
+        // A defined-length sequence found through the private dictionary keeps its length as read.
+        if (e.read.parsed && dictionary_vr_only(e)) return e.undefined_length;
         if (e.read.parsed) return e.undefined_length || unknown_in_implicit;
         return unknown_in_implicit || (!enc_.explicit_vr && tag_is_private(e.tag));
     }
@@ -214,12 +225,16 @@ private:
         // it is written as a normal SQ in the file's own encoding (testing-chat BE finding).
         const bool as_un = e.read.parsed && e.read.un_sequence && !enc_.big_endian &&
                            opt_.sequence_lengths == SequenceLengths::KeepAsRead;
-        const bool undef = as_un || sequence_undefined(e);
+        // A defined-length implicit VR sequence found through the private dictionary goes out as it
+        // was read: in explicit VR little endian as UN of defined length with implicit VR items.
+        const bool as_un_defined = !as_un && dictionary_vr_only(e) && !e.undefined_length && enc_.explicit_vr &&
+                                   !enc_.big_endian && opt_.sequence_lengths == SequenceLengths::KeepAsRead;
+        const bool undef = as_un || (!as_un_defined && sequence_undefined(e));
         std::size_t len_at = 0;
-        header(e.tag, as_un ? VR::UN : VR::SQ, undef ? kUndefinedLength : 0);
+        header(e.tag, (as_un || as_un_defined) ? VR::UN : VR::SQ, undef ? kUndefinedLength : 0);
         if (!undef) len_at = out_.size() - 4;
         const Enc outer = enc_;
-        if (as_un) enc_ = Enc{false, false};
+        if (as_un || as_un_defined) enc_ = Enc{false, false};
         struct RestoreEnc { Enc& ref; Enc v; ~RestoreEnc() { ref = v; } } restore{enc_, outer};
         const std::size_t body = out_.size();
         ++depth_;

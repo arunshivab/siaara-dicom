@@ -35,14 +35,34 @@ void print_value(const Dataset& ds, const Element& e) {
     std::printf("(%zu bytes)", e.value.size());
 }
 
+// Private data elements: the private dictionary's keyword (or name), and how sure it is.
+std::string private_label(const Dataset& ds, const Element& e, std::string& note) {
+    const auto p = dict::lookup_private_element(ds, e.tag);
+    if (!p) return {};
+    std::string label(!p->keyword.empty() ? p->keyword : p->name);
+    if (p->confidence == dict::PrivateConfidence::Assumed) note += ", creator assumed";
+    if (p->match == dict::PrivateMatch::Fuzzy) note += ", creator spelled \"" + std::string(p->creator) + "\"";
+    if (p->conflict) note += ", VR conflict";
+    if (!note.empty()) note = "  (private dictionary" + note + ")";
+    return label;
+}
+
 void dump(const Dataset& ds, int depth) {
     for (const Element& e : ds.elements()) {
-        const auto* d = dict::lookup(e.tag);
-        std::printf("%*s(%04X,%04X) %.2s %-40.*s ", depth * 2, "", tag_group(e.tag), tag_element(e.tag),
-                    vr_name(e.vr).data(), d ? static_cast<int>(d->keyword.size()) : 7,
-                    d ? d->keyword.data() : "Unknown");
+        // Private tags first: the public lookup also matches repeating groups such as 7Fxx on odd groups.
+        const auto* d = tag_is_private(e.tag) ? nullptr : dict::lookup(e.tag);
+        std::string note;
+        std::string label = d ? std::string(d->keyword) : std::string();
+        if (tag_is_private(e.tag)) {
+            const std::uint16_t el = tag_element(e.tag);
+            if (el >= 0x0010 && el <= 0x00FF) label = "PrivateCreator";
+            else label = private_label(ds, e, note);
+        }
+        if (label.empty()) label = "Unknown";
+        std::printf("%*s(%04X,%04X) %.2s %-40s ", depth * 2, "", tag_group(e.tag), tag_element(e.tag),
+                    vr_name(e.vr).data(), label.c_str());
         print_value(ds, e);
-        std::printf("\n");
+        std::printf("%s\n", note.c_str());
         for (std::size_t i = 0; i < e.items.size(); ++i) {
             std::printf("%*s  > Item %zu\n", depth * 2, "", i + 1);
             dump(e.items[i], depth + 2);
