@@ -181,6 +181,12 @@ siaara_store_get_series
 siaara_store_move
 siaara_store_open
 siaara_store_patient_key
+siaara_store_quarantine_bytes
+siaara_store_quarantine_count
+siaara_store_quarantine_delete
+siaara_store_quarantine_export
+siaara_store_quarantine_get
+siaara_store_quarantine_release
 siaara_store_query
 siaara_store_rebuild
 siaara_store_rebuild_ex
@@ -249,5 +255,6 @@ siaara_web_wado_instance
 siaara_web_wado_metadata
 siaara_web_wado_retrieve
 siaara_web_wado_retrieve_to
+siaara_web_wado_retrieve_to_ex
 siaara_web_wado_uri
 siaara_worklist_query
