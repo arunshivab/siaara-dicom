@@ -85,8 +85,7 @@ std::optional<std::uint32_t> find_node(std::string_view name) noexcept {
     while (!name.empty() && name.back() == ' ') name.remove_suffix(1);
     if (name.empty()) return std::nullopt;
     std::string_view id = name;
-    if (id.size() > 6 && iequals(id.substr(0, 6), "table_")) id.remove_prefix(6);
-    else if (id.size() > 6 && iequals(id.substr(0, 6), "table ")) id.remove_prefix(6);
+    if (id.size() > 6 && (iequals(id.substr(0, 6), "table_") || iequals(id.substr(0, 6), "table "))) id.remove_prefix(6);
     const auto& ns = detail::kModNodes;
     for (std::uint32_t i = 0; i < std::size(ns); ++i) {
         const ModNode& n = ns[i];
@@ -201,9 +200,10 @@ Result<std::vector<Segment>> parse_path(std::string_view p) {
             std::string_view t = name;
             if (t.size() >= 2 && t.front() == '(' && t.back() == ')') t = t.substr(1, t.size() - 2);
             std::uint16_t g = 0, el = 0;
-            if (t.size() == 9 && t[4] == ',' && hex4(t.substr(0, 4), g) && hex4(t.substr(5, 4), el)) {
-                s.tag = make_tag(g, el);
-            } else if (t.size() == 8 && hex4(t.substr(0, 4), g) && hex4(t.substr(4, 4), el) && name.front() != '(') {
+            const bool with_comma = t.size() == 9 && t[4] == ',' && hex4(t.substr(0, 4), g) && hex4(t.substr(5, 4), el);
+            const bool plain = !with_comma && t.size() == 8 && name.front() != '(' && hex4(t.substr(0, 4), g) &&
+                               hex4(t.substr(4, 4), el);
+            if (with_comma || plain) {
                 s.tag = make_tag(g, el);
             } else {
                 const auto* d = dict::lookup_keyword(t);
@@ -324,8 +324,9 @@ Result<PathTarget> resolve_path(const Dataset& root, std::string_view path) {
 
 Result<PathValue> get_by_path(const Dataset& root, std::string_view path) {
     auto wr = walk(root, path);
-    if (!wr) return wr.error();
+    if (!wr) return wr.take_error();
     const Walk& w = wr.value();
+    if (w.element == nullptr || w.parent == nullptr) return Status(Errc::Internal, "path did not resolve");
     const Element& e = *w.element;
     const Dataset& ds = *w.parent;
     PathValue v;
@@ -402,8 +403,9 @@ Result<PathValue> get_by_path(const Dataset& root, std::string_view path) {
 
 Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_view path) {
     auto wr = walk(root, path);
-    if (!wr) return wr.error();
+    if (!wr) return wr.take_error();
     const Walk& w = wr.value();
+    if (w.element == nullptr || w.parent == nullptr) return Status(Errc::Internal, "path did not resolve");
     const Element& e = *w.element;
     if (e.is_sequence() || e.is_encapsulated() || e.vr == VR::AT) return Status(Errc::TypeMismatch, "not a numeric element");
     const bool numeric = vr_is_binary_numeric(e.vr) || e.vr == VR::DS || e.vr == VR::IS || e.vr == VR::OW ||
