@@ -285,7 +285,11 @@ struct IodChecker {
     // module does not allow them otherwise), and those another row allows (any present module of
     // the IOD lists them unconditionally, its condition holds or cannot be evaluated).
     struct Unmet {
-        std::map<Tag, std::string> unmet;  // tag -> module name
+        struct Row {
+            std::string module;
+            bool forbidden = false;  // the description itself forbids presence (else PS3.5 7.4 only)
+        };
+        std::map<Tag, Row> unmet;
         std::set<Tag> allowed;
     };
     Unmet* unmet = nullptr;
@@ -600,7 +604,8 @@ struct IodChecker {
                         ++not_evaluated;
                     }
                     if (e && path.empty() && unmet) {
-                        if (r.has_value() && !*r && n.absent_unless_required) unmet->unmet.emplace(n.tag, module_name);
+                        if (r.has_value() && !*r && n.absent_unless_required)
+                            unmet->unmet.emplace(n.tag, Unmet::Row{module_name, n.forbidden_otherwise});
                         else unmet->allowed.insert(n.tag);
                     }
                     if (e && n.type == AttrType::T1C) value_required = true;  // present 1C must have a value
@@ -660,20 +665,81 @@ struct IodChecker {
     }
 };
 
-bool module_present(const Dataset& ds, const ModuleReq& m, const std::set<Tag>& mandatory_tags) {
+bool node_in(const Dataset& ds, const ReqNode& n) {
+    if (n.mask == 0xFFFFFFFFu) return ds.contains(n.tag);
+    for (const Element& e : ds.elements())
+        if (n.matches(e.tag)) return true;
+    return false;
+}
+
+// A module that is not mandatory is present when one of its own attributes (of any Type) is,
+// apart from attributes that also belong to a mandatory module, and apart from attributes that
+// `claimed` holds: those of another optional module of the IOD that is present by an attribute
+// no other module has. So a Floating Point Image Pixel object (Float Pixel Data) is not also
+// checked against the Image Pixel Module because both list Rows, Columns and Bits Allocated.
+bool module_present(const Dataset& ds, const ModuleReq& m, const std::set<Tag>& mandatory_tags,
+                    const std::set<Tag>* claimed = nullptr) {
     if (!m.attributes) return false;
-    // A module is present when any of its own attributes (of any Type) is, apart from attributes
-    // that also belong to a mandatory module.
     for (const ReqNode& n : *m.attributes) {
         if (mandatory_tags.count(n.tag)) continue;
-        if (n.mask == 0xFFFFFFFFu) {
-            if (ds.contains(n.tag)) return true;
-        } else {
-            for (const Element& e : ds.elements())
-                if (n.matches(e.tag)) return true;
-        }
+        if (claimed && claimed->count(n.tag)) continue;
+        if (node_in(ds, n)) return true;
     }
     return false;
+}
+
+// Checks the IOD's Functional Group Macros (R-155): a mandatory macro must be in the Shared
+// Functional Groups Sequence item or in every Per-Frame Functional Groups Sequence item, and
+// wherever a macro is present its attributes are checked as a module's are (Type 1 / 2, and
+// 1C / 2C with conditions evaluated in the frame's context).
+void check_functional_groups(const IodReq& iod, const Dataset& ds, Sink& sink, const std::map<Tag, AttrType>* overrides,
+                             IodChecker::ValueCache* cache) {
+    if (iod.functional_groups.empty()) return;
+    constexpr Tag kShared = 0x52009229u, kPerFrame = 0x52009230u;
+    const Element* sh = ds.find(kShared);
+    const Element* pf = ds.find(kPerFrame);
+    const Dataset* shared = sh && sh->is_sequence() && !sh->items.empty() ? &sh->items[0] : nullptr;
+    const std::size_t frames = pf && pf->is_sequence() ? pf->items.size() : 0;
+    if (!shared && frames == 0) return;  // the Multi-frame Functional Groups Module check reports that
+    auto path_of = [](Tag seq, std::size_t item) {
+        Path p = child({}, seq);
+        p.back().item = static_cast<std::int32_t>(item);
+        return p;
+    };
+    for (const ModuleReq& m : iod.functional_groups) {
+        if (!m.attributes || m.attributes->empty()) continue;
+        const std::string name = std::string(m.name) + " Functional Group Macro";
+        auto present_in = [&](const Dataset& item) {
+            for (const ReqNode& n : *m.attributes)
+                if (node_in(item, n)) return true;
+            return false;
+        };
+        auto check = [&](const Dataset& item, Tag seq, std::size_t index) {
+            IodChecker c{sink, ds, name, 0, overrides, nullptr, cache, {}, {}};
+            c.ancestors.push_back(&ds);
+            c.fg_items.push_back(&item);
+            c.check_list(item, *m.attributes, path_of(seq, index));
+        };
+        const bool in_shared = shared && present_in(*shared);
+        if (in_shared) check(*shared, kShared, 0);
+        std::size_t missing = 0, first_missing = 0;
+        for (std::size_t i = 0; i < frames; ++i) {
+            if (present_in(pf->items[i])) {
+                check(pf->items[i], kPerFrame, i);
+            } else if (missing++ == 0) {
+                first_missing = i;
+            }
+        }
+        if (m.usage == ModuleUsage::M && !in_shared && (missing > 0 || frames == 0)) {
+            Path p = frames ? path_of(kPerFrame, first_missing) : path_of(kShared, 0);
+            p.push_back({(*m.attributes)[0].tag, -1});
+            sink.add(Severity::Error, "missing-functional-group", 0, p,
+                     "mandatory Functional Group Macro is neither in the Shared Functional Groups Sequence item nor in " +
+                         (frames ? std::to_string(missing) + " of " + std::to_string(frames) + " Per-Frame Functional Groups Sequence items"
+                                 : std::string("a Per-Frame Functional Groups Sequence item")),
+                     name);
+        }
+    }
 }
 
 void check_iod_into(const DicomFile& f, Sink& sink) {
@@ -701,9 +767,30 @@ void check_iod_into(const DicomFile& f, Sink& sink) {
     }
     IodChecker::Unmet unmet;
     IodChecker::ValueCache value_cache;  // one split per element for the whole run (R-112)
+    // Attributes of optional modules that are present by an attribute only they have.
+    std::map<Tag, int> listed;  // top-level tag -> number of the IOD's modules that list it
+    for (const ModuleReq& m : iod->modules)
+        if (m.attributes)
+            for (const ReqNode& n : *m.attributes)
+                if (n.mask == 0xFFFFFFFFu) ++listed[n.tag];
+    std::vector<const ModuleReq*> sure;
+    for (const ModuleReq& m : iod->modules) {
+        if (!m.attributes || m.usage == ModuleUsage::M) continue;
+        for (const ReqNode& n : *m.attributes)
+            if (n.mask == 0xFFFFFFFFu && listed[n.tag] == 1 && ds.contains(n.tag)) {
+                sure.push_back(&m);
+                break;
+            }
+    }
     for (const ModuleReq& m : iod->modules) {
         if (!m.attributes) continue;
-        if (m.usage != ModuleUsage::M && !module_present(ds, m, mandatory_tags)) continue;
+        if (m.usage != ModuleUsage::M) {
+            std::set<Tag> claimed;
+            for (const ModuleReq* o : sure)
+                if (o != &m)
+                    for (const ReqNode& n : *o->attributes) claimed.insert(n.tag);
+            if (!module_present(ds, m, mandatory_tags, &claimed)) continue;
+        }
         IodChecker c{sink, ds, std::string(m.name) + " Module", 0, &overrides, &unmet, &value_cache, {}, {}};
         c.check_list(ds, *m.attributes, {});
         if (c.not_evaluated)
@@ -714,11 +801,17 @@ void check_iod_into(const DicomFile& f, Sink& sink) {
     }
     // PS3.5 7.4.4 / 7.4.6: a Type 1C / 2C attribute whose condition does not hold shall not be
     // present, unless its description says it may be present otherwise.
-    for (const auto& [tag, module] : unmet.unmet)
+    // An error only where the description itself forbids presence; otherwise the condition was
+    // read from prose and "does not hold" is this validator's reading: a warning.
+    for (const auto& [tag, row] : unmet.unmet)
         if (!unmet.allowed.count(tag))
-            sink.add(Severity::Error, "present-condition-unmet", 0, child({}, tag),
-                     "Type 1C/2C attribute is present although its condition does not hold (and it may not be present otherwise)",
-                     module);
+            sink.add(row.forbidden ? Severity::Error : Severity::Warning, "present-condition-unmet", 0, child({}, tag),
+                     row.forbidden
+                         ? "Type 1C/2C attribute is present although its condition does not hold and its description says it shall not be present then"
+                         : "Type 1C/2C attribute is present although its condition, as read from PS3.3, does not hold; "
+                           "PS3.5 7.4 allows it then only if the description says so (it does not say either way)",
+                     row.module);
+    check_functional_groups(*iod, ds, sink, &overrides, &value_cache);
 }
 
 }  // namespace

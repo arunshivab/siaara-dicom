@@ -36,6 +36,8 @@ struct IodDef {
     std::string_view id;
     std::uint32_t first;
     std::uint32_t count;
+    std::uint32_t fg_first;  // kFunctionalGroupRows
+    std::uint32_t fg_count;
 };
 struct SopIod {
     std::string_view uid;
@@ -141,6 +143,7 @@ ReqNode node_of(const FlatRow& fr, Cache& c) {
     n.type = static_cast<AttrType>(r.type);
     n.overrides = r.overrides != 0;
     n.absent_unless_required = r.strict != 0;
+    n.forbidden_otherwise = r.strict == 2;
     if (r.cond >= 0 && static_cast<std::size_t>(r.cond) < c.conditions.size()) n.condition = &c.conditions[static_cast<std::size_t>(r.cond)];
     if (r.enum_list >= 0) {
         const EnumList& e = kEnumLists[r.enum_list];
@@ -169,6 +172,7 @@ ReqNode* merge_into(std::vector<ReqNode>& list, ReqNode n) {
                 x.condition = n.condition;
             }
             x.absent_unless_required = strict;
+            x.forbidden_otherwise = strict && x.forbidden_otherwise && n.forbidden_otherwise;
             if (x.enumerated.empty()) x.enumerated = n.enumerated;
             return &x;
         }
@@ -258,6 +262,15 @@ const IodReq* iod_for_sop_class(std::string_view uid) {
         mr.usage = static_cast<ModuleUsage>(m.usage);
         mr.attributes = table_tree(m.table);
         iod->modules.push_back(mr);
+    }
+    for (std::uint32_t i = 0; i < def.fg_count; ++i) {
+        const ModuleRow& m = kFunctionalGroupRows[def.fg_first + i];
+        ModuleReq mr;
+        mr.name = m.name;
+        mr.table_id = kAttrTables[m.table].id;
+        mr.usage = static_cast<ModuleUsage>(m.usage);
+        mr.attributes = table_tree(m.table);
+        iod->functional_groups.push_back(mr);
     }
     Cache& c = cache();
     std::lock_guard<std::mutex> lock(c.mu);
