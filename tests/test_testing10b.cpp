@@ -653,6 +653,22 @@ TEST_CASE("10b 4.3: outcomes carry the UID sent after a lossy C-STORE; commitmen
         CHECK((one[0].flags & SIAARA_STORE_LOSSY_HISTORY_MISALIGNED) != 0);
         CHECK((one[0].flags & SIAARA_STORE_LOSSY_METHOD_FILLED) == 0);
         siaara_file_free(mf);
+        // R-170: one more Method than Ratio value. The lists become equally long and are still
+        // not pairs: the outcome flag says so.
+        DicomFile more = mr8("2.25.10118");
+        (void)more.dataset.set_string(0x00282110, VR::CS, "01");
+        (void)more.dataset.set_string(0x00282112, VR::DS, "7");
+        (void)more.dataset.set_string(0x00282114, VR::CS, "ISO_10918_1\\ISO_15444_1");
+        const auto moreb = bytes_of(more);
+        siaara_file* moref = nullptr;
+        REQUIRE(siaara_file_open_memory(moreb.data(), moreb.size(), nullptr, &moref) == SIAARA_OK);
+        one = outcomes(1);
+        r = result();
+        CHECK(siaara_dimse_store_report(&p, moref, nullptr, one.data(), &r) == SIAARA_OK);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY) != 0);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY_HISTORY_MISALIGNED) != 0);
+        CHECK((one[0].flags & SIAARA_STORE_LOSSY_METHOD_FILLED) == 0);
+        siaara_file_free(moref);
         // JPEG-LS near-lossless with one Ratio value and no Method: the syntax proves ISO_14495_1.
         DicomFile fill = mr8("2.25.10117");
         codec::TranscodeParams tp;

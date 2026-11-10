@@ -690,8 +690,11 @@ values the source has in each and never guesses:
 | Source lists | Written | Reported to the product as |
 |---|---|---|
 | Same number of values in both (or neither present) | one value appended to each | aligned |
-| One more Ratio than Method value, and the source pixel data is itself lossy coded in JPEG Baseline / Extended, JPEG-LS near-lossless, JPEG 2000 irreversible or HTJ2K irreversible | the missing Method value of that earlier step is filled in with the term the source's own coding proves; then one value appended to each | method filled (with the term) |
-| Anything else | the Ratio of this step is appended; Method is left byte for byte as it was | misaligned (with the counts found) |
+| Exactly one Ratio value and no Method value, and the source pixel data is itself lossy coded in JPEG Baseline / Extended, JPEG-LS near-lossless, JPEG 2000 irreversible or HTJ2K irreversible | the missing Method value of that one earlier step is filled in with the term the source's own coding proves; then one value appended to each | method filled (with the term) |
+| Anything else (for example 2 Ratio and 1 Method value, or more Method than Ratio values) | the Ratio of this step is appended; Method is left byte for byte as it was | misaligned (with the counts found) |
+
+After a misaligned step the two lists are not pairs value by value, also when they have become
+equally long (a source with one more Method than Ratio value).
 
 The new SOP Instance UID of a lossy network transfer is used consistently in the C-STORE
 command, the data set and the file meta, and the mapping from the original UID is reported.

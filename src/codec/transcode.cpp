@@ -630,6 +630,8 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
         // Ratio and Method are parallel lists, one value per lossy step (PS3.3 C.7.6.1.1.5.1).
         // Owner decision 2026-11-10: a missing earlier Method value is filled in only when the
         // source's own coding proves it; any other mismatch is left as it is and reported.
+        // R-170: with one more Method than Ratio value, appending the Ratio makes the lists
+        // equally long but not paired value by value - reported as Misaligned all the same.
         const std::size_t n_ratio = value_count(ds, kLossyRatio);
         const std::size_t n_method = value_count(ds, kLossyMethod);
         if (Status s = append_value(out, kLossyRatio, VR::DS, ratio); !s) return s;
@@ -637,7 +639,11 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
             rep.lossy_history = LossyHistory::Aligned;
             if (Status s = append_value(out, kLossyMethod, VR::CS, method); !s) return s;
         } else if (const std::string_view proven = proven_source_method(source_ts, fr);
-                   n_ratio == n_method + 1 && !proven.empty()) {
+                   n_ratio == 1 && n_method == 0 && !proven.empty()) {
+            // R-169: only this one case. With exactly one Ratio and no Method value the missing
+            // value can only belong to the one earlier step, which is the source's own coding.
+            // With more values (e.g. 2 Ratio / 1 Method) nothing says which step the existing
+            // Method value belongs to: adding one would shift it to the wrong step.
             if (Status s = append_value(out, kLossyMethod, VR::CS, proven); !s) return s;
             if (Status s = append_value(out, kLossyMethod, VR::CS, method); !s) return s;
             rep.lossy_history = LossyHistory::MethodFilled;
@@ -653,7 +659,7 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
                                      " Lossy Image Compression Ratio (0028,2112) and " + std::to_string(n_method) +
                                      " Method (0028,2114) value(s) and the method of the earlier step(s) cannot be " +
                                      "proven; ratio " + ratio + " appended, Method left unchanged (this step: " +
-                                     std::string(method) + ")";
+                                     std::string(method) + "); the lists are not paired value by value";
         }
         if (!p.keep_uid_on_lossy) {
             if (Status s = mark_derived(out, rep, method, ratio); !s) return s;

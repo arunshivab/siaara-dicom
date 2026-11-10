@@ -195,8 +195,13 @@ transcode - `siaara_file_transcode(_ex)` and the network paths above, with or wi
 | Source lists | What is written | Reported as |
 |---|---|---|
 | Same number of values in both (or neither present) | one value appended to each | `SIAARA_LOSSY_HISTORY_ALIGNED` |
-| One more Ratio than Method value, and the source pixel data is lossy coded in JPEG Baseline / Extended (.50 / .51: `ISO_10918_1`), JPEG-LS near-lossless (.81 with NEAR > 0: `ISO_14495_1`), JPEG 2000 (.91, irreversible: `ISO_15444_1`) or HTJ2K (.203, irreversible: `ISO_15444_15`) | the missing Method value of that earlier step is filled in with the term the source's own coding proves, then one value appended to each | `SIAARA_LOSSY_HISTORY_METHOD_FILLED` (`LOSSY_METHOD_FILLED`), with the term filled in |
-| Anything else: the source is uncompressed or losslessly coded (also losslessly inside .81 / .91 / .203), two or more Method values are missing, or there are more Method than Ratio values | the Ratio of this step is appended; Method is left byte for byte as it was (the method of this step is in Derivation Description unless `keep_uid_on_lossy`) | `SIAARA_LOSSY_HISTORY_MISALIGNED` (`LOSSY_HISTORY_MISALIGNED`) |
+| Exactly one Ratio value and no Method value, and the source pixel data is lossy coded in JPEG Baseline / Extended (.50 / .51: `ISO_10918_1`), JPEG-LS near-lossless (.81 with NEAR > 0: `ISO_14495_1`), JPEG 2000 (.91, irreversible: `ISO_15444_1`) or HTJ2K (.203, irreversible: `ISO_15444_15`) | the missing Method value of that one earlier step is filled in with the term the source's own coding proves, then one value appended to each | `SIAARA_LOSSY_HISTORY_METHOD_FILLED` (`LOSSY_METHOD_FILLED`), with the term filled in |
+| Anything else: the source is uncompressed or losslessly coded (also losslessly inside .81 / .91 / .203), the source has more than one earlier step (for example 2 Ratio and 1 Method value: nothing says which step the existing Method value belongs to), or there are more Method than Ratio values | the Ratio of this step is appended; Method is left byte for byte as it was (the method of this step is in Derivation Description unless `keep_uid_on_lossy`) | `SIAARA_LOSSY_HISTORY_MISALIGNED` (`LOSSY_HISTORY_MISALIGNED`) |
+
+Pairing caveat: after a misaligned step the two lists must not be read as pairs. In particular a
+source with one more Method than Ratio value ends up with lists of equal length whose values
+still do not belong together; it is reported as misaligned like every other mismatch, in the
+transcode report and in the C-STORE outcome flags.
 
 A transcode that applies no lossy compression (including same-syntax pass-through) leaves both
 attributes untouched. The report: `siaara_file_transcode_ex` fills a `siaara_transcode_report`

@@ -22,8 +22,11 @@
 //     value is appended to Lossy Image Compression Ratio (0028,2112) and Method (0028,2114), which
 //     are parallel lists (one value per lossy step). When the source lists do not have the same
 //     number of values see LossyHistory: a missing earlier Method value is filled in only when the
-//     source's own lossy transfer syntax proves it; otherwise only the Ratio is appended and the
-//     mismatch is reported. Nothing is guessed.
+//     source has exactly one Ratio value and no Method value and its own lossy transfer syntax
+//     proves the method; otherwise only the Ratio is appended and the mismatch is reported.
+//     Nothing is guessed. Pairing caveat: after a Misaligned step the two lists must not be read
+//     as pairs - in particular, a source with one more Method than Ratio value ends up with lists
+//     of equal length whose values still do not belong together.
 //     Once "01" it stays "01": decompressing lossy data, or re-encoding it losslessly, never claims
 //     the pixel data is lossless again.
 #pragma once
@@ -77,11 +80,14 @@ struct TranscodeParams {
 enum class LossyHistory {
     NotApplicable,  // no lossy compression was applied: both attributes are untouched
     Aligned,        // the source had as many Ratio as Method values (or neither): one appended to each
-    MethodFilled,   // the source had one more Ratio than Method value and its own lossy transfer
-                    // syntax proves the method of that step: that Method value was filled in, then
-                    // one value appended to each (TranscodeReport::lossy_method_filled)
-    Misaligned,     // any other mismatch: the Ratio was appended, Method was left exactly as it
-                    // was (the method of this step is not recorded in it; nothing is guessed)
+    MethodFilled,   // the source had exactly one Ratio value and no Method value, and its own lossy
+                    // transfer syntax proves the method of that one earlier step: that Method value
+                    // was filled in, then one value appended to each (lossy_method_filled)
+    Misaligned,     // any other mismatch (also 2 Ratio / 1 Method: nothing says which step the
+                    // existing Method value belongs to): the Ratio was appended, Method was left
+                    // exactly as it was (the method of this step is not recorded in it; nothing is
+                    // guessed). The lists are then not paired value by value, even when they have
+                    // become equally long (source with one more Method than Ratio value).
 };
 
 struct TranscodeReport {

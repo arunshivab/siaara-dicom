@@ -485,15 +485,29 @@ TEST_CASE("transcode lossy history: one Ratio and no Method in a lossy source sy
         CHECK_EQ(whole(h.ds, kLossyMethod), std::string("ISO_10918_1\\ISO_15444_1"));
         CHECK(h.rep.lossy_history == codec::LossyHistory::MethodFilled);
     }
-    // Two Ratio values and one Method value: the missing one is that of the latest earlier step.
-    {
-        const Dataset src = history_source(kJpeg, "9\\5", "ISO_15444_1");
-        const HistoryResult h = lossy_step(src, kJpeg, kJls);
+}
+
+TEST_CASE("transcode lossy history: R-169 two Ratio and one Method value are never filled (the Method would shift)") {
+    // The existing Method value may belong to step 1 or to step 2: nothing proves which. Filling
+    // one in (as the code did: ISO_15444_1 \\ ISO_10918_1 \\ ours) can pair it with the wrong step.
+    const Dataset src = history_source(kJpeg, "9\\5", "ISO_15444_1");
+    for (bool keep_uid : {false, true}) {
+        const HistoryResult h = lossy_step(src, kJpeg, kJls, keep_uid);
         CHECK_EQ(whole(h.ds, kLossyRatio), "9\\5\\" + h.new_ratio);
-        CHECK_EQ(whole(h.ds, kLossyMethod), std::string("ISO_15444_1\\ISO_10918_1\\ISO_14495_1"));
-        CHECK(h.rep.lossy_history == codec::LossyHistory::MethodFilled);
-        CHECK_EQ(h.rep.lossy_method_filled, std::string("ISO_10918_1"));
+        CHECK_EQ(whole(h.ds, kLossyMethod), std::string("ISO_15444_1"));
+        CHECK(*h.ds.get_raw_string(kLossyMethod) == *src.get_raw_string(kLossyMethod));
+        CHECK(h.rep.lossy_history == codec::LossyHistory::Misaligned);
+        CHECK(h.rep.lossy_method_filled.empty());
+        CHECK(h.rep.lossy_history_note.rfind("LOSSY_HISTORY_MISALIGNED: ", 0) == 0);
+        CHECK(h.rep.lossy_history_note.size() < 419u);
     }
+    // R-170: one more Method than Ratio value. Appending the Ratio makes the lists equally long;
+    // they are still not pairs, and that is reported.
+    const Dataset more = history_source(kJpeg, "7", "ISO_15444_1\\ISO_10918_1");
+    const HistoryResult h = lossy_step(more, kJpeg, kJ2k);
+    CHECK_EQ(vm(h.ds, kLossyRatio), vm(h.ds, kLossyMethod));
+    CHECK(h.rep.lossy_history == codec::LossyHistory::Misaligned);
+    CHECK(h.rep.lossy_history_note.find("not paired") != std::string::npos);
 }
 
 TEST_CASE("transcode lossy history: a mismatch that cannot be proven appends the Ratio only and is reported") {
@@ -512,6 +526,8 @@ TEST_CASE("transcode lossy history: a mismatch that cannot be proven appends the
         {"RLE, 1 Ratio / 0 Method", "1.2.840.10008.1.2.5", false, "7", nullptr},
         {"JPEG, 2 Ratio / 0 Method", kJpeg, true, "7\\3.5", nullptr},
         {"JPEG, 3 Ratio / 1 Method", kJpeg, true, "7\\3.5\\2", "ISO_15444_1"},
+        {"JPEG, 2 Ratio / 1 Method (R-169)", kJpeg, true, "7\\3.5", "ISO_15444_1"},
+        {"JPEG 2000 irreversible, 3 Ratio / 2 Method (R-169)", kJ2k, true, "7\\3.5\\2", "ISO_10918_1\\ISO_15444_1"},
         {"uncompressed, more Method than Ratio", kLE, false, "7", "ISO_10918_1\\ISO_15444_1"},
         {"JPEG, more Method than Ratio", kJpeg, true, "7", "ISO_15444_1\\ISO_10918_1"},
         {"JPEG, Method without Ratio", kJpeg, true, nullptr, "ISO_10918_1"},
@@ -649,6 +665,21 @@ TEST_CASE("transcode lossy history: C API siaara_file_transcode_ex report") {
         CHECK(value(h, kLossyRatio, 1) != "<absent>");
         siaara_file_free(h);
         p.keep_uid_on_lossy = 0;
+    }
+    // R-170: one more Method than Ratio value - the lists become equally long, are still not
+    // pairs, and the C API report says MISALIGNED. R-169: 2 Ratio / 1 Method in a lossy syntax too.
+    for (int pass = 0; pass < 2; ++pass) {
+        siaara_file* h = pass == 0 ? open(history_source(kLE, "7", "ISO_10918_1\\ISO_15444_1"), kLE)
+                                   : open(history_source(kJpeg, "9\\5", "ISO_15444_1"), kJpeg);
+        REQUIRE(h != nullptr);
+        siaara_transcode_report r{};
+        r.struct_size = sizeof r;
+        REQUIRE(siaara_file_transcode_ex(h, pass == 0 ? kJpeg : kJ2k, &p, &r) == SIAARA_OK);
+        CHECK_EQ(r.lossy_history, SIAARA_LOSSY_HISTORY_MISALIGNED);
+        CHECK(std::string(r.lossy_history_note).rfind("LOSSY_HISTORY_MISALIGNED: ", 0) == 0);
+        CHECK_EQ(std::string(r.lossy_method_filled), std::string());
+        CHECK_EQ(value(h, kLossyMethod, pass == 0 ? 2 : 1), std::string("<absent>"));
+        siaara_file_free(h);
     }
     // Aligned and not applicable; failure zeroes the report; NULL report is siaara_file_transcode.
     {
