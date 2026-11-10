@@ -410,7 +410,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_instance(siaara_web_client*
                                                               const char* series_uid, const char* instance_uid,
                                                               siaara_file** out);
 /* STOW-RS of one file (written in its current transfer syntax). study_uid may be NULL.
- * Returns SIAARA_OK when stored, SIAARA_ERR_REJECTED when the server refused the instance. */
+ * Returns SIAARA_OK when stored, SIAARA_ERR_REJECTED when the server refused the instance.
+ * A file whose read was not complete (siaara_file_read_report: truncated input, skipped bytes,
+ * heuristic recovery, header-only read) is not sent: SIAARA_ERR_REJECTED with a message starting
+ * "INCOMPLETE_INPUT", before any request, as for C-STORE (siaara_web_stow_ex can allow it). */
 SIAARA_API siaara_status SIAARA_CALL siaara_web_stow(siaara_web_client* client, const siaara_file* file,
                                                      const char* study_uid);
 
@@ -2566,6 +2569,12 @@ typedef struct siaara_scp_services {
     /* ---- allow-lists */
     uint32_t acl_count;
     const siaara_scp_acl* acls;
+    /* ---- appended; read only when struct_size includes them */
+    int32_t allow_incomplete;        /* 0 (default): a C-GET / C-MOVE sub-operation for a stored file whose read
+                                        was not complete (truncated input, skipped bytes, heuristic recovery;
+                                        siaara_file_read_report) is refused: that sub-operation fails and is
+                                        logged, the peer never gets less than the file holds. 1: send what was
+                                        read (as siaara_dimse_peer.allow_incomplete) */
 } siaara_scp_services;
 
 /* Starts an SCP with the services enabled in `services` on one port (Verification always), with
@@ -2857,6 +2866,19 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_clie
                                                                  siaara_store* store, int32_t policy, const char* folder,
                                                                  siaara_web_progress_callback cb, void* user,
                                                                  uint32_t* stored, uint32_t* failed);
+
+
+typedef struct siaara_web_stow_options {
+    uint32_t struct_size;            /* set to sizeof(siaara_web_stow_options) */
+    int32_t allow_incomplete;        /* 0 (default): a file whose read was not complete is not sent
+                                        (SIAARA_ERR_REJECTED, "INCOMPLETE_INPUT ..."). 1: what was read is
+                                        written and sent; the server stores an instance that holds less than
+                                        the source (as siaara_dimse_peer.allow_incomplete) */
+} siaara_web_stow_options;
+/* As siaara_web_stow with options (may be NULL: the defaults). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_stow_ex(siaara_web_client* client, const siaara_file* file,
+                                                        const char* study_uid,
+                                                        const siaara_web_stow_options* options);
 
 #ifdef __cplusplus
 }

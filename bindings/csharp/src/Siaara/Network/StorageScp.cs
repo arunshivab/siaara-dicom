@@ -126,6 +126,9 @@ public sealed record ScpServiceOptions
     public bool InstanceAvailability { get; init; }
     /// <summary>Conversions (StoreTransferSyntax, C-GET / C-MOVE sub-operations) may be lossy.</summary>
     public bool AllowLossy { get; init; }
+    /// <summary>C-GET / C-MOVE sub-operations may send a stored file whose read was not complete (truncated
+    /// input, skipped bytes, heuristic recovery). Default false: such a sub-operation fails and is logged.</summary>
+    public bool AllowIncomplete { get; init; }
     /// <summary>Storage SOP classes accepted; null = the toolkit's list.</summary>
     public IReadOnlyList<string>? StorageSopClasses { get; init; }
     /// <summary>Transfer syntaxes accepted for storage, preferred first; null = native (+ compressed with AcceptCompressed).</summary>
@@ -426,6 +429,7 @@ public sealed class StorageScp : IDisposable
                 max_commitment_items = U(services.MaxCommitmentItems),
                 acl_count = (uint)acls.Count,
                 acls = mem.Array<siaara_scp_acl>(acls.ToArray()),
+                allow_incomplete = services.AllowIncomplete ? 1 : 0,
             };
             if (services.OutboundTls is not null)
             {

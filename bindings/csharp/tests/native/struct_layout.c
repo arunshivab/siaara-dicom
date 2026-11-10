@@ -781,6 +781,7 @@ int main(void) {
     printf("F siaara_scp_services max_commitment_items %u\n", (unsigned)offsetof(siaara_scp_services, max_commitment_items));
     printf("F siaara_scp_services acl_count %u\n", (unsigned)offsetof(siaara_scp_services, acl_count));
     printf("F siaara_scp_services acls %u\n", (unsigned)offsetof(siaara_scp_services, acls));
+    printf("F siaara_scp_services allow_incomplete %u\n", (unsigned)offsetof(siaara_scp_services, allow_incomplete));
     printf("S siaara_qr_keys %u\n", (unsigned)sizeof(siaara_qr_keys));
     printf("F siaara_qr_keys struct_size %u\n", (unsigned)offsetof(siaara_qr_keys, struct_size));
     printf("F siaara_qr_keys return_keys %u\n", (unsigned)offsetof(siaara_qr_keys, return_keys));
@@ -860,5 +861,8 @@ int main(void) {
     printf("F siaara_web_limits body_timeout_ms %u\n", (unsigned)offsetof(siaara_web_limits, body_timeout_ms));
     printf("F siaara_web_limits max_parts %u\n", (unsigned)offsetof(siaara_web_limits, max_parts));
     printf("F siaara_web_limits max_part_bytes %u\n", (unsigned)offsetof(siaara_web_limits, max_part_bytes));
+    printf("S siaara_web_stow_options %u\n", (unsigned)sizeof(siaara_web_stow_options));
+    printf("F siaara_web_stow_options struct_size %u\n", (unsigned)offsetof(siaara_web_stow_options, struct_size));
+    printf("F siaara_web_stow_options allow_incomplete %u\n", (unsigned)offsetof(siaara_web_stow_options, allow_incomplete));
     return 0;
 }

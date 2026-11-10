@@ -977,6 +977,7 @@ internal static class StructLayouts
             r.Add("F siaara_scp_services max_commitment_items " + Offset(ref s, ref s.max_commitment_items).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_services acl_count " + Offset(ref s, ref s.acl_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_services acls " + Offset(ref s, ref s.acls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_services allow_incomplete " + Offset(ref s, ref s.allow_incomplete).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_qr_keys);
@@ -1078,6 +1079,12 @@ internal static class StructLayouts
             r.Add("F siaara_web_limits max_parts " + Offset(ref s, ref s.max_parts).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_limits max_part_bytes " + Offset(ref s, ref s.max_part_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        {
+            var s = default(siaara_web_stow_options);
+            r.Add("S siaara_web_stow_options " + Unsafe.SizeOf<siaara_web_stow_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_stow_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_stow_options allow_incomplete " + Offset(ref s, ref s.allow_incomplete).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         return r;
     }
 
@@ -1154,6 +1161,7 @@ internal static class StructLayouts
         r.Add("siaara_n_request " + Marshal.SizeOf<siaara_n_request>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_web_server_options " + Marshal.SizeOf<siaara_web_server_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_web_limits " + Marshal.SizeOf<siaara_web_limits>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_web_stow_options " + Marshal.SizeOf<siaara_web_stow_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         return r;
     }
 }

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,6 +12,7 @@
 
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
+#include "net/store_support.hpp"
 #include "web/base64.hpp"
 #include "web/dicom_json.hpp"
 
@@ -402,8 +404,25 @@ Result<std::string> DicomwebClient::wado_uri(std::string_view study, std::string
     return std::move(rs->body);
 }
 
-Result<StowResult> DicomwebClient::store(const std::vector<std::string>& part10, std::string_view study) {
+Result<StowResult> DicomwebClient::store(const std::vector<std::string>& part10, std::string_view study,
+                                         const StowOptions& opt) {
     if (part10.empty()) return Status(Errc::InvalidArgument, "nothing to store");
+    if (!opt.allow_incomplete) {
+        // The same guard as C-STORE (net::check_sendable): nothing is sent when a part is damaged.
+        for (std::size_t i = 0; i < part10.size(); ++i) {
+            const std::string& p = part10[i];
+            const std::string where = "STOW-RS part " + std::to_string(i + 1) + " of " + std::to_string(part10.size());
+            // A view of the caller's bytes (not owned): the parsed file does not outlive this block.
+            const Bytes view(std::shared_ptr<const void>(), reinterpret_cast<const std::uint8_t*>(p.data()), p.size());
+            auto f = read_part10(view);
+            if (!f)
+                return Status(Errc::Rejected, std::string(net::kIncompleteInput) + ": " + where +
+                                                  " is not a readable Part 10 stream (" + f.error().message +
+                                                  "); nothing was sent; allow incomplete input to send it anyway");
+            if (Status s = net::check_sendable(*f, false); !s)
+                return Status(Errc::Rejected, s.message + " (" + where + "; nothing was sent)", s.offset);
+        }
+    }
     multipart::Writer w;
     for (const auto& p : part10) w.add(media::Dicom, p);
     http::Request rq;

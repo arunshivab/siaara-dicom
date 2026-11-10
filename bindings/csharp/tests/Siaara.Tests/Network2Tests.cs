@@ -347,6 +347,59 @@ internal static class Network2Tests
             client.SetAuthorization("Bearer ok");
             client.Store(extra);
             CheckEq(store.GetStatistics().Instances, 4L);
+
+            // STOW-RS does not send a file whose read was not complete, unless allowed.
+            using DicomFile whole = Builders.Ct(2, 2, new short[] { 1, 2, 3, 4 }, sopUid: "2.25.3601.10", seriesUid: "2.25.3601",
+                studyUid: "2.25.3600", patientId: "WEB");
+            string wholePath = Path.Combine(dir, "whole.dcm");
+            whole.Save(wholePath);
+            byte[] all = File.ReadAllBytes(wholePath);
+            using DicomFile cut = DicomFile.Open(all.AsSpan(0, all.Length - 3));
+            SiaaraException? refused = Throws<SiaaraException>(() => client.Store(cut));
+            CheckEq(refused?.ErrorCode, SiaaraErrorCode.Rejected);
+            Check(refused?.Message.Contains("INCOMPLETE_INPUT", StringComparison.Ordinal) == true);
+            CheckEq(store.GetStatistics().Instances, 4L);
+            client.Store(cut, null, allowIncomplete: true);
+            CheckEq(store.GetStatistics().Instances, 5L);
+        });
+
+        Case("network2: ScpServiceOptions.AllowIncomplete decides C-GET sub-operations for a truncated stored file", () =>
+        {
+            string dir = NewTempDir("n2inc");
+            using DicomStore store = DicomStore.Open(Path.Combine(dir, "store"));
+            Fill(store, 1, "2.25.3700", "2.25.3701", "INC");
+            using (DicomFile f = Builders.Ct(2, 2, new short[] { 1, 2, 3, 4 }, sopUid: "2.25.3701.77", seriesUid: "2.25.3701",
+                studyUid: "2.25.3700", patientId: "INC"))
+            {
+                string p = Path.Combine(dir, "whole.dcm");
+                f.Save(p);
+                byte[] all = File.ReadAllBytes(p);
+                string t = Path.Combine(dir, "truncated.dcm");
+                File.WriteAllBytes(t, all.AsSpan(0, all.Length - 3).ToArray());
+                store.AddFile(t);
+            }
+            CheckEq(store.GetStatistics().Instances, 2L);
+            foreach (bool allow in new[] { false, true })
+            {
+                using StorageScp scp = StorageScp.Start(Options("INC_SCP"), new ScpServiceOptions
+                {
+                    Get = true,
+                    AllowIncomplete = allow,
+                }, store);
+                using DicomFile id = Dimse.CreateQueryIdentifier(QueryLevel.Study,
+                    new QueryKeys { StudyInstanceUid = "2.25.3700", ReturnKeys = false });
+                string folder = Path.Combine(dir, allow ? "got1" : "got0");
+                Directory.CreateDirectory(folder);
+                DimseResult got = Dimse.Get(Peer(scp.Port, "INC_SCP"), QueryRetrieveModel.StudyRoot, id.Dataset, new DimseGetOptions
+                {
+                    Folder = folder,
+                    NativeOnly = true,
+                    SopClasses = new[] { Builders.CtImageStorage },
+                });
+                CheckEq(got.Completed, allow ? 2 : 1);
+                CheckEq(got.Failed, allow ? 0 : 1);
+                CheckEq(Directory.GetFiles(folder).Length, allow ? 2 : 1);
+            }
         });
     }
 

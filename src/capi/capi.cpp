@@ -786,6 +786,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8_cs(siaara_dataset* 
 // ---------------------------------------------------------------- DICOM JSON and DICOMweb client
 #include <optional>
 
+#include "net/store_support.hpp"
 #include "web/client.hpp"
 #include "web/dicom_json.hpp"
 
@@ -953,22 +954,55 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_instance(siaara_web_client*
     });
 }
 
+}  // extern "C"
+
+namespace {
+
+// siaara_web_stow / siaara_web_stow_ex. The file is refused before any request when its read was
+// not complete (the C-STORE rule, net::check_sendable), unless options->allow_incomplete.
+siaara_status web_stow(siaara_web_client* client, const siaara_file* file, const char* study_uid,
+                       const siaara_web_stow_options* options) {
+    if (!client || !file) return fail(Errc::InvalidArgument, "client and file must not be NULL");
+    bool allow_incomplete = false;
+    if (options) {
+        if (options->struct_size < sizeof(uint32_t) + sizeof(int32_t))
+            return fail(Errc::InvalidArgument, "options->struct_size is too small");
+        if (options->allow_incomplete != 0 && options->allow_incomplete != 1)
+            return fail(Errc::InvalidArgument, "allow_incomplete must be 0 or 1");
+        allow_incomplete = options->allow_incomplete == 1;
+    }
+    std::string study;
+    if (!optional_uid(study_uid, study)) return fail(Errc::InvalidArgument, "invalid study UID");
+    if (Status s = siaara::net::check_sendable(file->file, allow_incomplete); !s) return fail(s);
+    std::vector<std::uint8_t> bytes;
+    siaara::WriteOptions wo;
+    wo.allow_incomplete = allow_incomplete;
+    if (Status s = siaara::write_part10(file->file, bytes, wo); !s) return fail(s);
+    std::vector<std::string> parts(1, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    // The bytes were just written from a data set that passed the check above: not read back again.
+    siaara::web::StowOptions so;
+    so.allow_incomplete = true;
+    auto r = client->client->store(parts, study, so);
+    if (!r) return fail(r.error());
+    if (r->http_status == 200 && r->failed.empty()) return ok();
+    std::string why = "HTTP " + std::to_string(r->http_status);
+    if (!r->failed.empty()) why += ", failure reason " + std::to_string(r->failed.front().second);
+    return fail(Errc::Rejected, why);
+}
+
+}  // namespace
+
+extern "C" {
+
 SIAARA_API siaara_status SIAARA_CALL siaara_web_stow(siaara_web_client* client, const siaara_file* file,
                                                      const char* study_uid) {
-    return guarded([&]() -> siaara_status {
-        if (!client || !file) return fail(Errc::InvalidArgument, "client and file must not be NULL");
-        std::string study;
-        if (!optional_uid(study_uid, study)) return fail(Errc::InvalidArgument, "invalid study UID");
-        std::vector<std::uint8_t> bytes;
-        if (Status s = siaara::write_part10(file->file, bytes); !s) return fail(s);
-        std::vector<std::string> parts(1, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-        auto r = client->client->store(parts, study);
-        if (!r) return fail(r.error());
-        if (r->http_status == 200 && r->failed.empty()) return ok();
-        std::string why = "HTTP " + std::to_string(r->http_status);
-        if (!r->failed.empty()) why += ", failure reason " + std::to_string(r->failed.front().second);
-        return fail(Errc::Rejected, why);
-    });
+    return guarded([&]() -> siaara_status { return web_stow(client, file, study_uid, nullptr); });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_stow_ex(siaara_web_client* client, const siaara_file* file,
+                                                        const char* study_uid,
+                                                        const siaara_web_stow_options* options) {
+    return guarded([&]() -> siaara_status { return web_stow(client, file, study_uid, options); });
 }
 
 }  // extern "C"

@@ -264,18 +264,33 @@ public sealed class DicomWebClient : IDisposable
         CancellationToken cancellationToken = default) =>
         Task.Run(() => WithToken(() => RetrieveInstance(studyInstanceUid, seriesInstanceUid, sopInstanceUid), cancellationToken), cancellationToken);
 
-    /// <summary>STOW-RS of one file (in its current transfer syntax).</summary>
+    /// <summary>STOW-RS of one file (in its current transfer syntax). A file whose read was not complete
+    /// (truncated input, skipped bytes, heuristic recovery, header-only read) is not sent: Rejected with a
+    /// message starting "INCOMPLETE_INPUT", as for C-STORE.</summary>
     /// <param name="file">The file.</param>
     /// <param name="studyInstanceUid">Target study, or null.</param>
-    /// <exception cref="SiaaraException">Rejected when the server refused the instance.</exception>
-    public void Store(DicomFile file, string? studyInstanceUid = null)
+    /// <exception cref="SiaaraException">Rejected when the server refused the instance or the file is incomplete.</exception>
+    public void Store(DicomFile file, string? studyInstanceUid = null) => Store(file, studyInstanceUid, false);
+
+    /// <summary>STOW-RS of one file (siaara_web_stow_ex).</summary>
+    /// <param name="file">The file.</param>
+    /// <param name="studyInstanceUid">Target study, or null.</param>
+    /// <param name="allowIncomplete">Send a file whose read was not complete: what was read is written and
+    /// sent, so the server stores an instance that holds less than the source. Default false: refused.</param>
+    /// <exception cref="SiaaraException">Rejected when the server refused the instance or the file is incomplete.</exception>
+    public void Store(DicomFile file, string? studyInstanceUid, bool allowIncomplete)
     {
         ArgumentNullException.ThrowIfNull(file);
         lock (_gate)
         {
             using var l = new HandleLease(_handle);
             using var f = new HandleLease(file.Handle);
-            Status.Check(Native.siaara_web_stow(l.Pointer, f.Pointer, Status.Utf8Z(studyInstanceUid)));
+            var o = new siaara_web_stow_options
+            {
+                struct_size = StructSize.Of<siaara_web_stow_options>(),
+                allow_incomplete = allowIncomplete ? 1 : 0,
+            };
+            Status.Check(Native.siaara_web_stow_ex(l.Pointer, f.Pointer, Status.Utf8Z(studyInstanceUid), in o));
         }
     }
 

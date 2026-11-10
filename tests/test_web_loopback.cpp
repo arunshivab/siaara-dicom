@@ -350,7 +350,10 @@ TEST_CASE("web/loopback STOW-RS failures and status codes") {
     auto c = fx.client();
     const std::string good = part10(instance(kStudyA, kSeries1, "2.25.5001", "A^B", 1, false, 9));
     // One bad part among good ones: 202 with a Failed SOP Sequence.
-    auto partial = c.store({good, "not a DICOM file"});
+    // (Sent unchecked: by default the client refuses to send a part it cannot read back.)
+    StowOptions unchecked;
+    unchecked.allow_incomplete = true;
+    auto partial = c.store({good, "not a DICOM file"}, {}, unchecked);
     REQUIRE(partial.is_ok());
     CHECK_EQ(partial->http_status, 202);
     CHECK_EQ(partial->stored.size(), 1u);

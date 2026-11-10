@@ -1623,6 +1623,7 @@ internal struct siaara_scp_services
     public uint max_commitment_items;
     public uint acl_count;
     public nint acls;
+    public int allow_incomplete;
 }
 
 /// <summary>siaara_qr_keys (blittable, C layout).</summary>
@@ -1737,6 +1738,14 @@ internal struct siaara_web_limits
     public int body_timeout_ms;
     public uint max_parts;
     public ulong max_part_bytes;
+}
+
+/// <summary>siaara_web_stow_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_web_stow_options
+{
+    public uint struct_size;
+    public int allow_incomplete;
 }
 
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
@@ -2745,6 +2754,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_web_wado_retrieve_to")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_web_wado_retrieve_to(nint client, byte* study_uid, byte* series_uid, byte* instance_uid, byte** transfer_syntaxes, uint ts_count, nint store, int policy, byte* folder, delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int> cb, void* user, uint* stored, uint* failed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_web_stow_ex")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_web_stow_ex(nint client, nint file, byte* study_uid, siaara_web_stow_options* options);
 
 }
 
@@ -4708,6 +4721,14 @@ internal static unsafe class Native
         fixed (uint* p_stored = &stored)
         fixed (uint* p_failed = &failed)
             return Raw.siaara_web_wado_retrieve_to(client, (byte*)p_study_uid, (byte*)p_series_uid, (byte*)p_instance_uid, (byte**)p_transfer_syntaxes, ts_count, store, policy, (byte*)p_folder, (delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int>)cb, (void*)user, p_stored, p_failed);
+    }
+
+    internal static int siaara_web_stow_ex(nint client, nint file, ReadOnlySpan<byte> study_uid, in siaara_web_stow_options options)
+    {
+        if (!study_uid.IsEmpty && study_uid.IndexOf((byte)0) < 0) throw new ArgumentException("study_uid must be NUL-terminated", nameof(study_uid));
+        fixed (byte* p_study_uid = study_uid)
+        fixed (siaara_web_stow_options* p_options = &options)
+            return Raw.siaara_web_stow_ex(client, file, (byte*)p_study_uid, p_options);
     }
 
 }

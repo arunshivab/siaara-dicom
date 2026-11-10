@@ -158,8 +158,17 @@ refuses it: the peer would store an instance that looks whole but holds less tha
 It counts as failed (`SIAARA_ERR_REJECTED`, outcome flag `SIAARA_STORE_INCOMPLETE_INPUT`, a
 message starting `INCOMPLETE_INPUT`); the association goes on with the other files. Opt in with
 `siaara_dimse_peer.allow_incomplete = 1` (C#: `DimsePeer.AllowIncomplete`; C++:
-`ScuConfig::allow_incomplete`, `ScpConfig::allow_incomplete` for sub-operations;
+`ScuConfig::allow_incomplete`, `ScpConfig::allow_incomplete` for sub-operations - from the C API
+`siaara_scp_services.allow_incomplete`, C# `ScpServiceOptions.AllowIncomplete`;
 `siaara-storescu --allow-incomplete`).
+
+STOW-RS follows the same rule: `siaara_web_stow` refuses such a file before any request
+(`SIAARA_ERR_REJECTED`, message starting `INCOMPLETE_INPUT`); `siaara_web_stow_ex` with
+`siaara_web_stow_options.allow_incomplete = 1` sends what was read (C#:
+`DicomWebClient.Store(file, study, allowIncomplete: true)`). The C++ `DicomwebClient::store` sends
+Part 10 bytes as they are, so it first reads every part back and sends nothing when one cannot be
+read or was not read completely (`StowOptions::allow_incomplete` skips the check;
+`siaara-webcli stow --allow-incomplete`).
 
 ### 2.4 Events and the drop policy (R-094)
 
