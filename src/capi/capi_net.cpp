@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -129,8 +130,13 @@ bool ae_ok(const std::string& ae) {
     return true;
 }
 
+// The first version of siaara_dimse_peer ended with reserved0; later fields are read when
+// struct_size covers them.
+constexpr std::size_t kPeerV1Size = offsetof(siaara_dimse_peer, reserved0) + sizeof(uint32_t);
+bool peer_covers(const siaara_dimse_peer* p, std::size_t offset) { return p->struct_size >= offset + sizeof(int32_t); }
+
 siaara_status peer_config(const siaara_dimse_peer* p, net::ScuConfig& c) {
-    if (!p || p->struct_size < sizeof(siaara_dimse_peer))
+    if (!p || p->struct_size < kPeerV1Size)
         return fail(Errc::InvalidArgument, "peer must be set up with struct_size");
     if (!p->host || !p->host[0]) return fail(Errc::InvalidArgument, "peer->host must be set");
     if (p->port == 0 || p->port > 65535) return fail(Errc::InvalidArgument, "peer->port must be 1..65535");
@@ -158,6 +164,16 @@ siaara_status peer_config(const siaara_dimse_peer* p, net::ScuConfig& c) {
     }
     c.transcode = true;
     c.transcode_params.allow_lossy = p->allow_lossy_transcode != 0;
+    if (peer_covers(p, offsetof(siaara_dimse_peer, allow_incomplete))) {
+        if (p->allow_incomplete != 0 && p->allow_incomplete != 1)
+            return fail(Errc::InvalidArgument, "peer->allow_incomplete must be 0 or 1");
+        c.allow_incomplete = p->allow_incomplete == 1;
+    }
+    if (peer_covers(p, offsetof(siaara_dimse_peer, keep_uid_on_lossy))) {
+        if (p->keep_uid_on_lossy != 0 && p->keep_uid_on_lossy != 1)
+            return fail(Errc::InvalidArgument, "peer->keep_uid_on_lossy must be 0 or 1");
+        c.transcode_params.keep_uid_on_lossy = p->keep_uid_on_lossy == 1;
+    }
     if (p->tls) {
         if (p->tls->struct_size < sizeof(siaara_tls_options))
             return fail(Errc::InvalidArgument, "tls->struct_size is too small");
@@ -941,7 +957,8 @@ namespace {
 
 // Contexts for C-STORE of the given headers: as found, plus uncompressed ones per SOP class so
 // that store() can transcode.
-siaara_status propose_store(net::Scu& scu, const std::vector<std::pair<std::string, std::string>>& class_ts) {
+siaara_status propose_store(net::Scu& scu, const std::vector<std::pair<std::string, std::string>>& class_ts,
+                            bool allow_lossy) {
     std::set<std::pair<std::string, std::string>> seen;
     std::set<std::string> classes;
     for (const auto& [cls, ts] : class_ts) {
@@ -959,13 +976,17 @@ siaara_status propose_store(net::Scu& scu, const std::vector<std::pair<std::stri
         if (!have) scu.add_context(cls, net::native_transfer_syntaxes());
     }
     // And the compressed syntaxes the transcoder can write, so a peer that accepts only those (a
-    // lossy-only archive, for instance) still gets the instance; whether lossy coding may be used
-    // is decided per instance by allow_lossy_transcode (R-093 keeps the UIDs consistent).
-    std::vector<std::string> encodable;
-    for (const std::string& t : compressed_syntaxes())
-        if (siaara::codec::can_encode(t)) encodable.push_back(t);
-    if (!encodable.empty() && scu.proposals().size() + classes.size() <= 128)
-        for (const std::string& cls : classes) scu.add_context(cls, encodable);
+    // lossy-only archive, for instance) still gets the instance: the lossless ones, and with
+    // allow_lossy_transcode the lossy ones in a context of their own (R-093 keeps the UIDs
+    // consistent; testing 10b P2).
+    net::ScuConfig probe;
+    probe.transcode_params.allow_lossy = allow_lossy;
+    for (bool lossy : {false, true}) {
+        std::vector<std::string> extra = net::transcode_targets(probe.transcode_params, lossy);
+        if (!lossy) extra.insert(extra.begin(), std::string(siaara::ts::DeflatedExplicitVRLittleEndian));
+        if (!extra.empty() && scu.proposals().size() + classes.size() <= 128)
+            for (const std::string& cls : classes) scu.add_context(cls, extra);
+    }
     if (scu.proposals().size() > 128) return fail(Errc::LimitExceeded, "more than 128 presentation contexts needed: store in smaller batches");
     if (scu.proposals().empty()) return fail(Errc::InvalidArgument, "nothing to store");
     return SIAARA_OK;
@@ -983,14 +1004,61 @@ std::string sop_class_of(const siaara::DicomFile& f) {
 extern "C++" {
 namespace siaara::capi::dimse {
 
-siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const* paths,
-                                                              const size_t* lens, uint32_t count, siaara_cancel* cancel,
-                                                              siaara_dimse_progress_callback cb, siaara_uid_change_callback uid_cb, void* user,
-                                                              siaara_dimse_result* result) {
+void copy_uid(char (&dst)[65], const std::string& v) {
+    const std::size_t n = std::min<std::size_t>(v.size(), sizeof dst - 1);
+    std::memcpy(dst, v.data(), n);
+    dst[n] = '\0';
+}
+
+// Starts an outcome: not sent, `error` (SIAARA_OK replaced once the request went out).
+void outcome_init(siaara_store_outcome* o, siaara_status error) {
+    if (!o) return;
+    const uint32_t size = o->struct_size;
+    std::memset(o, 0, sizeof *o);
+    o->struct_size = size;
+    o->error = error;
+    o->dimse_status = 0xFFFF;
+}
+
+// What Scu::store did for one instance (r: its result).
+void outcome_set(siaara_store_outcome* o, const std::string& sop_class, const net::StoreSent& sent,
+                 const Result<std::uint16_t>& r) {
+    if (!o) return;
+    copy_uid(o->sop_class_uid, sop_class);
+    copy_uid(o->sop_instance_uid, sent.sop_instance_uid);
+    copy_uid(o->original_sop_instance_uid, sent.original_sop_instance_uid);
+    if (sent.incomplete) o->flags |= SIAARA_STORE_INCOMPLETE_INPUT;
+    if (r) {
+        o->error = SIAARA_OK;
+        o->dimse_status = r.value();
+        o->flags |= SIAARA_STORE_SENT;
+        if (sent.uid_changed) o->flags |= SIAARA_STORE_UID_CHANGED;
+        if (sent.lossy) o->flags |= SIAARA_STORE_LOSSY;
+        copy_uid(o->transfer_syntax, sent.transfer_syntax);
+    } else {
+        o->error = static_cast<siaara_status>(r.error().code);
+    }
+}
+
+bool outcomes_ok(const siaara_store_outcome* o, uint32_t count) {
+    if (!o) return true;
+    for (uint32_t i = 0; i < count; ++i)
+        if (o[i].struct_size < sizeof(siaara_store_outcome)) return false;
+    return true;
+}
+
+siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const* paths, const size_t* lens,
+                               uint32_t count, siaara_cancel* cancel, siaara_dimse_progress_callback cb,
+                               siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result,
+                               siaara_store_outcome* outcomes) {
     return guarded([&]() -> siaara_status {
         if (!result_ok(result)) return fail(Errc::InvalidArgument, "result must be set up with struct_size");
         result_init(result);
         if (!paths || count == 0) return fail(Errc::InvalidArgument, "no files");
+        if (!outcomes_ok(outcomes, count))
+            return fail(Errc::InvalidArgument, "every outcome must be set up with struct_size");
+        for (uint32_t i = 0; outcomes && i < count; ++i) outcome_init(&outcomes[i], SIAARA_ERR_CANCELLED);
+        auto out_at = [&](std::size_t i) { return outcomes ? &outcomes[i] : nullptr; };
         net::ScuConfig c;
         if (siaara_status s = peer_config(peer, c); s != SIAARA_OK) return s;
         std::vector<std::string> files;
@@ -1014,7 +1082,7 @@ siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const*
             if (class_ts[i].first.empty()) header_error[i] = Status(Errc::Malformed, "file has no SOP Class UID");
         }
         net::Scu scu(c);
-        if (siaara_status s = propose_store(scu, class_ts); s != SIAARA_OK) return s;
+        if (siaara_status s = propose_store(scu, class_ts, c.transcode_params.allow_lossy); s != SIAARA_OK) return s;
         if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
         siaara_dimse_result prog{};
         prog.struct_size = sizeof prog;
@@ -1029,10 +1097,12 @@ siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const*
                 if (header_error[i]) {
                     auto f = siaara::read_file(files[i]);
                     if (!f) {
+                        if (siaara_store_outcome* o = out_at(i)) o->error = static_cast<siaara_status>(f.error().code);
                         capi::log(SIAARA_LOG_WARNING, false, "C-STORE: input file " + std::to_string(i) + ": " + f.error().message);
                     } else {
                         net::StoreSent sent;
                         auto r = scu.store(*f, {}, std::nullopt, &sent);
+                        outcome_set(out_at(i), class_ts[i].first, sent, r);
                         if (sent.uid_changed && uid_cb)
                             uid_cb(user, static_cast<uint32_t>(i), sent.original_sop_instance_uid.c_str(),
                                    sent.sop_instance_uid.c_str());
@@ -1040,6 +1110,10 @@ siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const*
                             if (!scu.connected() || scope.cancelled()) {
                                 transport = r.error();
                                 aborted = true;
+                                if (siaara_store_outcome* o = out_at(i))
+                                    o->error = scope.cancelled() ? SIAARA_ERR_CANCELLED : static_cast<siaara_status>(r.error().code);
+                                for (std::size_t k = i + 1; outcomes && k < files.size(); ++k)
+                                    outcomes[k].error = scope.cancelled() ? SIAARA_ERR_CANCELLED : SIAARA_ERR_NETWORK;
                                 break;
                             }
                             capi::log(SIAARA_LOG_WARNING, false, "C-STORE: input file " + std::to_string(i) + ": " + r.error().message);
@@ -1048,6 +1122,7 @@ siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const*
                         }
                     }
                 } else {
+                    if (siaara_store_outcome* o = out_at(i)) o->error = static_cast<siaara_status>(header_error[i].code);
                     capi::log(SIAARA_LOG_WARNING, false, "C-STORE: input file " + std::to_string(i) + ": " + header_error[i].message);
                 }
                 prog.status = status;
@@ -1084,24 +1159,41 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse
                                                               const size_t* lens, uint32_t count, siaara_cancel* cancel,
                                                               siaara_dimse_progress_callback cb, void* user,
                                                               siaara_dimse_result* result) {
-    return guarded([&]() -> siaara_status { return store_files_impl(peer, paths, lens, count, cancel, cb, nullptr, user, result); });
+    return guarded([&]() -> siaara_status { return store_files_impl(peer, paths, lens, count, cancel, cb, nullptr, user, result, nullptr); });
 }
 
 extern "C++" {
 namespace siaara::capi::dimse {
 
-siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file,
-                                                        siaara_cancel* cancel, siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result) {
+siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file, siaara_cancel* cancel,
+                         siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result,
+                         siaara_store_outcome* outcome) {
     return guarded([&]() -> siaara_status {
         if (!result_ok(result)) return fail(Errc::InvalidArgument, "result must be set up with struct_size");
         result_init(result);
+        if (!outcomes_ok(outcome, 1)) return fail(Errc::InvalidArgument, "outcome must be set up with struct_size");
+        outcome_init(outcome, SIAARA_ERR_CANCELLED);
         if (!file) return fail(Errc::InvalidArgument, "file must not be NULL");
         net::ScuConfig c;
         if (siaara_status s = peer_config(peer, c); s != SIAARA_OK) return s;
         const std::string cls = sop_class_of(file->file);
         if (cls.empty()) return fail(Errc::Malformed, "the file has no SOP Class UID");
+        // Refused before connecting: an incomplete file is not sent (allow_incomplete).
+        if (Status ok = net::check_sendable(file->file, c.allow_incomplete); !ok) {
+            if (outcome) {
+                net::StoreSent sent;
+                sent.sop_instance_uid = sent.original_sop_instance_uid =
+                    file->file.dataset.get_string(siaara::tags::SOPInstanceUID).value_or(std::string());
+                sent.incomplete = true;
+                outcome_set(outcome, cls, sent, Result<std::uint16_t>(ok));
+            }
+            if (result) result->failed = 1;
+            return fail(ok);
+        }
         net::Scu scu(c);
-        if (siaara_status s = propose_store(scu, {{cls, file->file.transfer_syntax}}); s != SIAARA_OK) return s;
+        if (siaara_status s = propose_store(scu, {{cls, file->file.transfer_syntax}}, c.transcode_params.allow_lossy);
+            s != SIAARA_OK)
+            return s;
         if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
         siaara_status out = SIAARA_OK;
         bool aborted = false;
@@ -1109,6 +1201,7 @@ siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file,
             capi::CancelScope scope(cancel, interrupter(scu));
             net::StoreSent sent;
             auto r = scu.store(file->file, {}, std::nullopt, &sent);
+            outcome_set(outcome, cls, sent, r);
             if (sent.uid_changed && uid_cb)
                 uid_cb(user, 0, sent.original_sop_instance_uid.c_str(), sent.sop_instance_uid.c_str());
             if (!r) {
@@ -1135,7 +1228,7 @@ siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file,
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store(const siaara_dimse_peer* peer, const siaara_file* file,
                                                         siaara_cancel* cancel, siaara_dimse_result* result) {
-    return guarded([&]() -> siaara_status { return store_impl(peer, file, cancel, nullptr, nullptr, result); });
+    return guarded([&]() -> siaara_status { return store_impl(peer, file, cancel, nullptr, nullptr, result, nullptr); });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit(const siaara_dimse_peer* peer, const char* const* sop_classes,
@@ -1290,4 +1383,24 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp) {
 
 SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT { free_scp(scp); }
 
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files_report(const siaara_dimse_peer* peer,
+                                                                     const char* const* paths, const size_t* lens,
+                                                                     uint32_t count, siaara_cancel* cancel,
+                                                                     siaara_dimse_progress_callback cb, void* user,
+                                                                     siaara_store_outcome* outcomes,
+                                                                     siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status {
+        return capi::dimse::store_files_impl(peer, paths, lens, count, cancel, cb, nullptr, user, result, outcomes);
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_report(const siaara_dimse_peer* peer, const siaara_file* file,
+                                                               siaara_cancel* cancel, siaara_store_outcome* outcome,
+                                                               siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status {
+        return capi::dimse::store_impl(peer, file, cancel, nullptr, nullptr, result, outcome);
+    });
+}
+
 }  // extern "C"
+

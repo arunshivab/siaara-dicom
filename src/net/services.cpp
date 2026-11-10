@@ -1147,6 +1147,10 @@ Result<StoreManyResult> store_many(Scu& scu, const std::vector<std::string>& pat
                 o.error = Status(Errc::Malformed, "instance lacks SOP Class/Instance UID");
                 continue;
             }
+            if (Status ok = check_sendable(*f, scu.config().allow_incomplete); !ok) {
+                o.error = ok;
+                continue;
+            }
             const NegotiatedContext* pc = nullptr;
             std::vector<std::uint8_t> body;
             Status enc = Status(Errc::Unsupported, "no accepted presentation context for this instance");

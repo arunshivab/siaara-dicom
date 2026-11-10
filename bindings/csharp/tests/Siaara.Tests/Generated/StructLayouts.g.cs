@@ -677,6 +677,8 @@ internal static class StructLayouts
             r.Add("F siaara_dimse_peer max_pdu " + Offset(ref s, ref s.max_pdu).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dimse_peer allow_lossy_transcode " + Offset(ref s, ref s.allow_lossy_transcode).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dimse_peer reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_dimse_peer allow_incomplete " + Offset(ref s, ref s.allow_incomplete).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_dimse_peer keep_uid_on_lossy " + Offset(ref s, ref s.keep_uid_on_lossy).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_dimse_result);
@@ -1039,6 +1041,18 @@ internal static class StructLayouts
             r.Add("F siaara_qr_options max_matches " + Offset(ref s, ref s.max_matches).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
+            var s = default(siaara_store_outcome);
+            r.Add("S siaara_store_outcome " + Unsafe.SizeOf<siaara_store_outcome>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome error " + Offset(ref s, ref s.error).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome dimse_status " + Offset(ref s, ref s.dimse_status).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome flags " + Offset(ref s, ref s.flags).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome sop_class_uid " + Offset(ref s, ref s.sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome original_sop_instance_uid " + Offset(ref s, ref s.original_sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_outcome transfer_syntax " + Offset(ref s, ref s.transfer_syntax).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
             var s = default(siaara_commit_options);
             r.Add("S siaara_commit_options " + Unsafe.SizeOf<siaara_commit_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_commit_options struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1165,6 +1179,7 @@ internal static class StructLayouts
         r.Add("siaara_scp_services " + Marshal.SizeOf<siaara_scp_services>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_qr_keys " + Marshal.SizeOf<siaara_qr_keys>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_qr_options " + Marshal.SizeOf<siaara_qr_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_store_outcome " + Marshal.SizeOf<siaara_store_outcome>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_commit_options " + Marshal.SizeOf<siaara_commit_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_n_request " + Marshal.SizeOf<siaara_n_request>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_web_server_options " + Marshal.SizeOf<siaara_web_server_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));

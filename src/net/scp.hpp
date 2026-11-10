@@ -138,6 +138,9 @@ struct ScpConfig {
         p.allow_lossy = false;
         return p;
     }();
+    // C-GET / C-MOVE sub-operations for files whose read was not complete (truncated input,
+    // skipped bytes): refused (the sub-operation fails, logged) unless set (check_sendable).
+    bool allow_incomplete = false;
     // Operations a requestor may have outstanding when it proposes an Asynchronous Operations
     // Window (PS3.7 D.3.3.3); 0 = unlimited. Requests are performed in order of arrival.
     std::uint16_t max_async_operations = 16;

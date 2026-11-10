@@ -634,6 +634,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         sc.tls = cfg_.move_tls;
         if (dest->tls) sc.tls.enabled = *dest->tls;
         sc.transcode_params = cfg_.transcode_params;
+        sc.allow_incomplete = cfg_.allow_incomplete;
         sub = std::make_unique<Scu>(sc);
         std::vector<std::pair<std::string, std::string>> seen;
         for (const Loaded& l : loaded) {
@@ -647,6 +648,12 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
                 for (const std::string& n : native_transfer_syntaxes())
                     if (n != l.ts) ts.push_back(n);
             sub->add_context(l.sop_class, std::move(ts));
+            // The compressed syntaxes the transcoder can write (lossy only when allowed), so a
+            // destination that accepts only those still receives the instance (testing 10b P2).
+            for (bool lossy : {false, true}) {
+                std::vector<std::string> extra = transcode_targets(cfg_.transcode_params, lossy);
+                if (!extra.empty() && sub->proposals().size() < 128) sub->add_context(l.sop_class, std::move(extra));
+            }
         }
         Status cs = seen.empty() ? Status(Errc::NotFound, "no sendable instances") : sub->connect();
         if (!cs) {
@@ -686,6 +693,12 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         if (l.ok && !f) {
             Result<DicomFile> full = read_file(l.path);
             if (full) f = std::make_shared<const DicomFile>(std::move(full.value()));
+        }
+        if (f) {
+            if (Status ok = check_sendable(*f, cfg_.allow_incomplete); !ok) {
+                log(std::string(is_get ? "C-GET" : "C-MOVE") + " sub-operation " + std::to_string(done + 1) + ": " + ok.message);
+                f.reset();
+            }
         }
         if (f && without_bulk) {
             auto stripped = std::make_shared<DicomFile>(*f);

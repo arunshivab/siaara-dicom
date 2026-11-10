@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,6 +23,21 @@ namespace siaara::net {
 std::vector<const NegotiatedContext*> store_contexts(const Association& a, std::string_view sop_class,
                                                      std::string_view file_ts, bool requestor_scp, bool transcode,
                                                      const codec::TranscodeParams& p);
+
+// Compressed transfer syntaxes to propose for C-STORE besides the file's own and the native ones,
+// so that an instance can be transcoded for a peer that accepts only those: the ones the
+// transcoder writes without loss (`lossy` false), or - when p.allow_lossy - the lossy ones it can
+// write (`lossy` true; JPEG Baseline / Extended, and JPEG-LS near-lossless, lossy JPEG 2000 and
+// HTJ2K when p.lossy). Proposed as separate presentation contexts (testing 10b P2).
+std::vector<std::string> transcode_targets(const codec::TranscodeParams& p, bool lossy);
+
+// Whether `file` may be sent (C-STORE, C-GET / C-MOVE sub-operations): a file whose read was not
+// complete (DicomFile::read_loss: truncated input, skipped bytes, header-only read) would reach
+// the peer as an instance that looks whole but holds less than the source, so it is refused
+// (Errc::Rejected, message starting "INCOMPLETE_INPUT") unless `allow_incomplete` - the same
+// rule as WriteOptions::allow_incomplete for saving (testing 10b P1).
+Status check_sendable(const DicomFile& file, bool allow_incomplete);
+inline constexpr std::string_view kIncompleteInput = "INCOMPLETE_INPUT";
 
 // Encodes the data set of `file` in `ts`, transcoding pixel data when the encodings differ.
 // `report` (may be null) receives what the transcoder did: when a lossy transcode gave the image a

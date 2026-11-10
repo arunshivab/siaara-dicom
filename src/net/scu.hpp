@@ -53,6 +53,7 @@ struct StoreSent {
     std::string transfer_syntax;            // of the presentation context used
     bool uid_changed = false;
     bool lossy = false;                     // this transfer applied lossy compression
+    bool incomplete = false;                // refused: the file was not read completely (allow_incomplete)
 };
 
 // Compares the command's Affected SOP Class / Instance UIDs (already in rq.sop_class_uid /
@@ -101,6 +102,9 @@ struct ScuConfig {
         p.allow_lossy = false;
         return p;
     }();
+    // C-STORE of a DicomFile whose read was not complete (truncated, bytes skipped, header-only):
+    // refused with Errc::Rejected ("INCOMPLETE_INPUT", net/store_support.hpp check_sendable) unless set.
+    bool allow_incomplete = false;
     std::optional<SpoolConfig> spool;                       // C-GET: receive large instances to disk
     // C-GET sub-operations whose command UIDs differ from the data set's: refuse (0xA900) instead of
     // accepting them under the data set's UIDs with StoreRequest::uid_mismatch (R-073).

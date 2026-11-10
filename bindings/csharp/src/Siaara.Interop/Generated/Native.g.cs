@@ -458,6 +458,10 @@ internal static class C
     public const int SIAARA_QR_FUZZY_NAMES = 4;
     public const int SIAARA_QR_TIMEZONE = 8;
     public const int SIAARA_QR_UPS = 3;
+    public const int SIAARA_STORE_SENT = 1;
+    public const int SIAARA_STORE_UID_CHANGED = 2;
+    public const int SIAARA_STORE_LOSSY = 4;
+    public const int SIAARA_STORE_INCOMPLETE_INPUT = 8;
     public const int SIAARA_N_EVENT_REPORT = 0x0100;
     public const int SIAARA_N_GET = 0x0110;
     public const int SIAARA_N_SET = 0x0120;
@@ -486,6 +490,12 @@ internal struct FixedArray20OfByte
 
 [InlineArray(32)]
 internal struct FixedArray32OfByte
+{
+    private byte _element0;
+}
+
+[InlineArray(65)]
+internal struct FixedArray65OfByte
 {
     private byte _element0;
 }
@@ -1303,6 +1313,8 @@ internal struct siaara_dimse_peer
     public uint max_pdu;
     public int allow_lossy_transcode;
     public uint reserved0;
+    public int allow_incomplete;
+    public int keep_uid_on_lossy;
 }
 
 /// <summary>siaara_dimse_result (blittable, C layout).</summary>
@@ -1705,6 +1717,20 @@ internal struct siaara_qr_options
     public uint flags;
     public uint accepted_flags;
     public uint max_matches;
+}
+
+/// <summary>siaara_store_outcome (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_store_outcome
+{
+    public uint struct_size;
+    public int error;
+    public uint dimse_status;
+    public uint flags;
+    public FixedArray65OfByte sop_class_uid;
+    public FixedArray65OfByte sop_instance_uid;
+    public FixedArray65OfByte original_sop_instance_uid;
+    public FixedArray65OfByte transfer_syntax;
 }
 
 /// <summary>siaara_commit_options (blittable, C layout).</summary>
@@ -2732,6 +2758,14 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_dimse_store_ex")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dimse_store_ex(siaara_dimse_peer* peer, nint file, nint cancel, delegate* unmanaged[Cdecl]<void*, uint, byte*, byte*, void> uid_cb, void* user, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_store_files_report")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_store_files_report(siaara_dimse_peer* peer, byte** paths, nuint* lens, uint count, nint cancel, delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int> cb, void* user, siaara_store_outcome* outcomes, siaara_dimse_result* result);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dimse_store_report")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dimse_store_report(siaara_dimse_peer* peer, nint file, nint cancel, siaara_store_outcome* outcome, siaara_dimse_result* result);
 
     [LibraryImport(Library, EntryPoint = "siaara_dimse_mpps_create")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -4618,6 +4652,27 @@ internal static unsafe class Native
         fixed (siaara_dimse_peer* p_peer = &peer)
         fixed (siaara_dimse_result* p_result = &result)
             return Raw.siaara_dimse_store_ex(p_peer, file, cancel, (delegate* unmanaged[Cdecl]<void*, uint, byte*, byte*, void>)uid_cb, (void*)user, p_result);
+    }
+
+    internal static int siaara_dimse_store_files_report(in siaara_dimse_peer peer, ReadOnlySpan<nint> paths, ReadOnlySpan<nuint> lens, uint count, nint cancel, nint cb, nint user, Span<siaara_store_outcome> outcomes, ref siaara_dimse_result result)
+    {
+        if (paths.Length < (long)count) throw new ArgumentException("paths has fewer elements than count requires", nameof(paths));
+        if (!lens.IsEmpty && lens.Length < (long)count) throw new ArgumentException("lens has fewer elements than count requires", nameof(lens));
+        if (!outcomes.IsEmpty && outcomes.Length < (long)count) throw new ArgumentException("outcomes has fewer elements than count requires", nameof(outcomes));
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (nint* p_paths = paths)
+        fixed (nuint* p_lens = lens)
+        fixed (siaara_store_outcome* p_outcomes = outcomes)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_store_files_report(p_peer, (byte**)p_paths, (nuint*)p_lens, count, cancel, (delegate* unmanaged[Cdecl]<void*, siaara_dimse_result*, int>)cb, (void*)user, p_outcomes, p_result);
+    }
+
+    internal static int siaara_dimse_store_report(in siaara_dimse_peer peer, nint file, nint cancel, ref siaara_store_outcome outcome, ref siaara_dimse_result result)
+    {
+        fixed (siaara_dimse_peer* p_peer = &peer)
+        fixed (siaara_store_outcome* p_outcome = &outcome)
+        fixed (siaara_dimse_result* p_result = &result)
+            return Raw.siaara_dimse_store_report(p_peer, file, cancel, p_outcome, p_result);
     }
 
     internal static int siaara_dimse_mpps_create(in siaara_dimse_peer peer, ReadOnlySpan<byte> uid, nint attributes, nint cancel, Span<byte> buf, out nuint needed, ref siaara_dimse_result result)

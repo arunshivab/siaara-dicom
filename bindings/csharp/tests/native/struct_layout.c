@@ -535,6 +535,8 @@ int main(void) {
     printf("F siaara_dimse_peer max_pdu %u\n", (unsigned)offsetof(siaara_dimse_peer, max_pdu));
     printf("F siaara_dimse_peer allow_lossy_transcode %u\n", (unsigned)offsetof(siaara_dimse_peer, allow_lossy_transcode));
     printf("F siaara_dimse_peer reserved0 %u\n", (unsigned)offsetof(siaara_dimse_peer, reserved0));
+    printf("F siaara_dimse_peer allow_incomplete %u\n", (unsigned)offsetof(siaara_dimse_peer, allow_incomplete));
+    printf("F siaara_dimse_peer keep_uid_on_lossy %u\n", (unsigned)offsetof(siaara_dimse_peer, keep_uid_on_lossy));
     printf("S siaara_dimse_result %u\n", (unsigned)sizeof(siaara_dimse_result));
     printf("F siaara_dimse_result struct_size %u\n", (unsigned)offsetof(siaara_dimse_result, struct_size));
     printf("F siaara_dimse_result status %u\n", (unsigned)offsetof(siaara_dimse_result, status));
@@ -832,6 +834,15 @@ int main(void) {
     printf("F siaara_qr_options flags %u\n", (unsigned)offsetof(siaara_qr_options, flags));
     printf("F siaara_qr_options accepted_flags %u\n", (unsigned)offsetof(siaara_qr_options, accepted_flags));
     printf("F siaara_qr_options max_matches %u\n", (unsigned)offsetof(siaara_qr_options, max_matches));
+    printf("S siaara_store_outcome %u\n", (unsigned)sizeof(siaara_store_outcome));
+    printf("F siaara_store_outcome struct_size %u\n", (unsigned)offsetof(siaara_store_outcome, struct_size));
+    printf("F siaara_store_outcome error %u\n", (unsigned)offsetof(siaara_store_outcome, error));
+    printf("F siaara_store_outcome dimse_status %u\n", (unsigned)offsetof(siaara_store_outcome, dimse_status));
+    printf("F siaara_store_outcome flags %u\n", (unsigned)offsetof(siaara_store_outcome, flags));
+    printf("F siaara_store_outcome sop_class_uid %u\n", (unsigned)offsetof(siaara_store_outcome, sop_class_uid));
+    printf("F siaara_store_outcome sop_instance_uid %u\n", (unsigned)offsetof(siaara_store_outcome, sop_instance_uid));
+    printf("F siaara_store_outcome original_sop_instance_uid %u\n", (unsigned)offsetof(siaara_store_outcome, original_sop_instance_uid));
+    printf("F siaara_store_outcome transfer_syntax %u\n", (unsigned)offsetof(siaara_store_outcome, transfer_syntax));
     printf("S siaara_commit_options %u\n", (unsigned)sizeof(siaara_commit_options));
     printf("F siaara_commit_options struct_size %u\n", (unsigned)offsetof(siaara_commit_options, struct_size));
     printf("F siaara_commit_options wait_ms %u\n", (unsigned)offsetof(siaara_commit_options, wait_ms));

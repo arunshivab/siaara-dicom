@@ -122,6 +122,26 @@ the file meta, the file name and the store index, and reports the mapping:
 `siaara_scp_event.original_sop_instance_uid` (SCP), `UidChange` / `ScpEvent.OriginalSopInstanceUid`
 (C#). A receiver with `strict_store_uids` therefore accepts lossy transfers.
 
+The SCU learns per file what was sent: `siaara_dimse_store_files_report` / `siaara_dimse_store_report`
+fill a `siaara_store_outcome` per file (SOP Class UID, the SOP Instance UID sent, the file's own
+UID, the transfer syntax used, the DIMSE status, flags `SENT`, `UID_CHANGED`, `LOSSY`,
+`INCOMPLETE_INPUT`, or the error when it was not sent). Its `sop_class_uid` / `sop_instance_uid`
+go to `siaara_dimse_commit(_ex)` as they are (C#: `Dimse.StoreFilesWithOutcomes`,
+`Dimse.StoreWithOutcome`, `StoreOutcome`). `siaara_dimse_peer.keep_uid_on_lossy = 1`
+(`DimsePeer.KeepUidOnLossy`) keeps the file's UID instead, as `siaara_transcode_params` does.
+
+### 2.3a Incomplete input is not sent (testing 10b P1)
+
+A file whose read was not complete (truncated input, skipped bytes: `siaara_file_read_report`)
+is refused by every C-STORE path - `siaara_dimse_store(_files)(_ex/_report)`, C++ `Scu::store`,
+`store_many`, and the C-GET / C-MOVE sub-operations of our SCP - exactly as `siaara_file_save`
+refuses it: the peer would store an instance that looks whole but holds less than the source.
+It counts as failed (`SIAARA_ERR_REJECTED`, outcome flag `SIAARA_STORE_INCOMPLETE_INPUT`, a
+message starting `INCOMPLETE_INPUT`); the association goes on with the other files. Opt in with
+`siaara_dimse_peer.allow_incomplete = 1` (C#: `DimsePeer.AllowIncomplete`; C++:
+`ScuConfig::allow_incomplete`, `ScpConfig::allow_incomplete` for sub-operations;
+`siaara-storescu --allow-incomplete`).
+
 ### 2.4 Events and the drop policy (R-094)
 
 One dispatcher thread per SCP calls `siaara_scp_callback` in order, with no toolkit lock held.
@@ -152,8 +172,13 @@ with the DIMSE status in `result->status`, `SIAARA_ERR_CANCELLED` (token or call
 - **Extended negotiation**: `siaara_qr_options.flags` (`SIAARA_QR_RELATIONAL`, `_COMBINED_DATETIME`,
   `_FUZZY_NAMES`, `_TIMEZONE`) with `siaara_dimse_find_ex` / `move_ex` / `get_ex`;
   `accepted_flags` tells what the peer agreed to. `max_matches` stops a C-FIND early (not an error).
-- **C-STORE** proposes, per SOP class, the file's syntax, the native syntaxes and every syntax the
-  transcoder writes, so it reaches SCPs that accept only compressed data.
+- **C-STORE** proposes, per SOP class, the file's syntax, the native syntaxes, a context with
+  every syntax the transcoder writes without loss, and with `allow_lossy_transcode` a context
+  with the lossy ones (JPEG Baseline / Extended), so it reaches SCPs that accept only compressed
+  data, a JPEG-Baseline-only archive included. The C++ `Scu::add_contexts_for_files`, the C-MOVE
+  sub-association of our SCP and `siaara-storescu --allow-lossy` propose the same.
+  `siaara_dimse_peer` fields after `reserved0` (`allow_incomplete`, `keep_uid_on_lossy`) are read
+  only when `struct_size` covers them.
 - **C-GET** options: store and / or folder, duplicate policy, native only, strict UIDs, SOP classes.
 - **MPPS**: `siaara_dimse_mpps_create` (returns the UID) and `siaara_dimse_mpps_set`.
 - **Storage Commitment**: `siaara_dimse_commit` waits on the same association;

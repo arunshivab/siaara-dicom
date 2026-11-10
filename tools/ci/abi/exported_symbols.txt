@@ -67,6 +67,8 @@ siaara_dimse_store
 siaara_dimse_store_ex
 siaara_dimse_store_files
 siaara_dimse_store_files_ex
+siaara_dimse_store_files_report
+siaara_dimse_store_report
 siaara_encode_jpeg
 siaara_encode_png
 siaara_extract_index

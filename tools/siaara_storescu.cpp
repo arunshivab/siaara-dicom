@@ -13,6 +13,7 @@
 #include "core/transfer_syntax.hpp"
 #include "net/scu.hpp"
 #include "net/services.hpp"
+#include "net/store_support.hpp"
 #include "tool_help.hpp"
 
 using namespace siaara;
@@ -28,7 +29,10 @@ void usage() {
                  "  --transcode TS   propose only transfer syntax TS and convert every file to it\n"
                  "  --propose TS     also propose TS for every SOP class (repeatable)\n"
                  "  --no-transcode   never convert pixel data (send only in an accepted encoding)\n"
-                 "  --allow-lossy    permit lossy conversion (JPEG baseline/extended, lossy JPEG 2000 / JPEG-LS)\n"
+                 "  --allow-lossy    permit lossy conversion (JPEG baseline/extended, lossy JPEG 2000 / JPEG-LS);\n"
+                 "                   the lossy syntaxes the transcoder writes are then proposed too\n"
+                 "  --allow-incomplete  send files whose read was not complete (truncated, bytes skipped);\n"
+                 "                   by default they are refused and count as failures\n"
                  "  --lossy          code lossily in syntaxes that allow both (.81, .91)\n"
                  "  --quality N      lossy quality 1..100 (default 90)\n"
                  "  --async N        propose an asynchronous operations window of N outstanding requests\n"
@@ -70,6 +74,7 @@ int main(int argc, char** argv) try {
         else if (!std::strcmp(a, "--propose") && more) extra.emplace_back(argv[++i]);
         else if (!std::strcmp(a, "--no-transcode")) cfg.transcode = false;
         else if (!std::strcmp(a, "--allow-lossy")) cfg.transcode_params.allow_lossy = true;
+        else if (!std::strcmp(a, "--allow-incomplete")) cfg.allow_incomplete = true;
         else if (!std::strcmp(a, "--lossy")) cfg.transcode_params.lossy = true;
         else if (!std::strcmp(a, "--quality") && more && parse_uint(argv[++i], 100, quality) && quality > 0) {}
         else if (!std::strcmp(a, "--async") && more && parse_uint(argv[++i], 65535, async)) {}
@@ -134,6 +139,10 @@ int main(int argc, char** argv) try {
         } else {
             add(h->transfer_syntax);
             for (const std::string& n : native_transfer_syntaxes()) add(n);
+            // With --allow-lossy, also what the transcoder can write (testing 10b P2).
+            if (cfg.transcode && cfg.transcode_params.allow_lossy)
+                for (bool lossy : {false, true})
+                    for (const std::string& x : transcode_targets(cfg.transcode_params, lossy)) add(x);
         }
         for (const std::string& x : extra) add(x);
     }

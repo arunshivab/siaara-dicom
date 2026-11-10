@@ -1771,8 +1771,18 @@ typedef struct siaara_dimse_peer {
     int32_t acse_timeout_ms;         /* association negotiation and release; 0 = 30000 */
     int32_t dimse_timeout_ms;        /* each DIMSE response; 0 = 60000 */
     uint32_t max_pdu;                /* largest PDU we accept; 0 = 65536 */
-    int32_t allow_lossy_transcode;   /* 0/1: C-STORE may code lossily when the peer accepts only that */
+    int32_t allow_lossy_transcode;   /* 0/1: C-STORE may code lossily when the peer accepts only that; the
+                                        lossy transfer syntaxes the transcoder can write are then proposed too */
     uint32_t reserved0;
+    /* Fields below are read only when struct_size covers them (0 when it does not). */
+    int32_t allow_incomplete;        /* 0 (default): a file whose read was not complete (truncated input, skipped
+                                        bytes; siaara_file_read_report) is not sent - it counts as failed, with
+                                        SIAARA_ERR_REJECTED and SIAARA_STORE_INCOMPLETE_INPUT in its
+                                        siaara_store_outcome - as siaara_file_save refuses it. 1: send it anyway */
+    int32_t keep_uid_on_lossy;       /* 0 (default): a lossy transcode on the way gives the instance a new SOP
+                                        Instance UID (R-093; reported in siaara_store_outcome and by the
+                                        siaara_uid_change_callback). 1: keep the file's UID (see
+                                        siaara_transcode_params.keep_uid_on_lossy) */
 } siaara_dimse_peer;
 
 typedef struct siaara_dimse_result {
@@ -2714,6 +2724,42 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files_ex(const siaara_di
 SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_ex(const siaara_dimse_peer* peer, const siaara_file* file,
                                                            siaara_cancel* cancel, siaara_uid_change_callback uid_cb,
                                                            void* user, siaara_dimse_result* result);
+
+/* What happened to one instance of a C-STORE call (siaara_dimse_store_files_report /
+ * siaara_dimse_store_report). The UIDs are what the peer received, so sop_class_uid /
+ * sop_instance_uid can be passed to siaara_dimse_commit(_ex) as they are. */
+enum {
+    SIAARA_STORE_SENT = 1,              /* a C-STORE request was sent; dimse_status is the peer's answer */
+    SIAARA_STORE_UID_CHANGED = 2,       /* lossy compression gave the instance a new SOP Instance UID (R-093) */
+    SIAARA_STORE_LOSSY = 4,             /* this transfer applied lossy compression */
+    SIAARA_STORE_INCOMPLETE_INPUT = 8   /* not sent: the file was not read completely (allow_incomplete = 0) */
+};
+typedef struct siaara_store_outcome {
+    uint32_t struct_size;            /* set to sizeof(siaara_store_outcome) in every element */
+    int32_t error;                   /* SIAARA_OK when sent; else why the instance was not sent
+                                        (SIAARA_ERR_REJECTED for incomplete input, SIAARA_ERR_UNSUPPORTED when
+                                        no accepted context / transcode fits, SIAARA_ERR_IO ...) */
+    uint32_t dimse_status;           /* the peer's C-STORE status; 0xFFFF when not sent */
+    uint32_t flags;                  /* SIAARA_STORE_* */
+    char sop_class_uid[65];          /* NUL-terminated; "" when the file could not be read */
+    char sop_instance_uid[65];       /* as sent (the new UID after a lossy transcode), else the file's */
+    char original_sop_instance_uid[65]; /* the file's own SOP Instance UID */
+    char transfer_syntax[65];        /* of the presentation context used; "" when not sent */
+} siaara_store_outcome;
+
+/* As siaara_dimse_store_files, writing outcomes[i] (count elements, may be NULL) for file i. Files
+ * that were not attempted (cancel, a lost association) keep error SIAARA_ERR_CANCELLED or
+ * SIAARA_ERR_NETWORK and dimse_status 0xFFFF. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files_report(const siaara_dimse_peer* peer,
+                                                                     const char* const* paths, const size_t* lens,
+                                                                     uint32_t count, siaara_cancel* cancel,
+                                                                     siaara_dimse_progress_callback cb, void* user,
+                                                                     siaara_store_outcome* outcomes,
+                                                                     siaara_dimse_result* result);
+/* As siaara_dimse_store, writing *outcome (may be NULL). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_report(const siaara_dimse_peer* peer, const siaara_file* file,
+                                                               siaara_cancel* cancel, siaara_store_outcome* outcome,
+                                                               siaara_dimse_result* result);
 
 /* Modality Performed Procedure Step SCU (PS3.4 F.7). N-CREATE with attributes (Performed
  * Procedure Step Status IN PROGRESS ...): uid NULL creates a new SOP Instance UID; the UID used
