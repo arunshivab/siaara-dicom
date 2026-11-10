@@ -600,11 +600,11 @@ private:
             auto h = header_at(syn, q);
             // B3: "does not fit" used to be the only reason to look `shift` bytes earlier; bytes
             // in the middle of a header can also read as a header that fits but is no attribute.
-            if (!recovery_header(h, q, prev) && q >= std::size_t{shift} + 8) {
+            if (!(h && recovery_header(*h, q, prev)) && q >= std::size_t{shift} + 8) {
                 q -= shift;
                 h = header_at(syn, q);
             }
-            if (!recovery_header(h, q, prev)) return n;
+            if (!h || !recovery_header(*h, q, prev)) return n;
             ++n;
             prev = h->tag;
             q += h->size + std::size_t{h->len};
@@ -620,11 +620,11 @@ private:
     // A header the recovery accepts as part of its run after `prev`: a real, fitting header (no
     // item tag, no undefined length) with a later tag, in a group up to 7FE0, that is private, a
     // standard attribute of the dictionary, or a group length element.
-    bool recovery_header(const std::optional<Header>& h, std::size_t q, Tag prev) const {
-        if (!h || !header_fits(*h, q)) return false;
-        if (tag_group(h->tag) == 0xFFFE || h->len == kUndefinedLength || !(prev < h->tag)) return false;
-        if (tag_group(h->tag) > 0x7FE0) return false;
-        return tag_is_private(h->tag) || recovery_tag_known(h->tag) || group_length_header(*h);
+    bool recovery_header(const Header& h, std::size_t q, Tag prev) const {
+        if (!header_fits(h, q)) return false;
+        if (tag_group(h.tag) == 0xFFFE || h.len == kUndefinedLength || !(prev < h.tag)) return false;
+        if (tag_group(h.tag) > 0x7FE0) return false;
+        return tag_is_private(h.tag) || recovery_tag_known(h.tag) || group_length_header(h);
     }
     // The GE Genesis length error: the bytes at a text value's stated end (vend) do not start a
     // run of three element headers (nor one fitting header of a standard attribute, in any tag
