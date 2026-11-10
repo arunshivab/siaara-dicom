@@ -222,7 +222,7 @@ jobs:
       matrix:
         include:
           - { name: linux-x64,   os: ubuntu-24.04,     lib: build/libsiaara.so,        tools: "build/tools/siaara-*", fortify: "--fortify" }
-          - { name: linux-arm64, os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", lib: build/libsiaara.so,        tools: "build/tools/siaara-*", fortify: "--fortify" }
+          - { name: linux-arm64, os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", lib: build/libsiaara.so,        tools: "build/tools/siaara-*", fortify: "--fortify --no-cfi" }  # BTI/PAC note is dropped by the static C/C++ runtime on this runner; open item R-134
           - { name: macos,       os: macos-15,         lib: build/libsiaara.dylib,     tools: "build/tools/siaara-*" }
           - { name: windows-x64, os: windows-2022,     lib: build/Release/siaara.dll,  tools: "build/tools/Release/siaara-*.exe" }
     steps:
