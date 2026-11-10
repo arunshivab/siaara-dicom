@@ -210,6 +210,11 @@ def decode_literals(lines):
         i = 0
         while i < len(body):
             ch = body[i]
+            if ch == '"':  # end of one literal and start of the next adjacent one: '" "'
+                j = body.index('"', i + 1)
+                assert body[i + 1:j].strip() == "", body
+                i = j + 1
+                continue
             if ch != "\\":
                 out += ch.encode("ascii")
                 i += 1
@@ -310,7 +315,10 @@ def generate(data_dir):
         for i, pbytes in enumerate(parts):
             chunk.append(c_bytes(pbytes) + "\\000")  # 3 octal digits: a following digit is not absorbed
             if len(chunk) == 8 or i == len(parts) - 1:
-                row_lines.append('        "' + "".join(chunk) + '"')
+                # MSVC C4125 (an error under /WX) fires when a decimal digit follows an
+                # octal escape, although the meaning is right; split the literal there.
+                line = re.sub(r'(\\[0-7]{3})(?=[0-9])', r'\1" "', "".join(chunk))
+                row_lines.append('        "' + line + '"')
                 chunk = []
         if decode_literals(row_lines) != body:
             raise SystemExit("internal error: pool literal does not decode to the pool bytes")
