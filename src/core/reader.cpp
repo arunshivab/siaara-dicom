@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -186,6 +187,20 @@ public:
                     if (!in_parent) note_truncated(start);
                     len = static_cast<std::uint32_t>(limit_ - pos_);
                     vend = limit_;
+                }
+                // Item 7a: a value whose stated length runs into the next element by a few bytes
+                // (GE Genesis files, gdcmData GE_GENESIS-16-MONO2-WrongLengthItem: (0008,103E)
+                // states 13 bytes for 10).
+                if (opt_.lenient && e.vr != VR::SQ && !(len & 0x80000000u)) {
+                    if (const std::uint32_t k = overlong_by(syn, tag, static_cast<std::size_t>(vend), len)) {
+                        warn("ELEMENT_LENGTH_RECOVERED: " + hex_tag(tag) + " states " + std::to_string(len) +
+                             " byte(s), but a valid element header starts " + std::to_string(k) +
+                             " byte(s) before that end while the bytes at the stated end are no element header; read as " +
+                             std::to_string(len - k) + " byte(s), the next element from there");
+                        note_loss(DicomFile::kReadRecovered, start);
+                        len -= k;
+                        vend -= k;
+                    }
                 }
                 e.read.length = len;
                 if (e.vr == VR::SQ) {
@@ -482,6 +497,92 @@ private:
         }
     }
 
+    // ---- item 7a heuristics: is there an element header at q (cursor not moved)?
+    struct Header {
+        Tag tag = 0;
+        std::uint32_t len = 0;
+        std::size_t size = 0;  // header bytes
+        bool vr_known = true;
+    };
+    std::optional<Header> header_at(Syntax syn, std::size_t q) const {
+        if (q > limit_ || limit_ - q < 8) return std::nullopt;
+        Header h;
+        const std::uint16_t g = syn.big_endian ? load_be16(p_ + q) : load_le16(p_ + q);
+        const std::uint16_t el = syn.big_endian ? load_be16(p_ + q + 2) : load_le16(p_ + q + 2);
+        h.tag = make_tag(g, el);
+        if (g == 0xFFFE || !syn.explicit_vr) {
+            h.len = syn.big_endian ? load_be32(p_ + q + 4) : load_le32(p_ + q + 4);
+            h.size = 8;
+            return h;
+        }
+        const VR vr = vr_from_chars(static_cast<char>(p_[q + 4]), static_cast<char>(p_[q + 5]));
+        if (!vr_is_known(vr)) {
+            h.vr_known = false;
+            return h;
+        }
+        if (vr_has_long_length(vr)) {
+            if (limit_ - q < 12) return std::nullopt;
+            h.len = syn.big_endian ? load_be32(p_ + q + 8) : load_le32(p_ + q + 8);
+            h.size = 12;
+        } else {
+            h.len = syn.big_endian ? load_be16(p_ + q + 6) : load_le16(p_ + q + 6);
+            h.size = 8;
+        }
+        return h;
+    }
+    // A header that can be read: a known VR (explicit VR), a value that fits before limit_ (or
+    // undefined length), an item tag only with an item element.
+    bool header_fits(const Header& h, std::size_t q) const {
+        if (!h.vr_known) return false;
+        if (tag_group(h.tag) == 0xFFFE)
+            return tag_element(h.tag) == 0xE000 || tag_element(h.tag) == 0xE00D || tag_element(h.tag) == 0xE0DD;
+        if (h.len == kUndefinedLength) return true;
+        return std::uint64_t{q} + h.size + h.len <= limit_;
+    }
+    // How many element headers follow one another from q (up to `depth`): each must fit, carry a
+    // tag after the previous one, and start where the previous value ends. Reaching the end of
+    // the container, an item tag or an undefined length counts as `depth` (nothing to doubt).
+    // With `shift`, a header that does not fit may instead start `shift` bytes earlier (the same
+    // length error repeated, as GE Genesis files do for several values).
+    int chain(Syntax syn, std::size_t q, Tag prev, int depth, std::uint32_t shift = 0) const {
+        int n = 0;
+        while (n < depth) {
+            if (q == limit_) return depth;
+            auto h = header_at(syn, q);
+            if ((!h || !header_fits(*h, q)) && shift && q >= shift + 8) {
+                q -= shift;
+                h = header_at(syn, q);
+            }
+            if (!h || !header_fits(*h, q)) return n;
+            if (tag_group(h->tag) == 0xFFFE) return depth;
+            if (!(prev < h->tag)) return n;
+            ++n;
+            if (h->len == kUndefinedLength) return depth;
+            prev = h->tag;
+            q += h->size + std::size_t{h->len};
+        }
+        return n;
+    }
+    // When the headers that follow a value's stated end (vend) do not read as elements but a
+    // run of at least two does from 1..7 bytes earlier (later values may repeat the same error) -
+    // its first tag after `cur` and known to the data dictionary (or a group length) - the
+    // stated length is that many bytes too large: returns k, else 0. A run of three from vend is
+    // never doubted.
+    std::uint32_t overlong_by(Syntax syn, Tag cur, std::size_t vend, std::uint32_t len) const {
+        if (vend >= limit_) return 0;
+        const int a = chain(syn, vend, cur, 3);
+        if (a >= 3) return 0;
+        for (std::uint32_t k = 1; k <= 7 && k <= len; ++k) {
+            const std::size_t q = vend - k;
+            const auto h = header_at(syn, q);
+            if (!h || !header_fits(*h, q) || tag_group(h->tag) == 0xFFFE || !(cur < h->tag)) continue;
+            if (tag_element(h->tag) != 0 && !dict::lookup(h->tag)) continue;
+            const int b = chain(syn, q, cur, 3, k);
+            if (b >= 2 && b > a) return k;
+        }
+        return 0;
+    }
+
     // Reads [pos_, vend) as fragment items when it is exactly a run of defined-length items (FFFE,E000),
     // optionally followed by a Sequence Delimitation Item at the very end. Fills e.fragments and
     // returns true then; leaves e and the cursor unchanged and returns false otherwise.
@@ -607,6 +708,35 @@ Syntax guess_syntax(const std::uint8_t* p, std::size_t n) {
     return {explicit_vr, big};
 }
 
+// Item 7b: ACR-NEMA 2.0 data written implicit VR big endian, without file meta (gdcmData
+// LIBIDO-16-ACR_NEMA-Volume). There is no transfer syntax UID for it. Detected only when the
+// little-endian reading fails at once (the first length does not fit) and the first `kProbe`
+// elements read big endian are all plausible: even groups below 0x7FE1 (or 0x0000/0x0008
+// ACR-NEMA groups), ascending tags, lengths that fit, never undefined.
+bool looks_implicit_big_endian(const std::uint8_t* p, std::size_t n) {
+    constexpr int kProbe = 6;
+    if (n < 8) return false;
+    // Explicit VR in either byte order is decided elsewhere.
+    if (vr_is_known(vr_from_chars(static_cast<char>(p[4]), static_cast<char>(p[5])))) return false;
+    const std::uint64_t le_len = load_le32(p + 4);
+    if (le_len + 8 <= n) return false;  // little endian reads fine
+    std::size_t q = 0;
+    Tag prev = 0;
+    for (int i = 0; i < kProbe; ++i) {
+        if (q == n) return i >= 2;
+        if (n - q < 8) return false;
+        const std::uint16_t g = load_be16(p + q);
+        const std::uint16_t el = load_be16(p + q + 2);
+        const std::uint32_t len = load_be32(p + q + 4);
+        const Tag t = make_tag(g, el);
+        if ((g & 1u) != 0 || g == 0xFFFE || g > 0x7FE0 || (i > 0 && !(prev < t))) return false;
+        if (len == kUndefinedLength || std::uint64_t{q} + 8 + len > n) return false;
+        prev = t;
+        q += 8 + std::size_t{len};
+    }
+    return true;
+}
+
 // Copies what the parser lost into `out` (P0-1). `total` is the size of the parsed stream.
 void record_loss(const Parser& p, std::size_t total, DicomFile& out) {
     if (p.loss()) {
@@ -631,9 +761,14 @@ void flag_incomplete(DicomFile& out) {
     if (out.read_loss & DicomFile::kReadBytesSkipped) {
         w = std::string(kWarnParseIncomplete) + ": parsing skipped " + std::to_string(out.bytes_not_read) +
             " input bytes that are in no element" + at;
-    } else {
+    } else if (out.read_loss & DicomFile::kReadInputTruncated) {
         w = std::string(kWarnInputTruncated) + ": the data ends inside an element, item or sequence" + at;
+    } else {
+        w = std::string(kWarnReadRecovered) +
+            ": damaged input was recovered by a heuristic (see the warnings that follow); the data set is an interpretation" + at;
     }
+    if ((out.read_loss & DicomFile::kReadRecovered) && (out.read_loss & (DicomFile::kReadBytesSkipped | DicomFile::kReadInputTruncated)))
+        w += "; damaged input was also recovered by a heuristic (" + std::string(kWarnReadRecovered) + ")";
     if ((out.read_loss & DicomFile::kReadBytesSkipped) && (out.read_loss & DicomFile::kReadInputTruncated))
         w += "; the data also ends early (" + std::string(kWarnInputTruncated) + ")";
     w += "; a save of this data set is refused unless incomplete saves are allowed";
@@ -641,10 +776,11 @@ void flag_incomplete(DicomFile& out) {
 }
 
 Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
-                  const ReadOptions& opt, DicomFile& out) {
+                  const ReadOptions& opt, DicomFile& out, const Syntax* forced = nullptr) {
     const TransferSyntaxInfo* info = nullptr;
     auto syn = syntax_for(ts_uid, opt.lenient, &info);
     if (!syn) return syn.take_error();
+    if (forced) syn = *forced;
     if (!info) out.warnings.push_back("unknown transfer syntax; read as explicit VR little endian");
 
     if (info && info->codec == Codec::Deflate) {
@@ -694,6 +830,22 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt) {
         pos = 4;
     } else {
         if (!opt.allow_raw_dataset) return Status(Errc::NotDicom, "no DICOM preamble");
+        if (opt.lenient && looks_implicit_big_endian(p, n)) {
+            // Values are held little endian in memory as always; the file is labelled Implicit
+            // VR Little Endian (no UID exists for the input's encoding), so a save - refused
+            // unless incomplete saves are allowed, kReadRecovered - writes little endian.
+            out.warnings.push_back(
+                "ACR_NEMA_IMPLICIT_BIG_ENDIAN: no file meta; the data is implicit VR big endian (ACR-NEMA 2.0), "
+                "which has no transfer syntax UID; read as such, labelled Implicit VR Little Endian; a save would "
+                "write little endian");
+            out.transfer_syntax = std::string(ts::ImplicitVRLittleEndian);
+            const Syntax be{false, true, false, false};
+            if (Status s = parse_body(data, 0, ts::ImplicitVRLittleEndian, opt, out, &be); !s) return s;
+            out.read_loss |= DicomFile::kReadRecovered;  // offset 0: the whole encoding was guessed
+            out.read_loss_offset = 0;
+            flag_incomplete(out);
+            return out;
+        }
         const Syntax g = guess_syntax(p, n);
         std::string_view uid = g.big_endian   ? ts::ExplicitVRBigEndian
                                : g.explicit_vr ? ts::ExplicitVRLittleEndian

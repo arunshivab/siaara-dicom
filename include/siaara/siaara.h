@@ -107,8 +107,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_transfer_syntax(const siaara_fi
                                                                  size_t cap, size_t* needed);
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_count(const siaara_file* file, uint32_t* out);
 /* Warning `index` (< warning count) as text (string buffer rules: buf / cap / needed). When the
- * read was not complete the first warning starts with "PARSE_INCOMPLETE" (input bytes skipped) or
- * "INPUT_TRUNCATED" (the input ended inside an element). Thread safety: as the file. */
+ * read was not complete the first warning starts with "PARSE_INCOMPLETE" (input bytes skipped),
+ * "INPUT_TRUNCATED" (the input ended inside an element) or "READ_RECOVERED" (a recovery heuristic
+ * was applied). Thread safety: as the file. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file, uint32_t index, char* buf,
                                                          size_t cap, size_t* needed);
 
@@ -116,7 +117,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning(const siaara_file* file
 enum {
     SIAARA_FILE_WARNING_GENERAL = 0,          /* a lenient-mode finding (repair, stray item, ...) */
     SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1, /* input bytes were skipped (SIAARA_READ_BYTES_SKIPPED) */
-    SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2   /* the input ended early (SIAARA_READ_INPUT_TRUNCATED) */
+    SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2,  /* the input ended early (SIAARA_READ_INPUT_TRUNCATED) */
+    SIAARA_FILE_WARNING_READ_RECOVERED = 3    /* damaged input recovered by a heuristic (SIAARA_READ_RECOVERED) */
 };
 SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file* file, uint32_t index, int32_t* out);
 
@@ -124,7 +126,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file*
 enum {
     SIAARA_READ_BYTES_SKIPPED = 1u << 0,   /* lenient parse skipped input bytes that are in no element */
     SIAARA_READ_INPUT_TRUNCATED = 1u << 1, /* the input ended inside an element, item or sequence */
-    SIAARA_READ_HEADER_ONLY = 1u << 2      /* stop_before_pixel_data: Pixel Data and the rest not read */
+    SIAARA_READ_HEADER_ONLY = 1u << 2,     /* stop_before_pixel_data: Pixel Data and the rest not read */
+    SIAARA_READ_RECOVERED = 1u << 3        /* lenient reading recovered damaged input by a heuristic (an element
+                                              length corrected, ACR-NEMA implicit VR big endian detected): the data
+                                              set is an interpretation; the warnings say what was done */
 };
 typedef struct siaara_read_report {
     uint32_t struct_size;            /* set to sizeof(siaara_read_report) */

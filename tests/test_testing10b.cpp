@@ -674,3 +674,153 @@ TEST_CASE("10b P3: repair of a truncated single frame reports counts that agree"
     const std::string json = repair::to_json(rep);
     CHECK(json.find("\"recovered_count\":0,\"lost_count\":1") != std::string::npos);
 }
+
+// ---------------------------------------------------------------- item 7: recovery heuristics
+
+namespace {
+
+// Implicit VR element, little or big endian.
+void put_implicit(std::vector<std::uint8_t>& b, std::uint16_t g, std::uint16_t e, const std::string& v,
+                  bool big = false, std::uint32_t stated = 0xFFFFFFFFu) {
+    const std::uint32_t len = stated == 0xFFFFFFFFu ? static_cast<std::uint32_t>(v.size()) : stated;
+    auto u16 = [&](std::uint16_t x) {
+        if (big) {
+            b.push_back(static_cast<std::uint8_t>(x >> 8));
+            b.push_back(static_cast<std::uint8_t>(x));
+        } else {
+            b.push_back(static_cast<std::uint8_t>(x));
+            b.push_back(static_cast<std::uint8_t>(x >> 8));
+        }
+    };
+    u16(g);
+    u16(e);
+    for (int k = 0; k < 4; ++k)
+        b.push_back(static_cast<std::uint8_t>(big ? len >> (8 * (3 - k)) : len >> (8 * k)));
+    b.insert(b.end(), v.begin(), v.end());
+}
+
+std::string le16(std::uint16_t x) { return std::string{static_cast<char>(x & 0xFF), static_cast<char>(x >> 8)}; }
+std::string be16(std::uint16_t x) { return std::string{static_cast<char>(x >> 8), static_cast<char>(x & 0xFF)}; }
+
+// A raw implicit VR little endian data set in which (0008,103E) states 13 bytes for 10, as GE
+// Genesis files do, and (0010,1030) repeats the error.
+std::vector<std::uint8_t> ge_like() {
+    std::vector<std::uint8_t> b;
+    put_implicit(b, 0x0008, 0x0016, std::string(kMR) + '\0');
+    put_implicit(b, 0x0008, 0x0018, "2.25.10140");
+    put_implicit(b, 0x0008, 0x0060, "MR");
+    put_implicit(b, 0x0008, 0x103E, "AX T1 POST", false, 13);
+    put_implicit(b, 0x0008, 0x1060, "JANETOS ");
+    put_implicit(b, 0x0008, 0x1090, "GENESIS_SIGNA ");
+    put_implicit(b, 0x0010, 0x0010, "TEN^B ");
+    put_implicit(b, 0x0010, 0x1030, " 54.431000", false, 13);
+    put_implicit(b, 0x0010, 0x21B0, "TUMOR F/U ");
+    put_implicit(b, 0x0028, 0x0010, le16(2));
+    put_implicit(b, 0x0028, 0x0011, le16(2));
+    put_implicit(b, 0x7FE0, 0x0010, std::string("\x01\x00\x02\x00\x03\x00\x04\x00", 8));
+    return b;
+}
+
+}  // namespace
+
+TEST_CASE("10b item 7a: a value length a few bytes too large is recovered, reported, and not saved silently") {
+    const std::vector<std::uint8_t> in = ge_like();
+    auto f = read_part10(Bytes::copy_of(in.data(), in.size()));
+    REQUIRE(f.is_ok());
+    CHECK(f->dataset.get_string(0x0008103E).value_or("") == "AX T1 POST");
+    CHECK(f->dataset.get_string(0x00081060).value_or("") == "JANETOS");
+    CHECK(f->dataset.get_string(0x00100010).value_or("") == "TEN^B");
+    CHECK(f->dataset.get_string(0x001021B0).value_or("") == "TUMOR F/U");
+    CHECK(f->dataset.get_int(tags::Rows).value_or(0) == 2);
+    CHECK(f->dataset.contains(tags::PixelData));
+    CHECK((f->read_loss & DicomFile::kReadRecovered) != 0);
+    CHECK((f->read_loss & DicomFile::kReadInputTruncated) == 0);
+    REQUIRE(!f->warnings.empty());
+    CHECK(f->warnings[0].rfind(std::string(kWarnReadRecovered), 0) == 0);
+    int recovered = 0;
+    for (const std::string& w : f->warnings) recovered += w.rfind("ELEMENT_LENGTH_RECOVERED", 0) == 0 ? 1 : 0;
+    CHECK(recovered == 2);
+    // Saving or sending refuses the interpretation unless asked for.
+    std::vector<std::uint8_t> out;
+    CHECK(write_part10(*f, out).code == Errc::Rejected);
+    CHECK(check_sendable(*f, false).code == Errc::Rejected);
+    WriteOptions wo;
+    wo.allow_incomplete = true;
+    CHECK(write_part10(*f, out, wo).is_ok());
+    // Strict mode does not guess.
+    ReadOptions strict;
+    strict.lenient = false;
+    auto s = read_part10(Bytes::copy_of(in.data(), in.size()), strict);
+    CHECK(!s.is_ok() || s->dataset.get_string(0x0008103E).value_or("") != "AX T1 POST");
+    // C API: the read report and the warning code say so.
+    siaara_file* cf = nullptr;
+    REQUIRE(siaara_file_open_memory(in.data(), in.size(), nullptr, &cf) == SIAARA_OK);
+    siaara_read_report rr;
+    std::memset(&rr, 0, sizeof rr);
+    rr.struct_size = sizeof rr;
+    REQUIRE(siaara_file_read_report(cf, &rr) == SIAARA_OK);
+    CHECK((rr.loss & SIAARA_READ_RECOVERED) != 0);
+    int32_t code = -1;
+    REQUIRE(siaara_file_warning_code(cf, 0, &code) == SIAARA_OK);
+    CHECK(code == SIAARA_FILE_WARNING_READ_RECOVERED);
+    siaara_file_free(cf);
+}
+
+TEST_CASE("10b item 7a: values that only look like a header near their end are not shortened") {
+    // A valid data set whose LO value ends in bytes that read as a header, (0008,1060) len 2:
+    // the stated end is followed by valid elements, so nothing is recovered.
+    std::vector<std::uint8_t> b;
+    put_implicit(b, 0x0008, 0x0016, std::string(kMR) + '\0');
+    put_implicit(b, 0x0008, 0x0018, "2.25.10141");
+    put_implicit(b, 0x0008, 0x103E, std::string("AB\x08\x00\x60\x10\x02\x00\x00\x00", 10));
+    put_implicit(b, 0x0008, 0x1060, "JANETOS ");
+    put_implicit(b, 0x0010, 0x0010, "TEN^B ");
+    put_implicit(b, 0x0010, 0x0020, "ID1 ");
+    auto f = read_part10(Bytes::copy_of(b.data(), b.size()));
+    REQUIRE(f.is_ok());
+    CHECK(f->complete());
+    CHECK(f->dataset.find(0x0008103E)->value.size() == 10);
+    CHECK(f->dataset.get_string(0x00081060).value_or("") == "JANETOS");
+    for (const std::string& w : f->warnings) CHECK(w.find("RECOVERED") == std::string::npos);
+    // The valid samples elsewhere stay complete: a well-formed Part 10 file.
+    auto g = read_part10(Bytes::copy_of(bytes_of(mr8("2.25.10142")).data(), bytes_of(mr8("2.25.10142")).size()));
+    REQUIRE(g.is_ok());
+    CHECK(g->complete());
+}
+
+TEST_CASE("10b item 7b: ACR-NEMA implicit VR big endian without meta is detected and reported") {
+    std::vector<std::uint8_t> b;
+    put_implicit(b, 0x0008, 0x0000, std::string("\x00\x00\x00\x16", 4), true);
+    put_implicit(b, 0x0008, 0x0010, "ACRNEMA_LIBIDO_1.1", true);  // Recognition Code (retired)
+    put_implicit(b, 0x0010, 0x0010, "TEN^B ", true);
+    put_implicit(b, 0x0028, 0x0010, be16(2), true);
+    put_implicit(b, 0x0028, 0x0011, be16(2), true);
+    put_implicit(b, 0x0028, 0x0100, be16(16), true);
+    put_implicit(b, 0x7FE0, 0x0010, std::string("\x00\x01\x00\x02\x00\x03\x01\x04", 8), true);
+    auto f = read_part10(Bytes::copy_of(b.data(), b.size()));
+    REQUIRE(f.is_ok());
+    CHECK(f->transfer_syntax == ts::ImplicitVRLittleEndian);
+    CHECK(f->dataset.get_int(tags::Rows).value_or(0) == 2);
+    CHECK(f->dataset.get_int(tags::BitsAllocated).value_or(0) == 16);
+    CHECK(f->dataset.get_string(tags::PatientName).value_or("") == "TEN^B");
+    const Element* px = f->dataset.find(tags::PixelData);
+    REQUIRE(px != nullptr);
+    REQUIRE(px->value.size() == 8);
+    CHECK(load_le16(px->value.data()) == 1);       // held little endian
+    CHECK(load_le16(px->value.data() + 6) == 0x0104);
+    CHECK((f->read_loss & DicomFile::kReadRecovered) != 0);
+    bool told = false;
+    for (const std::string& w : f->warnings) told = told || w.rfind("ACR_NEMA_IMPLICIT_BIG_ENDIAN", 0) == 0;
+    CHECK(told);
+    std::vector<std::uint8_t> out;
+    CHECK(write_part10(*f, out).code == Errc::Rejected);
+    // The same data little endian is read as before (no recovery).
+    std::vector<std::uint8_t> l;
+    put_implicit(l, 0x0008, 0x0000, std::string("\x16\x00\x00\x00", 4));
+    put_implicit(l, 0x0010, 0x0010, "TEN^B ");
+    put_implicit(l, 0x0028, 0x0010, le16(2));
+    auto g = read_part10(Bytes::copy_of(l.data(), l.size()));
+    REQUIRE(g.is_ok());
+    CHECK(g->complete());
+    CHECK(g->dataset.get_int(tags::Rows).value_or(0) == 2);
+}

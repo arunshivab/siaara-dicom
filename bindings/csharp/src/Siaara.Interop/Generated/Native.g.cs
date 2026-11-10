@@ -39,9 +39,11 @@ internal static class C
     public const int SIAARA_FILE_WARNING_GENERAL = 0;
     public const int SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1;
     public const int SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2;
+    public const int SIAARA_FILE_WARNING_READ_RECOVERED = 3;
     public const uint SIAARA_READ_BYTES_SKIPPED = 1u << 0;
     public const uint SIAARA_READ_INPUT_TRUNCATED = 1u << 1;
     public const uint SIAARA_READ_HEADER_ONLY = 1u << 2;
+    public const uint SIAARA_READ_RECOVERED = 1u << 3;
     public const int SIAARA_PRIVATE_STATED = 0;
     public const int SIAARA_PRIVATE_ASSUMED = 1;
     public const int SIAARA_PRIVATE_EXACT = 0;

@@ -76,7 +76,9 @@ Status check_sendable(const DicomFile& file, bool allow_incomplete) {
     if (file.complete() || allow_incomplete) return Status::ok();
     const char* why = (file.read_loss & DicomFile::kReadInputTruncated) ? "the input was truncated"
                       : (file.read_loss & DicomFile::kReadBytesSkipped) ? "input bytes were skipped"
-                                                                        : "it was read header-only";
+                      : (file.read_loss & DicomFile::kReadRecovered)
+                          ? "damaged input was recovered by a heuristic, see the read warnings"
+                          : "it was read header-only";
     return Status(Errc::Rejected,
                   std::string(kIncompleteInput) + ": not sending a data set that was not read completely (" + why +
                       "; first at offset " + std::to_string(file.read_loss_offset) +

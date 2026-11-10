@@ -353,7 +353,9 @@ Status write_part10(const DicomFile& file, std::vector<std::uint8_t>& out, const
     if (!file.complete() && !opt.allow_incomplete) {
         const char* why = (file.read_loss & DicomFile::kReadBytesSkipped)     ? "input bytes were skipped"
                           : (file.read_loss & DicomFile::kReadInputTruncated) ? "the input was truncated"
-                                                                              : "it was read header-only";
+                          : (file.read_loss & DicomFile::kReadRecovered)
+                              ? "damaged input was recovered by a heuristic, see the read warnings"
+                              : "it was read header-only";
         return Status(Errc::Rejected,
                       std::string("refusing to save a data set that was not read completely (") + why +
                           "; first at offset " + std::to_string(file.read_loss_offset) +
