@@ -469,6 +469,12 @@ typedef struct siaara_store_options {
     uint64_t max_total_bytes;      /* copied instances may take at most this much; 0 = no cap. Adding
                                       more fails with SIAARA_ERR_LIMIT_EXCEEDED (a Storage SCP answers 0xA700) */
     uint64_t min_free_disk_bytes;  /* free space adding leaves on the volume; 0 = default (64 MiB) */
+    /* Permissions of what the store creates (R-092). 0 (default): owner only - folders 0700 and
+     * files 0600 on POSIX, an owner-only DACL on Windows. Otherwise the POSIX mode of the files
+     * (e.g. 0640); folders get it plus the matching search bits, and on Windows the folders and
+     * files inherit the parent folder's permissions. */
+    uint32_t file_mode;
+    uint32_t reserved0;            /* set to 0 */
 } siaara_store_options;
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };

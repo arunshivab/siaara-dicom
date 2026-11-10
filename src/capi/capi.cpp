@@ -1038,6 +1038,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t 
                 o.max_total_bytes = options->max_total_bytes;
             if (has(offsetof(siaara_store_options, min_free_disk_bytes) + sizeof(uint64_t)) && options->min_free_disk_bytes)
                 o.min_free_disk_bytes = options->min_free_disk_bytes;
+            if (has(offsetof(siaara_store_options, file_mode) + sizeof(uint32_t))) {
+                if (options->file_mode > 07777u) return fail(Errc::InvalidArgument, "file_mode must be a POSIX mode (0 .. 07777)");
+                o.file_mode = options->file_mode;
+            }
         }
         auto s = st::Store::open(std::string(root, root_len), o);
         if (!s) return fail(s.error());

@@ -717,8 +717,8 @@ struct Store::Impl {
     Status journal_reset(std::uint32_t gen) {
         journal.close();
         const auto h = header(kJournalMagic, gen);
-        if (Status s = write_replace(journal_path, h.data(), h.size(), true); !s) return s;
-        auto f = OsFile::open(journal_path, OsFile::Mode::ReadWrite);
+        if (Status s = write_replace(journal_path, h.data(), h.size(), true, opt.file_mode); !s) return s;
+        auto f = OsFile::open(journal_path, OsFile::Mode::ReadWrite, opt.file_mode);
         if (!f) return f.take_error();
         journal = std::move(*f);
         counters.journal_bytes = kHeaderSize;
@@ -737,9 +737,8 @@ struct Store::Impl {
 
     // ---- snapshot
     Status write_snapshot(std::uint32_t gen) {
-        fs::path tmp = snapshot_path;
-        tmp += u8path(".siaara-tmp");
-        auto f = OsFile::open(tmp, OsFile::Mode::CreateTruncate);
+        const fs::path tmp = temp_name_for(snapshot_path);  // R-092: unique name, exclusive, owner-only
+        auto f = OsFile::open(tmp, OsFile::Mode::CreateExclusive, opt.file_mode);
         if (!f) return f.take_error();
         std::vector<std::uint8_t> buf = header(kSnapshotMagic, gen);
         std::uint64_t total = 0;
@@ -965,7 +964,7 @@ struct Store::Impl {
             counters.replayed_records = counters.journal_records = counters.recovered_bytes = 0;
             return journal_reset(snapshot_gen);  // the mapping is gone now
         }
-        auto f = OsFile::open(journal_path, OsFile::Mode::ReadWrite);
+        auto f = OsFile::open(journal_path, OsFile::Mode::ReadWrite, opt.file_mode);
         if (!f) return f.take_error();
         if (counters.recovered_bytes) {
             if (Status s = f->truncate(good_end); !s) return s;
@@ -1057,11 +1056,10 @@ struct Store::Impl {
         if (mode == AddMode::Copy) {
             if (Status q = check_disk_limits(data.size()); !q) return q;
             final_path = root / u8path(instance_relative_path(uid));
-            fs::create_directories(final_path.parent_path(), ec);
-            if (ec) return Status(Errc::IoError, "cannot create data folder");
-            tmp = final_path;
-            tmp += u8path("." + generate_uid().substr(5, 12) + ".siaara-tmp");
-            auto f = OsFile::open(tmp, OsFile::Mode::CreateTruncate);
+            if (Status d = create_private_dirs(final_path.parent_path(), opt.file_mode); !d)
+                return Status(Errc::IoError, "cannot create data folder");
+            tmp = temp_name_for(final_path);  // R-092: unpredictable name, exclusive create, owner-only
+            auto f = OsFile::open(tmp, OsFile::Mode::CreateExclusive, opt.file_mode);
             if (!f) return f.take_error();
             Status s = f->append(data.data(), data.size());
             if (s && opt.durable) s = f->sync();
@@ -1218,8 +1216,8 @@ Result<std::unique_ptr<Store>> Store::open(const std::string& utf8_root, const S
     fs::path root = u8path(utf8_root);
     if (!fs::exists(root, ec)) {
         if (!opt.create) return Status(Errc::NotFound, "store folder does not exist");
-        fs::create_directories(root, ec);
-        if (ec) return Status(Errc::IoError, "cannot create store folder");
+        if (Status d = create_private_dirs(root, opt.file_mode); !d)
+            return Status(Errc::IoError, "cannot create store folder");
     }
     fs::path abs = fs::absolute(root, ec);
     if (!ec) root = abs.lexically_normal();
@@ -1229,13 +1227,13 @@ Result<std::unique_ptr<Store>> Store::open(const std::string& utf8_root, const S
     impl->data_dir = root / "data";
     impl->journal_path = impl->index_dir / "journal.sxj";
     impl->snapshot_path = impl->index_dir / "snapshot.sxs";
-    auto lock = LockFile::acquire(root / "siaara-store.lock");
+    auto lock = LockFile::acquire(root / "siaara-store.lock", opt.file_mode);
     if (!lock) return lock.take_error();
     impl->lock = std::move(*lock);
-    fs::create_directories(impl->index_dir, ec);
-    if (ec) return Status(Errc::IoError, "cannot create index folder");
-    fs::create_directories(impl->data_dir, ec);
-    if (ec) return Status(Errc::IoError, "cannot create data folder");
+    if (Status d = create_private_dirs(impl->index_dir, opt.file_mode); !d)
+        return Status(Errc::IoError, "cannot create index folder");
+    if (Status d = create_private_dirs(impl->data_dir, opt.file_mode); !d)
+        return Status(Errc::IoError, "cannot create data folder");
     Status s = impl->load();
     if (!s) {
         if (!opt.rebuild_if_corrupt || (s.code != Errc::Malformed && s.code != Errc::Unsupported)) return s;
