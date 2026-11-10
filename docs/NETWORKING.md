@@ -73,7 +73,7 @@ scp.Received += (_, e) => Console.WriteLine($"{e.Kind} {e.CallingAeTitle} {e.Dim
 | `spool_*` | 16 MiB threshold, 64 MiB free-space floor | large data sets are received to an owner-only spool file (R-074) |
 | `event_queue_limit` | 1024 | see 2.4 |
 | `event_queue_max_bytes` | 64 MiB | data sets held by queued events; over it events are dropped as for a full queue (R-109) |
-| `incomplete_policy` | `SIAARA_INCOMPLETE_DEFAULT` = REFUSE | a received data set that was not read completely; see 2.3b |
+| `incomplete_policy` | `SIAARA_INCOMPLETE_DEFAULT` = QUARANTINE | a received data set that was not read completely; see 2.3b |
 | port taken | | `siaara_scp_start(_ex)` and `siaara_web_server_start` return `SIAARA_ERR_ADDRESS_IN_USE` (16) with the port in the message |
 
 ### 2.2 Services (`siaara_scp_services` / `ScpServiceOptions`)
@@ -231,24 +231,53 @@ read or was not read completely (`StowOptions::allow_incomplete` skips the check
 ### 2.3b Incomplete data on the receiving side (R-116)
 
 A data set that arrives truncated, with bytes the reader had to skip, or that only a recovery
-heuristic could read is not something to store behind a Success. One policy,
-`incomplete_policy` (`SIAARA_INCOMPLETE_*`; C# `IncompletePolicy`), applies wherever the toolkit
-receives instances:
+heuristic could read is not something to store behind a plain Success. What happens is an
+option, `incomplete_policy` (`SIAARA_INCOMPLETE_*`; C# `IncompletePolicy`), shared by the
+Storage SCP (`siaara_scp_options`), C-GET (`siaara_get_options`), the STOW-RS server
+(`siaara_web_server_options`) and `siaara_web_wado_retrieve_to_ex`:
 
-| Where | REFUSE (default) | ACCEPT_AS_RECEIVED |
+| Policy | What is kept | Sender is told | Event / report |
+|---|---|---|---|
+| `QUARANTINE` (default) | the bytes exactly as received, in `<store>/quarantine`, owner-only, outside the index (no C-FIND / QIDO / C-GET / C-MOVE / WADO returns them) | the *kept* answer: WARNING 0xB007 by default (STOW-RS: Warning Reason 0xB007, no Retrieve URL) | `SIAARA_SCP_QUARANTINED` with `read_loss`; retrieve report `quarantined` (also counted in `failed`) |
+| `REFUSE` | nothing | FAILURE 0xC000 (STOW-RS Failure Reason) | `SIAARA_SCP_STORE_FAILED` with `read_loss`; `incomplete_refused` |
+| `REFUSE_KEEP_COPY` | a copy in `<store>/rejected` for diagnosis (best effort) | as REFUSE | as REFUSE |
+| `ACCEPT_AS_RECEIVED` | the bytes exactly as received in the archive, indexed with `SIAARA_IDXF_INCOMPLETE`; never converted to `store_transfer_syntax` | the *kept* answer (STOW-RS: Warning Reason 0xB006, status 202) | `SIAARA_SCP_STORED` with `read_loss` != 0; `incomplete_accepted` |
+
+Options around it (each default is one named constant in `src/core/incomplete_policy.hpp` or
+`src/store/quarantine.hpp`):
+
+| Option | Default | Choices |
 |---|---|---|
-| Storage SCP (`siaara_scp_options`) | C-STORE status 0xC000 with Error Comment "data set incomplete"; nothing stored; `SIAARA_SCP_STORE_FAILED` with `read_loss` | stored exactly as received, `SIAARA_SCP_STORED` with `read_loss` != 0; never converted to `store_transfer_syntax` |
-| C-GET (`siaara_get_options`) | the sub-operation is answered 0xC000 (it fails at the SCP) | kept exactly as received |
-| STOW-RS server (`siaara_web_server_options`) | the instance is in the Failed SOP Sequence, Failure Reason 0xC000 | stored exactly as received; its item carries Warning Reason 0xB006 and the response is 202 |
-| `siaara_web_wado_retrieve_to_ex` | the part is not kept (`incomplete_refused`, `failed`) | kept exactly as received (`incomplete_accepted`) |
+| `incomplete_policy` (`kDefaultIncompletePolicy`) | QUARANTINE | the four policies above |
+| `incomplete_overrides` (`siaara_incomplete_override`; C# `IncompletePolicyByCallingAe`) | none | a policy per calling AE (Storage SCP) |
+| `quarantine_response` (`kDefaultQuarantineResponse`; C# `IncompleteAnswer`) | WARNING | WARNING, FAILURE, SUCCESS - the answer for instances that were kept (quarantined or accepted) |
+| `incomplete_warning_status` (`kQuarantineWarningStatus`) | 0xB007 | any warning status (0xB000, 0xB006 ...) |
+| `incomplete_failure_status` (`kIncompleteFailureStatus`) | 0xC000 | any failure status (0xA900 ...) |
+| `siaara_store_options.quarantine_max_items` / `_max_bytes` | 10000 / 4 GiB | caps of the quarantine; `rejected_max_*` for the rejected area |
+| `quarantine_when_full` / `rejected_when_full` (`kDefaultQuarantineEvictOldest`) | refuse (C-STORE 0xA700, STOW-RS Failure Reason 0xA700) | refuse, or evict the oldest items |
+| Storage Commitment for flagged instances (`kCommitFlaggedIncomplete`, compile-time) | committed | quarantined and rejected copies are never committed (they are not in the archive: Failure Reason 0x0112) |
+| network read recovery (`kRecoverOverlongLengthsNetwork`, compile-time) | off | the overlong-length recovery heuristic is not applied to data received over the network |
 
-Incomplete data is never transcoded and never rewritten, in either mode. A STOW-RS or WADO-RS
-part without a Part 10 preamble can only be stored rewritten, so an incomplete one is refused
-under both policies; a complete one is stored as a new Part 10 file and reported (STOW-RS Warning
-Reason 0xB000 with status 202; `rewritten` in the retrieve report). `siaara_web_wado_retrieve_to`
-is `siaara_web_wado_retrieve_to_ex` with the default options. The default lives in one constant
-(`kDefaultIncompletePolicy`, `src/core/incomplete_policy.hpp`). The sender-side
-`allow_incomplete` settings of 2.3a are unchanged.
+Quarantine items are identified by the SHA-256 of their bytes (the same bytes arriving again are
+one item) and carry a small record: time, source, calling AE / peer address, SOP Class and
+Instance UID when readable, size, read-loss bits and the first read warning - no other patient
+data. `siaara_store_quarantine_count / _get / _bytes / _release / _export / _delete` (C#
+`DicomStore.QuarantineList / QuarantineBytes / QuarantineRelease / QuarantineExport /
+QuarantineDelete`) take the area (`SIAARA_AREA_QUARANTINE`, `SIAARA_AREA_REJECTED`). Release
+stores the bytes unchanged in the archive, flagged `SIAARA_IDXF_INCOMPLETE`; an item without a
+Part 10 preamble cannot be stored unchanged and stays (`SIAARA_ERR_UNSUPPORTED`).
+
+Incomplete data is never transcoded and never rewritten, under any policy. A STOW-RS or WADO-RS
+part without a Part 10 preamble that is incomplete is therefore never stored in the archive
+(`ACCEPT_AS_RECEIVED` refuses it; `QUARANTINE` keeps its bytes); a complete one is stored as a
+new Part 10 file and reported (STOW-RS Warning Reason 0xB000 with status 202; `rewritten` in the
+retrieve report). Where a receiver has no quarantine area - a C-GET into a folder only, a C++
+DICOMweb server over a custom store without `Store::quarantine` - `QUARANTINE` falls back to
+`REFUSE`. The sender-side `allow_incomplete` settings of 2.3a are unchanged.
+
+Not built yet (owner decision 2026-11-11, points E to G): a policy table keyed by the kind of
+damage, repair-on-receipt, per-calling-AE overrides of the sub-options (only the policy itself
+can be set per AE), and per-client policy for STOW-RS.
 
 ### 2.4 Events and the drop policy (R-094)
 
@@ -392,7 +421,7 @@ folder (unless the file existed before).
   once; the temporary file is removed whenever a write fails (R-133).
 - Give C-MOVE callers a destination list (`move_acls`) and every PHI service an allow-list; the
   SCP warns at start about those that have none (R-129).
-- Keep `incomplete_policy` at its default unless you need the damaged bytes for forensics (2.3b).
+- Incomplete instances go to the quarantine by default (2.3b): review it (`siaara_store_quarantine_*`) and size its caps.
 - Log callbacks never receive patient data unless `siaara_set_log_include_phi(1)`.
 
 ## 7. Verification
