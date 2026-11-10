@@ -81,7 +81,8 @@ bool node_present(const Dataset& ds, std::uint32_t index);
 // A sequence segment that is not the last needs an item index. On the last segment, an index
 // selects an item of a sequence, or a value of a multi-valued element. Private attributes are
 // found through their Private Creator block (gggg,00bb) in the data set being walked; an unquoted
-// creator cannot contain '.', '[' or ']'.
+// creator cannot contain '.', '[' or ']'. A repeating-group keyword (OverlayRows, CurveDimensions,
+// ...) names the first group, 6000 or 5000; other groups are addressed by tag, e.g. (6002,0010).
 enum class ValueKind : std::int32_t { Empty = 0, Text = 1, Integer = 2, Real = 3, Binary = 4, Sequence = 5, Tag = 6, Item = 7 };
 
 struct PathTarget {
@@ -106,10 +107,29 @@ struct PathValue {
     bool has_real = false;
     double real = 0;
     std::string text;  // UTF-8; all values backslash separated, or the selected value
+    // Byte sequences of the element that are not characters of the character set in force and
+    // are U+FFFD in `text` (0: the text is exactly what the bytes hold). The bytes are unchanged.
+    std::uint32_t undecodable = 0;
 };
 Result<PathValue> get_by_path(const Dataset& root, std::string_view path);
 // Every value of the element as double (numeric VRs, including OF / OD / OL / OV / OW and the
 // numeric strings DS / IS). An index on the last segment selects one value.
+// One pass over the element (R-111). LimitExceeded when the result would exceed
+// kNamedDataMemoryBudget, OutOfMemory when the allocation fails (never an exception, R-123).
 Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_view path);
+// The number of values doubles_by_path would return, from the value count alone: nothing is
+// decoded or allocated, so a value that is not a number is reported only by the calls that read it.
+Result<std::size_t> doubles_by_path_count(const Dataset& root, std::string_view path);
+// The same values written straight into `out`, whose size must be doubles_by_path_count().
+Status doubles_by_path_into(const Dataset& root, std::string_view path, std::span<double> out);
+
+// Memory budget of the vectors the named data layer returns (doubles_by_path, waveform_raw,
+// waveform_scaled, device_positions): the toolkit's default allocation budget, 4 GiB (as
+// codec::FrameInfo::kDefaultMemoryBudget and image::FrameReader). The *_into forms write into the
+// caller's buffer and allocate nothing.
+inline constexpr std::uint64_t kNamedDataMemoryBudget = std::uint64_t{4} << 30;
+constexpr bool fits_named_data_budget(std::uint64_t count, std::uint64_t element_size) noexcept {
+    return element_size == 0 || count <= kNamedDataMemoryBudget / element_size;
+}
 
 }  // namespace siaara::modules

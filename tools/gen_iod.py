@@ -394,6 +394,9 @@ REWRITES = [
     (r"^either ", ""),
     (r"\bwhose SOP Class UID \(0008,0016\) is one of the following:", "SOP Class UID (0008,0016) is"),
     (r" points to ", " includes the Tag for "),
+    # "X (gggg,eeee) is absent or not V" (Dimension Index Sequence): two terms on the same attribute.
+    (r"([A-Z][A-Za-z0-9'\- ]*? \([0-9A-Fa-f]{4},[0-9A-Fa-f]{4}\)) is (absent|not present) or (?:is )?not (" + ONE_VALUE + r")$",
+     r"\1 is \2 or \1 is not \3"),
 ]
 
 # Conditions written as prose for which PS3.3 itself gives the machine-checkable meaning, by
@@ -412,9 +415,25 @@ STRUCTURED = {
 
 REQUIRED_IF = re.compile(r"(?:Required (?:only )?if|Shall be present (?:only )?if|Required for images where) (.*?)(?:\.(?:\s|$)|;|$)")
 # "may be present otherwise": a 1C / 2C attribute that may also be present when its condition does
-# not hold (PS3.5 7.4: without these words it shall not be present then).
-OTHERWISE = re.compile(r"(?:[Mm]ay be present otherwise|[Oo]therwise(?:,)? (?:it )?may be present|"
-                       r"[Mm]ay be present (?:if|when|for|in|even)|[Oo]therwise optional|may also be present)")
+# not hold. Any permissive wording counts ("May be present otherwise", "May also be present if
+# Window Center (0028,1050) is present", "may be present for other SOP Classes if ..."): the
+# description allows presence in some case this generator does not evaluate.
+OTHERWISE = re.compile(r"(?:[Mm]ay (?:also |otherwise |still |optionally )?be (?:present|included|sent|used|specified)|"
+                       r"[Oo]therwise(?:,)? (?:it )?may be present|[Oo]therwise optional|[Oo]ptional otherwise)")
+# Wording that positively forbids presence when the condition does not hold. Only then is a
+# present attribute with an unmet condition an error; with no wording either way it is PS3.5
+# 7.4.4 / 7.4.6 applied to a condition this generator read from prose, reported as a warning.
+FORBIDDEN = re.compile(r"(?:[Ss]hall not be present (?:otherwise|if|when|unless)|[Ss]hall be absent (?:otherwise|if|when|unless)|"
+                       r"[Nn]ot (?:be )?present otherwise|(?:Required|Shall be present) only if|"
+                       r"(?:Required|Shall be present) if and only if)")
+
+
+def presence_rule(desc):
+    """0: may be present when the condition does not hold; 2: the description forbids it;
+    1: the description says neither (PS3.5 7.4.4 / 7.4.6 then applies)."""
+    if OTHERWISE.search(desc):
+        return 0
+    return 2 if FORBIDDEN.search(desc) else 1
 
 
 def parse_condition(desc):
@@ -423,15 +442,31 @@ def parse_condition(desc):
     for phrase, cond in PHRASES:
         if re.search(r"Required if " + phrase, desc):
             return cond
-    m = REQUIRED_IF.search(desc)
-    if not m:
+    found = REQUIRED_IF.findall(desc)
+    if not found:
         return None
-    cond = m.group(1).strip()
-    # Strip a trailing ", may be present otherwise" / "otherwise ..." clause.
-    cond = re.split(r",? (?:otherwise|overriding|may be present otherwise|May be present otherwise)", cond)[0].strip()
-    for pat, rep in REWRITES:
-        cond = re.sub(pat, rep, cond)
-    return parse_expr(add_missing_tags(cond))
+
+    def one(cond):
+        cond = cond.strip()
+        # Strip a trailing ", may be present otherwise" / "otherwise ..." clause.
+        cond = re.split(r",? (?:otherwise|overriding|may be present otherwise|May be present otherwise)", cond)[0].strip()
+        for pat, rep in REWRITES:
+            cond = re.sub(pat, rep, cond)
+        return parse_expr(add_missing_tags(cond))
+
+    if len(found) == 1:
+        return one(found[0])
+    # Several "Required if" sentences (SR Concept Name Code Sequence has three): the attribute is
+    # required when any of them holds. Evaluated only when every sentence parses and each is a
+    # single term or an OR of terms; otherwise the condition as a whole is not evaluated - reading
+    # the first sentence alone would call the attribute "not required" where another one applies.
+    terms = []
+    for c in found:
+        pc = one(c)
+        if pc is None or (not pc[0] and len(pc[1]) != 1):
+            return None
+        terms += pc[1]
+    return (True, terms)
 
 
 def include_target(td):
@@ -459,6 +494,7 @@ class Gen:
         self.enum_values = []
         self.iods = []
         self.module_rows = []
+        self.fg_rows = []          # (macro name, attribute table index, usage)
         self.sop = []
         self.stats = {"conditional_includes": 0, "unresolved_includes": 0, "unparsed_conditions": 0, "parsed_conditions": 0}
 
@@ -554,9 +590,10 @@ class Gen:
                 structured = STRUCTURED.get((tid, pt[0]))
                 pc = structured or parse_condition(desc)
                 # Without "may be present otherwise" the attribute shall not be present when the
-                # condition does not hold (PS3.5 7.4.4, 7.4.6). Not for the STRUCTURED rules: they
-                # decide "required" only where the prose can be decided, so "false" may mean unknown.
-                strict = 0 if structured or OTHERWISE.search(desc) else 1
+                # condition does not hold (PS3.5 7.4.4, 7.4.6): 1, or 2 when the description says
+                # so itself (presence_rule). Not for the STRUCTURED rules: they decide "required"
+                # only where the prose can be decided, so "false" may mean unknown.
+                strict = 0 if structured else presence_rule(desc)
                 if pc is None:
                     self.stats["unparsed_conditions"] += 1
                 else:
@@ -622,6 +659,51 @@ class Gen:
             mods.append((ie, cells[0], ti, usage))
         return name, mods
 
+    def parse_functional_groups(self, iod_tid):
+        """The "<IOD> Functional Group Macros" table of the IOD's own section (Functional Group
+        Macro, Section, Usage): [(name, attribute table, usage)]. Empty when the IOD has none."""
+        def cap_text(tid):
+            cap = self.tables.by_id[tid].find(DB + "caption")
+            return text(cap) if cap is not None else ""
+
+        def is_fg(tid):
+            h = header(self.tables.by_id[tid])
+            return cap_text(tid).endswith("Functional Group Macros") and bool(h) and h[0] == "Functional Group Macro"
+
+        # The smallest section that holds the IOD's module table and a functional group table
+        # (they are in sibling subsections of the IOD's section), and only one IOD module table.
+        best = None
+        for sid, tids in self.tables.section_tables.items():
+            if iod_tid not in tids or not any(is_fg(t) for t in tids):
+                continue
+            iod_tables = [t for t in tids if cap_text(t).endswith("IOD Modules")]
+            if len(iod_tables) != 1:
+                continue
+            if best is None or len(tids) < len(best):
+                best = tids
+        out = []
+        for tid in best or []:
+            if not is_fg(tid):
+                continue
+            tbl = self.tables.by_id[tid]
+            for tr in body_rows(tbl):
+                tds = tr.findall(DB + "td")
+                if len(tds) < 3:
+                    continue
+                ref = None
+                for x in tr.iter(DB + "xref"):
+                    ref = x.get("linkend")
+                    break
+                if not ref:
+                    continue
+                mt = self.module_table_for_section(ref) if ref.startswith("sect_") else ref
+                ti = self.attr_table(mt) if mt else -1
+                if ti < 0:
+                    continue
+                out.append((text(tds[0]), ti, USAGE.get(text(tds[-1])[:1], 2)))
+            break
+        return out
+
     def run(self):
         iod_by_section = {}
         for sid in self.tables.section_tables:
@@ -642,7 +724,10 @@ class Gen:
             seen[tid] = len(self.iods)
             first = len(self.module_rows)
             self.module_rows.extend(r[1])
-            self.iods.append((r[0], tid[len("table_"):], first, len(r[1])))
+            fg = self.parse_functional_groups(tid)
+            fg_first = len(self.fg_rows)
+            self.fg_rows.extend(fg)
+            self.iods.append((r[0], tid[len("table_"):], first, len(r[1]), fg_first, len(fg)))
         # SOP classes (PS3.4 Table B.5-1).
         b51 = None
         for tbl in self.p4.iter(DB + "table"):
@@ -694,8 +779,9 @@ class Gen:
         L.append("// Row fields: depth, tag, mask, type (1=1, 2=1C, 3=2, 4=2C, 5=3; 0 = Include row, 6 = conditional")
         L.append("// Include row whose condition is the row's condition, -1 when not evaluated),")
         L.append("// included table (-1), condition (-1), enumerated value list (-1), overrides the Type given")
-        L.append("// by another module of the IOD (\"This type definition shall override ...\"), 1C/2C without")
-        L.append("// \"may be present otherwise\" (shall not be present when the condition does not hold).")
+        L.append("// by another module of the IOD (\"This type definition shall override ...\"), presence when a 1C/2C condition does not hold: 0 = allowed")
+        L.append("// (\"may be present otherwise\" and similar), 1 = not said (PS3.5 7.4.4 / 7.4.6 applies; a")
+        L.append("// warning), 2 = the description forbids it (an error).")
         L.append("")
         L.append("constexpr AttrRow kAttrRows[] = {")
         for r in self.rows:
@@ -715,9 +801,19 @@ class Gen:
             L.append("    {%s, %s, %d, %d}," % (c_str(ie), c_str(name), ti, usage))
         L.append("};")
         L.append("")
+        L.append("// Functional Group Macros of the IODs that have them (PS3.3 \"<IOD> Functional Group Macros\"")
+        L.append("// tables): macro name, attribute table, usage (1 = M, 2 = U, 3 = C).")
+        L.append("constexpr ModuleRow kFunctionalGroupRows[] = {")
+        if not self.fg_rows:
+            L.append("    {\"\", \"\", 0, 0},")
+        for name, ti, usage in self.fg_rows:
+            L.append("    {\"\", %s, %d, %d}," % (c_str(name), ti, usage))
+        L.append("};")
+        L.append("")
+        L.append("// name, IOD table, module rows (first, count), functional group rows (first, count).")
         L.append("constexpr IodDef kIods[] = {")
-        for name, tid, first, count in self.iods:
-            L.append("    {%s, %s, %du, %du}," % (c_str(name), c_str(tid), first, count))
+        for name, tid, first, count, fg_first, fg_count in self.iods:
+            L.append("    {%s, %s, %du, %du, %du, %du}," % (c_str(name), c_str(tid), first, count, fg_first, fg_count))
         L.append("};")
         L.append("")
         L.append("constexpr SopIod kSopClasses[] = {")

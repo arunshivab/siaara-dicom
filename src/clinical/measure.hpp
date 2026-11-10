@@ -29,7 +29,11 @@ struct LineProfile {
     std::vector<ProfileSample> samples;
     bool mm = false;
 };
-// Samples from a to b (inclusive); samples == 0 means one per pixel of length (at least 2).
+// Samples from a to b (inclusive); samples == 0 means one per pixel of length (at least 2, at most
+// kMaxProfileSamples). An empty profile when the image size does not match, an end point is not
+// finite or lies beyond +-kMaxProfileCoordinate, or `samples` exceeds kMaxProfileSamples (R-140).
+inline constexpr double kMaxProfileCoordinate = 1e9;
+inline constexpr std::uint32_t kMaxProfileSamples = 1'000'001;
 LineProfile line_profile(std::span<const float> values, std::uint32_t rows, std::uint32_t columns, Point2 a, Point2 b,
                          const PlaneGeometry* geometry = nullptr, std::uint32_t samples = 0);
 

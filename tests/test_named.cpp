@@ -479,8 +479,17 @@ TEST_CASE("named: NM energy windows and frame index vectors") {
     CHECK(x.in_pointer == (SIAARA_NM_ENERGY_WINDOW | SIAARA_NM_DETECTOR));
     CHECK(x.present == (SIAARA_NM_ENERGY_WINDOW | SIAARA_NM_DETECTOR | SIAARA_NM_ROTATION));
     CHECK(x.phase == 0 && x.time_slot == 0);
-    REQUIRE(siaara_nm_frame_index_get(d, 9, &x) == SIAARA_OK);  // past the vectors: 0, not invented
+    REQUIRE(siaara_nm_frame_index_get(d, 9, &x) == SIAARA_OK);  // past the vectors, no Number of Frames: 0, not invented
     CHECK(x.energy_window == 0 && x.detector == 0);
+    siaara_file_free(h);
+    // With Number of Frames a frame past it is refused, like every other per-frame call.
+    s(ds, 0x00280008, VR::IS, "4");
+    h = open_mem(f);
+    REQUIRE(h);
+    d = main_ds(h);
+    CHECK(siaara_nm_frame_index_get(d, 3, &x) == SIAARA_OK);
+    CHECK(siaara_nm_frame_index_get(d, 4, &x) == SIAARA_ERR_INVALID_ARGUMENT);
+    CHECK(siaara_nm_frame_index_get(d, 9, &x) == SIAARA_ERR_INVALID_ARGUMENT);
     siaara_file_free(h);
 }
 

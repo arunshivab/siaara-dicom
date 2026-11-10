@@ -2,8 +2,11 @@
 // frame index vectors (see data.hpp).
 #include "modules/data.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <new>
+#include <stdexcept>
 
 #include "charset/charset.hpp"
 #include "image/samples.hpp"
@@ -74,6 +77,18 @@ Result<const Dataset*> channel_item(const Dataset& g, std::uint32_t channel) {
 }
 
 bool interpretation_signed(std::string_view s) noexcept { return s == "SB" || s == "SS" || s == "SL" || s == "SV"; }
+
+// Bytes per sample for a Waveform Bits Allocated / Waveform Sample Interpretation pair of PS3.3
+// Table C.10-10 (8: SB UB MB AB; 16: SS US; 32: SL UL; 64: SV UV); 0 for any other pair (R-137).
+unsigned waveform_sample_bytes(std::uint32_t bits, std::string_view interp) noexcept {
+    switch (bits) {
+        case 8: return interp == "SB" || interp == "UB" || interp == "MB" || interp == "AB" ? 1u : 0u;
+        case 16: return interp == "SS" || interp == "US" ? 2u : 0u;
+        case 32: return interp == "SL" || interp == "UL" ? 4u : 0u;
+        case 64: return interp == "SV" || interp == "UV" ? 8u : 0u;
+        default: return 0;
+    }
+}
 
 std::int64_t load_sample(const std::uint8_t* p, unsigned bytes, bool is_signed) noexcept {
     std::uint64_t v = 0;
@@ -150,6 +165,7 @@ Result<PixelValue> pixel_value(const Dataset& ds, const image::PixelInfo& pi, st
     v.stored_real = static_cast<double>(v.stored);
     if (m && pi.samples_per_pixel == 1) {
         v.has_modality = true;
+        v.modality_in_data = m->in_data;
         v.modality_lut = m->has_lut;
         v.dose_grid_scaling = m->dose_grid_scaling;
         v.slope = m->has_lut ? 1.0 : m->slope;
@@ -231,12 +247,12 @@ Result<WaveformGroup> waveform_group(const Dataset& ds, std::uint32_t group) {
     w.interpretation = g.get_string(kSampleInterpretation).value_or(std::string());
     w.time_offset = opt_double(g, kGroupTimeOffset);
     w.trigger_time_offset = opt_double(g, kTriggerTimeOffset);
-    if (const Element* p = g.find(kPaddingValue); p && w.bits_allocated % 8 == 0 && w.bits_allocated >= 8 &&
-                                                  w.bits_allocated <= 64 && p->value.size() >= w.bits_allocated / 8)
-        w.padding = load_sample(p->value.data(), w.bits_allocated / 8, interpretation_signed(w.interpretation));
-    if (const Element* d = g.find(kWaveformData); d && !d->is_encapsulated() && w.channels && w.bits_allocated >= 8 &&
-                                                  w.bits_allocated % 8 == 0 && w.bits_allocated <= 64) {
-        const std::uint64_t total = d->value.size() / (w.bits_allocated / 8);
+    // Only the Bits Allocated / Sample Interpretation pairs of PS3.3 Table C.10-10 are read (R-137).
+    const unsigned bytes = waveform_sample_bytes(w.bits_allocated, w.interpretation);
+    if (const Element* p = g.find(kPaddingValue); p && bytes && !p->is_sequence() && p->value.size() >= bytes)
+        w.padding = load_sample(p->value.data(), bytes, interpretation_signed(w.interpretation));
+    if (const Element* d = g.find(kWaveformData); d && !d->is_sequence() && !d->is_encapsulated() && w.channels && bytes) {
+        const std::uint64_t total = d->value.size() / bytes;
         const std::uint64_t per = total / w.channels;
         w.data_samples = static_cast<std::uint32_t>(std::min<std::uint64_t>(per, w.samples));
     }
@@ -270,15 +286,13 @@ Result<std::string> waveform_text(const Dataset& ds, std::uint32_t group, std::u
     const Dataset& g = *gi.value();
     const charset::CharacterSet cs0 = charset::character_set_of(ds);
     const charset::CharacterSet csg = charset::character_set_of(g, &cs0);
+    // Decoded once and split once whatever the value count (R-111).
     auto text_of = [](const Dataset& d, Tag t, const charset::CharacterSet& cs) -> Result<std::string> {
-        if (!d.contains(t)) return Status(Errc::NotFound, "not present");
-        std::string out;
-        const std::size_t vm = d.value_multiplicity(t);
-        for (std::size_t i = 0; i < vm; ++i) {
-            if (i) out += '\\';
-            out += charset::get_utf8(d, t, i, &cs).value_or(std::string());
-        }
-        return out;
+        const Element* e = d.find(t);
+        if (!e) return Status(Errc::NotFound, "not present");
+        if (e->value.empty()) return std::string();
+        if (auto all = charset::get_utf8_all(d, t, &cs)) return std::move(*all);
+        return d.get_string(t).value_or(std::string());  // not a string VR: its first value as text
     };
     if (which == WaveformText::GroupLabel) return text_of(g, kMultiplexGroupLabel, csg);
     auto ci = channel_item(g, channel);
@@ -306,52 +320,130 @@ Result<std::string> waveform_text(const Dataset& ds, std::uint32_t group, std::u
     }
 }
 
-Result<std::vector<std::int64_t>> waveform_raw(const Dataset& ds, std::uint32_t group, std::uint32_t channel) {
+namespace {
+
+// The samples of one channel as Waveform Data holds them (interleaved by channel).
+struct RawChannel {
+    WaveformGroup group;
+    const std::uint8_t* data = nullptr;
+    unsigned bytes = 0;  // per sample
+    bool is_signed = false;
+    std::uint32_t channel = 0;
+
+    std::int64_t sample(std::uint64_t s) const noexcept {
+        const auto idx = static_cast<std::size_t>(s * group.channels + channel);  // < value size (data_samples bound)
+        return load_sample(data + idx * bytes, bytes, is_signed);
+    }
+};
+
+Result<RawChannel> raw_channel(const Dataset& ds, std::uint32_t group, std::uint32_t channel) {
     auto wg = waveform_group(ds, group);
     if (!wg) return wg.error();
-    const WaveformGroup& g = wg.value();
+    RawChannel r;
+    r.group = wg.value();
+    const WaveformGroup& g = r.group;
     if (channel >= g.channels) return Status(Errc::NotFound, "channel index out of range");
-    if (g.bits_allocated < 8 || g.bits_allocated > 64 || g.bits_allocated % 8)
-        return Status(Errc::Malformed, "Waveform Bits Allocated is not 8, 16, 32 or 64");
+    r.bytes = waveform_sample_bytes(g.bits_allocated, g.interpretation);
+    if (!r.bytes)
+        return Status(Errc::Malformed,
+                      "Waveform Bits Allocated and Waveform Sample Interpretation are not a pair of PS3.3 Table C.10-10 "
+                      "(8: SB UB MB AB; 16: SS US; 32: SL UL; 64: SV UV)");
     const Dataset& gi = *group_item(ds, group).value();
     const Element* d = gi.find(kWaveformData);
-    if (!d) return Status(Errc::NotFound, "no Waveform Data (5400,1010)");
+    if (!d || d->is_sequence()) return Status(Errc::NotFound, "no Waveform Data (5400,1010)");
     if (d->is_encapsulated()) return Status(Errc::Unsupported, "encapsulated Waveform Data");
-    const unsigned bytes = g.bits_allocated / 8;
-    const bool sign = interpretation_signed(g.interpretation);
-    std::vector<std::int64_t> out;
-    out.reserve(g.data_samples);
-    const std::uint8_t* p = d->value.data();
-    for (std::uint64_t s = 0; s < g.data_samples; ++s) {
-        const auto idx = static_cast<std::size_t>(s * g.channels + channel);  // < value size (data_samples bound)
-        out.push_back(load_sample(p + idx * bytes, bytes, sign));
-    }
-    return out;
+    r.data = d->value.data();
+    r.is_signed = interpretation_signed(g.interpretation);
+    r.channel = channel;
+    return r;
 }
 
-Result<std::vector<double>> waveform_scaled(const Dataset& ds, std::uint32_t group, std::uint32_t channel) {
+// sample x sensitivity x correction + baseline for one channel.
+struct Scaling {
+    double k = 1, b = 0;
+};
+Result<Scaling> channel_scaling(const Dataset& ds, std::uint32_t group, std::uint32_t channel) {
     auto wc = waveform_channel(ds, group, channel);
     if (!wc) return wc.error();
     const WaveformChannel& c = wc.value();
     if (!c.sensitivity) return Status(Errc::NotFound, "channel has no Channel Sensitivity (003A,0210): arbitrary units");
-    auto raw = waveform_raw(ds, group, channel);
-    if (!raw) return raw.error();
-    const WaveformGroup g = waveform_group(ds, group).value();
-    const double k = *c.sensitivity * c.correction.value_or(1.0);
-    const double b = c.baseline.value_or(0.0);
-    std::vector<double> out;
-    out.reserve(raw.value().size());
-    for (std::int64_t r : raw.value()) {
-        if (g.padding && r == *g.padding) {
-            out.push_back(std::numeric_limits<double>::quiet_NaN());
-            continue;
-        }
-        double x = static_cast<double>(r);
-        if (g.interpretation == "MB") x = g711_mulaw(static_cast<std::uint8_t>(r));
-        else if (g.interpretation == "AB") x = g711_alaw(static_cast<std::uint8_t>(r));
-        out.push_back(x * k + b);
+    return Scaling{*c.sensitivity * c.correction.value_or(1.0), c.baseline.value_or(0.0)};
+}
+
+double scaled_sample(const RawChannel& rc, const Scaling& sc, std::int64_t r) noexcept {
+    const WaveformGroup& g = rc.group;
+    if (g.padding && r == *g.padding) return std::numeric_limits<double>::quiet_NaN();
+    double x = static_cast<double>(r);
+    if (g.interpretation == "MB") x = g711_mulaw(static_cast<std::uint8_t>(r));
+    else if (g.interpretation == "AB") x = g711_alaw(static_cast<std::uint8_t>(r));
+    return x * sc.k + sc.b;
+}
+
+}  // namespace
+
+Result<std::uint32_t> waveform_sample_count(const Dataset& ds, std::uint32_t group, std::uint32_t channel, bool scaled) {
+    if (scaled)
+        if (auto sc = channel_scaling(ds, group, channel); !sc) return sc.error();
+    auto rc = raw_channel(ds, group, channel);
+    if (!rc) return rc.error();
+    return rc.value().group.data_samples;
+}
+
+Status waveform_raw_into(const Dataset& ds, std::uint32_t group, std::uint32_t channel, std::span<std::int64_t> out) {
+    auto rc = raw_channel(ds, group, channel);
+    if (!rc) return rc.error();
+    if (out.size() != rc.value().group.data_samples) return Status(Errc::BufferTooSmall, "buffer does not hold the sample count");
+    for (std::size_t s = 0; s < out.size(); ++s) out[s] = rc.value().sample(s);
+    return Status::ok();
+}
+
+Status waveform_samples_into(const Dataset& ds, std::uint32_t group, std::uint32_t channel, bool scaled, std::span<double> out) {
+    Scaling sc;
+    if (scaled) {
+        auto r = channel_scaling(ds, group, channel);
+        if (!r) return r.error();
+        sc = r.value();
     }
-    return out;
+    auto rc = raw_channel(ds, group, channel);
+    if (!rc) return rc.error();
+    if (out.size() != rc.value().group.data_samples) return Status(Errc::BufferTooSmall, "buffer does not hold the sample count");
+    for (std::size_t s = 0; s < out.size(); ++s) {
+        const std::int64_t r = rc.value().sample(s);
+        out[s] = scaled ? scaled_sample(rc.value(), sc, r) : static_cast<double>(r);
+    }
+    return Status::ok();
+}
+
+Result<std::vector<std::int64_t>> waveform_raw(const Dataset& ds, std::uint32_t group, std::uint32_t channel) {
+    try {
+        auto n = waveform_sample_count(ds, group, channel, false);
+        if (!n) return n.error();
+        if (!fits_named_data_budget(n.value(), sizeof(std::int64_t)))
+            return Status(Errc::LimitExceeded, "waveform samples exceed the memory budget");
+        std::vector<std::int64_t> out(n.value());
+        if (Status s = waveform_raw_into(ds, group, channel, out); !s) return s;
+        return out;
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
+    }
+}
+
+Result<std::vector<double>> waveform_scaled(const Dataset& ds, std::uint32_t group, std::uint32_t channel) {
+    try {
+        auto n = waveform_sample_count(ds, group, channel, true);
+        if (!n) return n.error();
+        if (!fits_named_data_budget(n.value(), sizeof(double)))
+            return Status(Errc::LimitExceeded, "waveform samples exceed the memory budget");
+        std::vector<double> out(n.value());
+        if (Status s = waveform_samples_into(ds, group, channel, true, out); !s) return s;
+        return out;
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
+    }
 }
 
 // ---------------------------------------------------------------- RT control points
@@ -373,9 +465,18 @@ Result<std::uint32_t> control_point_source(const Dataset& beam, std::uint32_t cp
     return Status(Errc::NotFound, "no control point at or before this one has the attribute");
 }
 
-Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t cp, std::string_view device_type,
-                                             bool effective, std::uint32_t* from_cp) {
-    constexpr Tag kPositions = 0x300A011A, kType = 0x300A00B8, kLeafJaw = 0x300A011C;
+namespace {
+
+constexpr Tag kLeafJawPositions = 0x300A011C;
+
+// The Beam Limiting Device Position Sequence item of `device_type` that applies at cp.
+struct PositionsItem {
+    const Dataset* item = nullptr;
+    std::uint32_t from_cp = 0;
+    std::size_t count = 0;
+};
+Result<PositionsItem> positions_item(const Dataset& beam, std::uint32_t cp, std::string_view device_type, bool effective) {
+    constexpr Tag kPositions = 0x300A011A, kType = 0x300A00B8;
     const Element* s = control_point_sequence(beam);
     if (!s) return Status(Errc::NotFound, "no control point sequence in this item");
     if (cp >= s->items.size()) return Status(Errc::NotFound, "control point index out of range");
@@ -384,17 +485,13 @@ Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t 
         if (p && p->is_sequence()) {
             for (const Dataset& it : p->items) {
                 if (it.get_string(kType).value_or(std::string()) != device_type) continue;
-                const std::size_t n = it.contains(kLeafJaw) ? it.value_multiplicity(kLeafJaw) : 0;
-                std::vector<double> out;
-                out.reserve(n);
-                for (std::size_t i = 0; i < n; ++i) {
-                    auto d = it.get_double(kLeafJaw, i);
-                    if (!d) return Status(Errc::Malformed, "Leaf/Jaw Positions value is not a number");
-                    out.push_back(*d);
-                }
-                if (!it.contains(kLeafJaw)) continue;
-                if (from_cp) *from_cp = k;
-                return out;
+                const Element* v = it.find(kLeafJawPositions);
+                if (!v) continue;
+                PositionsItem r;
+                r.item = &it;
+                r.from_cp = k;
+                r.count = v->is_sequence() || v->value.empty() ? 0 : it.value_multiplicity(kLeafJawPositions);
+                return r;
             }
         }
         if (!effective) break;
@@ -402,11 +499,55 @@ Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t 
     return Status(Errc::NotFound, "no positions for this device type");
 }
 
+}  // namespace
+
+Result<std::size_t> device_positions_count(const Dataset& beam, std::uint32_t cp, std::string_view device_type,
+                                           bool effective, std::uint32_t* from_cp) {
+    auto r = positions_item(beam, cp, device_type, effective);
+    if (!r) return r.error();
+    if (from_cp) *from_cp = r.value().from_cp;
+    return r.value().count;
+}
+
+Status device_positions_into(const Dataset& beam, std::uint32_t cp, std::string_view device_type, bool effective,
+                             std::span<double> out) {
+    auto r = positions_item(beam, cp, device_type, effective);
+    if (!r) return r.error();
+    if (out.size() != r.value().count) return Status(Errc::BufferTooSmall, "buffer does not hold the value count");
+    // One pass over the DS text (R-111).
+    if (!out.empty() && !r.value().item->get_doubles(kLeafJawPositions, 0, out))
+        return Status(Errc::Malformed, "Leaf/Jaw Positions value is not a number");
+    return Status::ok();
+}
+
+Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t cp, std::string_view device_type,
+                                             bool effective, std::uint32_t* from_cp) {
+    try {
+        std::uint32_t from = 0;
+        auto n = device_positions_count(beam, cp, device_type, effective, &from);
+        if (!n) return n.error();
+        if (!fits_named_data_budget(n.value(), sizeof(double)))
+            return Status(Errc::LimitExceeded, "positions exceed the memory budget");
+        std::vector<double> out(n.value());
+        if (Status s = device_positions_into(beam, cp, device_type, effective, out); !s) return s;
+        if (from_cp) *from_cp = from;
+        return out;
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
+    }
+}
+
 // ---------------------------------------------------------------- NM
 
 Result<NmFrameIndex> nm_frame_index(const Dataset& ds, std::uint32_t frame) {
     static constexpr Tag kVectors[9] = {0x00540010, 0x00540020, 0x00540030, 0x00540050, 0x00540060,
                                         0x00540070, 0x00540080, 0x00540090, 0x00540100};
+    // Frames past Number of Frames are refused like everywhere else (they used to read as zeros).
+    // Without a readable Number of Frames the range is not known and the vectors decide.
+    if (const auto frames = ds.get_int(0x00280008); frames && *frames >= 1 && frame >= *frames)
+        return Status(Errc::InvalidArgument, "frame index out of range");
     NmFrameIndex r;
     std::vector<Tag> pointer;
     if (const Element* f = ds.find(0x00280009); f && !f->is_sequence()) {

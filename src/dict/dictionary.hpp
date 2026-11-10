@@ -23,6 +23,10 @@ struct Entry {
     std::string_view name;
     std::string_view vm;
     bool retired;
+    VR vr_alt2 = VR::None;  // third VR ("US or SS or OW"), VR::None otherwise
+
+    // The VR is one of those the dictionary gives for the attribute.
+    constexpr bool allows(VR v) const noexcept { return v != VR::None && (v == vr || v == vr_alt || v == vr_alt2); }
 };
 
 // Finds the dictionary entry for a public tag (including repeating groups and group-length

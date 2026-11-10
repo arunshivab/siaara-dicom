@@ -40,6 +40,9 @@ internal static class C
     public const int SIAARA_ERR_CANCELLED = 14;
     public const int SIAARA_ERR_BUFFER_TOO_SMALL = 15;
     public const int SIAARA_ERR_INTERNAL = 99;
+    public const int SIAARA_RECOVER_DEFAULT = 0;
+    public const int SIAARA_RECOVER_ON = 1;
+    public const int SIAARA_RECOVER_OFF = 2;
     public const int SIAARA_FILE_WARNING_GENERAL = 0;
     public const int SIAARA_FILE_WARNING_PARSE_INCOMPLETE = 1;
     public const int SIAARA_FILE_WARNING_INPUT_TRUNCATED = 2;
@@ -549,6 +552,7 @@ internal struct siaara_read_options
     public int allow_raw_dataset;
     public int strict;
     public uint max_depth;
+    public int recover_overlong_lengths;
 }
 
 /// <summary>siaara_read_report (blittable, C layout).</summary>
@@ -576,6 +580,9 @@ internal struct siaara_dict_entry
     public nint keyword;
     public nint name;
     public nint vm;
+    public FixedArray3OfByte vr_alt2;
+    public byte reserved0;
+    public uint mask;
 }
 
 /// <summary>siaara_private_dict_entry (blittable, C layout).</summary>
@@ -1423,7 +1430,7 @@ internal struct siaara_path_value
     public uint item_count;
     public int has_integer;
     public int has_real;
-    public uint reserved0;
+    public uint undecodable;
     public long integer;
     public double real;
     public ulong byte_length;
@@ -1449,6 +1456,8 @@ internal struct siaara_pixel_value
     public double rescale_slope;
     public double rescale_intercept;
     public FixedArray32OfByte units;
+    public int modality_in_data;
+    public int reserved0;
 }
 
 /// <summary>siaara_volume_sample (blittable, C layout).</summary>

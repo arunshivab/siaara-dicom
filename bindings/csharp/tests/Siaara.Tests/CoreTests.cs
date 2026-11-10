@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using static Siaara.Tests.T;
@@ -159,6 +160,47 @@ internal static class CoreTests
             "DICM"u8.CopyTo(truncated.AsSpan(128));
             truncated[132] = 0x02; // (0002,0000 ... cut off
             Check(Throws<SiaaraException>(() => DicomFile.Open(truncated, new DicomReadOptions { Strict = true })) is not null);
+        });
+
+        Case("core: RecoverOverlongLengths read option (security review R-108)", () =>
+        {
+            // A raw implicit VR little endian data set in which (0008,103E) states 13 bytes for 10
+            // (GE Genesis files), followed by three known elements.
+            var b = new List<byte>();
+            void El(ushort g, ushort e, string v, int stated = -1)
+            {
+                b.Add((byte)g); b.Add((byte)(g >> 8)); b.Add((byte)e); b.Add((byte)(e >> 8));
+                int n = stated < 0 ? v.Length : stated;
+                b.Add((byte)n); b.Add((byte)(n >> 8)); b.Add(0); b.Add(0);
+                foreach (char c in v)
+                {
+                    b.Add((byte)c);
+                }
+            }
+            El(0x0008, 0x0018, "2.25.41092");
+            El(0x0008, 0x0060, "MR");
+            El(0x0008, 0x103E, "AX T1 POST", 13);
+            El(0x0008, 0x1060, "JANETOS ");
+            El(0x0008, 0x1090, "GENESIS_SIGNA ");
+            El(0x0010, 0x0010, "TEN^B ");
+            El(0x0010, 0x0020, "ID4A");
+            byte[] bytes = b.ToArray();
+            using (DicomFile on = DicomFile.Open(bytes, new DicomReadOptions { RecoverOverlongLengths = true }))
+            {
+                Check((on.ReadReport.Loss & DicomReadLoss.Recovered) != 0);
+                CheckEq(on.Dataset.GetString(DicomTags.SeriesDescription), "AX T1 POST");
+            }
+            DicomReadLoss? off = null;
+            try
+            {
+                using DicomFile f = DicomFile.Open(bytes, new DicomReadOptions { RecoverOverlongLengths = false });
+                off = f.ReadReport.Loss;
+            }
+            catch (SiaaraException)
+            {
+                // Without the recovery the data may not parse at all: also "not recovered".
+            }
+            Check(off is null || (off.Value & DicomReadLoss.Recovered) == 0);
         });
 
         Case("core: sequences and item navigation", () =>

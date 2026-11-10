@@ -8,36 +8,22 @@ public static class DicomTags
 {
     /// <summary>(0000,0000) Command Group Length, VR UL, VM 1.</summary>
     public static readonly DicomTag CommandGroupLength = new(0x00000000u);
-    /// <summary>(0000,0001) Command Length to End, VR UL, VM 1.</summary>
-    public static readonly DicomTag CommandLengthToEnd = new(0x00000001u);
     /// <summary>(0000,0002) Affected SOP Class UID, VR UI, VM 1.</summary>
     public static readonly DicomTag AffectedSOPClassUID = new(0x00000002u);
     /// <summary>(0000,0003) Requested SOP Class UID, VR UI, VM 1.</summary>
     public static readonly DicomTag RequestedSOPClassUID = new(0x00000003u);
-    /// <summary>(0000,0010) Command Recognition Code, VR SH, VM 1.</summary>
-    public static readonly DicomTag CommandRecognitionCode = new(0x00000010u);
     /// <summary>(0000,0100) Command Field, VR US, VM 1.</summary>
     public static readonly DicomTag CommandField = new(0x00000100u);
     /// <summary>(0000,0110) Message ID, VR US, VM 1.</summary>
     public static readonly DicomTag MessageID = new(0x00000110u);
     /// <summary>(0000,0120) Message ID Being Responded To, VR US, VM 1.</summary>
     public static readonly DicomTag MessageIDBeingRespondedTo = new(0x00000120u);
-    /// <summary>(0000,0200) Initiator, VR AE, VM 1.</summary>
-    public static readonly DicomTag Initiator = new(0x00000200u);
-    /// <summary>(0000,0300) Receiver, VR AE, VM 1.</summary>
-    public static readonly DicomTag Receiver = new(0x00000300u);
-    /// <summary>(0000,0400) Find Location, VR AE, VM 1.</summary>
-    public static readonly DicomTag FindLocation = new(0x00000400u);
     /// <summary>(0000,0600) Move Destination, VR AE, VM 1.</summary>
     public static readonly DicomTag MoveDestination = new(0x00000600u);
     /// <summary>(0000,0700) Priority, VR US, VM 1.</summary>
     public static readonly DicomTag Priority = new(0x00000700u);
     /// <summary>(0000,0800) Command Data Set Type, VR US, VM 1.</summary>
     public static readonly DicomTag CommandDataSetType = new(0x00000800u);
-    /// <summary>(0000,0850) Number of Matches, VR US, VM 1.</summary>
-    public static readonly DicomTag NumberOfMatches = new(0x00000850u);
-    /// <summary>(0000,0860) Response Sequence Number, VR US, VM 1.</summary>
-    public static readonly DicomTag ResponseSequenceNumber = new(0x00000860u);
     /// <summary>(0000,0900) Status, VR US, VM 1.</summary>
     public static readonly DicomTag Status = new(0x00000900u);
     /// <summary>(0000,0901) Offending Element, VR AT, VM 1-n.</summary>
@@ -68,36 +54,6 @@ public static class DicomTags
     public static readonly DicomTag MoveOriginatorApplicationEntityTitle = new(0x00001030u);
     /// <summary>(0000,1031) Move Originator Message ID, VR US, VM 1.</summary>
     public static readonly DicomTag MoveOriginatorMessageID = new(0x00001031u);
-    /// <summary>(0000,4000) Dialog Receiver, VR LT, VM 1.</summary>
-    public static readonly DicomTag DialogReceiver = new(0x00004000u);
-    /// <summary>(0000,4010) Terminal Type, VR LT, VM 1.</summary>
-    public static readonly DicomTag TerminalType = new(0x00004010u);
-    /// <summary>(0000,5010) Message Set ID, VR SH, VM 1.</summary>
-    public static readonly DicomTag MessageSetID = new(0x00005010u);
-    /// <summary>(0000,5020) End Message ID, VR SH, VM 1.</summary>
-    public static readonly DicomTag EndMessageID = new(0x00005020u);
-    /// <summary>(0000,5110) Display Format, VR LT, VM 1.</summary>
-    public static readonly DicomTag DisplayFormat = new(0x00005110u);
-    /// <summary>(0000,5120) Page Position ID, VR LT, VM 1.</summary>
-    public static readonly DicomTag PagePositionID = new(0x00005120u);
-    /// <summary>(0000,5130) Text Format ID, VR CS, VM 1.</summary>
-    public static readonly DicomTag TextFormatID = new(0x00005130u);
-    /// <summary>(0000,5140) Normal/Reverse, VR CS, VM 1.</summary>
-    public static readonly DicomTag NormalReverse = new(0x00005140u);
-    /// <summary>(0000,5150) Add Gray Scale, VR CS, VM 1.</summary>
-    public static readonly DicomTag AddGrayScale = new(0x00005150u);
-    /// <summary>(0000,5160) Borders, VR CS, VM 1.</summary>
-    public static readonly DicomTag Borders = new(0x00005160u);
-    /// <summary>(0000,5170) Copies, VR IS, VM 1.</summary>
-    public static readonly DicomTag Copies = new(0x00005170u);
-    /// <summary>(0000,5180) Command Magnification Type, VR CS, VM 1.</summary>
-    public static readonly DicomTag CommandMagnificationType = new(0x00005180u);
-    /// <summary>(0000,5190) Erase, VR CS, VM 1.</summary>
-    public static readonly DicomTag Erase = new(0x00005190u);
-    /// <summary>(0000,51A0) Print, VR CS, VM 1.</summary>
-    public static readonly DicomTag Print = new(0x000051A0u);
-    /// <summary>(0000,51B0) Overlays, VR US, VM 1-n.</summary>
-    public static readonly DicomTag Overlays = new(0x000051B0u);
     /// <summary>(0002,0000) File Meta Information Group Length, VR UL, VM 1.</summary>
     public static readonly DicomTag FileMetaInformationGroupLength = new(0x00020000u);
     /// <summary>(0002,0001) File Meta Information Version, VR OB, VM 1.</summary>

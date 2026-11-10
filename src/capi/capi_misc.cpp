@@ -94,13 +94,36 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_strings(const siaara_dat
         if (e->is_sequence() || e->is_encapsulated()) return fail(Errc::TypeMismatch, "element has no string values");
         const std::size_t vm = d.value_multiplicity(tag);
         std::string all;
-        for (std::size_t k = 0; k < vm; ++k) {
-            std::optional<std::string> v = utf8 ? siaara::charset::get_utf8(d, tag, k) : d.get_string(tag, k);
-            if (!v) return fail(Errc::TypeMismatch, "value cannot be read as a string");
-            all += *v;
-            all.push_back('\0');
+        std::size_t values = vm;
+        const siaara::VR vr = e->vr;
+        const bool multi_text = siaara::vr_is_string(vr) && vr != siaara::VR::LT && vr != siaara::VR::ST &&
+                                vr != siaara::VR::UT && vr != siaara::VR::UR;
+        if (multi_text && vm > 0) {
+            // One pass over the element (security review R-111): asking for value k rescans (and
+            // with utf8 decodes) the whole element for every k.
+            auto append = [&](std::string_view text, bool trim) {
+                values = siaara::for_each_value(text, [&](std::size_t, std::string_view piece) {
+                    all += trim ? siaara::trim_value(piece, vr) : piece;
+                    all.push_back('\0');
+                    return true;
+                });
+            };
+            if (utf8) {
+                const auto decoded = siaara::charset::get_utf8_all(d, tag);  // values already trimmed
+                if (!decoded) return fail(Errc::TypeMismatch, "value cannot be read as a string");
+                append(*decoded, false);
+            } else {
+                append(e->value.as_chars(), true);
+            }
+        } else {
+            for (std::size_t k = 0; k < vm; ++k) {
+                std::optional<std::string> v = utf8 ? siaara::charset::get_utf8(d, tag, k) : d.get_string(tag, k);
+                if (!v) return fail(Errc::TypeMismatch, "value cannot be read as a string");
+                all += *v;
+                all.push_back('\0');
+            }
         }
-        if (count) *count = static_cast<uint32_t>(vm);
+        if (count) *count = static_cast<uint32_t>(values);
         if (needed) *needed = all.size();
         if (!buf && cap == 0) return ok();
         if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");

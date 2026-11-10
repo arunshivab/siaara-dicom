@@ -25,6 +25,7 @@ internal static class StructLayouts
             r.Add("F siaara_read_options allow_raw_dataset " + Offset(ref s, ref s.allow_raw_dataset).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_read_options strict " + Offset(ref s, ref s.strict).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_read_options max_depth " + Offset(ref s, ref s.max_depth).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_options recover_overlong_lengths " + Offset(ref s, ref s.recover_overlong_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_read_report);
@@ -48,6 +49,9 @@ internal static class StructLayouts
             r.Add("F siaara_dict_entry keyword " + Offset(ref s, ref s.keyword).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dict_entry name " + Offset(ref s, ref s.name).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dict_entry vm " + Offset(ref s, ref s.vm).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_dict_entry vr_alt2 " + Offset(ref s, ref s.vr_alt2).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_dict_entry reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_dict_entry mask " + Offset(ref s, ref s.mask).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_private_dict_entry);
@@ -797,7 +801,7 @@ internal static class StructLayouts
             r.Add("F siaara_path_value item_count " + Offset(ref s, ref s.item_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_path_value has_integer " + Offset(ref s, ref s.has_integer).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_path_value has_real " + Offset(ref s, ref s.has_real).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_path_value reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value undecodable " + Offset(ref s, ref s.undecodable).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_path_value integer " + Offset(ref s, ref s.integer).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_path_value real " + Offset(ref s, ref s.real).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_path_value byte_length " + Offset(ref s, ref s.byte_length).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -821,6 +825,8 @@ internal static class StructLayouts
             r.Add("F siaara_pixel_value rescale_slope " + Offset(ref s, ref s.rescale_slope).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_pixel_value rescale_intercept " + Offset(ref s, ref s.rescale_intercept).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_pixel_value units " + Offset(ref s, ref s.units).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value modality_in_data " + Offset(ref s, ref s.modality_in_data).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_volume_sample);
