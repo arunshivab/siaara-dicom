@@ -168,8 +168,17 @@ Status mark_derived(Dataset& out, TranscodeReport& rep, std::string_view method,
         std::string v(it->begin(), it->end());
         while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.pop_back();
         const std::size_t bs = v.find('\\');
-        const std::string rest = bs == std::string::npos ? std::string() : v.substr(bs);
-        if (Status s = out.set_string(0x00080008, VR::CS, "DERIVED" + rest); !s) return s;
+        if (bs == std::string::npos) {
+            // P3-7: an empty or single-valued Image Type. The attribute needs at least two values
+            // (PS3.3 C.7.6.1.1.2), so "DERIVED" alone would not do: value 2 is written as when
+            // the attribute is absent.
+            if (Status s = out.set_string(0x00080008, VR::CS, "DERIVED\\SECONDARY"); !s) return s;
+            rep.image_type_added = true;
+            rep.derivation_note = "IMAGE_TYPE_ADDED: the source's Image Type (0008,0008) had fewer than two values; the "
+                                  "derived image got DERIVED\\SECONDARY";
+        } else if (Status s = out.set_string(0x00080008, VR::CS, "DERIVED" + v.substr(bs)); !s) {
+            return s;
+        }
     } else {
         // T-P3-11: the source had no Image Type (it is Type 3 in e.g. Secondary Capture), so
         // nothing in the new image would say it is derived. Both values are required once the
