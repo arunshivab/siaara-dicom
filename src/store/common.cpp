@@ -1,6 +1,7 @@
 #include "store/common.hpp"
 
 #include "core/io.hpp"
+#include "core/secure_file.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -197,12 +198,28 @@ void OsFile::close() noexcept {
     if (h_) CloseHandle(static_cast<HANDLE>(h_));
     h_ = nullptr;
 }
-Result<OsFile> OsFile::open(const fs::path& p, Mode mode) {
+Result<OsFile> OsFile::open(const fs::path& p, Mode mode, std::uint32_t file_mode) {
     const DWORD access = mode == Mode::ReadOnly ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
-    const DWORD disp = mode == Mode::CreateTruncate ? CREATE_ALWAYS : (mode == Mode::ReadWrite ? OPEN_ALWAYS : OPEN_EXISTING);
-    HANDLE h = CreateFileW(p.c_str(), access, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, disp,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    const DWORD disp = mode == Mode::CreateExclusive ? CREATE_NEW : (mode == Mode::ReadWrite ? OPEN_ALWAYS : OPEN_EXISTING);
+    // R-092: files the store creates are owner-only unless file_mode asks for inherited permissions;
+    // a reparse point (symbolic link) is opened as itself, never followed, and then refused.
+    io::OwnerOnlySecurity sec;
+    SECURITY_ATTRIBUTES* sa = nullptr;
+    if (mode != Mode::ReadOnly && file_mode == 0) {
+        sa = sec.get();
+        if (!sa) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
+    }
+    const DWORD flags = FILE_ATTRIBUTE_NORMAL | (mode == Mode::ReadOnly ? 0u : FILE_FLAG_OPEN_REPARSE_POINT);
+    HANDLE h = CreateFileW(p.c_str(), access, FILE_SHARE_READ | FILE_SHARE_DELETE, sa, disp, flags, nullptr);
     if (h == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot open file");
+    if (mode != Mode::ReadOnly) {
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) ||
+            (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(h);
+            return Status(Errc::IoError, "cannot open file: it is a link");
+        }
+    }
     OsFile f;
     f.h_ = h;
     return f;
@@ -268,12 +285,14 @@ void OsFile::close() noexcept {
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
 }
-Result<OsFile> OsFile::open(const fs::path& p, Mode mode) {
+Result<OsFile> OsFile::open(const fs::path& p, Mode mode, std::uint32_t file_mode) {
     int flags = O_CLOEXEC;
     if (mode == Mode::ReadOnly) flags |= O_RDONLY;
-    else if (mode == Mode::ReadWrite) flags |= O_RDWR | O_CREAT;
-    else flags |= O_RDWR | O_CREAT | O_TRUNC;
-    const int fd = ::open(p.c_str(), flags, 0644);
+    else if (mode == Mode::ReadWrite) flags |= O_RDWR | O_CREAT | O_NOFOLLOW;
+    else flags |= O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW;
+    // R-092: owner-only unless file_mode says otherwise (the umask may still remove bits).
+    const mode_t perm = file_mode == 0 ? mode_t{0600} : static_cast<mode_t>(file_mode & 07777u);
+    const int fd = ::open(p.c_str(), flags, perm);
     if (fd < 0) return Status(Errc::IoError, "cannot open file");
     OsFile f;
     f.fd_ = fd;
@@ -414,11 +433,43 @@ Result<std::vector<std::uint8_t>> read_whole(const fs::path& p) {
     return buf;
 }
 
-Status write_replace(const fs::path& p, const std::uint8_t* data, std::size_t size, bool durable) {
+fs::path temp_name_for(const fs::path& p) {
     fs::path tmp = p;
-    tmp += u8path("." + generate_uid().substr(5, 12) + ".siaara-tmp");
+    tmp += u8path(io::unique_name(".", ".siaara-tmp"));
+    return tmp;
+}
+
+Status create_private_dirs(const fs::path& dir, std::uint32_t file_mode) {
+    if (dir.empty()) return Status::ok();
+    std::error_code ec;
+    if (fs::is_directory(dir, ec)) return Status::ok();
+    // Parents first; only the folders created here get the restricted permissions.
+    const fs::path parent = dir.parent_path();
+    if (!parent.empty() && parent != dir)
+        if (Status s = create_private_dirs(parent, file_mode); !s) return s;
+#if defined(_WIN32)
+    io::OwnerOnlySecurity sec;
+    SECURITY_ATTRIBUTES* sa = nullptr;
+    if (file_mode == 0) {
+        sa = sec.get();
+        if (!sa) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
+    }
+    if (!CreateDirectoryW(dir.c_str(), sa) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return Status(Errc::IoError, "cannot create folder");
+#else
+    const mode_t m = file_mode == 0 ? mode_t{0700}
+                                    : static_cast<mode_t>((file_mode & 07777u) | ((file_mode & 0444u) >> 2));
+    if (::mkdir(dir.c_str(), m) != 0 && errno != EEXIST) return Status(Errc::IoError, "cannot create folder");
+#endif
+    if (!fs::is_directory(dir, ec)) return Status(Errc::IoError, "cannot create folder");
+    return Status::ok();
+}
+
+Status write_replace(const fs::path& p, const std::uint8_t* data, std::size_t size, bool durable,
+                     std::uint32_t file_mode) {
+    const fs::path tmp = temp_name_for(p);
     {
-        auto f = OsFile::open(tmp, OsFile::Mode::CreateTruncate);
+        auto f = OsFile::open(tmp, OsFile::Mode::CreateExclusive, file_mode);
         if (!f) return f.take_error();
         Status s = f->append(data, size);
         if (s && durable) s = f->sync();
@@ -475,22 +526,36 @@ LockFile& LockFile::operator=(LockFile&& o) noexcept {
     return *this;
 }
 
-Result<LockFile> LockFile::acquire(const fs::path& p) {
+Result<LockFile> LockFile::acquire(const fs::path& p, std::uint32_t file_mode) {
     std::error_code ec;
     fs::path canon = fs::weakly_canonical(p, ec);
     if (ec) canon = p;
     LockFile l;
 #if defined(_WIN32)
-    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    io::OwnerOnlySecurity sec;
+    SECURITY_ATTRIBUTES* sa = nullptr;
+    if (file_mode == 0) {
+        sa = sec.get();
+        if (!sa) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
+    }
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, sa, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         if (GetLastError() == ERROR_SHARING_VIOLATION)
             return Status(Errc::Rejected, "store is in use by another process");
         return Status(Errc::IoError, "cannot open lock file");
     }
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) ||
+        (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        CloseHandle(h);
+        return Status(Errc::IoError, "cannot open lock file: it is a link");
+    }
     l.h_ = h;
 #else
-    const int fd = ::open(p.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    // R-092: never through a symbolic link; created owner-only.
+    const mode_t perm = file_mode == 0 ? mode_t{0600} : static_cast<mode_t>(file_mode & 07777u);
+    const int fd = ::open(p.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, perm);
     if (fd < 0) return Status(Errc::IoError, "cannot open lock file");
     if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
         ::close(fd);

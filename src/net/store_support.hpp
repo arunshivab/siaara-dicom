@@ -24,11 +24,16 @@ std::vector<const NegotiatedContext*> store_contexts(const Association& a, std::
                                                      const codec::TranscodeParams& p);
 
 // Encodes the data set of `file` in `ts`, transcoding pixel data when the encodings differ.
+// `report` (may be null) receives what the transcoder did: when a lossy transcode gave the image a
+// new SOP Instance UID (report->new_sop_instance_uid), the caller must use that UID in the
+// C-STORE command, the file meta and any index (R-093).
 Status encode_for_transfer_syntax(const DicomFile& file, std::string_view ts, const codec::TranscodeParams& p,
-                                  std::vector<std::uint8_t>& body);
+                                  std::vector<std::uint8_t>& body, codec::TranscodeReport* report = nullptr);
 
 // Re-encodes a received instance in `ts` (raw bytes, data set and transfer syntax are replaced).
-// A spooled instance is written to a new spool file in `spool`'s directory.
+// A spooled instance is written to a new spool file in `spool`'s directory. When a lossy
+// conversion gives the instance a new SOP Instance UID, rq.sop_instance_uid becomes it and the
+// old one is kept in rq.original_sop_instance_uid (R-093).
 Status convert_received(StoreRequest& rq, std::string_view ts, const codec::TranscodeParams& p,
                         const SpoolConfig* spool);
 

@@ -42,8 +42,11 @@ public:
     OsFile(OsFile&& o) noexcept;
     OsFile& operator=(OsFile&& o) noexcept;
 
-    enum class Mode { ReadOnly, ReadWrite, CreateTruncate };
-    static Result<OsFile> open(const std::filesystem::path& p, Mode mode);
+    // ReadWrite opens or creates; CreateExclusive fails when the name exists (temporary files with
+    // unique names). Neither follows a symbolic link at the last component (R-092). Files created
+    // get `file_mode` (0: owner only - 0600 / an owner-only DACL on Windows).
+    enum class Mode { ReadOnly, ReadWrite, CreateExclusive };
+    static Result<OsFile> open(const std::filesystem::path& p, Mode mode, std::uint32_t file_mode = 0);
 
     bool is_open() const noexcept;
     Result<std::uint64_t> size() const;
@@ -70,10 +73,17 @@ Result<Bytes> map_for_header(const std::string& utf8_path);
 
 // Reads a whole (small) file. Fails with IoError when it cannot be read.
 Result<std::vector<std::uint8_t>> read_whole(const std::filesystem::path& p);
-// Writes `data` to `<p>.tmp-<random>`, optionally syncs, then renames over `p`
-// (and syncs the folder on POSIX when `durable`).
+// Writes `data` to an exclusively created temporary file with an unpredictable name next to `p`
+// (owner-only unless file_mode says otherwise), optionally syncs, then renames over `p` (and
+// syncs the folder on POSIX when `durable`).
 Status write_replace(const std::filesystem::path& p, const std::uint8_t* data, std::size_t size,
-                     bool durable);
+                     bool durable, std::uint32_t file_mode = 0);
+// Creates `dir` and its missing parents (R-092): new folders are owner-only (0700 / an owner-only
+// DACL on Windows) when file_mode is 0, else file_mode plus the matching search bits (Windows:
+// inherited permissions). Existing folders are left as they are.
+Status create_private_dirs(const std::filesystem::path& dir, std::uint32_t file_mode = 0);
+// A unique, unpredictable temporary name next to `p` ("<p>.<random>.siaara-tmp").
+std::filesystem::path temp_name_for(const std::filesystem::path& p);
 // Flushes a folder's entry table to disk (POSIX); a no-op where unsupported.
 void sync_dir(const std::filesystem::path& dir) noexcept;
 
@@ -90,8 +100,9 @@ public:
     LockFile(LockFile&& o) noexcept;
     LockFile& operator=(LockFile&& o) noexcept;
 
-    // Fails with Errc::Rejected when another process (or this one) holds the lock.
-    static Result<LockFile> acquire(const std::filesystem::path& p);
+    // Fails with Errc::Rejected when another process (or this one) holds the lock. The lock file
+    // is created owner-only and a symbolic link in its place is refused (R-092).
+    static Result<LockFile> acquire(const std::filesystem::path& p, std::uint32_t file_mode = 0);
     void release() noexcept;
 
 private:

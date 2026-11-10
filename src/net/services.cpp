@@ -259,6 +259,8 @@ Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg,
     sc.port = dest->port;
     sc.timeouts = cfg.timeouts;
     sc.limits = cfg.limits;
+    sc.tls = cfg.move_tls;  // as for C-MOVE sub-associations
+    if (dest->tls) sc.tls.enabled = *dest->tls;
     Scu scu(sc);
     std::set<std::string> classes;
     for (const EventToSend& e : events) classes.insert(e.sop_class);
@@ -291,6 +293,7 @@ bool is_ups_class(std::string_view cls) {
 }
 
 ServiceOutcome reply(ServiceContext& c, const Message& m, Command rsp, const Dataset* ds = nullptr) {
+    c.last_status = rsp.status.value_or(0);
     if (Status s = send_dimse(c.a, m.context_id, rsp, rsp.has_dataset ? ds : nullptr); !s) {
         if (c.log) c.log("sending DIMSE response failed: " + s.message);
         return ServiceOutcome::Failed;
@@ -343,6 +346,7 @@ ServiceOutcome do_commitment_action(ServiceSet& s, ServiceContext& c, const Mess
         }
     }
     if (!delivered && c.log) c.log("storage commitment report not delivered");
+    if (s.on_commitment_done) s.on_commitment_done(*req, result, delivered);
     return ServiceOutcome::Handled;
 }
 
@@ -1146,9 +1150,10 @@ Result<StoreManyResult> store_many(Scu& scu, const std::vector<std::string>& pat
             const NegotiatedContext* pc = nullptr;
             std::vector<std::uint8_t> body;
             Status enc = Status(Errc::Unsupported, "no accepted presentation context for this instance");
+            codec::TranscodeReport report;
             for (const NegotiatedContext* k : store_contexts(*a, cls, f->transfer_syntax, false, scu.config().transcode,
                                                              scu.config().transcode_params)) {
-                enc = encode_for_transfer_syntax(*f, k->transfer_syntax, scu.config().transcode_params, body);
+                enc = encode_for_transfer_syntax(*f, k->transfer_syntax, scu.config().transcode_params, body, &report);
                 if (enc) {
                     pc = k;
                     break;
@@ -1157,6 +1162,11 @@ Result<StoreManyResult> store_many(Scu& scu, const std::vector<std::string>& pat
             if (!pc) {
                 o.error = enc;
                 continue;
+            }
+            // R-093: a lossy transcode gave the image a new SOP Instance UID; send that one.
+            if (!report.new_sop_instance_uid.empty() && report.new_sop_instance_uid != o.sop_instance) {
+                o.original_sop_instance = o.sop_instance;
+                o.sop_instance = report.new_sop_instance_uid;
             }
             const std::uint16_t mid = a->next_message_id();
             if (Status s = send_dimse_raw(*a, pc->id, make_c_store_rq(mid, cls, o.sop_instance), body.data(), body.size());
@@ -1194,6 +1204,23 @@ ServiceOutcome dispatch_service(ServiceSet& s, ServiceContext& c, const Message&
     const NegotiatedContext* pc = c.a.context(m.context_id);
     if (!pc || !context_covers(pc->abstract_syntax, cls)) return ServiceOutcome::NotHandled;
 
+    // Requests this set serves pass the admission check first (allow-lists, limits).
+    if (s.admit) {
+        const bool mine =
+            (cls == sop::StorageCommitmentPushModel &&
+             ((rq.command_field == cmd::NActionRq && s.on_commitment) ||
+              (rq.command_field == cmd::NEventReportRq && s.on_commitment_report))) ||
+            (cls == sop::ModalityPerformedProcedureStep && (s.on_mpps_create || s.on_mpps_set || s.mpps) &&
+             (rq.command_field == cmd::NCreateRq || rq.command_field == cmd::NSetRq)) ||
+            (cls == sop::InstanceAvailabilityNotification && s.on_instance_availability &&
+             rq.command_field == cmd::NCreateRq) ||
+            (s.ups && is_ups_class(cls)) ||
+            (cls == sop::UpsEvent && s.on_ups_event && rq.command_field == cmd::NEventReportRq);
+        if (mine)
+            if (const std::uint16_t st = s.admit(c.a.calling_ae(), rq); st != dimse_status::Success)
+                return reply(c, m, make_response(rq, st));
+    }
+
     if (cls == sop::StorageCommitmentPushModel) {
         if (rq.command_field == cmd::NActionRq && s.on_commitment) return do_commitment_action(s, c, m);
         if (rq.command_field == cmd::NEventReportRq && s.on_commitment_report) {
@@ -1227,7 +1254,11 @@ ServiceOutcome dispatch_service(ServiceSet& s, ServiceContext& c, const Message&
         rsp.affected_sop_instance_uid = uid;
         return reply(c, m, rsp);
     }
-    if (s.ups && is_ups_class(cls)) return do_ups(s, c, m);
+    if (s.ups && is_ups_class(cls)) {
+        const ServiceOutcome o = do_ups(s, c, m);
+        if (o == ServiceOutcome::Handled && s.on_ups_served) s.on_ups_served(c.a.calling_ae(), rq, c.last_status);
+        return o;
+    }
     if (cls == sop::UpsEvent && s.on_ups_event && rq.command_field == cmd::NEventReportRq) {
         Result<Dataset> ds = decode_message_dataset(m);
         if (!ds) return reply(c, m, make_response(rq, dimse_status::ProcessingFailure));

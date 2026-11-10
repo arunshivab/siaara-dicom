@@ -116,6 +116,9 @@ struct AcceptedSyntax {
     // Roles the acceptor is willing to grant when the requestor proposes role selection.
     bool allow_requestor_scu = true;
     bool allow_requestor_scp = false;
+    // Transfer syntaxes (in preference order) for contexts on which the requestor takes only the
+    // SCP role (C-GET sub-operations, which this side sends and may transcode). Empty: as above.
+    std::vector<std::string> scp_role_transfer_syntaxes = {};
 };
 
 // Negotiates the requestor's proposals against the acceptor's policy (acceptor preference wins).

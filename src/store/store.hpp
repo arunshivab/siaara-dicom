@@ -82,6 +82,10 @@ struct StoreOptions {
     // than min_free_disk_bytes free on the volume (0 = no floor).
     std::uint64_t max_total_bytes = 0;
     std::uint64_t min_free_disk_bytes = 64ull << 20;
+    // Permissions of the folders and files the store creates (R-092). 0: owner only (folders 0700,
+    // files 0600; an owner-only DACL on Windows). Otherwise the POSIX file mode (folders get the
+    // matching search bits too; Windows: inherited permissions).
+    std::uint32_t file_mode = 0;
 };
 
 enum class DuplicatePolicy { Keep, Replace };

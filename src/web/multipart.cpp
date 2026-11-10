@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -46,6 +47,40 @@ std::size_t find_delimiter(std::string_view body, std::string_view dash_boundary
     }
 }
 
+// One part: headers up to an empty line (a part may also have no headers at all), then the body.
+Status parse_part(std::string_view content, const Limits& limits, Part& part) {
+    // Part headers, up to an empty line (a part may also have no headers at all).
+    std::size_t hp = 0, header_bytes = 0;
+    for (;;) {
+        auto nl = content.find('\n', hp);
+        if (nl == std::string_view::npos) {
+            if (hp == content.size()) break;  // headers only, empty body, no blank line
+            return Status(Errc::Malformed, "multipart: part header section not terminated");
+        }
+        std::string_view line = content.substr(hp, nl - hp);
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        hp = nl + 1;
+        header_bytes += line.size() + 2;
+        if (header_bytes > limits.max_part_header_bytes) return Status(Errc::LimitExceeded, "multipart: part headers too large");
+        if (line.empty()) break;
+        if (line[0] == ' ' || line[0] == '\t') return Status(Errc::Malformed, "multipart: folded part header");
+        if (part.headers.size() >= limits.max_part_headers) return Status(Errc::LimitExceeded, "multipart: too many part headers");
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos || colon == 0) return Status(Errc::Malformed, "multipart: bad part header");
+        for (std::size_t k = 0; k < colon; ++k)
+            if (!is_token_char(line[k])) return Status(Errc::Malformed, "multipart: bad part header name");
+        auto value = line.substr(colon + 1);
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1);
+        while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
+        for (char c : value)
+            if ((static_cast<unsigned char>(c) < 0x20 && c != '\t') || c == 0x7F)
+                return Status(Errc::Malformed, "multipart: control character in part header");
+        part.headers.push_back({std::string(line.substr(0, colon)), std::string(value)});
+    }
+    part.body = content.substr(std::min(hp, content.size()));
+    return Status::ok();
+}
+
 }  // namespace
 
 bool valid_boundary(std::string_view b, std::size_t max_len) noexcept {
@@ -77,35 +112,7 @@ Result<std::vector<Part>> parse(std::string_view body, std::string_view boundary
         if (parts.size() >= limits.max_parts) return Status(Errc::LimitExceeded, "multipart: too many parts");
         Part part;
         std::string_view content = body.substr(after, end - after);
-        // Part headers, up to an empty line (a part may also have no headers at all).
-        std::size_t hp = 0, header_bytes = 0;
-        for (;;) {
-            auto nl = content.find('\n', hp);
-            if (nl == std::string_view::npos) {
-                if (hp == content.size()) break;  // headers only, empty body, no blank line
-                return Status(Errc::Malformed, "multipart: part header section not terminated");
-            }
-            std::string_view line = content.substr(hp, nl - hp);
-            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-            hp = nl + 1;
-            header_bytes += line.size() + 2;
-            if (header_bytes > limits.max_part_header_bytes) return Status(Errc::LimitExceeded, "multipart: part headers too large");
-            if (line.empty()) break;
-            if (line[0] == ' ' || line[0] == '\t') return Status(Errc::Malformed, "multipart: folded part header");
-            if (part.headers.size() >= limits.max_part_headers) return Status(Errc::LimitExceeded, "multipart: too many part headers");
-            const auto colon = line.find(':');
-            if (colon == std::string_view::npos || colon == 0) return Status(Errc::Malformed, "multipart: bad part header");
-            for (std::size_t k = 0; k < colon; ++k)
-                if (!is_token_char(line[k])) return Status(Errc::Malformed, "multipart: bad part header name");
-            auto value = line.substr(colon + 1);
-            while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1);
-            while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
-            for (char c : value)
-                if ((static_cast<unsigned char>(c) < 0x20 && c != '\t') || c == 0x7F)
-                    return Status(Errc::Malformed, "multipart: control character in part header");
-            part.headers.push_back({std::string(line.substr(0, colon)), std::string(value)});
-        }
-        part.body = content.substr(std::min(hp, content.size()));
+        if (Status ps = parse_part(content, limits, part); !ps) return ps;
         parts.push_back(std::move(part));
         pos = next;
     }
@@ -153,6 +160,83 @@ std::string Writer::finish() {
 
 std::string Writer::content_type(std::string_view root_type) const {
     return "multipart/related; type=" + http::quote_if_needed(root_type) + "; boundary=" + http::quote_if_needed(boundary_);
+}
+
+// ---------------------------------------------------------------- streaming
+StreamParser::StreamParser(std::string boundary, const Limits& limits, std::uint64_t max_part_bytes,
+                           std::function<Status(const Part&)> on_part)
+    : dash_("--" + std::move(boundary)), limits_(limits), max_part_(max_part_bytes), on_part_(std::move(on_part)) {}
+
+Status StreamParser::feed(std::string_view data) {
+    if (state_ == State::Failed) return Status(Errc::Malformed, "multipart: stream already failed");
+    if (state_ == State::Done) return Status::ok();  // epilogue
+    buf_.append(data.data(), data.size());
+    Status s = step();
+    if (!s) state_ = State::Failed;
+    return s;
+}
+
+Status StreamParser::step() {
+    if (!valid_boundary(std::string_view(dash_).substr(2), limits_.max_boundary))
+        return Status(Errc::Malformed, "multipart: invalid boundary");
+    for (;;) {
+        if (state_ == State::Preamble) {
+            const std::size_t p = find_delimiter(buf_, dash_, 0);
+            if (p == std::string_view::npos) {
+                // Keep only what may still begin the first delimiter.
+                if (buf_.size() > dash_.size() + 2) buf_.erase(0, buf_.size() - dash_.size() - 2);
+                return Status::ok();
+            }
+            buf_.erase(0, p);
+            state_ = State::Delimiter;
+        }
+        if (state_ == State::Delimiter) {
+            // buf_ starts with the dash-boundary.
+            std::size_t after = dash_.size();
+            if (buf_.size() < after + 2) return Status::ok();
+            if (buf_.compare(after, 2, "--") == 0) {
+                state_ = State::Done;
+                buf_.clear();
+                return Status::ok();
+            }
+            while (after < buf_.size() && (buf_[after] == ' ' || buf_[after] == '\t')) ++after;
+            if (after > dash_.size() + 64) return Status(Errc::Malformed, "multipart: bad delimiter line");
+            if (buf_.size() < after + 2) return Status::ok();
+            if (buf_.compare(after, 2, "\r\n") == 0) after += 2;
+            else if (buf_[after] == '\n') after += 1;
+            else return Status(Errc::Malformed, "multipart: bad delimiter line");
+            buf_.erase(0, after);
+            scanned_ = 0;
+            state_ = State::Part;
+        }
+        if (state_ == State::Part) {
+            const std::size_t from = scanned_ > dash_.size() + 2 ? scanned_ - dash_.size() - 2 : 0;
+            const std::size_t next = find_delimiter(buf_, dash_, from);
+            if (next == std::string_view::npos) {
+                scanned_ = buf_.size();
+                if (buf_.size() > max_part_ + dash_.size() + limits_.max_part_header_bytes + 4)
+                    return Status(Errc::LimitExceeded, "multipart: part too large");
+                return Status::ok();
+            }
+            std::size_t end = next;
+            if (end >= 2 && buf_[end - 2] == '\r' && buf_[end - 1] == '\n') end -= 2;
+            else if (end >= 1 && buf_[end - 1] == '\n') end -= 1;
+            if (++parts_ > limits_.max_parts) return Status(Errc::LimitExceeded, "multipart: too many parts");
+            Part part;
+            if (Status ps = parse_part(std::string_view(buf_).substr(0, end), limits_, part); !ps) return ps;
+            if (part.body.size() > max_part_) return Status(Errc::LimitExceeded, "multipart: part too large");
+            if (Status cs = on_part_(part); !cs) return cs;
+            buf_.erase(0, next);
+            state_ = State::Delimiter;
+        }
+        if (state_ == State::Done || state_ == State::Failed) return Status::ok();
+    }
+}
+
+Status StreamParser::finish() {
+    if (state_ == State::Failed) return Status(Errc::Malformed, "multipart: stream failed");
+    if (state_ != State::Done) return Status(Errc::Truncated, "multipart: missing close delimiter");
+    return Status::ok();
 }
 
 }  // namespace siaara::web::multipart

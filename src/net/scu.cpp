@@ -204,7 +204,7 @@ Result<std::uint16_t> Scu::echo() {
 }
 
 Result<std::uint16_t> Scu::store(const DicomFile& file, std::string_view move_originator_ae,
-                                 std::optional<std::uint16_t> move_originator_message_id) {
+                                 std::optional<std::uint16_t> move_originator_message_id, StoreSent* sent) {
     if (!connected()) return Status(Errc::InvalidArgument, "not connected");
     const std::string sop_class = sop_class_of(file);
     const std::string sop_instance = sop_instance_of(file);
@@ -217,16 +217,26 @@ Result<std::uint16_t> Scu::store(const DicomFile& file, std::string_view move_or
     const NegotiatedContext* pc = nullptr;
     std::vector<std::uint8_t> body;
     Status enc = Status::ok();
+    codec::TranscodeReport report;
     for (const NegotiatedContext* c : cands) {
-        enc = encode_for_transfer_syntax(file, c->transfer_syntax, cfg_.transcode_params, body);
+        enc = encode_for_transfer_syntax(file, c->transfer_syntax, cfg_.transcode_params, body, &report);
         if (enc) {
             pc = c;
             break;
         }
     }
     if (!pc) return enc;
+    // R-093: a lossy transcode gave the image a new SOP Instance UID; the command must carry it.
+    const std::string& sent_uid = report.new_sop_instance_uid.empty() ? sop_instance : report.new_sop_instance_uid;
+    if (sent) {
+        sent->sop_instance_uid = sent_uid;
+        sent->original_sop_instance_uid = sop_instance;
+        sent->transfer_syntax = pc->transfer_syntax;
+        sent->uid_changed = sent_uid != sop_instance;
+        sent->lossy = report.lossy_applied;
+    }
     const std::uint16_t mid = assoc_->next_message_id();
-    const Command rq = make_c_store_rq(mid, sop_class, sop_instance, priority::Medium, move_originator_ae,
+    const Command rq = make_c_store_rq(mid, sop_class, sent_uid, priority::Medium, move_originator_ae,
                                        move_originator_message_id);
     if (Status s = send_dimse_raw(*assoc_, pc->id, rq, body.data(), body.size()); !s) return s;
     Result<Message> rsp = wait_response(mid, cmd::CStoreRsp);

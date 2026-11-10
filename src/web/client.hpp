@@ -98,6 +98,20 @@ public:
     // STOW-RS: Part 10 streams. `study` empty posts to /studies.
     Result<StowResult> store(const std::vector<std::string>& part10, std::string_view study = {});
 
+    // WADO-RS retrieve that hands every part to `on_part` as soon as it has arrived (content type,
+    // bytes valid during the call), holding about one part in memory (max_part_bytes; Limits::
+    // max_body does not apply). `on_progress` (optional) sees (body bytes so far, Content-Length or
+    // 0) and returns false to stop (Errc::Cancelled). A single-part response is one part.
+    Status retrieve_stream(std::string_view study, std::string_view series, std::string_view instance,
+                           const std::vector<std::string>& transfer_syntaxes, std::uint64_t max_part_bytes,
+                           const std::function<Status(const std::string& content_type, std::string_view data)>& on_part,
+                           const std::function<bool(std::uint64_t bytes, std::uint64_t total)>& on_progress = {});
+
+    // Limits for later requests.
+    void set_limits(const http::Limits& limits, const multipart::Limits& multipart_limits);
+    const http::Limits& limits() const noexcept { return cfg_.limits; }
+    const multipart::Limits& multipart_limits() const noexcept { return cfg_.multipart; }
+
     // Aborts a request running in another thread (its connection is shut down; the call fails).
     void interrupt() noexcept {
         if (http_) http_->interrupt();

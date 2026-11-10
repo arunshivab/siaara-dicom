@@ -523,6 +523,12 @@ typedef struct siaara_store_options {
     uint64_t max_total_bytes;      /* copied instances may take at most this much; 0 = no cap. Adding
                                       more fails with SIAARA_ERR_LIMIT_EXCEEDED (a Storage SCP answers 0xA700) */
     uint64_t min_free_disk_bytes;  /* free space adding leaves on the volume; 0 = default (64 MiB) */
+    /* Permissions of what the store creates (R-092). 0 (default): owner only - folders 0700 and
+     * files 0600 on POSIX, an owner-only DACL on Windows. Otherwise the POSIX mode of the files
+     * (e.g. 0640); folders get it plus the matching search bits, and on Windows the folders and
+     * files inherit the parent folder's permissions. */
+    uint32_t file_mode;
+    uint32_t reserved0;            /* set to 0 */
 } siaara_store_options;
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
@@ -1890,6 +1896,8 @@ typedef struct siaara_scp_options {
     uint64_t spool_threshold;        /* 0 = 16 MiB */
     uint64_t spool_max_total_bytes;  /* all spool files together; 0 = no cap. Over it: 0xA700 */
     uint64_t spool_min_free_disk_bytes; /* free space the spool leaves; 0 = default (64 MiB). Below: 0xA700 */
+    uint32_t event_queue_limit;      /* events queued for the callback; 0 = 1024 (see siaara_scp_callback) */
+    uint32_t reserved1;              /* set to 0 */
 } siaara_scp_options;
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
@@ -1908,12 +1916,28 @@ typedef struct siaara_scp_event {
                                         was stored under the data set's (sop_class_uid / sop_instance_uid) */
     const char* command_sop_class_uid;    /* the command's Affected SOP Class UID ("" unless uid_mismatch) */
     const char* command_sop_instance_uid; /* the command's Affected SOP Instance UID ("" unless uid_mismatch) */
+    /* Present when struct_size covers them (siaara_scp_start_ex services; "" / NULL / 0 otherwise). */
+    const char* original_sop_instance_uid; /* SIAARA_SCP_UID_CHANGED, or SIAARA_SCP_STORED after a lossy conversion:
+                                              the UID before; sop_instance_uid is the new one (R-093) */
+    const char* transaction_uid;     /* Storage Commitment events */
+    const char* destination_ae;      /* SIAARA_SCP_MOVE */
+    const siaara_dataset* dataset;   /* MPPS attributes / modifications, the C-FIND or worklist identifier, the
+                                        commitment request or report, UPS data: borrowed, NULL when none */
+    uint32_t completed;              /* retrieve sub-operations / C-FIND matches / committed instances */
+    uint32_t failed;
+    uint32_t warning;
+    uint32_t command_field;          /* DIMSE command field of the request (0x0020 C-FIND, 0x0140 N-CREATE ...) */
 } siaara_scp_event;
 
 /* Called after each event, in order, from one dispatcher thread of the SCP (never concurrently
- * for one SCP), with no toolkit lock held: a slow callback delays only later events (and, once
- * 1024 are queued, the associations). It must not call siaara_scp_stop (SIAARA_ERR_INVALID_ARGUMENT)
- * or siaara_scp_free (ignored) on its own SCP. */
+ * for one SCP), with no toolkit lock held: a slow callback delays only later events. Drop policy
+ * (R-094): once event_queue_limit events (default 1024) wait for the callback, an association
+ * that has a new event waits at most 1 second for room; then the event is dropped, counted in
+ * siaara_scp_stats.events_dropped and a warning is logged (once per SCP). After siaara_scp_stop
+ * nothing waits: events that do not fit are dropped at once, so stopping never depends on the
+ * callback. The DIMSE operations themselves are never failed or delayed further because of the
+ * callback. It must not call siaara_scp_stop (SIAARA_ERR_INVALID_ARGUMENT) or siaara_scp_free
+ * (ignored) on its own SCP. */
 typedef void (SIAARA_CALL* siaara_scp_callback)(void* user, const siaara_scp_event* event);
 
 typedef struct siaara_scp_stats {
@@ -1926,6 +1950,14 @@ typedef struct siaara_scp_stats {
     uint64_t store_failures;
     uint64_t echoes;
     uint64_t bytes_received;         /* data set bytes of stored instances */
+    /* Present when struct_size covers them. */
+    uint64_t events_dropped;         /* events not delivered to the callback (R-094 drop policy) */
+    uint64_t finds;                  /* C-FIND requests answered (Q/R and worklist) */
+    uint64_t retrieves;              /* C-MOVE and C-GET requests */
+    uint64_t sub_operations;         /* C-STORE sub-operations of those */
+    uint64_t mpps;                   /* MPPS N-CREATE and N-SET */
+    uint64_t commitments;            /* Storage Commitment requests answered */
+    uint64_t refused;                /* requests refused by a service allow-list or limit */
 } siaara_scp_stats;
 
 /* Starts a Storage SCP (and Verification SCP) that adds every received instance to `store`,
@@ -2452,6 +2484,371 @@ enum {
  * *count receives the number of matches; at most cap indices are written (buf may be NULL). */
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_search(const char* text, size_t len, const char* vr, int32_t flags,
                                                         uint32_t* buf, size_t cap, size_t* count);
+
+/* ================================================================ networking: full service set (RIS / PACS)
+ * Everything below extends the DIMSE and DICOMweb sections above; docs/NETWORKING.md is the
+ * integration guide. */
+
+/* ---------------------------------------------------------------- SCP: all services on one port */
+enum {
+    SIAARA_SCP_FIND = 3,             /* C-FIND answered from the store: completed = matches, dataset = identifier */
+    SIAARA_SCP_MOVE = 4,             /* C-MOVE finished: destination_ae, completed / failed / warning */
+    SIAARA_SCP_GET = 5,              /* C-GET finished: completed / failed / warning */
+    SIAARA_SCP_WORKLIST = 6,         /* Modality Worklist C-FIND answered: completed = items sent */
+    SIAARA_SCP_MPPS_CREATE = 7,      /* MPPS N-CREATE: sop_instance_uid, dataset = the attributes */
+    SIAARA_SCP_MPPS_SET = 8,         /* MPPS N-SET: sop_instance_uid, dataset = the modifications */
+    SIAARA_SCP_COMMIT_REQUEST = 9,   /* Storage Commitment request decided: transaction_uid, completed = committed,
+                                        failed; outcome 1 when the report was delivered, 0 when not */
+    SIAARA_SCP_COMMIT_REPORT = 10,   /* Storage Commitment report received (SCU role, siaara_dimse_commit_ex) */
+    SIAARA_SCP_UPS = 11,             /* UPS request served: command_field, sop_instance_uid, dimse_status */
+    SIAARA_SCP_REFUSED = 12,         /* a request refused by a service allow-list or limit: command_field, sop_class_uid */
+    SIAARA_SCP_UID_CHANGED = 13,     /* a C-GET / C-MOVE sub-operation needed lossy compression, which gave the
+                                        instance a new SOP Instance UID: original_sop_instance_uid -> sop_instance_uid */
+    SIAARA_SCP_IAN = 14              /* Instance Availability Notification received: dataset */
+};
+
+/* Services, for siaara_scp_acl. */
+enum {
+    SIAARA_SVC_VERIFICATION = 0, SIAARA_SVC_STORAGE = 1, SIAARA_SVC_FIND = 2, SIAARA_SVC_MOVE = 3,
+    SIAARA_SVC_GET = 4, SIAARA_SVC_WORKLIST = 5, SIAARA_SVC_MPPS = 6, SIAARA_SVC_COMMITMENT = 7,
+    SIAARA_SVC_UPS = 8, SIAARA_SVC_IAN = 9
+};
+
+/* A remote application entity the SCP opens associations to: C-MOVE destinations, receivers of
+ * Storage Commitment reports sent on a new association, UPS event subscribers. */
+typedef struct siaara_ae_entry {
+    uint32_t struct_size;            /* sizeof(siaara_ae_entry) */
+    uint32_t port;                   /* 1..65535 */
+    const char* ae_title;
+    const char* host;                /* name or address */
+    int32_t tls;                     /* 0/1: associations to it use TLS (siaara_scp_services.outbound_tls) */
+    uint32_t reserved0;              /* set to 0 */
+} siaara_ae_entry;
+
+/* A per-service allow-list: only these calling AE titles may use the service (each must also be
+ * accepted by siaara_scp_options.allowed_calling_aes). A service without an entry is open to
+ * every accepted peer. A refused request is answered 0x0124 (Refused: Not Authorized), for
+ * C-STORE 0xA700 is not used for it, and an event SIAARA_SCP_REFUSED is raised. Verification
+ * may be listed too. */
+typedef struct siaara_scp_acl {
+    uint32_t struct_size;            /* sizeof(siaara_scp_acl) */
+    int32_t service;                 /* SIAARA_SVC_* */
+    const char* const* calling_aes;
+    uint32_t count;                  /* 0: nobody may use the service */
+    uint32_t reserved0;
+} siaara_scp_acl;
+
+/* Modality Worklist SCP fed by the application. For each C-FIND the toolkit calls the callback
+ * (on the association's thread; several associations may call it at once) with the identifier;
+ * the callback passes candidate scheduled procedure steps to emit() - every one, or a
+ * pre-filtered set - and returns the final status (0 = Success). The toolkit applies the C-FIND
+ * matching rules (PS3.4 C.2.2.2 and K.6, including Scheduled Procedure Step Sequence matching)
+ * and returns only the requested keys, so emitting the whole list is correct. emit() returns 0
+ * to continue, non-zero once the requestor cancelled or the association failed (stop then). The
+ * item is only read during emit(). */
+typedef int32_t (SIAARA_CALL* siaara_worklist_emit)(void* emit_ctx, const siaara_dataset* item);
+typedef uint32_t (SIAARA_CALL* siaara_worklist_callback)(void* user, const char* calling_ae,
+                                                          const siaara_dataset* identifier,
+                                                          siaara_worklist_emit emit, void* emit_ctx);
+
+enum {
+    SIAARA_COMMIT_REPORT_SAME_THEN_NEW = 0, /* on the requestor's association; a new one when it is gone */
+    SIAARA_COMMIT_REPORT_SAME = 1,          /* only on the requestor's association */
+    SIAARA_COMMIT_REPORT_NEW = 2            /* always on a new association to the requestor (ae_table) */
+};
+
+typedef struct siaara_scp_services {
+    uint32_t struct_size;            /* set to sizeof(siaara_scp_services) */
+    /* ---- which services run (Verification always) */
+    int32_t storage;                 /* 0/1: Storage SCP into the store */
+    int32_t find;                    /* 0/1: C-FIND, Patient and Study Root, every level, from the store */
+    int32_t move;                    /* 0/1: C-MOVE from the store to ae_table destinations */
+    int32_t get;                     /* 0/1: C-GET from the store */
+    int32_t worklist;                /* 0/1: Modality Worklist (worklist_cb, else siaara_scp_set_worklist) */
+    int32_t mpps;                    /* 0/1: MPPS SCP (N-CREATE / N-SET; F.7.2.2 state rules; siaara_scp_mpps_get) */
+    int32_t commitment;              /* 0/1: Storage Commitment Push Model SCP, decided from the store */
+    int32_t commitment_report_mode;  /* SIAARA_COMMIT_REPORT_* */
+    int32_t commitment_reports;      /* 0/1: receive Storage Commitment reports sent on new associations (the
+                                        SCU role; siaara_dimse_commit_ex with this SCP as receiver) */
+    int32_t ups;                     /* 0/1: UPS Push / Pull / Watch / Query SCP (in memory; events to subscribers) */
+    int32_t instance_availability;   /* 0/1: Instance Availability Notification SCP (events only) */
+    int32_t allow_lossy;             /* 0/1: store_transfer_syntax and C-GET / C-MOVE transcodes may be lossy */
+    /* ---- storage */
+    const char* const* storage_sop_classes; /* NULL: the toolkit's storage list (or any with accept_any_sop_class) */
+    uint32_t storage_sop_class_count;
+    uint32_t transfer_syntax_count;
+    const char* const* transfer_syntaxes;   /* accepted for storage, in preference order. NULL: native, plus the
+                                               compressed ones with siaara_scp_options.accept_compressed */
+    const char* store_transfer_syntax;      /* NULL: keep as received; else convert before storing */
+    /* ---- query / retrieve */
+    const siaara_ae_entry* ae_table; /* C-MOVE destinations, commitment and UPS report receivers */
+    uint32_t ae_count;
+    uint32_t max_find_results;       /* 0 = 10000; past it the C-FIND ends with 0xA700 after the matches sent */
+    const siaara_tls_options* outbound_tls; /* TLS client settings for ae_table entries with tls = 1 */
+    uint32_t max_retrieve_instances; /* 0 = 65535; more: 0xA701 without sub-operations */
+    int32_t relational;              /* 0/1: accept relational queries and retrieval (extended negotiation) */
+    int32_t fuzzy_person_names;      /* 0/1: accept fuzzy semantic matching of person names */
+    int32_t combined_datetime;       /* 0/1: accept combined date-time matching */
+    /* ---- worklist */
+    siaara_worklist_callback worklist_cb;   /* NULL: the list of siaara_scp_set_worklist */
+    void* worklist_user;
+    uint32_t max_worklist_items;     /* 0 = 10000 */
+    /* ---- MPPS, commitment */
+    uint32_t max_mpps_instances;     /* 0 = 10000; more N-CREATEs get 0xA700 */
+    uint32_t max_commitment_items;   /* per request; 0 = 10000; larger requests fail every item (Failure Reason
+                                        0x0213 Resource Limitation) */
+    /* ---- allow-lists */
+    uint32_t acl_count;
+    const siaara_scp_acl* acls;
+} siaara_scp_services;
+
+/* Starts an SCP with the services enabled in `services` on one port (Verification always), with
+ * every limit and check of siaara_scp_start (allowed peers, per-peer limits, lifetime, spool,
+ * UID checks). store holds what Storage receives and what Q/R, Storage Commitment and the
+ * DICOMweb server answer from; it must outlive the SCP. services may be NULL: Storage only (as
+ * siaara_scp_start). The returned handle works with siaara_scp_port / stats / stop / free.
+ * Thread safety: as siaara_scp_start. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_start_ex(const siaara_scp_options* options,
+                                                         const siaara_scp_services* services, siaara_store* store,
+                                                         siaara_scp_callback cb, void* user, siaara_scp** out);
+/* Replaces the worklist served when no worklist_cb is set: `count` data sets (copied), each one
+ * scheduled procedure step with its patient / visit / request attributes and a Scheduled
+ * Procedure Step Sequence. Thread safety: any thread; running queries see the old or new list. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_set_worklist(siaara_scp* scp, const siaara_dataset* const* items,
+                                                             uint32_t count);
+/* As above from a DICOM JSON array (PS3.18 F.2) of such data sets. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_set_worklist_json(siaara_scp* scp, const char* json, size_t len);
+/* The current state of an MPPS instance received by the SCP (created attributes with every N-SET
+ * applied). SIAARA_ERR_NOT_FOUND when unknown. Caller owns *out. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_mpps_get(const siaara_scp* scp, const char* sop_instance_uid,
+                                                         siaara_file** out);
+/* Schedules a UPS workitem locally (as a UPS Push N-CREATE would; Procedure Step State SCHEDULED).
+ * uid NULL: a new UID, copied to buf (string buffer rules; buf may be NULL with cap 0). */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_ups_create(siaara_scp* scp, const char* uid,
+                                                           const siaara_dataset* attributes, char* buf, size_t cap,
+                                                           size_t* needed);
+/* The current state of a UPS workitem. Caller owns *out. */
+SIAARA_API siaara_status SIAARA_CALL siaara_scp_ups_get(const siaara_scp* scp, const char* uid, siaara_file** out);
+
+/* ---------------------------------------------------------------- SCU additions */
+/* Q/R levels (SIAARA_LEVEL_* values): PATIENT, STUDY, SERIES, IMAGE. */
+typedef struct siaara_qr_keys {
+    uint32_t struct_size;            /* sizeof(siaara_qr_keys) */
+    int32_t return_keys;             /* 0/1: also add the usual return keys of the level (empty, universal) */
+    /* Matching values (NULL or "": universal / return key only). Wildcards and ranges as in C-FIND. */
+    const char* patient_id;
+    const char* patient_name;
+    const char* patient_birth_date;
+    const char* patient_sex;
+    const char* study_instance_uid;  /* may list several UIDs separated by backslashes */
+    const char* study_date;
+    const char* study_time;
+    const char* accession_number;
+    const char* study_id;
+    const char* study_description;
+    const char* referring_physician;
+    const char* modalities_in_study;
+    const char* series_instance_uid;
+    const char* modality;
+    const char* series_number;
+    const char* series_description;
+    const char* sop_instance_uid;
+    const char* sop_class_uid;
+    const char* instance_number;
+} siaara_qr_keys;
+
+/* A Query/Retrieve identifier: Query/Retrieve Level for `level` (SIAARA_LEVEL_*; INSTANCE is
+ * "IMAGE"), the given keys, Specific Character Set ISO_IR 192 (UTF-8), and with return_keys the
+ * level's usual return keys. Use it with siaara_dimse_find / move / get (and the _ex forms);
+ * add more keys with the data set functions. Caller owns *out. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_qr_identifier(int32_t level, const siaara_qr_keys* keys,
+                                                          siaara_file** out);
+
+/* SOP Class Extended Negotiation for Query/Retrieve (PS3.4 C.5). */
+enum {
+    SIAARA_QR_RELATIONAL = 1,        /* relational queries (C-FIND) / relational retrieval (C-MOVE, C-GET) */
+    SIAARA_QR_COMBINED_DATETIME = 2, /* C-FIND only */
+    SIAARA_QR_FUZZY_NAMES = 4,       /* C-FIND only: fuzzy semantic matching of person names */
+    SIAARA_QR_TIMEZONE = 8           /* C-FIND only: timezone query adjustment */
+};
+enum { SIAARA_QR_UPS = 3 };          /* model for siaara_dimse_find(_ex): UPS Query (C-FIND of UPS workitems) */
+
+typedef struct siaara_qr_options {
+    uint32_t struct_size;            /* sizeof(siaara_qr_options) */
+    uint32_t flags;                  /* SIAARA_QR_* proposed */
+    uint32_t accepted_flags;         /* out: what the peer accepted */
+    uint32_t max_matches;            /* C-FIND: send C-CANCEL after this many (0 = all); not an error */
+} siaara_qr_options;
+
+/* As siaara_dimse_find, proposing extended negotiation; options may be NULL. options->accepted_flags
+ * is written. With max_matches reached the call returns SIAARA_OK. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find_ex(const siaara_dimse_peer* peer, int32_t model,
+                                                          const siaara_dataset* identifier, siaara_qr_options* options,
+                                                          siaara_cancel* cancel, siaara_find_callback cb, void* user,
+                                                          siaara_dimse_result* result);
+/* As siaara_dimse_move / siaara_dimse_get with SIAARA_QR_RELATIONAL (options may be NULL). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move_ex(const siaara_dimse_peer* peer, int32_t model,
+                                                          const siaara_dataset* identifier, const char* destination_ae,
+                                                          siaara_qr_options* options, siaara_cancel* cancel,
+                                                          siaara_dimse_progress_callback cb, void* user,
+                                                          siaara_dimse_result* result);
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get_ex(const siaara_dimse_peer* peer, int32_t model,
+                                                         const siaara_dataset* identifier,
+                                                         const siaara_get_options* get_options,
+                                                         siaara_qr_options* options, siaara_cancel* cancel,
+                                                         siaara_dimse_progress_callback cb, void* user,
+                                                         siaara_dimse_result* result);
+
+/* A C-STORE (or C-GET / C-MOVE sub-operation) needed lossy compression, which gave the instance a
+ * new SOP Instance UID (R-093). index: the file's position in the call. Called on the calling
+ * thread; strings valid during the call. */
+typedef void (SIAARA_CALL* siaara_uid_change_callback)(void* user, uint32_t index, const char* original_uid,
+                                                       const char* new_uid);
+/* As siaara_dimse_store_files / siaara_dimse_store, reporting UID changes (uid_cb may be NULL). The
+ * command, the data set and the peer all see the new UID; the source files are unchanged. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files_ex(const siaara_dimse_peer* peer, const char* const* paths,
+                                                                 const size_t* lens, uint32_t count,
+                                                                 siaara_cancel* cancel, siaara_dimse_progress_callback cb,
+                                                                 siaara_uid_change_callback uid_cb, void* user,
+                                                                 siaara_dimse_result* result);
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_ex(const siaara_dimse_peer* peer, const siaara_file* file,
+                                                           siaara_cancel* cancel, siaara_uid_change_callback uid_cb,
+                                                           void* user, siaara_dimse_result* result);
+
+/* Modality Performed Procedure Step SCU (PS3.4 F.7). N-CREATE with attributes (Performed
+ * Procedure Step Status IN PROGRESS ...): uid NULL creates a new SOP Instance UID; the UID used
+ * is copied to buf (string buffer rules; buf may be NULL with cap 0). result->status is the
+ * DIMSE status. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_mpps_create(const siaara_dimse_peer* peer, const char* uid,
+                                                              const siaara_dataset* attributes, siaara_cancel* cancel,
+                                                              char* buf, size_t cap, size_t* needed,
+                                                              siaara_dimse_result* result);
+/* N-SET of an MPPS instance (e.g. COMPLETED with the Performed Series Sequence). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_mpps_set(const siaara_dimse_peer* peer, const char* uid,
+                                                           const siaara_dataset* modifications, siaara_cancel* cancel,
+                                                           siaara_dimse_result* result);
+
+/* Storage Commitment with the report on the same or a new association (PS3.4 J.3.3). */
+typedef struct siaara_commit_options {
+    uint32_t struct_size;            /* sizeof(siaara_commit_options) */
+    int32_t wait_ms;                 /* total wait for the report; 0 = 60000 */
+    siaara_scp* receiver;            /* a running SCP started with commitment_reports = 1 that the peer reaches
+                                        (its ae_table entry for us); NULL: same association only */
+    int32_t same_association_ms;     /* with a receiver: how long the association stays open for a report on it
+                                        before it is released (0 = 2000; -1 = release at once) */
+    const char* transaction_uid;     /* NULL: a new one */
+    char* transaction_uid_out;       /* receives the Transaction UID (65 bytes); may be NULL */
+} siaara_commit_options;
+
+/* Requests commitment of `count` instances and waits for the report, which may arrive on this
+ * association or (with options->receiver) on a new association to the receiver SCP, matched by
+ * Transaction UID. SIAARA_ERR_TIMEOUT when no report arrived in time. failure_reasons and result
+ * as for siaara_dimse_commit; result->status is the event type (1 all committed, 2 failures). */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit_ex(const siaara_dimse_peer* peer,
+                                                            const siaara_commit_options* options,
+                                                            const char* const* sop_classes,
+                                                            const char* const* sop_instances, uint32_t count,
+                                                            siaara_cancel* cancel, uint16_t* failure_reasons,
+                                                            siaara_dimse_result* result);
+
+/* A generic DIMSE-N request on its own association: UPS Push / Pull / Watch (N-CREATE, N-SET,
+ * N-GET, N-ACTION), Instance Availability Notification (N-CREATE), or any other N-service. */
+enum {
+    SIAARA_N_EVENT_REPORT = 0x0100, SIAARA_N_GET = 0x0110, SIAARA_N_SET = 0x0120,
+    SIAARA_N_ACTION = 0x0130, SIAARA_N_CREATE = 0x0140, SIAARA_N_DELETE = 0x0150
+};
+typedef struct siaara_n_request {
+    uint32_t struct_size;            /* sizeof(siaara_n_request) */
+    uint32_t command_field;          /* SIAARA_N_* */
+    const char* abstract_syntax;     /* the presentation context; NULL: sop_class_uid */
+    const char* sop_class_uid;
+    const char* sop_instance_uid;    /* NULL for N-CREATE: the SCP assigns one (copied to buf) */
+    uint32_t type_id;                /* Event Type ID / Action Type ID */
+    uint32_t attribute_count;        /* N-GET Attribute Identifier List (0: all) */
+    const uint32_t* attribute_tags;
+    const siaara_dataset* dataset;   /* NULL: no data set */
+    int32_t propose_scp_role;        /* 0/1: role selection with us as SCP (e.g. N-EVENT-REPORT to a subscriber) */
+    uint32_t reserved0;
+} siaara_n_request;
+/* *out (may be NULL) receives the response data set, NULL when there was none (caller owns it).
+ * The SOP Instance UID of the response is copied to buf (string buffer rules; buf may be NULL).
+ * result->status: the DIMSE status. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_n_request(const siaara_dimse_peer* peer, const siaara_n_request* request,
+                                                            siaara_cancel* cancel, siaara_file** out, char* buf,
+                                                            size_t cap, size_t* needed, siaara_dimse_result* result);
+
+/* A new file holding a copy of `ds` (for keeping a C-FIND match or an SCP event data set beyond
+ * its callback; values are shared, not duplicated). Caller owns *out. Thread safety: as reading. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dataset_clone(const siaara_dataset* ds, siaara_file** out);
+
+/* ---------------------------------------------------------------- DICOMweb server (PS3.18) */
+/* An origin server over a siaara_store: QIDO-RS (studies / series / instances, at every level,
+ * with paging), WADO-RS (study, series, instance, metadata, frames, bulk data), WADO-URI and
+ * STOW-RS. Rendered resources answer 406. */
+typedef struct siaara_web_server siaara_web_server;
+
+/* Access control, called for every request (from server threads, several at once) before it is
+ * served: return 1 to allow, 0 to answer 401. authorization is the Authorization header ("" when
+ * absent); strings valid during the call. Must not call siaara_web_server_free. */
+typedef int32_t (SIAARA_CALL* siaara_web_authorize_callback)(void* user, const char* method, const char* target,
+                                                            const char* authorization);
+
+typedef struct siaara_web_server_options {
+    uint32_t struct_size;            /* sizeof(siaara_web_server_options) */
+    uint32_t port;                   /* 0: ephemeral (siaara_web_server_port) */
+    const char* bind_address;        /* NULL: "127.0.0.1". Off loopback the server needs TLS plus authorize or
+                                        client certificates, unless allow_insecure_remote */
+    const char* base_path;           /* NULL: "/dicomweb" */
+    const char* public_base_url;     /* absolute URL of base_path for BulkDataURI / RetrieveURL; NULL: from Host */
+    const siaara_tls_options* tls;   /* HTTPS with this identity (pkcs12_file, or certificate + key); NULL: HTTP */
+    int32_t require_client_certificate; /* 0/1: mutual TLS */
+    int32_t allow_insecure_remote;   /* 0/1: DANGEROUS, plain HTTP / no access control off loopback */
+    int32_t read_only;               /* 0/1: STOW-RS is not offered (501) */
+    int32_t duplicate_policy;        /* SIAARA_DUP_* for STOW-RS */
+    siaara_web_authorize_callback authorize; /* NULL: every request is allowed */
+    void* authorize_user;
+    const char* cors_allow_origin;   /* NULL: no CORS; "*" is refused with authorize */
+    uint32_t max_connections;        /* 0 = 32 */
+    uint32_t max_qido_results;       /* 0 = 10000 */
+    uint64_t max_body_bytes;         /* STOW-RS request body; 0 = 256 MiB */
+} siaara_web_server_options;
+
+/* Starts the server; store must outlive it. Caller owns *out: free with siaara_web_server_free
+ * (stops it). Thread safety: the server runs on its own threads. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_server_options* options,
+                                                             siaara_store* store, siaara_web_server** out);
+SIAARA_API siaara_status SIAARA_CALL siaara_web_server_port(const siaara_web_server* server, uint32_t* out);
+SIAARA_API void SIAARA_CALL siaara_web_server_free(siaara_web_server* server) SIAARA_NOEXCEPT;
+
+/* ---------------------------------------------------------------- DICOMweb client additions */
+typedef struct siaara_web_limits {
+    uint32_t struct_size;            /* sizeof(siaara_web_limits) */
+    int32_t read_timeout_ms;         /* each wait for incoming bytes; 0 = keep */
+    uint64_t max_body;               /* largest response body; 0 = keep (default 256 MiB) */
+    int32_t body_timeout_ms;         /* the whole response body; 0 = keep (default 10 min), -1 = no limit */
+    uint32_t max_parts;              /* multipart responses; 0 = keep */
+    uint64_t max_part_bytes;         /* one part; 0 = keep */
+} siaara_web_limits;
+/* Changes the client's limits for later requests. Thread safety: as every client call. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_limits(siaara_web_client* client,
+                                                                  const siaara_web_limits* limits);
+
+/* Progress of a streaming retrieve: parts stored so far, response bytes received, and the total
+ * (Content-Length; 0 when unknown). Called on the calling thread; return non-zero to cancel. */
+typedef int32_t (SIAARA_CALL* siaara_web_progress_callback)(void* user, uint32_t parts, uint64_t bytes,
+                                                            uint64_t total_bytes);
+/* WADO-RS retrieve of a study / series / instance that handles each part as it arrives: added to
+ * store (policy SIAARA_DUP_*) and / or written to folder as <SOP Instance UID>.dcm (owner-only),
+ * so memory holds at most one part (max_part_bytes). Transfer syntaxes as for
+ * siaara_web_wado_retrieve. *stored / *failed (may be NULL) count the parts. Cancellation: the
+ * attached token (siaara_web_client_set_cancel) or the callback. Parts kept before a failure or a
+ * cancel stay kept. */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_client* client, const char* study_uid,
+                                                                 const char* series_uid, const char* instance_uid,
+                                                                 const char* const* transfer_syntaxes, uint32_t ts_count,
+                                                                 siaara_store* store, int32_t policy, const char* folder,
+                                                                 siaara_web_progress_callback cb, void* user,
+                                                                 uint32_t* stored, uint32_t* failed);
 
 #ifdef __cplusplus
 }

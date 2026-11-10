@@ -47,10 +47,56 @@ internal interface IProgressSink : ICallbackSink
     int OnProgress(ulong done, ulong total);
 }
 
+/// <summary>A siaara_scp_event copied out of native memory (Dataset is borrowed: valid during the call).</summary>
+internal readonly record struct ScpEventData(int Kind, int DimseStatus, int Outcome, string CallingAe, string SopClassUid,
+    string SopInstanceUid, string PeerAddress, bool UidMismatch, string CommandSopClassUid, string CommandSopInstanceUid,
+    string OriginalSopInstanceUid, string TransactionUid, string DestinationAe, nint Dataset, int Completed, int Failed,
+    int Warning, int CommandField);
+
 /// <summary>Target of siaara_scp_callback.</summary>
 internal interface IScpSink : ICallbackSink
 {
-    void OnEvent(int kind, int dimseStatus, int outcome, string callingAe, string sopClassUid, string sopInstanceUid);
+    void OnEvent(in ScpEventData e);
+}
+
+/// <summary>The emit() of a siaara_worklist_callback, valid during that callback only.</summary>
+internal readonly unsafe struct WorklistEmitter
+{
+    private readonly delegate* unmanaged[Cdecl]<void*, nint, int> _emit;
+    private readonly void* _context;
+
+    internal WorklistEmitter(delegate* unmanaged[Cdecl]<void*, nint, int> emit, void* context)
+    {
+        _emit = emit;
+        _context = context;
+    }
+
+    /// <summary>Offers one item (a native data set); false once the query should stop.</summary>
+    internal bool Emit(nint dataset) => _emit != null && _emit(_context, dataset) == 0;
+}
+
+/// <summary>Target of siaara_worklist_callback: returns the final DIMSE status.</summary>
+internal interface IWorklistSink : ICallbackSink
+{
+    uint OnQuery(string callingAe, nint identifier, WorklistEmitter emitter);
+}
+
+/// <summary>Target of siaara_uid_change_callback.</summary>
+internal interface IUidChangeSink : ICallbackSink
+{
+    void OnUidChange(int index, string originalUid, string newUid);
+}
+
+/// <summary>Target of siaara_web_authorize_callback: true to allow.</summary>
+internal interface IWebAuthorizeSink : ICallbackSink
+{
+    bool Authorize(string method, string target, string authorization);
+}
+
+/// <summary>Target of siaara_web_progress_callback. Returns 0 to continue.</summary>
+internal interface IWebProgressSink : ICallbackSink
+{
+    int OnProgress(uint parts, ulong bytes, ulong totalBytes);
 }
 
 /// <summary>Target of siaara_log_callback.</summary>
@@ -85,6 +131,15 @@ internal static unsafe class Callbacks
     internal static nint ScpEventPointer => (nint)(delegate* unmanaged[Cdecl]<void*, siaara_scp_event*, void>)&ScpEvent;
 
     internal static nint LogPointer => (nint)(delegate* unmanaged[Cdecl]<void*, int, int, byte*, void>)&Log;
+
+    internal static nint WorklistPointer =>
+        (nint)(delegate* unmanaged[Cdecl]<void*, byte*, nint, delegate* unmanaged[Cdecl]<void*, nint, int>, void*, uint>)&Worklist;
+
+    internal static nint UidChangePointer => (nint)(delegate* unmanaged[Cdecl]<void*, uint, byte*, byte*, void>)&UidChange;
+
+    internal static nint WebAuthorizePointer => (nint)(delegate* unmanaged[Cdecl]<void*, byte*, byte*, byte*, int>)&WebAuthorize;
+
+    internal static nint WebProgressPointer => (nint)(delegate* unmanaged[Cdecl]<void*, uint, ulong, ulong, int>)&WebProgress;
 
     /// <summary>Length of the string table a record refers to (largest offset + length + NUL).</summary>
     internal static int StringTableLength(in siaara_index_record record)
@@ -243,10 +298,17 @@ internal static unsafe class Callbacks
         {
             if (e != null)
             {
-                Sink<IScpSink>(user)?.OnEvent(e->kind, (int)e->dimse_status, e->outcome,
-                    Marshal.PtrToStringUTF8(e->calling_ae) ?? string.Empty,
-                    Marshal.PtrToStringUTF8(e->sop_class_uid) ?? string.Empty,
-                    Marshal.PtrToStringUTF8(e->sop_instance_uid) ?? string.Empty);
+                static string S(nint p) => p == 0 ? string.Empty : Marshal.PtrToStringUTF8(p) ?? string.Empty;
+                // Fields after peer_address exist only when struct_size covers them (older libraries).
+                bool full = e->struct_size >= (uint)sizeof(siaara_scp_event);
+                var d = new ScpEventData(e->kind, (int)e->dimse_status, e->outcome, S(e->calling_ae), S(e->sop_class_uid),
+                    S(e->sop_instance_uid), S(e->peer_address),
+                    full && e->uid_mismatch != 0, full ? S(e->command_sop_class_uid) : string.Empty,
+                    full ? S(e->command_sop_instance_uid) : string.Empty, full ? S(e->original_sop_instance_uid) : string.Empty,
+                    full ? S(e->transaction_uid) : string.Empty, full ? S(e->destination_ae) : string.Empty,
+                    full ? e->dataset : 0, full ? (int)e->completed : 0, full ? (int)e->failed : 0, full ? (int)e->warning : 0,
+                    full ? (int)e->command_field : 0);
+                Sink<IScpSink>(user)?.OnEvent(in d);
             }
         }
 #pragma warning disable CA1031 // a callback must never let an exception reach native code
@@ -254,6 +316,77 @@ internal static unsafe class Callbacks
 #pragma warning restore CA1031
         {
             Report(user, ex);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static uint Worklist(void* user, byte* calling, nint identifier, delegate* unmanaged[Cdecl]<void*, nint, int> emit,
+        void* context)
+    {
+        try
+        {
+            IWorklistSink? sink = Sink<IWorklistSink>(user);
+            return sink is null ? 0xC000u
+                : sink.OnQuery(Marshal.PtrToStringUTF8((nint)calling) ?? string.Empty, identifier, new WorklistEmitter(emit, context));
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+            return 0xC000u;  // Unable to process
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void UidChange(void* user, uint index, byte* original, byte* changed)
+    {
+        try
+        {
+            Sink<IUidChangeSink>(user)?.OnUidChange((int)index, Marshal.PtrToStringUTF8((nint)original) ?? string.Empty,
+                Marshal.PtrToStringUTF8((nint)changed) ?? string.Empty);
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int WebAuthorize(void* user, byte* method, byte* target, byte* authorization)
+    {
+        try
+        {
+            IWebAuthorizeSink? sink = Sink<IWebAuthorizeSink>(user);
+            return sink is not null && sink.Authorize(Marshal.PtrToStringUTF8((nint)method) ?? string.Empty,
+                Marshal.PtrToStringUTF8((nint)target) ?? string.Empty, Marshal.PtrToStringUTF8((nint)authorization) ?? string.Empty)
+                ? 1 : 0;
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+            return 0;  // deny
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int WebProgress(void* user, uint parts, ulong bytes, ulong total)
+    {
+        try
+        {
+            IWebProgressSink? sink = Sink<IWebProgressSink>(user);
+            return sink is null ? 1 : sink.OnProgress(parts, bytes, total);
+        }
+#pragma warning disable CA1031 // a callback must never let an exception reach native code
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Report(user, e);
+            return 1;
         }
     }
 

@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "capi/capi_internal.hpp"
+#include "capi/capi_net_internal.hpp"
+#include "codec/transcode.hpp"
 #include "core/io.hpp"
 #include "core/reader.hpp"
 #include "core/writer.hpp"
@@ -68,6 +70,10 @@ LogState& log_state() {
     static LogState s;
     return s;
 }
+
+}  // namespace
+
+namespace siaara::capi::dimse {
 
 // ---------------------------------------------------------------- DIMSE helpers
 std::string hex4(unsigned v) {
@@ -219,6 +225,7 @@ std::string_view model_find(int32_t m) {
         case SIAARA_QR_PATIENT_ROOT: return net::sop::PatientRootFind;
         case SIAARA_QR_STUDY_ROOT: return net::sop::StudyRootFind;
         case SIAARA_QR_WORKLIST: return net::sop::ModalityWorklistFind;
+        case SIAARA_QR_UPS: return net::sop::UpsQuery;
         default: return {};
     }
 }
@@ -259,7 +266,7 @@ std::string join_path(const std::string& dir, const std::string& name) {
 // as it is (no check-then-write race) and `kept_existing` is set; the peer still gets Success.
 std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st::DuplicatePolicy policy,
                             const std::string& folder, int32_t* outcome, std::string& error,
-                            bool* kept_existing = nullptr) {
+                            bool* kept_existing) {
     if (kept_existing) *kept_existing = false;
     std::vector<std::uint8_t> bytes;
     if (Status s = net::encode_received_part10(rq, bytes); !s) {
@@ -304,7 +311,19 @@ void fill_progress(siaara_dimse_result& p, const net::RetrieveProgress& r) {
     p.warning = r.warning;
 }
 
-}  // namespace
+uint32_t accepted_qr_flags(const net::Association& a, std::string_view sop_class, bool is_find) {
+    const net::QueryFlags f = net::negotiated_query_flags(a, sop_class, is_find);
+    uint32_t out = 0;
+    if (f.relational) out |= SIAARA_QR_RELATIONAL;
+    if (f.combined_datetime) out |= SIAARA_QR_COMBINED_DATETIME;
+    if (f.fuzzy_person_names) out |= SIAARA_QR_FUZZY_NAMES;
+    if (f.timezone_adjustment) out |= SIAARA_QR_TIMEZONE;
+    return out;
+}
+
+}  // namespace siaara::capi::dimse
+
+using namespace siaara::capi::dimse;  // NOLINT(google-build-using-namespace)
 
 // ---------------------------------------------------------------- internal logging API
 namespace siaara::capi {
@@ -350,111 +369,99 @@ std::function<void(const std::string&)> log_sink(int level) {
 
 }  // namespace siaara::capi
 
-// ---------------------------------------------------------------- the SCP handle
-// Events go through a bounded queue to one dispatcher thread, which calls the user's callback
-// with no toolkit lock held (R-070): a slow callback delays only the event queue, and the
-// associations only once the queue is full (back-pressure, so no event is lost).
-struct siaara_scp {
-    struct Event {
-        int32_t kind = 0;
-        std::uint16_t status = 0;
-        int32_t outcome = 0;
-        int32_t uid_mismatch = 0;
-        std::string calling, cls, inst, addr, cmd_cls, cmd_inst;
-    };
-    static constexpr std::size_t kMaxQueued = 1024;
-
-    std::unique_ptr<net::ScpServer> server;
-    siaara_store* store = nullptr;
-    st::DuplicatePolicy policy = st::DuplicatePolicy::Keep;
-    siaara_scp_callback cb = nullptr;
-    void* user = nullptr;
-    std::mutex q_mu;
-    std::condition_variable q_cv;       // events queued / dispatcher stopping
-    std::condition_variable space_cv;   // room in the queue
-    std::deque<Event> queue;
-    bool closing = false;
-    std::thread dispatcher;
-    std::atomic<std::uint64_t> stored{0}, failures{0}, echoes{0}, bytes{0};
-    siaara::capi::LiveHandle live_{};
-
-    void start_dispatcher() {
-        if (cb) dispatcher = std::thread([this] { dispatch_loop(); });
-    }
-    bool on_dispatcher() const noexcept { return dispatcher.joinable() && dispatcher.get_id() == std::this_thread::get_id(); }
-
-    // Stops the server (joins its threads, so no new events), then delivers what is queued and
-    // ends the dispatcher, before the members its handlers use go away.
-    ~siaara_scp() {
-        if (server) server->stop();
+// ---------------------------------------------------------------- the SCP handle (capi_net_internal.hpp)
+void siaara_scp::dispatch_loop() {
+    for (;;) {
+        Event ev;
         {
-            const std::lock_guard<std::mutex> l(q_mu);
-            closing = true;
-        }
-        q_cv.notify_all();
-        space_cv.notify_all();
-        if (dispatcher.joinable()) dispatcher.join();
-    }
-
-    void dispatch_loop() {
-        for (;;) {
-            Event ev;
-            {
-                std::unique_lock<std::mutex> l(q_mu);
-                q_cv.wait(l, [&] { return closing || !queue.empty(); });
-                if (queue.empty()) return;
-                ev = std::move(queue.front());
-                queue.pop_front();
-            }
-            space_cv.notify_one();
-            siaara_scp_event e{};
-            e.struct_size = sizeof e;
-            e.kind = ev.kind;
-            e.dimse_status = ev.status;
-            e.outcome = ev.outcome;
-            e.calling_ae = ev.calling.c_str();
-            e.sop_class_uid = ev.cls.c_str();
-            e.sop_instance_uid = ev.inst.c_str();
-            e.peer_address = ev.addr.c_str();
-            e.uid_mismatch = ev.uid_mismatch;
-            e.command_sop_class_uid = ev.cmd_cls.c_str();
-            e.command_sop_instance_uid = ev.cmd_inst.c_str();
-            try {
-                cb(user, &e);
-            } catch (...) {
-                siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-    }
-
-    void event(int32_t kind, std::uint16_t status, int32_t outcome, const std::string& calling, const std::string& cls,
-               const std::string& inst, const std::string& addr, const net::StoreRequest* rq = nullptr) {
-        if (!cb) return;
-        try {
-            Event ev;
-            ev.kind = kind;
-            ev.status = status;
-            ev.outcome = outcome;
-            ev.calling = calling;
-            ev.cls = cls;
-            ev.inst = inst;
-            ev.addr = addr;
-            if (rq && rq->uid_mismatch) {
-                ev.uid_mismatch = 1;
-                ev.cmd_cls = rq->command_sop_class_uid;
-                ev.cmd_inst = rq->command_sop_instance_uid;
-            }
             std::unique_lock<std::mutex> l(q_mu);
-            space_cv.wait(l, [&] { return closing || queue.size() < kMaxQueued; });
-            if (closing) return;
-            queue.push_back(std::move(ev));
-            l.unlock();
-            q_cv.notify_one();
+            q_cv.wait(l, [&] { return closing || !queue.empty(); });
+            if (queue.empty()) return;
+            ev = std::move(queue.front());
+            queue.pop_front();
+        }
+        space_cv.notify_one();
+        siaara_scp_event e{};
+        e.struct_size = sizeof e;
+        e.kind = ev.kind;
+        e.dimse_status = ev.status;
+        e.outcome = ev.outcome;
+        e.calling_ae = ev.calling.c_str();
+        e.sop_class_uid = ev.cls.c_str();
+        e.sop_instance_uid = ev.inst.c_str();
+        e.peer_address = ev.addr.c_str();
+        e.uid_mismatch = ev.uid_mismatch;
+        e.command_sop_class_uid = ev.cmd_cls.c_str();
+        e.command_sop_instance_uid = ev.cmd_inst.c_str();
+        e.original_sop_instance_uid = ev.original_inst.c_str();
+        e.transaction_uid = ev.transaction_uid.c_str();
+        e.destination_ae = ev.destination.c_str();
+        e.dataset = ev.dataset ? reinterpret_cast<const siaara_dataset*>(&*ev.dataset) : nullptr;
+        e.completed = ev.completed;
+        e.failed = ev.failed;
+        e.warning = ev.warning;
+        e.command_field = ev.command_field;
+        try {
+            cb(user, &e);
         } catch (...) {
             siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
         }
     }
-};
+}
+
+void siaara_scp::post(Event ev) {
+    if (!cb) return;
+    try {
+        bool dropped_now = false;
+        {
+            std::unique_lock<std::mutex> l(q_mu);
+            // R-094: never wait unbounded; once stopping, never wait at all.
+            if (!stopping && queue.size() >= max_queued)
+                (void)space_cv.wait_for(l, kMaxWait, [&] { return closing || stopping || queue.size() < max_queued; });
+            if (closing || queue.size() >= max_queued) {
+                dropped_now = true;
+            } else {
+                queue.push_back(std::move(ev));
+            }
+        }
+        if (dropped_now) {
+            dropped.fetch_add(1, std::memory_order_relaxed);
+            if (!drop_logged.exchange(true))
+                capi::log(SIAARA_LOG_WARNING, false,
+                          "SCP: the event callback is not keeping up; events are being dropped "
+                          "(see siaara_scp_stats.events_dropped)");
+            return;
+        }
+        q_cv.notify_one();
+    } catch (...) {
+        siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void siaara_scp::event(int32_t kind, std::uint16_t status, int32_t outcome, const std::string& calling,
+                       const std::string& cls, const std::string& inst, const std::string& addr,
+                       const net::StoreRequest* rq) {
+    if (!cb) return;
+    try {
+        Event ev;
+        ev.kind = kind;
+        ev.status = status;
+        ev.outcome = outcome;
+        ev.calling = calling;
+        ev.cls = cls;
+        ev.inst = inst;
+        ev.addr = addr;
+        if (rq && rq->uid_mismatch) {
+            ev.uid_mismatch = 1;
+            ev.cmd_cls = rq->command_sop_class_uid;
+            ev.cmd_inst = rq->command_sop_instance_uid;
+        }
+        if (rq) ev.original_inst = rq->original_sop_instance_uid;
+        post(std::move(ev));
+    } catch (...) {
+        siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+    }
+}
 
 namespace {
 // From the SCP callback, freeing would join the thread it runs on: refused (the handle stays valid).
@@ -466,6 +473,105 @@ void free_scp(siaara_scp* scp) noexcept {
     delete scp;
 }
 }  // namespace
+
+namespace siaara::capi::dimse {
+
+siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg) {
+    if (!o || o->struct_size < offsetof(siaara_scp_options, tls) + sizeof(void*))
+        return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+    const auto has = [&](std::size_t end) { return o->struct_size >= end; };
+    if (o->port > 65535) return fail(Errc::InvalidArgument, "port must be 0..65535");
+    if (o->allowed_count && !o->allowed_calling_aes) return fail(Errc::InvalidArgument, "allowed_calling_aes is NULL");
+    if (o->duplicate_policy != SIAARA_DUP_KEEP && o->duplicate_policy != SIAARA_DUP_REPLACE)
+        return fail(Errc::InvalidArgument, "unknown duplicate_policy");
+    if (o->idle_timeout_ms < 0 || o->dimse_timeout_ms < 0) return fail(Errc::InvalidArgument, "timeouts must not be negative");
+    cfg = net::ScpConfig{};
+    if (o->ae_title) cfg.ae_title = o->ae_title;
+    if (!ae_ok(cfg.ae_title)) return fail(Errc::InvalidArgument, "ae_title is not a valid AE title");
+    if (o->bind_address) cfg.bind_address = o->bind_address;
+    cfg.port = static_cast<std::uint16_t>(o->port);
+    for (uint32_t i = 0; i < o->allowed_count; ++i) {
+        if (!o->allowed_calling_aes[i]) return fail(Errc::InvalidArgument, "allowed_calling_aes entry is NULL");
+        cfg.allowed_calling_aes.emplace_back(o->allowed_calling_aes[i]);
+    }
+    cfg.allow_any_calling_ae = o->allow_any_calling_ae != 0;
+    if (cfg.allowed_calling_aes.empty() && !cfg.allow_any_calling_ae)
+        return fail(Errc::InvalidArgument, "no allowed_calling_aes: list the peers, or set allow_any_calling_ae");
+    if (o->max_associations) cfg.max_associations = o->max_associations;
+    // R-074: bounded so that associations x in-memory data set (the spool threshold) stays modest.
+    if (cfg.max_associations > 64) return fail(Errc::InvalidArgument, "max_associations must be at most 64");
+    cfg.require_called_ae = o->accept_any_called_ae == 0;
+    cfg.accept_any_sop_class = o->accept_any_sop_class != 0;
+    cfg.transfer_syntaxes = net::native_transfer_syntaxes();
+    if (o->accept_compressed)
+        cfg.transfer_syntaxes.insert(cfg.transfer_syntaxes.end(), compressed_syntaxes().begin(), compressed_syntaxes().end());
+    if (o->idle_timeout_ms) cfg.timeouts.idle_ms = o->idle_timeout_ms;
+    if (o->dimse_timeout_ms) cfg.timeouts.dimse_ms = o->dimse_timeout_ms;
+    if (o->max_pdu) {
+        if (o->max_pdu < 4096) return fail(Errc::InvalidArgument, "max_pdu must be at least 4096");
+        cfg.limits.max_receive_pdu = o->max_pdu;
+        cfg.limits.pdu.max_pdu_length = std::max<std::uint64_t>(cfg.limits.pdu.max_pdu_length, o->max_pdu);
+    }
+    if (o->tls) {
+        if (o->tls->struct_size < sizeof(siaara_tls_options)) return fail(Errc::InvalidArgument, "tls->struct_size is too small");
+        cfg.tls = capi::tls_settings(o->tls);
+        cfg.tls.log = capi::log_sink(SIAARA_LOG_INFO);
+    }
+    if (has(offsetof(siaara_scp_options, strict_store_uids) + sizeof(int32_t)))
+        cfg.strict_store_uids = o->strict_store_uids != 0;
+    // R-074: always receive large data sets to disk, with the quota and free-space floor.
+    net::SpoolConfig spool;
+    spool.threshold = 16ull << 20;
+    if (has(offsetof(siaara_scp_options, spool_directory) + sizeof(void*)) && o->spool_directory)
+        spool.directory = o->spool_directory;
+    if (has(offsetof(siaara_scp_options, spool_threshold) + sizeof(uint64_t)) && o->spool_threshold)
+        spool.threshold = o->spool_threshold;
+    if (has(offsetof(siaara_scp_options, spool_max_total_bytes) + sizeof(uint64_t)))
+        spool.max_total_bytes = o->spool_max_total_bytes;
+    if (has(offsetof(siaara_scp_options, spool_min_free_disk_bytes) + sizeof(uint64_t)) && o->spool_min_free_disk_bytes)
+        spool.min_free_disk_bytes = o->spool_min_free_disk_bytes;
+    cfg.spool = spool;
+    return SIAARA_OK;
+}
+
+void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
+        hd.on_echo = [raw](const std::string& calling) -> std::uint16_t {
+            raw->echoes.fetch_add(1, std::memory_order_relaxed);
+            raw->event(SIAARA_SCP_ECHO, net::dimse_status::Success, 0, calling, "", "", "");  // never throws
+            return net::dimse_status::Success;
+        };
+        hd.on_store = [raw](const net::StoreRequest& rq) noexcept -> std::uint16_t {
+          // Runs on the server's threads: no exception may leave it (out of memory -> 0xA700).
+          try {
+            std::string err;
+            int32_t outcome = SIAARA_ADD_ADDED;
+            const std::uint16_t s = keep_instance(rq, raw->store, raw->policy, std::string(), &outcome, err);
+            if (s == net::dimse_status::Success) {
+                raw->stored.fetch_add(1, std::memory_order_relaxed);
+                raw->bytes.fetch_add(rq.raw.size(), std::memory_order_relaxed);
+                if (rq.uid_mismatch)
+                    capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid +
+                                                            " stored under its data set's UIDs; the C-STORE command said " +
+                                                            rq.command_sop_class_uid + " / " + rq.command_sop_instance_uid);
+                raw->event(SIAARA_SCP_STORED, s, outcome, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, rq.peer_address,
+                           &rq);
+            } else {
+                raw->failures.fetch_add(1, std::memory_order_relaxed);
+                capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid + " not stored: " + err);
+                raw->event(SIAARA_SCP_STORE_FAILED, s, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, rq.peer_address,
+                           &rq);
+            }
+            return s;
+          } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+            raw->failures.fetch_add(1, std::memory_order_relaxed);
+            return net::dimse_status::OutOfResources;
+          }
+        };
+        hd.log = capi::log_sink(SIAARA_LOG_INFO);
+}
+
+}  // namespace siaara::capi::dimse
 
 extern "C" {
 
@@ -564,8 +670,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_echo(const siaara_dimse_peer* 
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* peer, int32_t model,
-                                                       const siaara_dataset* identifier, siaara_cancel* cancel,
+extern "C++" {
+namespace siaara::capi::dimse {
+
+siaara_status find_impl(const siaara_dimse_peer* peer, int32_t model,
+                                                       const siaara_dataset* identifier, siaara_qr_options* qo, siaara_cancel* cancel,
                                                        siaara_find_callback cb, void* user, siaara_dimse_result* result) {
     return guarded([&]() -> siaara_status {
         if (!result_ok(result)) return fail(Errc::InvalidArgument, "result must be set up with struct_size");
@@ -573,13 +682,27 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* 
         if (!identifier) return fail(Errc::InvalidArgument, "identifier must not be NULL");
         const std::string_view cls = model_find(model);
         if (cls.empty()) return fail(Errc::InvalidArgument, "unknown model");
+        if (qo && qo->struct_size < sizeof(siaara_qr_options))
+            return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        if (qo) qo->accepted_flags = 0;
+        const uint32_t flags = qo ? qo->flags : 0;
+        const uint32_t max_matches = qo ? qo->max_matches : 0;
         net::ScuConfig c;
         if (siaara_status s = peer_config(peer, c); s != SIAARA_OK) return s;
+        if (flags != 0 && model != SIAARA_QR_WORKLIST) {
+            net::QueryFlags qf;
+            qf.relational = (flags & SIAARA_QR_RELATIONAL) != 0;
+            qf.combined_datetime = (flags & SIAARA_QR_COMBINED_DATETIME) != 0;
+            qf.fuzzy_person_names = (flags & SIAARA_QR_FUZZY_NAMES) != 0;
+            qf.timezone_adjustment = (flags & SIAARA_QR_TIMEZONE) != 0;
+            c.extended_negotiation.push_back(net::find_extended_negotiation(cls, qf));
+        }
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
         if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (qo && scu.association()) qo->accepted_flags = accepted_qr_flags(*scu.association(), cls, true);
         siaara_status out = SIAARA_OK;
-        bool aborted = false, stopped = false;
+        bool aborted = false, stopped = false, limited = false;
         std::uint32_t matches = 0;
         {
             capi::CancelScope scope(cancel, interrupter(scu));
@@ -588,6 +711,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* 
                 if (scope.cancelled()) return false;
                 if (cb && cb(user, reinterpret_cast<const siaara_dataset*>(&m)) != 0) {
                     stopped = true;
+                    return false;
+                }
+                if (max_matches != 0 && matches >= max_matches) {
+                    limited = true;  // our own C-CANCEL: not an error
                     return false;
                 }
                 return true;
@@ -599,7 +726,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* 
             } else {
                 if (result) result->status = r->status;
                 out = stopped || scope.cancelled() ? fail(Errc::Cancelled, "C-FIND cancelled")
-                                                   : dimse_outcome(r->status, "C-FIND");
+                      : limited && net::classify_status(r->status) == net::StatusClass::Cancel
+                          ? ok()
+                          : dimse_outcome(r->status, "C-FIND");
             }
         }
         finish(scu, aborted);
@@ -607,8 +736,20 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* 
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* peer, int32_t model,
-                                                       const siaara_dataset* identifier, const char* destination_ae,
+}  // namespace siaara::capi::dimse
+}  // extern "C++"
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_find(const siaara_dimse_peer* peer, int32_t model,
+                                                       const siaara_dataset* identifier, siaara_cancel* cancel,
+                                                       siaara_find_callback cb, void* user, siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status { return find_impl(peer, model, identifier, nullptr, cancel, cb, user, result); });
+}
+
+extern "C++" {
+namespace siaara::capi::dimse {
+
+siaara_status move_impl(const siaara_dimse_peer* peer, int32_t model,
+                                                       const siaara_dataset* identifier, const char* destination_ae, siaara_qr_options* qo,
                                                        siaara_cancel* cancel, siaara_dimse_progress_callback cb,
                                                        void* user, siaara_dimse_result* result) {
     return guarded([&]() -> siaara_status {
@@ -619,11 +760,17 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* 
         if (!ae_ok(dest)) return fail(Errc::InvalidArgument, "destination_ae is not a valid AE title");
         const std::string_view cls = model_move(model);
         if (cls.empty()) return fail(Errc::InvalidArgument, "model must be SIAARA_QR_PATIENT_ROOT or SIAARA_QR_STUDY_ROOT");
+        if (qo && qo->struct_size < sizeof(siaara_qr_options))
+            return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        if (qo) qo->accepted_flags = 0;
         net::ScuConfig c;
         if (siaara_status s = peer_config(peer, c); s != SIAARA_OK) return s;
+        if (qo && (qo->flags & SIAARA_QR_RELATIONAL) != 0)
+            c.extended_negotiation.push_back(net::retrieve_extended_negotiation(cls, true));
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
         if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (qo && scu.association()) qo->accepted_flags = accepted_qr_flags(*scu.association(), cls, false);
         siaara_status out = SIAARA_OK;
         bool aborted = false, stopped = false;
         {
@@ -659,8 +806,21 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* 
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* peer, int32_t model,
-                                                      const siaara_dataset* identifier, const siaara_get_options* options,
+}  // namespace siaara::capi::dimse
+}  // extern "C++"
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* peer, int32_t model,
+                                                       const siaara_dataset* identifier, const char* destination_ae,
+                                                       siaara_cancel* cancel, siaara_dimse_progress_callback cb,
+                                                       void* user, siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status { return move_impl(peer, model, identifier, destination_ae, nullptr, cancel, cb, user, result); });
+}
+
+extern "C++" {
+namespace siaara::capi::dimse {
+
+siaara_status get_impl(const siaara_dimse_peer* peer, int32_t model,
+                                                      const siaara_dataset* identifier, const siaara_get_options* options, siaara_qr_options* qo,
                                                       siaara_cancel* cancel, siaara_dimse_progress_callback cb, void* user,
                                                       siaara_dimse_result* result) {
     return guarded([&]() -> siaara_status {
@@ -690,10 +850,16 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
         if (!options->native_only) ts.insert(ts.end(), compressed_syntaxes().begin(), compressed_syntaxes().end());
         if (options->struct_size >= offsetof(siaara_get_options, strict_store_uids) + sizeof(int32_t))
             c.strict_store_uids = options->strict_store_uids != 0;
+        if (qo && qo->struct_size < sizeof(siaara_qr_options))
+            return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        if (qo) qo->accepted_flags = 0;
+        if (qo && (qo->flags & SIAARA_QR_RELATIONAL) != 0)
+            c.extended_negotiation.push_back(net::retrieve_extended_negotiation(cls, true));
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
         for (const std::string& k : classes) scu.add_get_storage(k, ts);
         if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (qo && scu.association()) qo->accepted_flags = accepted_qr_flags(*scu.association(), cls, false);
         const st::DuplicatePolicy policy =
             options->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
         const std::string folder = options->folder ? options->folder : "";
@@ -760,6 +926,16 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* p
     });
 }
 
+}  // namespace siaara::capi::dimse
+}  // extern "C++"
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_get(const siaara_dimse_peer* peer, int32_t model,
+                                                      const siaara_dataset* identifier, const siaara_get_options* options,
+                                                      siaara_cancel* cancel, siaara_dimse_progress_callback cb, void* user,
+                                                      siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status { return get_impl(peer, model, identifier, options, nullptr, cancel, cb, user, result); });
+}
+
 extern "C++" {  // internal helpers inside the extern "C" block keep C++ linkage
 namespace {
 
@@ -782,6 +958,14 @@ siaara_status propose_store(net::Scu& scu, const std::vector<std::pair<std::stri
             if (c2 == cls && t2 == siaara::ts::ExplicitVRLittleEndian) have = true;
         if (!have) scu.add_context(cls, net::native_transfer_syntaxes());
     }
+    // And the compressed syntaxes the transcoder can write, so a peer that accepts only those (a
+    // lossy-only archive, for instance) still gets the instance; whether lossy coding may be used
+    // is decided per instance by allow_lossy_transcode (R-093 keeps the UIDs consistent).
+    std::vector<std::string> encodable;
+    for (const std::string& t : compressed_syntaxes())
+        if (siaara::codec::can_encode(t)) encodable.push_back(t);
+    if (!encodable.empty() && scu.proposals().size() + classes.size() <= 128)
+        for (const std::string& cls : classes) scu.add_context(cls, encodable);
     if (scu.proposals().size() > 128) return fail(Errc::LimitExceeded, "more than 128 presentation contexts needed: store in smaller batches");
     if (scu.proposals().empty()) return fail(Errc::InvalidArgument, "nothing to store");
     return SIAARA_OK;
@@ -796,9 +980,12 @@ std::string sop_class_of(const siaara::DicomFile& f) {
 }  // namespace
 }  // extern "C++"
 
-SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse_peer* peer, const char* const* paths,
+extern "C++" {
+namespace siaara::capi::dimse {
+
+siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const* paths,
                                                               const size_t* lens, uint32_t count, siaara_cancel* cancel,
-                                                              siaara_dimse_progress_callback cb, void* user,
+                                                              siaara_dimse_progress_callback cb, siaara_uid_change_callback uid_cb, void* user,
                                                               siaara_dimse_result* result) {
     return guarded([&]() -> siaara_status {
         if (!result_ok(result)) return fail(Errc::InvalidArgument, "result must be set up with struct_size");
@@ -844,7 +1031,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse
                     if (!f) {
                         capi::log(SIAARA_LOG_WARNING, false, "C-STORE: input file " + std::to_string(i) + ": " + f.error().message);
                     } else {
-                        auto r = scu.store(*f);
+                        net::StoreSent sent;
+                        auto r = scu.store(*f, {}, std::nullopt, &sent);
+                        if (sent.uid_changed && uid_cb)
+                            uid_cb(user, static_cast<uint32_t>(i), sent.original_sop_instance_uid.c_str(),
+                                   sent.sop_instance_uid.c_str());
                         if (!r) {
                             if (!scu.connected() || scope.cancelled()) {
                                 transport = r.error();
@@ -886,8 +1077,21 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store(const siaara_dimse_peer* peer, const siaara_file* file,
-                                                        siaara_cancel* cancel, siaara_dimse_result* result) {
+}  // namespace siaara::capi::dimse
+}  // extern "C++"
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store_files(const siaara_dimse_peer* peer, const char* const* paths,
+                                                              const size_t* lens, uint32_t count, siaara_cancel* cancel,
+                                                              siaara_dimse_progress_callback cb, void* user,
+                                                              siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status { return store_files_impl(peer, paths, lens, count, cancel, cb, nullptr, user, result); });
+}
+
+extern "C++" {
+namespace siaara::capi::dimse {
+
+siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file,
+                                                        siaara_cancel* cancel, siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result) {
     return guarded([&]() -> siaara_status {
         if (!result_ok(result)) return fail(Errc::InvalidArgument, "result must be set up with struct_size");
         result_init(result);
@@ -903,7 +1107,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store(const siaara_dimse_peer*
         bool aborted = false;
         {
             capi::CancelScope scope(cancel, interrupter(scu));
-            auto r = scu.store(file->file);
+            net::StoreSent sent;
+            auto r = scu.store(file->file, {}, std::nullopt, &sent);
+            if (sent.uid_changed && uid_cb)
+                uid_cb(user, 0, sent.original_sop_instance_uid.c_str(), sent.sop_instance_uid.c_str());
             if (!r) {
                 out = op_error(r.error(), scope);
                 aborted = !scu.connected() || scope.cancelled();
@@ -921,6 +1128,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store(const siaara_dimse_peer*
         finish(scu, aborted);
         return out;
     });
+}
+
+}  // namespace siaara::capi::dimse
+}  // extern "C++"
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dimse_store(const siaara_dimse_peer* peer, const siaara_file* file,
+                                                        siaara_cancel* cancel, siaara_dimse_result* result) {
+    return guarded([&]() -> siaara_status { return store_impl(peer, file, cancel, nullptr, nullptr, result); });
 }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit(const siaara_dimse_peer* peer, const char* const* sop_classes,
@@ -1008,94 +1223,20 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
     return guarded([&]() -> siaara_status {
         if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
         *out = nullptr;
-        if (!o || o->struct_size < offsetof(siaara_scp_options, tls) + sizeof(void*))
-            return fail(Errc::InvalidArgument, "options must be set up with struct_size");
-        const auto has = [&](std::size_t end) { return o->struct_size >= end; };
         if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
-        if (o->port > 65535) return fail(Errc::InvalidArgument, "port must be 0..65535");
-        if (o->allowed_count && !o->allowed_calling_aes) return fail(Errc::InvalidArgument, "allowed_calling_aes is NULL");
-        if (o->duplicate_policy != SIAARA_DUP_KEEP && o->duplicate_policy != SIAARA_DUP_REPLACE)
-            return fail(Errc::InvalidArgument, "unknown duplicate_policy");
-        if (o->idle_timeout_ms < 0 || o->dimse_timeout_ms < 0) return fail(Errc::InvalidArgument, "timeouts must not be negative");
         net::ScpConfig cfg;
-        if (o->ae_title) cfg.ae_title = o->ae_title;
-        if (!ae_ok(cfg.ae_title)) return fail(Errc::InvalidArgument, "ae_title is not a valid AE title");
-        if (o->bind_address) cfg.bind_address = o->bind_address;
-        cfg.port = static_cast<std::uint16_t>(o->port);
-        for (uint32_t i = 0; i < o->allowed_count; ++i) {
-            if (!o->allowed_calling_aes[i]) return fail(Errc::InvalidArgument, "allowed_calling_aes entry is NULL");
-            cfg.allowed_calling_aes.emplace_back(o->allowed_calling_aes[i]);
-        }
-        cfg.allow_any_calling_ae = o->allow_any_calling_ae != 0;
-        if (cfg.allowed_calling_aes.empty() && !cfg.allow_any_calling_ae)
-            return fail(Errc::InvalidArgument, "no allowed_calling_aes: list the peers, or set allow_any_calling_ae");
-        if (o->max_associations) cfg.max_associations = o->max_associations;
-        // R-074: bounded so that associations x in-memory data set (the spool threshold) stays modest.
-        if (cfg.max_associations > 64) return fail(Errc::InvalidArgument, "max_associations must be at most 64");
-        cfg.require_called_ae = o->accept_any_called_ae == 0;
-        cfg.accept_any_sop_class = o->accept_any_sop_class != 0;
-        cfg.transfer_syntaxes = net::native_transfer_syntaxes();
-        if (o->accept_compressed)
-            cfg.transfer_syntaxes.insert(cfg.transfer_syntaxes.end(), compressed_syntaxes().begin(), compressed_syntaxes().end());
-        if (o->idle_timeout_ms) cfg.timeouts.idle_ms = o->idle_timeout_ms;
-        if (o->dimse_timeout_ms) cfg.timeouts.dimse_ms = o->dimse_timeout_ms;
-        if (o->max_pdu) {
-            if (o->max_pdu < 4096) return fail(Errc::InvalidArgument, "max_pdu must be at least 4096");
-            cfg.limits.max_receive_pdu = o->max_pdu;
-            cfg.limits.pdu.max_pdu_length = std::max<std::uint64_t>(cfg.limits.pdu.max_pdu_length, o->max_pdu);
-        }
-        if (o->tls) {
-            if (o->tls->struct_size < sizeof(siaara_tls_options)) return fail(Errc::InvalidArgument, "tls->struct_size is too small");
-            cfg.tls = capi::tls_settings(o->tls);
-        }
-        if (has(offsetof(siaara_scp_options, strict_store_uids) + sizeof(int32_t)))
-            cfg.strict_store_uids = o->strict_store_uids != 0;
-        // R-074: always receive large data sets to disk, with the quota and free-space floor.
-        net::SpoolConfig spool;
-        spool.threshold = 16ull << 20;
-        if (has(offsetof(siaara_scp_options, spool_directory) + sizeof(void*)) && o->spool_directory)
-            spool.directory = o->spool_directory;
-        if (has(offsetof(siaara_scp_options, spool_threshold) + sizeof(uint64_t)) && o->spool_threshold)
-            spool.threshold = o->spool_threshold;
-        if (has(offsetof(siaara_scp_options, spool_max_total_bytes) + sizeof(uint64_t)))
-            spool.max_total_bytes = o->spool_max_total_bytes;
-        if (has(offsetof(siaara_scp_options, spool_min_free_disk_bytes) + sizeof(uint64_t)) && o->spool_min_free_disk_bytes)
-            spool.min_free_disk_bytes = o->spool_min_free_disk_bytes;
-        cfg.spool = spool;
+        if (siaara_status s = scp_config(o, cfg); s != SIAARA_OK) return s;
+        const auto has = [&](std::size_t end) { return o->struct_size >= end; };
         auto h = std::make_unique<siaara_scp>();
         h->store = store;
         h->policy = o->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
         h->cb = cb;
         h->user = user;
+        if (has(offsetof(siaara_scp_options, event_queue_limit) + sizeof(uint32_t)) && o->event_queue_limit)
+            h->max_queued = o->event_queue_limit;
         h->start_dispatcher();
-        siaara_scp* raw = h.get();
         net::ScpHandlers hd;
-        hd.on_echo = [raw](const std::string& calling) -> std::uint16_t {
-            raw->echoes.fetch_add(1, std::memory_order_relaxed);
-            raw->event(SIAARA_SCP_ECHO, net::dimse_status::Success, 0, calling, "", "", "");
-            return net::dimse_status::Success;
-        };
-        hd.on_store = [raw](const net::StoreRequest& rq) -> std::uint16_t {
-            std::string err;
-            int32_t outcome = SIAARA_ADD_ADDED;
-            const std::uint16_t s = keep_instance(rq, raw->store, raw->policy, std::string(), &outcome, err);
-            if (s == net::dimse_status::Success) {
-                raw->stored.fetch_add(1, std::memory_order_relaxed);
-                raw->bytes.fetch_add(rq.raw.size(), std::memory_order_relaxed);
-                if (rq.uid_mismatch)
-                    capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid +
-                                                            " stored under its data set's UIDs; the C-STORE command said " +
-                                                            rq.command_sop_class_uid + " / " + rq.command_sop_instance_uid);
-                raw->event(SIAARA_SCP_STORED, s, outcome, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, "", &rq);
-            } else {
-                raw->failures.fetch_add(1, std::memory_order_relaxed);
-                capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid + " not stored: " + err);
-                raw->event(SIAARA_SCP_STORE_FAILED, s, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, "", &rq);
-            }
-            return s;
-        };
-        hd.log = capi::log_sink(SIAARA_LOG_INFO);
-        if (cfg.tls.enabled) cfg.tls.log = capi::log_sink(SIAARA_LOG_INFO);
+        storage_handlers(h.get(), hd);
         h->server = std::make_unique<net::ScpServer>(std::move(cfg), std::move(hd));
         if (Status s = h->server->start(); !s) return fail(s);
         capi::log(SIAARA_LOG_INFO, false, "Storage SCP listening on port " + std::to_string(h->server->port()));
@@ -1114,8 +1255,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_port(const siaara_scp* scp, uint
 
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp, siaara_scp_stats* out) {
     return guarded([&]() -> siaara_status {
-        if (!scp || !out || out->struct_size < sizeof(siaara_scp_stats))
-            return fail(Errc::InvalidArgument, "scp and out (with struct_size) must be set");
+        constexpr std::size_t v1 = offsetof(siaara_scp_stats, bytes_received) + sizeof(uint64_t);
+        if (!scp || !out || out->struct_size < v1) return fail(Errc::InvalidArgument, "scp and out (with struct_size) must be set");
+        const auto has = [&](std::size_t end) { return out->struct_size >= end; };
         out->reserved0 = 0;
         out->active_associations = scp->server->active_associations();
         out->associations_handled = scp->server->associations_handled();
@@ -1124,6 +1266,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp,
         out->store_failures = scp->failures.load();
         out->echoes = scp->echoes.load();
         out->bytes_received = scp->bytes.load();
+        if (has(offsetof(siaara_scp_stats, events_dropped) + sizeof(uint64_t))) out->events_dropped = scp->dropped.load();
+        if (has(offsetof(siaara_scp_stats, refused) + sizeof(uint64_t))) {
+            out->finds = scp->finds.load();
+            out->retrieves = scp->retrieves.load();
+            out->sub_operations = scp->sub_operations.load();
+            out->mpps = scp->mpps.load();
+            out->commitments = scp->commitments.load();
+            out->refused = scp->refused.load();
+        }
         return ok();
     });
 }
@@ -1132,7 +1283,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp) {
     return guarded([&]() -> siaara_status {
         if (!scp) return fail(Errc::InvalidArgument, "scp must not be NULL");
         if (scp->on_dispatcher()) return fail(Errc::InvalidArgument, "siaara_scp_stop must not be called from the SCP callback");
-        scp->server->stop();
+        scp->stop_server();  // R-094: producers stop waiting for room before the server joins them
         return ok();
     });
 }

@@ -155,6 +155,7 @@ struct siaara_web_client {
     std::optional<siaara::web::DicomwebClient> client;
     std::string authorization;
     std::string last_response;
+    std::uint64_t max_part_bytes = 0;       // siaara_web_wado_retrieve_to; 0: the body limit
     siaara::capi::CancelAttachment cancel;  // declared after `client`: detached before it is destroyed
     siaara::capi::LiveHandle live_{};
 };

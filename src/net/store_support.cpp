@@ -61,11 +61,12 @@ std::vector<const NegotiatedContext*> store_contexts(const Association& a, std::
 }
 
 Status encode_for_transfer_syntax(const DicomFile& file, std::string_view ts, const codec::TranscodeParams& p,
-                                  std::vector<std::uint8_t>& body) {
+                                  std::vector<std::uint8_t>& body, codec::TranscodeReport* report) {
     body.clear();
+    if (report) *report = codec::TranscodeReport{};
     if (ts == file.transfer_syntax || (is_native(ts) && is_native(file.transfer_syntax)))
         return write_dataset(file.dataset, ts, body);
-    Result<Dataset> t = codec::transcode_dataset(file.dataset, file.transfer_syntax, ts, p);
+    Result<Dataset> t = codec::transcode_dataset(file.dataset, file.transfer_syntax, ts, p, report);
     if (!t) return t.take_error();
     return write_dataset(*t, ts, body);
 }
@@ -77,12 +78,17 @@ Status convert_received(StoreRequest& rq, std::string_view ts, const codec::Tran
     f.dataset = rq.dataset;
     f.transfer_syntax = rq.transfer_syntax;
     auto body = std::make_shared<std::vector<std::uint8_t>>();
-    if (Status s = encode_for_transfer_syntax(f, ts, p, *body); !s) return s;
+    codec::TranscodeReport report;
+    if (Status s = encode_for_transfer_syntax(f, ts, p, *body, &report); !s) return s;
+    // R-093: a lossy conversion gave the instance a new SOP Instance UID; the file meta, the file
+    // name and the index must use it.
+    const std::string sop_instance = report.new_sop_instance_uid.empty() ? rq.sop_instance_uid
+                                                                         : report.new_sop_instance_uid;
     Bytes raw;
     std::shared_ptr<SpoolFile> file;
     if (rq.spool && spool) {
         std::vector<std::uint8_t> header;
-        if (Status s = part10_header(rq.sop_class_uid, rq.sop_instance_uid, ts, rq.calling_ae, header); !s) return s;
+        if (Status s = part10_header(rq.sop_class_uid, sop_instance, ts, rq.calling_ae, header); !s) return s;
         Result<std::unique_ptr<SpoolWriter>> w = SpoolWriter::open(*spool, header);
         if (!w) return w.take_error();
         if (Status s = (*w)->write(body->data(), body->size()); !s) return s;
@@ -102,6 +108,10 @@ Status convert_received(StoreRequest& rq, std::string_view ts, const codec::Tran
     rq.raw = raw;
     rq.spool = file;
     rq.transfer_syntax = std::string(ts);
+    if (sop_instance != rq.sop_instance_uid) {
+        if (rq.original_sop_instance_uid.empty()) rq.original_sop_instance_uid = rq.sop_instance_uid;
+        rq.sop_instance_uid = sop_instance;
+    }
     return Status::ok();
 }
 

@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +31,31 @@ bool valid_boundary(std::string_view b, std::size_t max_len = 70) noexcept;
 
 // Splits a multipart body. The returned views point into `body`.
 Result<std::vector<Part>> parse(std::string_view body, std::string_view boundary, const Limits& limits = {});
+
+// Incremental parsing of a multipart body that arrives in pieces: each complete part is passed to
+// `on_part` (its views are valid during the call only) and dropped, so memory holds about one part.
+// A part larger than max_part_bytes fails with LimitExceeded; an error from on_part stops parsing.
+class StreamParser {
+public:
+    StreamParser(std::string boundary, const Limits& limits, std::uint64_t max_part_bytes,
+                 std::function<Status(const Part&)> on_part);
+    Status feed(std::string_view data);
+    // After the last piece: Truncated when the close delimiter was not seen.
+    Status finish();
+    std::size_t parts() const noexcept { return parts_; }
+
+private:
+    enum class State { Preamble, Delimiter, Part, Done, Failed };
+    Status step();
+    std::string dash_;
+    Limits limits_;
+    std::uint64_t max_part_;
+    std::function<Status(const Part&)> on_part_;
+    std::string buf_;
+    std::size_t scanned_ = 0;
+    std::size_t parts_ = 0;
+    State state_ = State::Preamble;
+};
 
 // Builds a body. The boundary is chosen so that it occurs in no part.
 class Writer {
