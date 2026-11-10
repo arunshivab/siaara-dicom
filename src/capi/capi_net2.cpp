@@ -183,6 +183,26 @@ net::MatchOptions match_options(const net::QueryRequest& q, bool& relational) {
     return mo;
 }
 
+// Handlers run on the server's threads: no exception may leave them (out of memory while
+// building a response or an event). `on_error` is the status answered instead.
+template <class F>
+auto shielded(std::uint16_t on_error, F&& f) noexcept -> std::uint16_t {
+    try {
+        return f();
+    } catch (...) {
+        capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+        return on_error;
+    }
+}
+template <class F>
+void shielded_void(F&& f) noexcept {
+    try {
+        f();
+    } catch (...) {
+        capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 // The emit() passed to a siaara_worklist_callback.
 struct WorklistEmit {
     const std::function<bool(const Dataset&)>* offer;
@@ -205,31 +225,38 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
     capi::dimse::storage_handlers(raw, base);
     hd.log = base.log;
     hd.on_echo = [s, echo = base.on_echo](const std::string& calling) -> std::uint16_t {
-        if (!s->allowed(SIAARA_SVC_VERIFICATION, calling)) {
-            refused(*s, calling, std::string(net::sop::Verification), 0x0030, "");
-            return kNotAuthorized;
-        }
-        return echo(calling);
+        return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
+            if (!s->allowed(SIAARA_SVC_VERIFICATION, calling)) {
+                refused(*s, calling, std::string(net::sop::Verification), 0x0030, "");
+                return kNotAuthorized;
+            }
+            return echo(calling);
+        });
     };
     if (sv.storage)
         hd.on_store = [s, store = base.on_store](const net::StoreRequest& rq) -> std::uint16_t {
-            if (!s->allowed(SIAARA_SVC_STORAGE, rq.calling_ae)) {
-                refused(*s, rq.calling_ae, rq.sop_class_uid, 0x0001, rq.peer_address);
-                return kNotAuthorized;
-            }
-            return store(rq);
+            return shielded(net::dimse_status::OutOfResources, [&]() -> std::uint16_t {
+                if (!s->allowed(SIAARA_SVC_STORAGE, rq.calling_ae)) {
+                    refused(*s, rq.calling_ae, rq.sop_class_uid, 0x0001, rq.peer_address);
+                    return kNotAuthorized;
+                }
+                return store(rq);
+            });
         };
     hd.on_sop_instance_uid_changed = [raw](const std::string& calling, const std::string& old_uid,
                                            const std::string& new_uid) {
+      shielded_void([&] {
         capi::log(SIAARA_LOG_WARNING, true,
                   "SCP: a retrieve sub-operation was coded lossily; " + old_uid + " was sent as " + new_uid);
         siaara_scp::Event ev = base_event(SIAARA_SCP_UID_CHANGED, kSuccess, calling, "", "");
         ev.inst = new_uid;
         ev.original_inst = old_uid;
         raw->post(std::move(ev));
+      });
     };
     hd.on_retrieve_done = [raw](const net::QueryRequest& q, bool is_get, std::uint16_t status, std::uint16_t completed,
                                 std::uint16_t failed, std::uint16_t warning) {
+      shielded_void([&] {
         raw->sub_operations.fetch_add(static_cast<std::uint64_t>(completed) + failed + warning, std::memory_order_relaxed);
         siaara_scp::Event ev = base_event(is_get ? SIAARA_SCP_GET : SIAARA_SCP_MOVE, status, q.calling_ae,
                                           q.sop_class_uid, q.peer_address);
@@ -240,12 +267,14 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
         ev.command_field = is_get ? 0x0010u : 0x0021u;
         ev.dataset = q.identifier;
         raw->post(std::move(ev));
+      });
     };
 
     // C-FIND: Q/R from the store, and Modality Worklist.
     if (sv.find || sv.worklist)
         hd.on_find = [raw, s](const net::QueryRequest& q,
                               const std::function<bool(const Dataset&)>& emit) -> std::uint16_t {
+          return shielded(net::dimse_status::OutOfResources, [&]() -> std::uint16_t {
             const bool is_worklist = q.sop_class_uid == net::sop::ModalityWorklistFind;
             const std::int32_t svc = is_worklist ? SIAARA_SVC_WORKLIST : SIAARA_SVC_FIND;
             if (!s->allowed(svc, q.calling_ae)) {
@@ -302,6 +331,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             ev.dataset = q.identifier;
             raw->post(std::move(ev));
             return status;
+          });
         };
 
     // C-MOVE / C-GET from the store.
@@ -314,28 +344,38 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             raw->retrieves.fetch_add(1, std::memory_order_relaxed);
             const net::QueryFlags f = net::parse_query_flags(q.extended_negotiation, false);
             // Refusals are reported through on_retrieve_done like completed retrieves.
-            return capi::store_retrieve(*raw->store->store, q.sop_class_uid, q.identifier, f.relational, s->qr, items);
+            return shielded(net::dimse_status::OutOfResources, [&]() {
+                return capi::store_retrieve(*raw->store->store, q.sop_class_uid, q.identifier, f.relational, s->qr, items);
+            });
         };
     };
     if (sv.move) hd.on_move = retrieve(false);
     if (sv.get) hd.on_get = retrieve(true);
-    hd.resolve_move_destination = [s](const std::string& ae) -> std::optional<net::MoveDestination> {
-        const auto it = s->ae_table.find(trim_ae(ae));
-        if (it == s->ae_table.end()) return std::nullopt;
-        return it->second;
+    hd.resolve_move_destination = [s](const std::string& ae) noexcept -> std::optional<net::MoveDestination> {
+        try {
+            const auto it = s->ae_table.find(trim_ae(ae));
+            if (it == s->ae_table.end()) return std::nullopt;
+            return it->second;
+        } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
     };
 
     // N-services.
     ss.resolve_ae = hd.resolve_move_destination;
     ss.admit = [s](const std::string& calling, const net::Command& rq) -> std::uint16_t {
-        if (s->allowed(service_of_n(rq), calling)) return kSuccess;
-        refused(*s, calling, rq.sop_class(), rq.command_field, "");
-        return kNotAuthorized;
+        return shielded(kNotAuthorized, [&]() -> std::uint16_t {
+            if (s->allowed(service_of_n(rq), calling)) return kSuccess;
+            refused(*s, calling, rq.sop_class(), rq.command_field, "");
+            return kNotAuthorized;
+        });
     };
     if (sv.mpps) {
         sv.mpps_store = std::make_shared<net::MppsStore>();
         ss.mpps = sv.mpps_store;
         ss.on_mpps_create = [raw, s](const std::string& calling, const std::string& uid, const Dataset& ds) -> std::uint16_t {
+          return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             raw->mpps.fetch_add(1, std::memory_order_relaxed);
             std::uint16_t status = s->mpps_store->size() >= s->max_mpps ? kOutOfResources : s->mpps_store->create(uid, ds);
             siaara_scp::Event ev = base_event(SIAARA_SCP_MPPS_CREATE, status, calling,
@@ -345,8 +385,10 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             ev.dataset = ds;
             raw->post(std::move(ev));
             return status;
+          });
         };
         ss.on_mpps_set = [raw, s](const std::string& calling, const std::string& uid, const Dataset& ds) -> std::uint16_t {
+          return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             raw->mpps.fetch_add(1, std::memory_order_relaxed);
             const std::uint16_t status = s->mpps_store->set(uid, ds);
             siaara_scp::Event ev = base_event(SIAARA_SCP_MPPS_SET, status, calling,
@@ -356,6 +398,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             ev.dataset = ds;
             raw->post(std::move(ev));
             return status;
+          });
         };
     }
     if (sv.commitment) {
@@ -363,21 +406,29 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             raw->commitments.fetch_add(1, std::memory_order_relaxed);
             net::CommitmentResult r;
             r.transaction_uid = rq.transaction_uid;
-            r.retrieve_ae = s->ae_title;
-            const bool too_many = rq.items.size() > s->max_commit;
-            for (const net::SopRef& ref : rq.items) {
-                if (too_many) {
-                    r.failed.push_back({ref, kResourceLimitation});
-                    continue;
+            try {
+                r.retrieve_ae = s->ae_title;
+                const bool too_many = rq.items.size() > s->max_commit;
+                for (const net::SopRef& ref : rq.items) {
+                    if (too_many) {
+                        r.failed.push_back({ref, kResourceLimitation});
+                        continue;
+                    }
+                    auto rec = raw->store->store->instance(ref.sop_instance);
+                    if (!rec) r.failed.push_back({ref, kNoSuchObjectInstance});
+                    else if ((*rec)[st::Str::SopClassUid] != ref.sop_class) r.failed.push_back({ref, kClassInstanceConflict});
+                    else r.committed.push_back(ref);
                 }
-                auto rec = raw->store->store->instance(ref.sop_instance);
-                if (!rec) r.failed.push_back({ref, kNoSuchObjectInstance});
-                else if ((*rec)[st::Str::SopClassUid] != ref.sop_class) r.failed.push_back({ref, kClassInstanceConflict});
-                else r.committed.push_back(ref);
+            } catch (...) {
+                // Out of memory part way: nothing is reported as committed.
+                capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+                r.committed.clear();
+                r.failed.clear();
             }
             return r;
         };
         ss.on_commitment_done = [raw](const net::CommitmentRequest& rq, const net::CommitmentResult& r, bool delivered) {
+          shielded_void([&] {
             siaara_scp::Event ev = base_event(SIAARA_SCP_COMMIT_REQUEST, r.event_type(), rq.calling_ae,
                                               std::string(net::sop::StorageCommitmentPushModel), "");
             ev.transaction_uid = rq.transaction_uid;
@@ -387,6 +438,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             ev.command_field = 0x0130;
             ev.dataset = net::encode_commitment_result(r);
             raw->post(std::move(ev));
+          });
         };
         switch (sv.qr.commitment_mode) {
             case SIAARA_COMMIT_REPORT_SAME: ss.commitment_report = net::CommitmentReportMode::SameAssociation; break;
@@ -396,6 +448,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
     }
     if (sv.commitment_reports)
         ss.on_commitment_report = [raw, s](const std::string& calling, const net::CommitmentResult& r) -> std::uint16_t {
+          return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             {
                 const std::lock_guard<std::mutex> l(s->cr_mu);
                 const auto it = s->pending.find(r.transaction_uid);
@@ -411,26 +464,31 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             ev.dataset = net::encode_commitment_result(r);
             raw->post(std::move(ev));
             return kSuccess;
+          });
         };
     if (sv.ups) {
         sv.ups_provider = std::make_shared<net::UpsProvider>();
         ss.ups = sv.ups_provider;
         ss.on_ups_served = [raw](const std::string& calling, const net::Command& rq, std::uint16_t status) {
-            siaara_scp::Event ev = base_event(SIAARA_SCP_UPS, status, calling, rq.sop_class(), "");
-            ev.inst = rq.sop_instance();
-            ev.command_field = rq.command_field;
-            raw->post(std::move(ev));
+            shielded_void([&] {
+                siaara_scp::Event ev = base_event(SIAARA_SCP_UPS, status, calling, rq.sop_class(), "");
+                ev.inst = rq.sop_instance();
+                ev.command_field = rq.command_field;
+                raw->post(std::move(ev));
+            });
         };
     }
     if (sv.ian)
         ss.on_instance_availability = [raw](const std::string& calling, const std::string& uid,
                                             const Dataset& ds) -> std::uint16_t {
-            siaara_scp::Event ev = base_event(SIAARA_SCP_IAN, kSuccess, calling,
-                                              std::string(net::sop::InstanceAvailabilityNotification), "");
-            ev.inst = uid;
-            ev.command_field = 0x0140;
-            ev.dataset = ds;
-            raw->post(std::move(ev));
+            shielded_void([&] {
+                siaara_scp::Event ev = base_event(SIAARA_SCP_IAN, kSuccess, calling,
+                                                  std::string(net::sop::InstanceAvailabilityNotification), "");
+                ev.inst = uid;
+                ev.command_field = 0x0140;
+                ev.dataset = ds;
+                raw->post(std::move(ev));
+            });
             return kSuccess;
         };
 }

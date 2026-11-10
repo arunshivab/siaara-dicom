@@ -171,8 +171,8 @@ Dataset candidate(const IndexRecord& r, int level, const StoreQrOptions& opt) {
         const std::string v = value_of(k, r, level, opt);
         if (v.empty()) continue;
         if (k.vr == VR::US) {
-            const unsigned long n = std::stoul(v);
-            (void)c.set_uint16(k.tag, static_cast<std::uint16_t>(std::min<unsigned long>(n, 0xFFFF)));
+            const std::uint32_t n = k.src == Src::Rows ? r.rows : r.columns;
+            (void)c.set_uint16(k.tag, static_cast<std::uint16_t>(std::min<std::uint32_t>(n, 0xFFFF)));
         } else {
             (void)c.set_string(k.tag, k.vr, v);
         }

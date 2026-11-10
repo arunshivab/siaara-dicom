@@ -537,10 +537,12 @@ siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg) {
 void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
         hd.on_echo = [raw](const std::string& calling) -> std::uint16_t {
             raw->echoes.fetch_add(1, std::memory_order_relaxed);
-            raw->event(SIAARA_SCP_ECHO, net::dimse_status::Success, 0, calling, "", "", "");
+            raw->event(SIAARA_SCP_ECHO, net::dimse_status::Success, 0, calling, "", "", "");  // never throws
             return net::dimse_status::Success;
         };
-        hd.on_store = [raw](const net::StoreRequest& rq) -> std::uint16_t {
+        hd.on_store = [raw](const net::StoreRequest& rq) noexcept -> std::uint16_t {
+          // Runs on the server's threads: no exception may leave it (out of memory -> 0xA700).
+          try {
             std::string err;
             int32_t outcome = SIAARA_ADD_ADDED;
             const std::uint16_t s = keep_instance(rq, raw->store, raw->policy, std::string(), &outcome, err);
@@ -560,6 +562,11 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
                            &rq);
             }
             return s;
+          } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+            raw->failures.fetch_add(1, std::memory_order_relaxed);
+            return net::dimse_status::OutOfResources;
+          }
         };
         hd.log = capi::log_sink(SIAARA_LOG_INFO);
 }
