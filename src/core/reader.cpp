@@ -1,9 +1,11 @@
 #include "core/reader.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "codec/deflate.hpp"
@@ -76,6 +78,9 @@ public:
         if (depth > opt_.max_depth)
             return Status(Errc::LimitExceeded, "sequence nesting too deep", pos_);
         GroupLengthTracker groups{ds, pos_};  // F1: records each group length's actual group size
+        // Private Creator values of this data set (PS3.5 7.8.1: a creator's scope is the data set
+        // that holds it), for the private dictionary on implicit VR elements.
+        std::vector<std::pair<Tag, std::string>> creators;
         while (true) {
             groups.content_end = pos_;
             if (!undefined && pos_ >= end) return Status::ok();
@@ -128,6 +133,24 @@ public:
             // are unchanged.
             if (e.read.vr_inferred && e.vr == VR::US && pixel_rep_ == 1 && dict::us_or_ss_by_pixel_representation(tag))
                 e.vr = VR::SS;
+            // Private dictionary: an inferred UN on a private data element (gggg,xxEE) takes the VR
+            // the dictionary decided for its creator, for interpretation only (ReadInfo::private_vr).
+            // Little endian only, so the bytes need no swapping; undefined lengths keep their
+            // meaning (an implicit sequence).
+            if (opt_.private_dictionary && e.read.vr_inferred && e.vr == VR::UN && !syn.big_endian &&
+                len != kUndefinedLength && tag_is_private(tag) && tag_element(tag) >= 0x1000) {
+                const Tag ct = make_tag(tag_group(tag), static_cast<std::uint16_t>(tag_element(tag) >> 8));
+                for (const auto& c : creators) {
+                    if (c.first != ct) continue;
+                    const VR pv = dict::implicit_private_vr(c.second, tag_group(tag),
+                                                            static_cast<std::uint8_t>(tag_element(tag) & 0xFFu));
+                    if (pv != VR::UN && pv != VR::None) {
+                        e.vr = pv;
+                        e.read.private_vr = pv;
+                    }
+                    break;
+                }
+            }
 
             if (++element_count_ > opt_.max_elements)
                 return Status(Errc::LimitExceeded, "too many elements", start, tag);
@@ -169,12 +192,16 @@ public:
                     if (Status s = parse_items(e, syn, vend, false, depth); !s) {
                         // A broken private sequence (odd group, defined length) is kept as its
                         // raw bytes (VR UN) and parsing resumes after it.
-                        if (!opt_.lenient || (tag_group(tag) & 1u) == 0 ||
+                        // A sequence only the private dictionary called SQ is a guess: it falls
+                        // back to UN bytes in strict mode too.
+                        const bool dict_sq = e.read.private_vr == VR::SQ;
+                        if ((!opt_.lenient && !dict_sq) || (tag_group(tag) & 1u) == 0 ||
                             (s.code != Errc::Malformed && s.code != Errc::Truncated))
                             return s;
                         warn("private sequence " + hex_tag(tag) + " unreadable (" + s.message + "); kept as UN bytes");
                         e.items.clear();
                         e.vr = VR::UN;
+                        e.read.private_vr = VR::None;
                         e.value = buf_.sub(vstart, static_cast<std::size_t>(vend) - vstart);
                     }
                     if (Status s = advance_to(vend, tag); !s) return s;
@@ -195,6 +222,13 @@ public:
                         bits_allocated_ = load_le16(e.value.data());
                     if (tag == tags::PixelRepresentation && e.value.size() >= 2)
                         pixel_rep_ = load_le16(e.value.data()) == 0 ? 0 : 1;
+                    if (opt_.private_dictionary && !syn.big_endian && tag_is_private(tag) &&
+                        tag_element(tag) >= 0x0010 && tag_element(tag) <= 0x00FF && vr_is_string(e.vr)) {
+                        auto it = std::find_if(creators.begin(), creators.end(),
+                                               [tag](const auto& c) { return c.first == tag; });
+                        if (it != creators.end()) it->second.assign(e.value.as_chars());
+                        else creators.emplace_back(tag, std::string(e.value.as_chars()));
+                    }
                     if (Status s = advance_to(vend, tag); !s) return s;
                 }
             }

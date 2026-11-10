@@ -18,6 +18,12 @@ struct ReadOptions {
     std::uint64_t max_items_per_sequence = 1'000'000;
     std::uint64_t max_fragments = 1'000'000;
     std::uint64_t max_inflated_size = 4ull << 30;  // deflated TS output cap
+    // Implicit VR (little endian) private data elements whose Private Creator and element the
+    // private dictionary knows with a decided VR get that VR for interpretation (getters, JSON,
+    // C API). The bytes are unchanged and Element::ReadInfo::private_vr records it, so saving
+    // keeps the element as read. Undecided VRs (documents disagree) stay UN. Explicit VRs in the
+    // stream always win. docs/PRIVATE_DICTIONARY.md.
+    bool private_dictionary = true;
 };
 
 // Parses a complete Part 10 file held in `data` (the Bytes keeps the storage alive; values in

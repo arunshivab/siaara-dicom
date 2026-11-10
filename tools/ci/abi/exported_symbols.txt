@@ -42,6 +42,9 @@ siaara_dicomdir_write
 siaara_dicomdir_write_ex
 siaara_dict_lookup
 siaara_dict_lookup_keyword
+siaara_dict_lookup_private
+siaara_dict_lookup_private_element
+siaara_dict_private_candidate
 siaara_dimse_commit
 siaara_dimse_echo
 siaara_dimse_find

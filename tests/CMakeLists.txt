@@ -126,6 +126,9 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
   add_test(NAME csharp_interop_up_to_date
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/gen_csharp_interop.py --check)
+  # The committed private dictionary must match what tools/gen_private_dict.py makes of data/private-tags.
+  add_test(NAME private_dict_up_to_date
+           COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/gen_private_dict.py --check)
 endif()
 # Test-only: writes the broken repair samples for tests/crosscheck/repair_crosscheck.py (not installed).
 add_executable(repair_samples crosscheck/repair_samples.cpp)

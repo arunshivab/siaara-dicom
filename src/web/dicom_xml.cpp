@@ -88,6 +88,12 @@ private:
                 xml::append_escaped(out_, d->keyword, true);
                 out_.push_back('"');
             }
+        } else if (opt_.xml_keywords && is_private_data(e.tag)) {
+            if (const auto p = dict::lookup_private_element(ds, e.tag); p && !p->keyword.empty()) {
+                out_.append(" keyword=\"");
+                xml::append_escaped(out_, p->keyword, true);
+                out_.push_back('"');
+            }
         }
         if (is_private_data(e.tag)) {
             const Tag creator = make_tag(tag_group(e.tag), static_cast<std::uint16_t>(tag_element(e.tag) >> 8));

@@ -40,7 +40,13 @@ struct ModelWriteOptions {
     // Text that cannot be converted to UTF-8 from its Specific Character Set is an error
     // (Errc::Unsupported). When false, unconvertible bytes become U+FFFD.
     bool strict_charset = false;
-    bool xml_keywords = true;       // XML: keyword="..." on public attributes
+    // XML: keyword="..." on public attributes, and on private attributes whose Private Creator and
+    // element the private dictionary knows (docs/PRIVATE_DICTIONARY.md).
+    bool xml_keywords = true;
+    // JSON: adds "keyword" and "name" members to private attributes the private dictionary knows.
+    // Off by default: they are not members of the PS3.18 F.2 attribute object (readers that follow
+    // PS3.18 ignore them; SIAARA's own JSON reader does).
+    bool json_private_names = false;
     std::uint32_t max_depth = 64;   // sequence nesting
 };
 

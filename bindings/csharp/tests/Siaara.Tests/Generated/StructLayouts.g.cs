@@ -50,6 +50,36 @@ internal static class StructLayouts
             r.Add("F siaara_dict_entry vm " + Offset(ref s, ref s.vm).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
+            var s = default(siaara_private_dict_entry);
+            r.Add("S siaara_private_dict_entry " + Unsafe.SizeOf<siaara_private_dict_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry group " + Offset(ref s, ref s.group).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry element " + Offset(ref s, ref s.element).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry vr " + Offset(ref s, ref s.vr).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry retired " + Offset(ref s, ref s.retired).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry conflict " + Offset(ref s, ref s.conflict).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry vm_conflict " + Offset(ref s, ref s.vm_conflict).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry confidence " + Offset(ref s, ref s.confidence).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry match " + Offset(ref s, ref s.match).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry source_page " + Offset(ref s, ref s.source_page).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry source_count " + Offset(ref s, ref s.source_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry candidate_count " + Offset(ref s, ref s.candidate_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry creator " + Offset(ref s, ref s.creator).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry keyword " + Offset(ref s, ref s.keyword).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry name " + Offset(ref s, ref s.name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry vm " + Offset(ref s, ref s.vm).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry vendor " + Offset(ref s, ref s.vendor).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_entry source_document " + Offset(ref s, ref s.source_document).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_private_dict_candidate);
+            r.Add("S siaara_private_dict_candidate " + Unsafe.SizeOf<siaara_private_dict_candidate>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_candidate struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_candidate vr " + Offset(ref s, ref s.vr).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_candidate page " + Offset(ref s, ref s.page).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_private_dict_candidate document " + Offset(ref s, ref s.document).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
             var s = default(siaara_pixel_info);
             r.Add("S siaara_pixel_info " + Unsafe.SizeOf<siaara_pixel_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_pixel_info struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -749,6 +779,8 @@ internal static class StructLayouts
         r.Add("siaara_read_options " + Marshal.SizeOf<siaara_read_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_read_report " + Marshal.SizeOf<siaara_read_report>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_dict_entry " + Marshal.SizeOf<siaara_dict_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_private_dict_entry " + Marshal.SizeOf<siaara_private_dict_entry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_private_dict_candidate " + Marshal.SizeOf<siaara_private_dict_candidate>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_pixel_info " + Marshal.SizeOf<siaara_pixel_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_render_options " + Marshal.SizeOf<siaara_render_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_index_record " + Marshal.SizeOf<siaara_index_record>().ToString(System.Globalization.CultureInfo.InvariantCulture));

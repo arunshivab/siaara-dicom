@@ -162,6 +162,34 @@ bool parse_vr(const char* vr, siaara::VR& out) {
     return siaara::vr_is_known(out);
 }
 
+void put_vr(siaara::VR vr, char out[3]) {
+    const auto a = siaara::vr_name(vr);
+    out[0] = vr == siaara::VR::None ? 0 : a[0];
+    out[1] = vr == siaara::VR::None ? 0 : a[1];
+    out[2] = 0;
+}
+
+// Pool strings of the private dictionary are NUL-terminated.
+void fill_private(const siaara::dict::PrivateEntry& e, siaara_private_dict_entry* out) {
+    out->group = e.group;
+    out->element = e.element;
+    put_vr(e.vr, out->vr);
+    out->retired = e.retired ? 1 : 0;
+    out->conflict = e.conflict ? 1 : 0;
+    out->vm_conflict = e.vm_conflict ? 1 : 0;
+    out->confidence = e.confidence == siaara::dict::PrivateConfidence::Assumed ? SIAARA_PRIVATE_ASSUMED : SIAARA_PRIVATE_STATED;
+    out->match = e.match == siaara::dict::PrivateMatch::Fuzzy ? SIAARA_PRIVATE_FUZZY : SIAARA_PRIVATE_EXACT;
+    out->source_page = e.source.page;
+    out->source_count = e.source_count;
+    out->candidate_count = e.candidate_count;
+    out->creator = e.creator.data();
+    out->keyword = e.keyword.data();
+    out->name = e.name.data();
+    out->vm = e.vm.data();
+    out->vendor = e.vendor.data();
+    out->source_document = e.source.document.data();
+}
+
 void fill_entry(const siaara::dict::Entry& e, siaara_dict_entry* out) {
     out->tag = e.tag;
     const auto a = siaara::vr_name(e.vr);
@@ -518,6 +546,48 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyw
     });
 }
 
+SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_private(const char* creator, size_t len, uint16_t group,
+                                                                uint8_t element_low_byte,
+                                                                siaara_private_dict_entry* out) {
+    return guarded([&]() -> siaara_status {
+        if ((!creator && len) || !out || out->struct_size < sizeof(siaara_private_dict_entry))
+            return fail(Errc::InvalidArgument, "bad argument");
+        const auto e = siaara::dict::lookup_private(std::string_view(creator ? creator : "", len), group, element_low_byte);
+        if (!e) return fail(Errc::NotFound, "private creator and element not in the private dictionary");
+        fill_private(*e, out);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_private_element(const siaara_dataset* ds, uint32_t tag,
+                                                                        siaara_private_dict_entry* out) {
+    return guarded([&]() -> siaara_status {
+        if (!ds || !out || out->struct_size < sizeof(siaara_private_dict_entry))
+            return fail(Errc::InvalidArgument, "bad argument");
+        const auto e = siaara::dict::lookup_private_element(*ds_cast(ds), tag);
+        if (!e) return fail(Errc::NotFound, "private element not in the private dictionary");
+        fill_private(*e, out);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dict_private_candidate(const char* creator, size_t len, uint16_t group,
+                                                                   uint8_t element_low_byte, uint32_t index,
+                                                                   siaara_private_dict_candidate* out) {
+    return guarded([&]() -> siaara_status {
+        if ((!creator && len) || !out || out->struct_size < sizeof(siaara_private_dict_candidate))
+            return fail(Errc::InvalidArgument, "bad argument");
+        const auto e = siaara::dict::lookup_private(std::string_view(creator ? creator : "", len), group, element_low_byte);
+        if (!e) return fail(Errc::NotFound, "private creator and element not in the private dictionary");
+        siaara::dict::PrivateCandidate c;
+        if (!siaara::dict::private_candidate(*e, index, c)) return fail(Errc::NotFound, "no such candidate");
+        put_vr(c.vr, out->vr);
+        out->page = c.source.page;
+        out->document = c.source.document.data();
+        return ok();
+    });
+}
+
 }  // extern "C"
 
 // ---------------------------------------------------------------- pixel data
@@ -739,9 +809,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_to_json(const siaara_dataset
                                                             size_t cap, size_t* needed) {
     return guarded([&]() -> siaara_status {
         if (!ds) return fail(Errc::InvalidArgument, "ds must not be NULL");
-        if (flags & ~static_cast<uint32_t>(SIAARA_JSON_NUMBERS_AS_STRINGS | SIAARA_JSON_STRICT_CHARSET))
+        if (flags & ~static_cast<uint32_t>(SIAARA_JSON_NUMBERS_AS_STRINGS | SIAARA_JSON_STRICT_CHARSET |
+                                           SIAARA_JSON_PRIVATE_NAMES))
             return fail(Errc::InvalidArgument, "unknown flags");
         siaara::web::ModelWriteOptions opt;
+        opt.json_private_names = (flags & SIAARA_JSON_PRIVATE_NAMES) != 0;
         opt.numbers_as_strings = (flags & SIAARA_JSON_NUMBERS_AS_STRINGS) != 0;
         opt.strict_charset = (flags & SIAARA_JSON_STRICT_CHARSET) != 0;
         std::string out;

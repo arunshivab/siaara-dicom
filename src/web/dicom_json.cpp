@@ -45,7 +45,7 @@ public:
             out_.append(detail::tag_hex(e.tag));
             out_.append("\":");
             path_.push_back(e.tag);
-            Status st = element(e, cs, depth);
+            Status st = element(ds, e, cs, depth);
             path_.pop_back();
             if (!st) return st;
         }
@@ -66,12 +66,24 @@ private:
         return Status::ok();
     }
 
-    Status element(const Element& e, Charset cs, std::uint32_t depth) {
+    Status element(const Dataset& ds, const Element& e, Charset cs, std::uint32_t depth) {
         VR vr = e.vr == VR::None ? VR::UN : e.vr;
         if (e.is_encapsulated()) vr = VR::OB;  // PS3.5 A.4: encapsulated pixel data is OB
         out_.append("{\"vr\":\"");
         out_.append(vr_name(vr));
         out_.push_back('"');
+        if (opt_.json_private_names) {
+            if (const auto p = dict::lookup_private_element(ds, e.tag); p && (!p->keyword.empty() || !p->name.empty())) {
+                if (!p->keyword.empty()) {
+                    out_.append(",\"keyword\":");
+                    json::write_string(out_, p->keyword);
+                }
+                if (!p->name.empty()) {
+                    out_.append(",\"name\":");
+                    json::write_string(out_, p->name);
+                }
+            }
+        }
         if (vr == VR::SQ) {
             if (!e.items.empty()) {
                 if (depth + 1 > opt_.max_depth) return Status(Errc::LimitExceeded, "sequence nesting too deep", 0, e.tag);

@@ -130,6 +130,11 @@ struct Element {
         // The VR was not in the stream (implicit VR, or an unknown VR read as implicit): it came
         // from the dictionary, and for "US or SS" elements from Pixel Representation (F8).
         bool vr_inferred = false;
+        // The inferred VR came from the private dictionary (dict::lookup_private) through the
+        // element's Private Creator. It is for interpretation only: the stream had no VR, so
+        // while vr still equals this value the writer saves the element as it was read (UN in
+        // explicit VR syntaxes; a defined-length SQ stays defined length). VR::None otherwise.
+        VR private_vr = VR::None;
     } read;
     // Byte offset of this element's header in the parsed stream (the file for native syntaxes; the
     // inflated stream for the deflated syntax, see DicomFile::offsets_are_file_offsets). 0 if built in memory.
