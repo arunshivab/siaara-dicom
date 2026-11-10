@@ -80,6 +80,8 @@ struct Store {
     // Keeps an incomplete part outside the archive (IncompletePolicy::Quarantine); `peer` is the
     // client's address when known. Returns 0, or a failure reason (0xA700 when full).
     std::function<std::uint16_t(const DicomFile& file, const Bytes& part, const std::string& peer)> quarantine;
+    // Keeps a copy of a refused incomplete part for diagnosis (IncompletePolicy::RefuseKeepCopy).
+    std::function<void(const DicomFile& file, const Bytes& part, const std::string& peer)> keep_rejected;
 };
 
 struct DicomwebServerConfig {

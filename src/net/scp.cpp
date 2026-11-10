@@ -506,6 +506,13 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                         ? "C-STORE: command UIDs differ from the data set's; accepted under the data set's UIDs"
                         : "C-STORE: command UIDs differ from the data set's; refused (0xA900)");
         }
+        const auto kept_answer = [this]() -> std::uint16_t {
+            switch (cfg_.quarantine_response) {
+                case QuarantineResponse::Failure: return cfg_.incomplete_failure_status;
+                case QuarantineResponse::Success: return dimse_status::Success;
+                default: return cfg_.incomplete_warning_status;
+            }
+        };
         IncompletePolicy policy = cfg_.incomplete_policy;
         if (const auto by = cfg_.incomplete_policy_by_caller.find(trimmed_ae(rq.calling_ae));
             by != cfg_.incomplete_policy_by_caller.end())
@@ -513,23 +520,23 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
         if (policy == IncompletePolicy::Quarantine && !h_.on_store_quarantine) policy = IncompletePolicy::Refuse;
         if (ds && st == dimse_status::Success && rq.read_loss != 0 && policy == IncompletePolicy::Quarantine) {
             // Kept verbatim outside the archive; the sender learns that it is not a normal store.
-            const std::uint16_t answer = cfg_.quarantine_response == QuarantineResponse::Warning
-                                             ? kQuarantineWarningStatus
-                                             : dimse_status::CannotUnderstand;
+            const std::uint16_t answer = kept_answer();
             const std::uint16_t kept = h_.on_store_quarantine(rq, answer);
             st = kept == dimse_status::Success ? answer : kept;
             error_comment = kept == dimse_status::Success ? "data set incomplete: quarantined" : "data set incomplete";
             log(std::string("C-STORE: incomplete data set ") +
                 (kept == dimse_status::Success ? "quarantined" : "not quarantined (quarantine full or failed)") + " (" +
                 (rq.read_warning.empty() ? std::string("read loss") : rq.read_warning) + ")");
-        } else if (ds && st == dimse_status::Success && rq.read_loss != 0 && policy == IncompletePolicy::Refuse) {
+        } else if (ds && st == dimse_status::Success && rq.read_loss != 0 &&
+                   (policy == IncompletePolicy::Refuse || policy == IncompletePolicy::RefuseKeepCopy)) {
             // The data set arrived truncated or damaged: storing it would keep less than the
             // sender holds while answering Success.
-            st = dimse_status::CannotUnderstand;
+            st = cfg_.incomplete_failure_status;
+            if (policy == IncompletePolicy::RefuseKeepCopy && h_.on_store_keep_rejected) h_.on_store_keep_rejected(rq);
             error_comment = "data set incomplete";
             const std::string why = std::string(kIncompleteInput) + ": the received data set was not read completely (" +
                                     (rq.read_warning.empty() ? std::string("read loss") : rq.read_warning) +
-                                    "; first at offset " + std::to_string(rq.read_loss_offset) + "); refused (0xC000)";
+                                    "; first at offset " + std::to_string(rq.read_loss_offset) + "); refused";
             log("C-STORE: " + why);
             if (h_.on_store_refused) h_.on_store_refused(rq, st, why);
         } else if (ds && st == dimse_status::Success) {
@@ -545,6 +552,11 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                 else if (!history_note.empty()) log("C-STORE conversion: " + history_note);
             }
             st = h_.on_store(rq);
+            // Accepted although incomplete: stored verbatim and flagged; the sender is told.
+            if (rq.read_loss != 0 && st == dimse_status::Success) {
+                st = kept_answer();
+                error_comment = "data set incomplete: stored as received";
+            }
         }
     }
     Command rsp = make_response(m.command, st);

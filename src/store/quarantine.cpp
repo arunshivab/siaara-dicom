@@ -103,8 +103,8 @@ bool decode(std::string_view text, QuarantineRecord& r) {
 
 }  // namespace
 
-Quarantine::Quarantine(std::string store_root, const QuarantineLimits& limits)
-    : dir_(to_utf8(u8path(store_root) / "quarantine")), lim_(limits) {}
+Quarantine::Quarantine(std::string store_root, const QuarantineLimits& limits, std::string_view area)
+    : dir_(to_utf8(u8path(store_root) / u8path(std::string(area)))), lim_(limits) {}
 
 Status Quarantine::load_locked() const {
     if (loaded_) return Status::ok();
@@ -141,8 +141,19 @@ Result<QuarantineAdd> Quarantine::add(const Bytes& bytes, QuarantineRecord rec) 
     if (Status s = load_locked(); !s) return s;
     for (const QuarantineRecord& r : recs_)
         if (r.id == rec.id) return QuarantineAdd::Duplicate;  // the same bytes: one item
-    if (recs_.size() >= lim_.max_items || rec.size > lim_.max_bytes || bytes_ > lim_.max_bytes - rec.size)
-        return Status(Errc::LimitExceeded, "quarantine is full");
+    const auto full = [&] { return recs_.size() >= lim_.max_items || bytes_ > lim_.max_bytes - std::min(rec.size, lim_.max_bytes); };
+    if (rec.size > lim_.max_bytes || lim_.max_items == 0) return Status(Errc::LimitExceeded, "quarantine is full");
+    while (full() && lim_.evict_oldest && !recs_.empty()) {
+        // Option "evict oldest": the oldest item makes room.
+        const auto oldest = std::min_element(recs_.begin(), recs_.end(),
+                                             [](const QuarantineRecord& a, const QuarantineRecord& b) { return a.time < b.time; });
+        std::error_code ec;
+        fs::remove(u8path(path_of(dir_, oldest->id, ".rec")), ec);
+        fs::remove(u8path(path_of(dir_, oldest->id, ".bin")), ec);
+        bytes_ -= std::min(bytes_, oldest->size);
+        recs_.erase(oldest);
+    }
+    if (full()) return Status(Errc::LimitExceeded, "quarantine is full");
     // Bytes first, then the record: an item is listed only once both are in place.
     if (Status s = io::write_file_atomic(path_of(dir_, rec.id, ".bin"), bytes.data(), bytes.size()); !s) return s;
     const std::string text = encode(rec);

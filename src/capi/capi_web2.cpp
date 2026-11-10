@@ -154,6 +154,13 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_se
                                               f.dataset.get_string(siaara::tags::SOPInstanceUID).value_or(""), f.read_loss,
                                               f.warnings.empty() ? std::string() : f.warnings.front());
             };
+        if (o->read_only == 0)
+            backend.keep_rejected = [store](const siaara::DicomFile& f, const siaara::Bytes& part, const std::string& peer) {
+                (void)capi::quarantine_bytes(store, part, "STOW-RS", std::string(), peer,
+                                             f.dataset.get_string(siaara::tags::SOPClassUID).value_or(""),
+                                             f.dataset.get_string(siaara::tags::SOPInstanceUID).value_or(""), f.read_loss,
+                                             f.warnings.empty() ? std::string() : f.warnings.front(), true);
+            };
         if (Status s = h->server.start(cfg, std::move(backend)); !s) return fail(s);
         capi::log(SIAARA_LOG_INFO, false, "DICOMweb server listening on port " + std::to_string(h->server.port()));
         *out = h.release();

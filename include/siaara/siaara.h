@@ -573,13 +573,22 @@ typedef struct siaara_store_options {
      * hold. Past them an incomplete instance is refused (C-STORE 0xA700, STOW-RS Failure Reason 0xA700). */
     uint64_t quarantine_max_bytes; /* 0 = 4 GiB */
     uint32_t quarantine_max_items; /* 0 = 10000 */
-    uint32_t reserved1;            /* set to 0 */
+    uint32_t quarantine_when_full; /* SIAARA_AREA_FULL_*: 0 (default) refuse the new item; 1 evict the oldest items */
+    /* The "rejected" area (<root>/rejected; SIAARA_INCOMPLETE_REFUSE_KEEP_COPY): its own caps. */
+    uint64_t rejected_max_bytes;   /* 0 = 4 GiB */
+    uint32_t rejected_max_items;   /* 0 = 10000 */
+    uint32_t rejected_when_full;   /* SIAARA_AREA_FULL_*; default refuse (the copy is then not kept) */
 } siaara_store_options;
+enum { SIAARA_AREA_FULL_REFUSE = 0, SIAARA_AREA_FULL_EVICT_OLDEST = 1 };
+/* The two areas of the siaara_store_quarantine_* functions. */
+enum { SIAARA_AREA_QUARANTINE = 0, SIAARA_AREA_REJECTED = 1 };
 
 /* ---- quarantine (R-116). Instances that arrived incomplete under SIAARA_INCOMPLETE_QUARANTINE are
  * kept exactly as received in <root>/quarantine (owner-only), outside the index: no query and no
  * retrieve returns them, and Storage Commitment answers "not committed" for them. An item is
- * identified by the SHA-256 of its bytes (the same bytes arriving again are one item). */
+ * identified by the SHA-256 of its bytes (the same bytes arriving again are one item).
+ * SIAARA_INCOMPLETE_REFUSE_KEEP_COPY keeps copies of refused instances the same way in a second
+ * area, <root>/rejected. Every function takes the area (SIAARA_AREA_*). */
 typedef struct siaara_quarantine_record {
     uint32_t struct_size;          /* set to sizeof(siaara_quarantine_record) */
     uint32_t read_loss;            /* SIAARA_READ_* loss bits */
@@ -592,25 +601,30 @@ typedef struct siaara_quarantine_record {
     char sop_class_uid[65];        /* "" when not readable */
     char sop_instance_uid[65];
     char warning[256];             /* the first read warning (a fixed code and offsets; no patient data) */
-    char reserved[4];
+    int32_t area;                  /* SIAARA_AREA_* */
 } siaara_quarantine_record;
 /* Number of items and their total size (either pointer may be NULL). Thread safety: any thread. */
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, uint32_t* items,
-                                                                   uint64_t* bytes);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, int32_t area,
+                                                                   uint32_t* items, uint64_t* bytes);
 /* The record of item `index` (0 = newest). SIAARA_ERR_NOT_FOUND past the end. */
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_store* store, uint32_t index,
-                                                                 siaara_quarantine_record* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_store* store, int32_t area,
+                                                                 uint32_t index, siaara_quarantine_record* out);
 /* The bytes of an item, exactly as received (array buffer rules: cap 0 reports *needed). */
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_store* store, const char* id,
-                                                                   uint8_t* buf, size_t cap, size_t* needed);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_store* store, int32_t area,
+                                                                   const char* id, uint8_t* buf, size_t cap,
+                                                                   size_t* needed);
 /* Moves an item to the archive: the bytes are stored unchanged (policy SIAARA_DUP_*) and indexed
  * with SIAARA_IDXF_INCOMPLETE; the item then leaves the quarantine. An item without a Part 10
  * preamble cannot be stored unchanged: SIAARA_ERR_UNSUPPORTED, the item stays. *outcome (may be
  * NULL): SIAARA_ADD_*. */
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, const char* id, int32_t policy,
-                                                                     int32_t* outcome);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, int32_t area, const char* id,
+                                                                     int32_t policy, int32_t* outcome);
 /* Deletes an item (bytes and record). */
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, const char* id);
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, int32_t area, const char* id);
+/* Writes an item's bytes, unchanged, to folder/<id>.dcm (owner-only, replaced atomically); the
+ * item stays where it is. */
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_export(const siaara_store* store, int32_t area,
+                                                                    const char* id, const char* folder);
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
 enum { SIAARA_ADD_COPY = 0, SIAARA_ADD_REFERENCE = 1 };
@@ -1894,8 +1908,8 @@ typedef struct siaara_get_options {
     int32_t strict_store_uids;       /* 0/1: refuse (0xA900) an instance whose C-STORE command UIDs differ from
                                         (0008,0016)/(0008,0018) of its data set; 0: keep it under the data set's
                                         UIDs and log a warning */
-    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for received instances (default: refuse with 0xC000;
-                                        the sub-operation then counts as failed at the SCP) */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for received instances (default: quarantine in
+                                        options->store, answered 0xB007; refused 0xC000 without a store) */
 } siaara_get_options;
 
 /* C-GET; the instances arrive on the same association. options->store or ->folder is required. */
@@ -1972,6 +1986,10 @@ typedef struct siaara_scp_options {
     int32_t quarantine_response;     /* SIAARA_QUARANTINE_ANSWER_*: what the sender of a quarantined instance is told */
     const struct siaara_incomplete_override* incomplete_overrides; /* the policy for particular calling AEs */
     uint32_t incomplete_override_count;
+    uint32_t incomplete_warning_status; /* the WARNING answer; 0 = 0xB007 (0xB000 and 0xB006 are the other
+                                        standard choices) */
+    uint32_t incomplete_failure_status; /* the FAILURE answer, also for REFUSE and REFUSE_KEEP_COPY; 0 = 0xC000
+                                        (e.g. 0xA900) */
     uint32_t reserved2;              /* set to 0 */
 } siaara_scp_options;
 
@@ -1983,27 +2001,36 @@ typedef struct siaara_incomplete_override {
 } siaara_incomplete_override;
 
 /* What a receiver does with a data set whose read was not complete (siaara_read_report loss bits):
- * the Storage SCP (siaara_scp_options), C-GET (siaara_get_options), the STOW-RS server
- * (siaara_web_server_options) and siaara_web_wado_retrieve_to_ex share this one policy.
- * REFUSE: nothing is stored - C-STORE status 0xC000 (and SIAARA_SCP_STORE_FAILED with read_loss),
- *   STOW-RS Failure Reason 0xC000, a retrieved part counted as failed.
- * ACCEPT_AS_RECEIVED: the bytes are stored exactly as they arrived - never transcoded
- *   (store_transfer_syntax is skipped) and never rewritten - and flagged: SIAARA_SCP_STORED with
- *   read_loss != 0, STOW-RS Warning Reason 0xB006, the retrieve report.
- * A part without a Part 10 preamble that is incomplete is refused under both: storing it would
- * need a rewrite.
- * QUARANTINE: the bytes are kept exactly as received in the store's quarantine area
- *   (siaara_store_quarantine_*): outside the index, so nothing returns them until an operator
- *   releases or deletes them. The sender is told per quarantine_response: WARNING (C-STORE status
- *   0xB007, STOW-RS Warning Reason 0xB007 and no Retrieve URL) or FAILURE (0xC000); a full
- *   quarantine gives 0xA700. Event SIAARA_SCP_QUARANTINED. Without a store (a C-GET into a folder
- *   only) the instance is refused.
- * SIAARA_INCOMPLETE_DEFAULT (0) is REFUSE; SIAARA_QUARANTINE_ANSWER_DEFAULT (0) is WARNING. */
+ * the Storage SCP (siaara_scp_options, per calling AE with incomplete_overrides), C-GET
+ * (siaara_get_options), the STOW-RS server (siaara_web_server_options) and
+ * siaara_web_wado_retrieve_to_ex share this one policy. Whatever the choice, incomplete data is
+ * never transcoded and never rewritten.
+ * REFUSE: nothing is kept - the FAILURE answer (C-STORE incomplete_failure_status, 0xC000;
+ *   SIAARA_SCP_STORE_FAILED with read_loss; STOW-RS Failure Reason; a retrieved part counted failed).
+ * ACCEPT_AS_RECEIVED ("accept, flagged"): the bytes are stored exactly as they arrived in the
+ *   archive, indexed with SIAARA_IDXF_INCOMPLETE; SIAARA_SCP_STORED with read_loss != 0; the
+ *   sender gets the answer chosen with quarantine_response (default WARNING: C-STORE 0xB007;
+ *   STOW-RS Warning Reason 0xB006).
+ * QUARANTINE (the default): the bytes are kept exactly as received in the store's quarantine
+ *   area (siaara_store_quarantine_*), outside the index, so nothing returns them until an
+ *   operator releases or deletes them; SIAARA_SCP_QUARANTINED; the sender gets the
+ *   quarantine_response answer (WARNING 0xB007 / STOW-RS Warning Reason 0xB007 and no Retrieve
+ *   URL, FAILURE, or SUCCESS). A full quarantine gives 0xA700 (or evicts the oldest items:
+ *   siaara_store_options.quarantine_when_full). Without a store to quarantine in (a C-GET into
+ *   a folder only) the instance is refused.
+ * REFUSE_KEEP_COPY: answered like REFUSE, and a copy is kept in the store's "rejected" area for
+ *   diagnosis (SIAARA_AREA_REJECTED; best effort, its own caps).
+ * A STOW-RS / WADO-RS part without a Part 10 preamble that is incomplete is never stored in the
+ * archive (that would need a rewrite): ACCEPT_AS_RECEIVED refuses it.
+ * SIAARA_INCOMPLETE_DEFAULT (0) is QUARANTINE; SIAARA_QUARANTINE_ANSWER_DEFAULT (0) is WARNING. */
 enum {
     SIAARA_INCOMPLETE_DEFAULT = 0, SIAARA_INCOMPLETE_REFUSE = 1, SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2,
-    SIAARA_INCOMPLETE_QUARANTINE = 3
+    SIAARA_INCOMPLETE_QUARANTINE = 3, SIAARA_INCOMPLETE_REFUSE_KEEP_COPY = 4
 };
-enum { SIAARA_QUARANTINE_ANSWER_DEFAULT = 0, SIAARA_QUARANTINE_ANSWER_WARNING = 1, SIAARA_QUARANTINE_ANSWER_FAILURE = 2 };
+enum {
+    SIAARA_QUARANTINE_ANSWER_DEFAULT = 0, SIAARA_QUARANTINE_ANSWER_WARNING = 1, SIAARA_QUARANTINE_ANSWER_FAILURE = 2,
+    SIAARA_QUARANTINE_ANSWER_SUCCESS = 3
+};
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
 

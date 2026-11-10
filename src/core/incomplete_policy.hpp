@@ -21,21 +21,36 @@ enum class IncompletePolicy : std::uint8_t {
     // operator releases them to the archive or deletes them. The sender is answered per
     // QuarantineResponse. Where no quarantine area is available the instance is refused.
     Quarantine = 2,
+    // Refused like Refuse (the sender gets the failure status), but the bytes are kept verbatim in
+    // the store's "rejected" area - a second area like the quarantine, with its own caps - for
+    // diagnosis. Where no such area is available it is a plain Refuse.
+    RefuseKeepCopy = 3,
 };
 
-// What the sender is told about an instance that went to quarantine.
+// THE default everywhere (owner decision 2026-11-11: quarantine). Change it here only. Where a
+// receiver has no quarantine area (a C-GET into a folder only, a DICOMweb server over a custom
+// store) Quarantine falls back to Refuse.
+inline constexpr IncompletePolicy kDefaultIncompletePolicy = IncompletePolicy::Quarantine;
+
+// What the sender is told about an instance that was kept although incomplete (AcceptAsReceived
+// and Quarantine). Refuse and RefuseKeepCopy always answer the failure status.
 enum class QuarantineResponse : std::uint8_t {
-    Warning = 0,  // C-STORE 0xB007 (Data Set does not match SOP Class), STOW-RS Warning Reason 0xB007
-    Failure = 1,  // C-STORE 0xC000, STOW-RS Failure Reason 0xC000 (the bytes are quarantined all the same)
+    Warning = 0,  // the warning status below (C-STORE), STOW-RS Warning Reason
+    Failure = 1,  // the failure status below (the bytes are kept all the same)
+    Success = 2,  // 0x0000, no warning (STOW-RS: no Warning Reason)
 };
 // The default answer. Change it here only.
 inline constexpr QuarantineResponse kDefaultQuarantineResponse = QuarantineResponse::Warning;
-// C-STORE status / STOW-RS Warning Reason for a quarantined instance answered with a warning.
+// Default C-STORE warning status / STOW-RS Warning Reason for a kept incomplete instance
+// (0xB007 Data Set does not match SOP Class; 0xB000 and 0xB006 are the other standard choices).
 inline constexpr std::uint16_t kQuarantineWarningStatus = 0xB007;
-
-// The default everywhere (the rule already used for saving and sending: an incomplete data set
-// is not passed on as if it were whole). Change it here only.
-inline constexpr IncompletePolicy kDefaultIncompletePolicy = IncompletePolicy::Refuse;
+// Default C-STORE failure status / STOW-RS Failure Reason for a refused incomplete instance
+// (0xC000 Cannot Understand; 0xA900 is the other usual choice).
+inline constexpr std::uint16_t kIncompleteFailureStatus = 0xC000;
+// Storage Commitment for instances that arrived incomplete. Quarantined and rejected copies are
+// not in the archive and are never committed. One kept in the archive and flagged
+// (AcceptAsReceived, or released from quarantine) is committed when this is true.
+inline constexpr bool kCommitFlaggedIncomplete = true;
 
 // ReadOptions::recover_overlong_lengths for data that arrives over the network (C-STORE data
 // sets at the SCP, C-GET / C-MOVE sub-operations received, every other DIMSE data set, STOW-RS

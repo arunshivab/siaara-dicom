@@ -769,11 +769,15 @@ private:
                         if (!reason) {
                             quarantined = true;
                             if (cfg_.quarantine_response == QuarantineResponse::Warning) warn = kQuarantineWarningStatus;
-                            else reason = failure::CannotUnderstand;
+                            else if (cfg_.quarantine_response == QuarantineResponse::Failure) reason = kIncompleteFailureStatus;
                         }
                     } else if (!f->complete() &&
-                               (cfg_.incomplete_policy != IncompletePolicy::AcceptAsReceived || !f->had_preamble))
-                        reason = failure::CannotUnderstand;
+                               (cfg_.incomplete_policy != IncompletePolicy::AcceptAsReceived || !f->had_preamble)) {
+                        reason = kIncompleteFailureStatus;
+                        // RefuseKeepCopy: a copy for diagnosis, outside the archive.
+                        if (cfg_.incomplete_policy == IncompletePolicy::RefuseKeepCopy && store_.keep_rejected)
+                            store_.keep_rejected(f.value(), bytes, std::string());
+                    }
                     else {
                         reason = store_.store(f.value(), bytes);
                         if (!reason && !f->complete()) warn = warning::ElementsDiscarded;

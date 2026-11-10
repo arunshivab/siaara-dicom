@@ -669,11 +669,12 @@ TEST_CASE("net2: sec4 R-116 a truncated C-STORE data set is refused by default, 
     const DicomFile whole = make_image("2.25.47001", "2.25.47900", "2.25.47901", true);
     std::vector<std::uint8_t> cut = dataset_bytes(make_image("2.25.47002", "2.25.47900", "2.25.47901", true));
     cut.resize(cut.size() - 60);  // the data set ends inside Pixel Data
-    {  // Default policy: refused with 0xC000, nothing stored, the event says why.
+    {  // REFUSE: 0xC000, nothing stored, the event says why.
         const auto dir = temp_dir("r116a");
         StoreOpen st(dir / "store");
         Events ev;
         siaara_scp_options o = scp_options("INC_SCP");
+        o.incomplete_policy = SIAARA_INCOMPLETE_REFUSE;
         siaara_scp* scp = nullptr;
         REQUIRE(siaara_scp_start(&o, st.store, on_event, &ev, &scp) == SIAARA_OK);
         const auto port = static_cast<std::uint16_t>(port_of(scp));
@@ -701,7 +702,7 @@ TEST_CASE("net2: sec4 R-116 a truncated C-STORE data set is refused by default, 
         siaara_scp* scp = nullptr;
         REQUIRE(siaara_scp_start_ex(&o, &sv, st.store, on_event, &ev, &scp) == SIAARA_OK);
         const auto port = static_cast<std::uint16_t>(port_of(scp));
-        CHECK_EQ(raw_store(port, "INC_SCP", kMR, "2.25.47002", cut), 0x0000);
+        CHECK_EQ(raw_store(port, "INC_SCP", kMR, "2.25.47002", cut), 0xB007);  // stored, with the warning answer
         CHECK_EQ(raw_store(port, "INC_SCP", kMR, "2.25.47001", dataset_bytes(whole)), 0x0000);
         REQUIRE(ev.wait_for(SIAARA_SCP_STORED, 2));
         for (const auto& e : ev.of(SIAARA_SCP_STORED)) {
@@ -1355,15 +1356,15 @@ TEST_CASE("io/sec4 R-133 Windows: atomic replace through the creating handle, re
 
 // ---------------------------------------------------------------- R-116: quarantine
 namespace {
-std::vector<siaara_quarantine_record> quarantine_list(const siaara_store* store) {
+std::vector<siaara_quarantine_record> quarantine_list(const siaara_store* store, int32_t area = SIAARA_AREA_QUARANTINE) {
     std::vector<siaara_quarantine_record> out;
     uint32_t n = 0;
-    if (siaara_store_quarantine_count(store, &n, nullptr) != SIAARA_OK) return out;
+    if (siaara_store_quarantine_count(store, area, &n, nullptr) != SIAARA_OK) return out;
     for (uint32_t i = 0; i < n; ++i) {
         siaara_quarantine_record r;
         std::memset(&r, 0, sizeof r);
         r.struct_size = sizeof r;
-        if (siaara_store_quarantine_get(store, i, &r) == SIAARA_OK) out.push_back(r);
+        if (siaara_store_quarantine_get(store, area, i, &r) == SIAARA_OK) out.push_back(r);
     }
     return out;
 }
@@ -1379,15 +1380,15 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
     StoreOpen st(dir / "store");
     Events ev;
     siaara_scp_options o = scp_options("Q_SCP");
-    o.incomplete_policy = SIAARA_INCOMPLETE_QUARANTINE;
-    // One calling AE is refused instead, another accepted as received (per-AE override).
+    // QUARANTINE is the default policy (owner decision): nothing is set here.
+    // One calling AE is refused instead, another keeps a copy of what is refused (per-AE override).
     siaara_incomplete_override ov[2];
     std::memset(ov, 0, sizeof ov);
     ov[0].struct_size = ov[1].struct_size = sizeof(siaara_incomplete_override);
     ov[0].calling_ae = "STRICT_AE";
     ov[0].policy = SIAARA_INCOMPLETE_REFUSE;
-    ov[1].calling_ae = "LAX_AE";
-    ov[1].policy = SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED;
+    ov[1].calling_ae = "COPY_AE";
+    ov[1].policy = SIAARA_INCOMPLETE_REFUSE_KEEP_COPY;
     o.incomplete_overrides = ov;
     o.incomplete_override_count = 2;
     siaara_scp_services sv = services();
@@ -1417,10 +1418,10 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
     CHECK(quarantine_list(st.store).size() == 1);
     // The bytes are exactly what arrived (after the file meta the release would store).
     size_t need = 0;
-    REQUIRE(siaara_store_quarantine_bytes(st.store, items[0].id, nullptr, 0, &need) == SIAARA_OK);
+    REQUIRE(siaara_store_quarantine_bytes(st.store, SIAARA_AREA_QUARANTINE, items[0].id, nullptr, 0, &need) == SIAARA_OK);
     CHECK(need == items[0].size);
     std::vector<uint8_t> got(need);
-    REQUIRE(siaara_store_quarantine_bytes(st.store, items[0].id, got.data(), got.size(), &need) == SIAARA_OK);
+    REQUIRE(siaara_store_quarantine_bytes(st.store, SIAARA_AREA_QUARANTINE, items[0].id, got.data(), got.size(), &need) == SIAARA_OK);
     REQUIRE(got.size() > cut.size());
     CHECK(std::memcmp(got.data() + got.size() - cut.size(), cut.data(), cut.size()) == 0);
     // The quarantine area is owner-only.
@@ -1445,6 +1446,39 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
         (void)scu.release();
     }
     CHECK(quarantine_list(st.store).size() == 1);
+    CHECK(quarantine_list(st.store, SIAARA_AREA_REJECTED).empty());
+    // REFUSE_KEEP_COPY for another AE: the failure answer, and a copy in the "rejected" area.
+    {
+        net::Scu scu(scu_cfg(port, "Q_SCP", "COPY_AE"));
+        scu.add_context(kMR, {std::string(ts::ExplicitVRLittleEndian)});
+        REQUIRE(scu.connect().is_ok());
+        net::Association* a = scu.association();
+        const std::uint16_t mid = a->next_message_id();
+        REQUIRE(net::send_dimse_raw(*a, a->find_context(kMR)->id, net::make_c_store_rq(mid, kMR, "2.25.57003"), cut2.data(),
+                                    cut2.size())
+                    .is_ok());
+        auto r = net::receive_dimse(*a, 5000);
+        REQUIRE(r.is_ok());
+        CHECK_EQ(r->message.command.status.value_or(0), 0xC000);
+        (void)scu.release();
+    }
+    {
+        const auto rejected = quarantine_list(st.store, SIAARA_AREA_REJECTED);
+        REQUIRE(rejected.size() == 1);
+        CHECK(std::string(rejected[0].calling_ae) == "COPY_AE");
+        CHECK(rejected[0].area == SIAARA_AREA_REJECTED);
+        // Export writes the bytes unchanged to a folder; the item stays.
+        const std::string out_dir = (dir / "export").string();
+        std::filesystem::create_directories(out_dir);
+        REQUIRE(siaara_store_quarantine_export(st.store, SIAARA_AREA_REJECTED, rejected[0].id, out_dir.c_str()) == SIAARA_OK);
+        const auto exported = std::filesystem::path(out_dir) / (std::string(rejected[0].id) + ".dcm");
+        CHECK(std::filesystem::file_size(exported) == rejected[0].size);
+        CHECK(quarantine_list(st.store, SIAARA_AREA_REJECTED).size() == 1);
+        CHECK(siaara_store_quarantine_delete(st.store, SIAARA_AREA_REJECTED, rejected[0].id) == SIAARA_OK);
+        CHECK(siaara_store_quarantine_count(st.store, 7, nullptr, nullptr) == SIAARA_ERR_INVALID_ARGUMENT);
+    }
+    CHECK(quarantine_list(st.store).size() == 1);
+    CHECK(st.instances() == 1);
     // C-FIND does not return the quarantined instance; Storage Commitment does not commit it.
     siaara_dimse_peer p = peer(port, "Q_SCP");
     {
@@ -1458,7 +1492,7 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
     }
     // Release: stored unchanged, flagged incomplete in the index, gone from the quarantine.
     int32_t outcome = -1;
-    REQUIRE(siaara_store_quarantine_release(st.store, items[0].id, SIAARA_DUP_KEEP, &outcome) == SIAARA_OK);
+    REQUIRE(siaara_store_quarantine_release(st.store, SIAARA_AREA_QUARANTINE, items[0].id, SIAARA_DUP_KEEP, &outcome) == SIAARA_OK);
     CHECK(outcome == SIAARA_ADD_ADDED);
     CHECK(quarantine_list(st.store).empty());
     CHECK(st.instances() == 2);
@@ -1488,15 +1522,15 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
         }
         CHECK(flagged);
     }
-    CHECK(siaara_store_quarantine_release(st.store, items[0].id, SIAARA_DUP_KEEP, nullptr) == SIAARA_ERR_NOT_FOUND);
+    CHECK(siaara_store_quarantine_release(st.store, SIAARA_AREA_QUARANTINE, items[0].id, SIAARA_DUP_KEEP, nullptr) == SIAARA_ERR_NOT_FOUND);
     // Delete.
     CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.57003", cut2), 0xB007);
     items = quarantine_list(st.store);
     REQUIRE(items.size() == 1);
-    CHECK(siaara_store_quarantine_delete(st.store, items[0].id) == SIAARA_OK);
+    CHECK(siaara_store_quarantine_delete(st.store, SIAARA_AREA_QUARANTINE, items[0].id) == SIAARA_OK);
     CHECK(quarantine_list(st.store).empty());
-    CHECK(siaara_store_quarantine_delete(st.store, items[0].id) == SIAARA_ERR_NOT_FOUND);
-    CHECK(siaara_store_quarantine_delete(st.store, "../../etc/passwd") == SIAARA_ERR_NOT_FOUND);
+    CHECK(siaara_store_quarantine_delete(st.store, SIAARA_AREA_QUARANTINE, items[0].id) == SIAARA_ERR_NOT_FOUND);
+    CHECK(siaara_store_quarantine_delete(st.store, SIAARA_AREA_QUARANTINE, "../../etc/passwd") == SIAARA_ERR_NOT_FOUND);
     siaara_scp_free(scp);
 }
 
@@ -1540,6 +1574,31 @@ TEST_CASE("net2: sec4 R-116 quarantine caps, the FAILURE answer, and survival ac
     o2.incomplete_policy = SIAARA_INCOMPLETE_QUARANTINE;
     REQUIRE(siaara_scp_start(&o2, store, nullptr, nullptr, &scp) == SIAARA_OK);
     CHECK_EQ(raw_store(static_cast<std::uint16_t>(port_of(scp)), "Q_SCP", kMR, "2.25.58002", cut_b), 0xA700);  // byte cap
+    siaara_scp_free(scp);
+    siaara_store_free(store);
+    // Option "evict oldest": with room for one item the new one replaces the old one; SUCCESS answer.
+    so.quarantine_max_bytes = 0;
+    so.quarantine_max_items = 1;
+    so.quarantine_when_full = SIAARA_AREA_FULL_EVICT_OLDEST;
+    REQUIRE(siaara_store_open(root.c_str(), root.size(), &so, &store) == SIAARA_OK);
+    siaara_scp_options o3 = scp_options("Q_SCP");
+    o3.quarantine_response = SIAARA_QUARANTINE_ANSWER_SUCCESS;
+    o3.incomplete_warning_status = 0xB006;
+    REQUIRE(siaara_scp_start(&o3, store, nullptr, nullptr, &scp) == SIAARA_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // item times have one-second resolution
+    CHECK_EQ(raw_store(static_cast<std::uint16_t>(port_of(scp)), "Q_SCP", kMR, "2.25.58002", cut_b), 0x0000);
+    const auto after = quarantine_list(store);
+    REQUIRE(after.size() == 1);
+    CHECK(std::string(after[0].sop_instance_uid) == "2.25.58002");
+    siaara_scp_free(scp);
+    // The selectable warning status.
+    siaara_scp_options o4 = scp_options("Q_SCP");
+    o4.incomplete_warning_status = 0xB006;
+    REQUIRE(siaara_scp_start(&o4, store, nullptr, nullptr, &scp) == SIAARA_OK);
+    CHECK_EQ(raw_store(static_cast<std::uint16_t>(port_of(scp)), "Q_SCP", kMR, "2.25.58002", cut_b), 0xB006);
+    o4.incomplete_warning_status = 0xC000;  // not a warning status
+    siaara_scp* bad = nullptr;
+    CHECK(siaara_scp_start(&o4, store, nullptr, nullptr, &bad) == SIAARA_ERR_INVALID_ARGUMENT);
     siaara_scp_free(scp);
     siaara_store_free(store);
 }

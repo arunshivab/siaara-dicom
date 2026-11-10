@@ -36,7 +36,11 @@ public sealed class DicomWebRetrieveOptions
 /// <param name="Rewritten">Kept, but the part had no Part 10 preamble and was written as a new Part 10 file.</param>
 /// <param name="Message">The library's message when parts were not kept.</param>
 public sealed record DicomWebRetrieveReport(SiaaraErrorCode Outcome, int Stored, int Failed, int IncompleteRefused, int UidMismatch,
-                                            int IncompleteAccepted, int Rewritten, string Message);
+                                            int IncompleteAccepted, int Rewritten, string Message)
+{
+    /// <summary>Incomplete parts kept in the store's quarantine (counted in Failed too: they are not in the archive).</summary>
+    public int Quarantined { get; init; }
+}
 
 /// <summary>QIDO-RS search level.</summary>
 public enum QidoLevel
@@ -622,7 +626,7 @@ public sealed class DicomWebClient : IDisposable
                     throw new SiaaraException((SiaaraErrorCode)st, message);
                 }
                 return new DicomWebRetrieveReport((SiaaraErrorCode)st, (int)r.stored, (int)r.failed, (int)r.incomplete_refused,
-                    (int)r.uid_mismatch, (int)r.incomplete_accepted, (int)r.rewritten, message);
+                    (int)r.uid_mismatch, (int)r.incomplete_accepted, (int)r.rewritten, message) { Quarantined = (int)r.quarantined };
             }
         }
         finally

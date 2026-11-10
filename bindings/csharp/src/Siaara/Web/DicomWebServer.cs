@@ -46,6 +46,8 @@ public sealed record DicomWebServerOptions
     public int MinResponseRate { get; init; }
     /// <summary>What happens to a STOW-RS part that cannot be read completely. Default: refused (Failure Reason 0xC000).</summary>
     public Network.IncompletePolicy IncompletePolicy { get; init; }
+    /// <summary>What the client is told when an incomplete part was kept (quarantined).</summary>
+    public Network.IncompleteAnswer IncompleteAnswer { get; init; }
 }
 
 /// <summary>
@@ -95,6 +97,7 @@ public sealed class DicomWebServer : IDisposable
             response_timeout_ms = options.ResponseTimeout < TimeSpan.Zero ? -1 : (int)Math.Min(int.MaxValue, options.ResponseTimeout.TotalMilliseconds),
             min_response_rate = (uint)Math.Max(0, options.MinResponseRate),
             incomplete_policy = (int)options.IncompletePolicy,
+            quarantine_response = (int)options.IncompleteAnswer,
         };
         if (options.Tls is not null)
         {

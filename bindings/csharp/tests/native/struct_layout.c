@@ -121,7 +121,10 @@ int main(void) {
     printf("F siaara_store_options keep_permissions %u\n", (unsigned)offsetof(siaara_store_options, keep_permissions));
     printf("F siaara_store_options quarantine_max_bytes %u\n", (unsigned)offsetof(siaara_store_options, quarantine_max_bytes));
     printf("F siaara_store_options quarantine_max_items %u\n", (unsigned)offsetof(siaara_store_options, quarantine_max_items));
-    printf("F siaara_store_options reserved1 %u\n", (unsigned)offsetof(siaara_store_options, reserved1));
+    printf("F siaara_store_options quarantine_when_full %u\n", (unsigned)offsetof(siaara_store_options, quarantine_when_full));
+    printf("F siaara_store_options rejected_max_bytes %u\n", (unsigned)offsetof(siaara_store_options, rejected_max_bytes));
+    printf("F siaara_store_options rejected_max_items %u\n", (unsigned)offsetof(siaara_store_options, rejected_max_items));
+    printf("F siaara_store_options rejected_when_full %u\n", (unsigned)offsetof(siaara_store_options, rejected_when_full));
     printf("S siaara_quarantine_record %u\n", (unsigned)sizeof(siaara_quarantine_record));
     printf("F siaara_quarantine_record struct_size %u\n", (unsigned)offsetof(siaara_quarantine_record, struct_size));
     printf("F siaara_quarantine_record read_loss %u\n", (unsigned)offsetof(siaara_quarantine_record, read_loss));
@@ -134,7 +137,7 @@ int main(void) {
     printf("F siaara_quarantine_record sop_class_uid %u\n", (unsigned)offsetof(siaara_quarantine_record, sop_class_uid));
     printf("F siaara_quarantine_record sop_instance_uid %u\n", (unsigned)offsetof(siaara_quarantine_record, sop_instance_uid));
     printf("F siaara_quarantine_record warning %u\n", (unsigned)offsetof(siaara_quarantine_record, warning));
-    printf("F siaara_quarantine_record reserved %u\n", (unsigned)offsetof(siaara_quarantine_record, reserved));
+    printf("F siaara_quarantine_record area %u\n", (unsigned)offsetof(siaara_quarantine_record, area));
     printf("S siaara_store_filter %u\n", (unsigned)sizeof(siaara_store_filter));
     printf("F siaara_store_filter struct_size %u\n", (unsigned)offsetof(siaara_store_filter, struct_size));
     printf("F siaara_store_filter level %u\n", (unsigned)offsetof(siaara_store_filter, level));
@@ -584,6 +587,8 @@ int main(void) {
     printf("F siaara_scp_options quarantine_response %u\n", (unsigned)offsetof(siaara_scp_options, quarantine_response));
     printf("F siaara_scp_options incomplete_overrides %u\n", (unsigned)offsetof(siaara_scp_options, incomplete_overrides));
     printf("F siaara_scp_options incomplete_override_count %u\n", (unsigned)offsetof(siaara_scp_options, incomplete_override_count));
+    printf("F siaara_scp_options incomplete_warning_status %u\n", (unsigned)offsetof(siaara_scp_options, incomplete_warning_status));
+    printf("F siaara_scp_options incomplete_failure_status %u\n", (unsigned)offsetof(siaara_scp_options, incomplete_failure_status));
     printf("F siaara_scp_options reserved2 %u\n", (unsigned)offsetof(siaara_scp_options, reserved2));
     printf("S siaara_incomplete_override %u\n", (unsigned)sizeof(siaara_incomplete_override));
     printf("F siaara_incomplete_override struct_size %u\n", (unsigned)offsetof(siaara_incomplete_override, struct_size));

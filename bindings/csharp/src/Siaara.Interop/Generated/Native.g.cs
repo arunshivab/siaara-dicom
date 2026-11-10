@@ -118,6 +118,10 @@ internal static class C
     public const int SIAARA_LEVEL_STUDY = 1;
     public const int SIAARA_LEVEL_SERIES = 2;
     public const int SIAARA_LEVEL_INSTANCE = 3;
+    public const int SIAARA_AREA_FULL_REFUSE = 0;
+    public const int SIAARA_AREA_FULL_EVICT_OLDEST = 1;
+    public const int SIAARA_AREA_QUARANTINE = 0;
+    public const int SIAARA_AREA_REJECTED = 1;
     public const int SIAARA_DUP_KEEP = 0;
     public const int SIAARA_DUP_REPLACE = 1;
     public const int SIAARA_ADD_COPY = 0;
@@ -340,9 +344,11 @@ internal static class C
     public const int SIAARA_INCOMPLETE_REFUSE = 1;
     public const int SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2;
     public const int SIAARA_INCOMPLETE_QUARANTINE = 3;
+    public const int SIAARA_INCOMPLETE_REFUSE_KEEP_COPY = 4;
     public const int SIAARA_QUARANTINE_ANSWER_DEFAULT = 0;
     public const int SIAARA_QUARANTINE_ANSWER_WARNING = 1;
     public const int SIAARA_QUARANTINE_ANSWER_FAILURE = 2;
+    public const int SIAARA_QUARANTINE_ANSWER_SUCCESS = 3;
     public const int SIAARA_SCP_STORED = 0;
     public const int SIAARA_SCP_STORE_FAILED = 1;
     public const int SIAARA_SCP_ECHO = 2;
@@ -739,7 +745,10 @@ internal struct siaara_store_options
     public uint keep_permissions;
     public ulong quarantine_max_bytes;
     public uint quarantine_max_items;
-    public uint reserved1;
+    public uint quarantine_when_full;
+    public ulong rejected_max_bytes;
+    public uint rejected_max_items;
+    public uint rejected_when_full;
 }
 
 /// <summary>siaara_quarantine_record (blittable, C layout).</summary>
@@ -757,7 +766,7 @@ internal struct siaara_quarantine_record
     public FixedArray65OfByte sop_class_uid;
     public FixedArray65OfByte sop_instance_uid;
     public FixedArray256OfByte warning;
-    public FixedArray4OfByte reserved;
+    public int area;
 }
 
 /// <summary>siaara_store_filter (blittable, C layout).</summary>
@@ -1392,6 +1401,8 @@ internal struct siaara_scp_options
     public int quarantine_response;
     public nint incomplete_overrides;
     public uint incomplete_override_count;
+    public uint incomplete_warning_status;
+    public uint incomplete_failure_status;
     public uint reserved2;
 }
 
@@ -2123,23 +2134,27 @@ internal static unsafe partial class Raw
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_count")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-    internal static partial int siaara_store_quarantine_count(nint store, uint* items, ulong* bytes);
+    internal static partial int siaara_store_quarantine_count(nint store, int area, uint* items, ulong* bytes);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_get")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-    internal static partial int siaara_store_quarantine_get(nint store, uint index, siaara_quarantine_record* @out);
+    internal static partial int siaara_store_quarantine_get(nint store, int area, uint index, siaara_quarantine_record* @out);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_bytes")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-    internal static partial int siaara_store_quarantine_bytes(nint store, byte* id, byte* buf, nuint cap, nuint* needed);
+    internal static partial int siaara_store_quarantine_bytes(nint store, int area, byte* id, byte* buf, nuint cap, nuint* needed);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_release")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-    internal static partial int siaara_store_quarantine_release(nint store, byte* id, int policy, int* outcome);
+    internal static partial int siaara_store_quarantine_release(nint store, int area, byte* id, int policy, int* outcome);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_delete")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-    internal static partial int siaara_store_quarantine_delete(nint store, byte* id);
+    internal static partial int siaara_store_quarantine_delete(nint store, int area, byte* id);
+
+    [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_export")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_store_quarantine_export(nint store, int area, byte* id, byte* folder);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_open")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -3342,45 +3357,54 @@ internal static unsafe class Native
             return Raw.siaara_extract_index_memory((byte*)p_data, (nuint)data.Length, p_out, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
-    internal static int siaara_store_quarantine_count(nint store, out uint items, out ulong bytes)
+    internal static int siaara_store_quarantine_count(nint store, int area, out uint items, out ulong bytes)
     {
         items = default;
         bytes = default;
         fixed (uint* p_items = &items)
         fixed (ulong* p_bytes = &bytes)
-            return Raw.siaara_store_quarantine_count(store, p_items, p_bytes);
+            return Raw.siaara_store_quarantine_count(store, area, p_items, p_bytes);
     }
 
-    internal static int siaara_store_quarantine_get(nint store, uint index, ref siaara_quarantine_record @out)
+    internal static int siaara_store_quarantine_get(nint store, int area, uint index, ref siaara_quarantine_record @out)
     {
         fixed (siaara_quarantine_record* p_out = &@out)
-            return Raw.siaara_store_quarantine_get(store, index, p_out);
+            return Raw.siaara_store_quarantine_get(store, area, index, p_out);
     }
 
-    internal static int siaara_store_quarantine_bytes(nint store, ReadOnlySpan<byte> id, Span<byte> buf, out nuint needed)
+    internal static int siaara_store_quarantine_bytes(nint store, int area, ReadOnlySpan<byte> id, Span<byte> buf, out nuint needed)
     {
         if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
         needed = default;
         fixed (byte* p_id = id)
         fixed (byte* p_buf = buf)
         fixed (nuint* p_needed = &needed)
-            return Raw.siaara_store_quarantine_bytes(store, (byte*)p_id, (byte*)p_buf, (nuint)buf.Length, p_needed);
+            return Raw.siaara_store_quarantine_bytes(store, area, (byte*)p_id, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
-    internal static int siaara_store_quarantine_release(nint store, ReadOnlySpan<byte> id, int policy, out int outcome)
+    internal static int siaara_store_quarantine_release(nint store, int area, ReadOnlySpan<byte> id, int policy, out int outcome)
     {
         if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
         outcome = default;
         fixed (byte* p_id = id)
         fixed (int* p_outcome = &outcome)
-            return Raw.siaara_store_quarantine_release(store, (byte*)p_id, policy, p_outcome);
+            return Raw.siaara_store_quarantine_release(store, area, (byte*)p_id, policy, p_outcome);
     }
 
-    internal static int siaara_store_quarantine_delete(nint store, ReadOnlySpan<byte> id)
+    internal static int siaara_store_quarantine_delete(nint store, int area, ReadOnlySpan<byte> id)
     {
         if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
         fixed (byte* p_id = id)
-            return Raw.siaara_store_quarantine_delete(store, (byte*)p_id);
+            return Raw.siaara_store_quarantine_delete(store, area, (byte*)p_id);
+    }
+
+    internal static int siaara_store_quarantine_export(nint store, int area, ReadOnlySpan<byte> id, ReadOnlySpan<byte> folder)
+    {
+        if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
+        if (!folder.IsEmpty && folder.IndexOf((byte)0) < 0) throw new ArgumentException("folder must be NUL-terminated", nameof(folder));
+        fixed (byte* p_id = id)
+        fixed (byte* p_folder = folder)
+            return Raw.siaara_store_quarantine_export(store, area, (byte*)p_id, (byte*)p_folder);
     }
 
     internal static int siaara_store_open(ReadOnlySpan<byte> utf8_root, in siaara_store_options options, out nint @out)

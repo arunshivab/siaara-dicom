@@ -630,6 +630,15 @@ siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg) {
     if (has(offsetof(siaara_scp_options, quarantine_response) + sizeof(int32_t)))
         if (siaara_status ps = capi::quarantine_response(o->quarantine_response, cfg.quarantine_response); ps != SIAARA_OK)
             return ps;
+    if (has(offsetof(siaara_scp_options, incomplete_failure_status) + sizeof(uint32_t))) {
+        if (o->incomplete_warning_status > 0xFFFF || o->incomplete_failure_status > 0xFFFF)
+            return fail(Errc::InvalidArgument, "incomplete_warning_status / incomplete_failure_status: a DIMSE status");
+        if (o->incomplete_warning_status) cfg.incomplete_warning_status = static_cast<std::uint16_t>(o->incomplete_warning_status);
+        if (o->incomplete_failure_status) cfg.incomplete_failure_status = static_cast<std::uint16_t>(o->incomplete_failure_status);
+        if (net::classify_status(cfg.incomplete_warning_status) != net::StatusClass::Warning ||
+            net::classify_status(cfg.incomplete_failure_status) != net::StatusClass::Failure)
+            return fail(Errc::InvalidArgument, "incomplete_warning_status must be a warning status, incomplete_failure_status a failure status");
+    }
     if (has(offsetof(siaara_scp_options, incomplete_override_count) + sizeof(uint32_t))) {
         if (o->incomplete_override_count && !o->incomplete_overrides) return fail(Errc::InvalidArgument, "incomplete_overrides is NULL");
         if (o->incomplete_override_count > 4096) return fail(Errc::LimitExceeded, "at most 4096 incomplete_overrides");
@@ -727,6 +736,17 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
           } catch (...) {
             capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
             return net::dimse_status::OutOfResources;
+          }
+        };
+        // RefuseKeepCopy: a copy of the refused instance for diagnosis (best effort).
+        hd.on_store_keep_rejected = [raw](const net::StoreRequest& rq) noexcept {
+          try {
+            std::vector<std::uint8_t> bytes;
+            if (!net::encode_received_part10(rq, bytes)) return;
+            (void)capi::quarantine_bytes(raw->store, bytes_of(std::move(bytes)), "C-STORE", rq.calling_ae, rq.peer_address,
+                                         rq.sop_class_uid, rq.sop_instance_uid, rq.read_loss, rq.read_warning, true);
+          } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
           }
         };
         hd.log = capi::log_sink(SIAARA_LOG_INFO);

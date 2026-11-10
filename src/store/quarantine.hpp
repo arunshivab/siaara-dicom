@@ -24,7 +24,13 @@ namespace siaara::store {
 struct QuarantineLimits {
     std::size_t max_items = 10000;
     std::uint64_t max_bytes = 4ull << 30;
+    // When a cap would be passed: false (default) refuses the new item (Errc::LimitExceeded);
+    // true removes the oldest items until it fits.
+    bool evict_oldest = false;
 };
+inline constexpr std::size_t kDefaultQuarantineMaxItems = 10000;
+inline constexpr std::uint64_t kDefaultQuarantineMaxBytes = 4ull << 30;
+inline constexpr bool kDefaultQuarantineEvictOldest = false;
 
 struct QuarantineRecord {
     std::string id;            // SHA-256 of the bytes, 64 lower-case hex digits
@@ -43,7 +49,9 @@ enum class QuarantineAdd { Added, Duplicate };
 class Quarantine {
 public:
     // `store_root`: the store's root folder (UTF-8). Nothing is created until the first add().
-    explicit Quarantine(std::string store_root, const QuarantineLimits& limits = {});
+    // `area`: the folder under the store root ("quarantine", or "rejected" for copies of refused
+    // instances - same layout, separate caps).
+    explicit Quarantine(std::string store_root, const QuarantineLimits& limits = {}, std::string_view area = "quarantine");
 
     // Keeps `bytes` verbatim. `rec.id`, `rec.size` and `rec.time` are filled in here.
     // Errc::LimitExceeded when the item or byte cap would be passed (nothing is kept).

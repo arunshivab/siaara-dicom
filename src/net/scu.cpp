@@ -467,10 +467,11 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
                 const std::uint16_t kept = cfg_.on_quarantine(rq);
                 st = kept != dimse_status::Success ? kept
                      : cfg_.quarantine_response == QuarantineResponse::Warning ? kQuarantineWarningStatus
-                                                                               : dimse_status::CannotUnderstand;
+                     : cfg_.quarantine_response == QuarantineResponse::Success ? dimse_status::Success
+                                                                               : kIncompleteFailureStatus;
             } else if (st == dimse_status::Success && rq.read_loss != 0 &&
                        cfg_.incomplete_policy != IncompletePolicy::AcceptAsReceived)
-                st = dimse_status::CannotUnderstand;
+                st = kIncompleteFailureStatus;
             else if (st == dimse_status::Success)
                 st = on_instance ? on_instance(rq) : dimse_status::Success;
         }

@@ -319,6 +319,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
     hd.log = base.log;
     hd.on_store_refused = base.on_store_refused;        // R-116: incomplete data refused
     hd.on_store_quarantine = base.on_store_quarantine;  // R-116: incomplete data kept outside the archive
+    hd.on_store_keep_rejected = base.on_store_keep_rejected;
     hd.on_echo = [s, echo = base.on_echo](const std::string& calling) -> std::uint16_t {
         return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             if (!s->allowed(SIAARA_SVC_VERIFICATION, calling)) {
@@ -509,6 +510,9 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
                     // A quarantined copy is not in the archive: never "committed" (R-116).
                     if (!rec) r.failed.push_back({ref, kNoSuchObjectInstance});
                     else if ((*rec)[st::Str::SopClassUid] != ref.sop_class) r.failed.push_back({ref, kClassInstanceConflict});
+                    // Kept although incomplete (flagged): committed only when kCommitFlaggedIncomplete.
+                    else if (!siaara::kCommitFlaggedIncomplete && ((*rec).flags & st::kIncompleteRead) != 0)
+                        r.failed.push_back({ref, net::dimse_status::ProcessingFailure});
                     else r.committed.push_back(ref);
                 }
             } catch (...) {

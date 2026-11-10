@@ -9,6 +9,7 @@
 
 #include "capi/capi_internal.hpp"
 #include "capi/capi_net_internal.hpp"
+#include "core/io.hpp"
 #include "store/index.hpp"
 #include "store/quarantine.hpp"
 
@@ -34,6 +35,18 @@ siaara_status guarded(F&& f) noexcept {
     }
 }
 
+// The area of a call, or null (error set) for a bad store / area.
+st::Quarantine* area_of(const siaara_store* store, int32_t area) {
+    if (!store) {
+        (void)fail(Errc::InvalidArgument, "store must not be NULL");
+        return nullptr;
+    }
+    if (area == SIAARA_AREA_QUARANTINE && store->quarantine) return store->quarantine.get();
+    if (area == SIAARA_AREA_REJECTED && store->rejected) return store->rejected.get();
+    (void)fail(Errc::InvalidArgument, "unknown area (SIAARA_AREA_*)");
+    return nullptr;
+}
+
 template <std::size_t N>
 void put(char (&dst)[N], const std::string& v) {
     const std::size_t n = std::min(v.size(), N - 1);
@@ -47,8 +60,9 @@ namespace siaara::capi {
 
 std::uint16_t quarantine_bytes(siaara_store* store, const Bytes& bytes, const char* source, const std::string& calling_ae,
                                const std::string& peer, const std::string& sop_class, const std::string& sop_instance,
-                               std::uint32_t read_loss, const std::string& warning) {
-    if (!store || !store->quarantine) return 0x0110;
+                               std::uint32_t read_loss, const std::string& warning, bool rejected) {
+    st::Quarantine* area = !store ? nullptr : rejected ? store->rejected.get() : store->quarantine.get();
+    if (!area) return 0x0110;
     st::QuarantineRecord rec;
     rec.source = source;
     rec.calling_ae = calling_ae;
@@ -57,7 +71,7 @@ std::uint16_t quarantine_bytes(siaara_store* store, const Bytes& bytes, const ch
     rec.sop_instance_uid = sop_instance;
     rec.read_loss = read_loss;
     rec.warning = warning;
-    auto r = store->quarantine->add(bytes, std::move(rec));
+    auto r = area->add(bytes, std::move(rec));
     if (r) return 0;
     log(SIAARA_LOG_WARNING, false, "quarantine: an incomplete instance was not kept: " + r.error().message);
     return r.error().code == Errc::LimitExceeded ? 0xA700 : 0x0110;
@@ -67,23 +81,25 @@ std::uint16_t quarantine_bytes(siaara_store* store, const Bytes& bytes, const ch
 
 extern "C" {
 
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, uint32_t* items,
-                                                                   uint64_t* bytes) {
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, int32_t area,
+                                                                   uint32_t* items, uint64_t* bytes) {
     return guarded([&]() -> siaara_status {
-        if (!store || !store->quarantine) return fail(Errc::InvalidArgument, "store must not be NULL");
-        if (items) *items = static_cast<uint32_t>(std::min<std::size_t>(store->quarantine->items(), 0xFFFFFFFFu));
-        if (bytes) *bytes = store->quarantine->total_bytes();
+        st::Quarantine* q = area_of(store, area);
+        if (!q) return SIAARA_ERR_INVALID_ARGUMENT;
+        if (items) *items = static_cast<uint32_t>(std::min<std::size_t>(q->items(), 0xFFFFFFFFu));
+        if (bytes) *bytes = q->total_bytes();
         return ok();
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_store* store, uint32_t index,
-                                                                 siaara_quarantine_record* out) {
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_store* store, int32_t area,
+                                                                 uint32_t index, siaara_quarantine_record* out) {
     return guarded([&]() -> siaara_status {
-        if (!store || !store->quarantine) return fail(Errc::InvalidArgument, "store must not be NULL");
+        st::Quarantine* q = area_of(store, area);
+        if (!q) return SIAARA_ERR_INVALID_ARGUMENT;
         if (!out || out->struct_size < sizeof(siaara_quarantine_record))
             return fail(Errc::InvalidArgument, "out must be set up with struct_size");
-        auto list = store->quarantine->list();
+        auto list = q->list();
         if (!list) return fail(list.error());
         if (index >= list->size()) return fail(Errc::NotFound, "no such quarantine item");
         const st::QuarantineRecord& r = list.value()[index];
@@ -100,16 +116,20 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_get(const siaara_st
         put(out->sop_class_uid, r.sop_class_uid);
         put(out->sop_instance_uid, r.sop_instance_uid);
         put(out->warning, r.warning);
+        out->area = area;
         return ok();
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_store* store, const char* id,
-                                                                   uint8_t* buf, size_t cap, size_t* needed) {
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_store* store, int32_t area,
+                                                                   const char* id, uint8_t* buf, size_t cap,
+                                                                   size_t* needed) {
     return guarded([&]() -> siaara_status {
         if (needed) *needed = 0;
-        if (!store || !store->quarantine || !id) return fail(Errc::InvalidArgument, "store and id must not be NULL");
-        auto b = store->quarantine->bytes(id);
+        st::Quarantine* q = area_of(store, area);
+        if (!q) return SIAARA_ERR_INVALID_ARGUMENT;
+        if (!id) return fail(Errc::InvalidArgument, "id must not be NULL");
+        auto b = q->bytes(id);
         if (!b) return fail(b.error());
         if (needed) *needed = b->size();
         if (cap == 0) return buf ? fail(Errc::BufferTooSmall, "buffer too small") : ok();
@@ -120,12 +140,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, const char* id, int32_t policy,
-                                                                     int32_t* outcome) {
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, int32_t area, const char* id,
+                                                                     int32_t policy, int32_t* outcome) {
     return guarded([&]() -> siaara_status {
-        if (!store || !store->quarantine || !id) return fail(Errc::InvalidArgument, "store and id must not be NULL");
+        st::Quarantine* q = area_of(store, area);
+        if (!q) return SIAARA_ERR_INVALID_ARGUMENT;
+        if (!id) return fail(Errc::InvalidArgument, "id must not be NULL");
         if (policy != SIAARA_DUP_KEEP && policy != SIAARA_DUP_REPLACE) return fail(Errc::InvalidArgument, "unknown policy");
-        auto b = store->quarantine->bytes(id);
+        auto b = q->bytes(id);
         if (!b) return fail(b.error());
         // Only a Part 10 stream is stored unchanged; the store would rewrite anything else.
         if (b->size() < 132 || std::memcmp(b->data() + 128, "DICM", 4) != 0)
@@ -134,15 +156,31 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_stor
                                           st::kIncompleteRead);
         if (!r) return fail(r.error());
         if (outcome) *outcome = static_cast<int32_t>(*r);
-        if (Status s = store->quarantine->remove(id); !s) return fail(s);
+        if (Status s = q->remove(id); !s) return fail(s);
         return ok();
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, const char* id) {
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, int32_t area, const char* id) {
     return guarded([&]() -> siaara_status {
-        if (!store || !store->quarantine || !id) return fail(Errc::InvalidArgument, "store and id must not be NULL");
-        if (Status s = store->quarantine->remove(id); !s) return fail(s);
+        st::Quarantine* q = area_of(store, area);
+        if (!q) return SIAARA_ERR_INVALID_ARGUMENT;
+        if (!id) return fail(Errc::InvalidArgument, "id must not be NULL");
+        if (Status s = q->remove(id); !s) return fail(s);
+        return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_export(const siaara_store* store, int32_t area,
+                                                                    const char* id, const char* folder) {
+    return guarded([&]() -> siaara_status {
+        st::Quarantine* q = area_of(store, area);
+        if (!q) return SIAARA_ERR_INVALID_ARGUMENT;
+        if (!id || !folder || !folder[0]) return fail(Errc::InvalidArgument, "id and folder must be set");
+        auto b = q->bytes(id);
+        if (!b) return fail(b.error());
+        const std::string path = capi::dimse::join_path(folder, std::string(id) + ".dcm");
+        if (Status s = siaara::io::write_file_atomic(path, b->data(), b->size()); !s) return fail(s);
         return ok();
     });
 }

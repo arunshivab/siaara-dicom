@@ -73,6 +73,9 @@ struct ScpHandlers {
     // outside the archive. `answer` is the status the sender will get when this returns Success;
     // return a failure status (0xA700: quarantine full) when it could not be kept.
     std::function<std::uint16_t(const StoreRequest&, std::uint16_t answer)> on_store_quarantine;
+    // IncompletePolicy::RefuseKeepCopy: keeps a copy of the refused instance for diagnosis (best
+    // effort; the sender is answered the failure status whatever happens here).
+    std::function<void(const StoreRequest&)> on_store_keep_rejected;
     // Yields matches through `emit` (which returns false once the SCU cancelled or the
     // association failed); returns the final status (Success, or a failure code).
     std::function<std::uint16_t(const QueryRequest&, const std::function<bool(const Dataset&)>& emit)> on_find;
@@ -158,6 +161,11 @@ struct ScpConfig {
     // 0xB007 (Warning) or 0xC000 (Failure) per quarantine_response, or the handler's failure
     // status (0xA700 when the quarantine is full). Without the handler the instance is refused.
     QuarantineResponse quarantine_response = kDefaultQuarantineResponse;
+    // The statuses those answers use: warning (0xB007; 0xB000 / 0xB006 are the other standard
+    // choices) and failure (0xC000; e.g. 0xA900). The failure status is also what Refuse and
+    // RefuseKeepCopy answer.
+    std::uint16_t incomplete_warning_status = kQuarantineWarningStatus;
+    std::uint16_t incomplete_failure_status = kIncompleteFailureStatus;
     // C-MOVE: the destinations a calling AE may name (R-129). A calling AE without an entry may
     // name any destination resolve_move_destination knows; others get 0xA801 (Move Destination
     // unknown) for a destination outside their list.

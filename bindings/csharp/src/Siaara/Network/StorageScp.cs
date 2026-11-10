@@ -55,19 +55,45 @@ public sealed record StorageScpOptions
     /// <summary>What happens to a received C-STORE data set that could not be read completely (truncated, bytes
     /// skipped, recovered by a heuristic). Default: refused (status 0xC000), nothing stored.</summary>
     public IncompletePolicy IncompletePolicy { get; init; }
+    /// <summary>What the sender is told when an incomplete instance was kept (accepted or quarantined).</summary>
+    public IncompleteAnswer IncompleteAnswer { get; init; }
+    /// <summary>The warning status of that answer; 0 = 0xB007 (0xB000 and 0xB006 are the other standard choices).</summary>
+    public int IncompleteWarningStatus { get; init; }
+    /// <summary>The failure status (also for Refuse and RefuseKeepCopy); 0 = 0xC000.</summary>
+    public int IncompleteFailureStatus { get; init; }
+    /// <summary>The policy for particular calling AE titles (others get <see cref="IncompletePolicy"/>).</summary>
+    public IReadOnlyDictionary<string, IncompletePolicy>? IncompletePolicyByCallingAe { get; init; }
 }
 
 /// <summary>What a receiver does with a data set whose read was not complete (SIAARA_INCOMPLETE_*): one policy
 /// for the Storage SCP, C-GET, the STOW-RS server and the streaming WADO-RS retrieve.</summary>
 public enum IncompletePolicy
 {
-    /// <summary>The library default: <see cref="Refuse"/>.</summary>
+    /// <summary>The library default: <see cref="Quarantine"/>.</summary>
     Default = C.SIAARA_INCOMPLETE_DEFAULT,
+    /// <summary>The bytes are kept exactly as received in the store's quarantine area, outside the index, until
+    /// they are released or deleted (DicomStore.Quarantine*). Without a store to quarantine in: refused.</summary>
+    Quarantine = C.SIAARA_INCOMPLETE_QUARANTINE,
+    /// <summary>Refused, and a copy is kept in the store's "rejected" area for diagnosis.</summary>
+    RefuseKeepCopy = C.SIAARA_INCOMPLETE_REFUSE_KEEP_COPY,
     /// <summary>Nothing is stored: C-STORE status 0xC000, STOW-RS Failure Reason, a retrieved part counted as failed.</summary>
     Refuse = C.SIAARA_INCOMPLETE_REFUSE,
     /// <summary>The bytes are stored exactly as received - never transcoded or rewritten - and flagged
     /// (ScpEvent.ReadLoss, STOW-RS Warning Reason, the retrieve report).</summary>
     AcceptAsReceived = C.SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED,
+}
+
+/// <summary>What the sender of an instance that was kept although incomplete is told (SIAARA_QUARANTINE_ANSWER_*).</summary>
+public enum IncompleteAnswer
+{
+    /// <summary>The library default: <see cref="Warning"/>.</summary>
+    Default = C.SIAARA_QUARANTINE_ANSWER_DEFAULT,
+    /// <summary>A warning status (C-STORE 0xB007 unless changed; STOW-RS Warning Reason).</summary>
+    Warning = C.SIAARA_QUARANTINE_ANSWER_WARNING,
+    /// <summary>The failure status (the bytes are kept all the same).</summary>
+    Failure = C.SIAARA_QUARANTINE_ANSWER_FAILURE,
+    /// <summary>Success, without a warning.</summary>
+    Success = C.SIAARA_QUARANTINE_ANSWER_SUCCESS,
 }
 
 /// <summary>The C-MOVE destinations one calling AE may name (siaara_move_acl). A calling AE without an entry may name
@@ -244,6 +270,8 @@ public enum ScpEventKind
     UidChanged = C.SIAARA_SCP_UID_CHANGED,
     /// <summary>Instance Availability Notification received.</summary>
     InstanceAvailability = C.SIAARA_SCP_IAN,
+    /// <summary>An incomplete C-STORE data set was kept in the quarantine (ReadLoss; DimseStatus is what the sender was told).</summary>
+    Quarantined = C.SIAARA_SCP_QUARANTINED,
 }
 
 /// <summary>An event of the SCP.</summary>
@@ -459,7 +487,26 @@ public sealed class StorageScp : IDisposable
             event_queue_limit = U(options.EventQueueLimit),
             event_queue_max_bytes = UL(options.EventQueueMaxBytes),
             incomplete_policy = (int)options.IncompletePolicy,
+            quarantine_response = (int)options.IncompleteAnswer,
+            incomplete_warning_status = U(options.IncompleteWarningStatus),
+            incomplete_failure_status = U(options.IncompleteFailureStatus),
         };
+        if (options.IncompletePolicyByCallingAe is { Count: > 0 })
+        {
+            var ov = new siaara_incomplete_override[options.IncompletePolicyByCallingAe.Count];
+            int k = 0;
+            foreach (KeyValuePair<string, IncompletePolicy> e in options.IncompletePolicyByCallingAe)
+            {
+                ov[k++] = new siaara_incomplete_override
+                {
+                    struct_size = StructSize.Of<siaara_incomplete_override>(),
+                    policy = (int)e.Value,
+                    calling_ae = mem.Utf8(e.Key),
+                };
+            }
+            o.incomplete_overrides = mem.Array<siaara_incomplete_override>(ov);
+            o.incomplete_override_count = (uint)ov.Length;
+        }
         if (options.Tls is not null)
         {
             siaara_tls_options t = options.Tls.ToNative(mem);

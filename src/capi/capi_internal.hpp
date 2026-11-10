@@ -172,6 +172,7 @@ struct siaara_store {
     std::unique_ptr<siaara::store::Store> store;
     // R-116: instances that arrived incomplete under IncompletePolicy::Quarantine.
     std::unique_ptr<siaara::store::Quarantine> quarantine;
+    std::unique_ptr<siaara::store::Quarantine> rejected;  // copies of refused instances (RefuseKeepCopy)
     siaara::capi::LiveHandle live_{};
     // R-150: servers that use the store (siaara_scp_start(_ex), siaara_web_server_start) attach
     // to it. siaara_store_free while one is attached does not free the store under the server's

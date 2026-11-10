@@ -212,10 +212,11 @@ TEST_CASE("web/sec4 R-116 STOW-RS refuses an incomplete part by default, or stor
     REQUIRE(write_dataset(make_image("2.25.62003", "2.25.62900", "2.25.62901").dataset, ts::ExplicitVRLittleEndian,
                           raw_dataset)
                 .is_ok());
-    {  // Default: refuse.
+    {  // REFUSE.
         const auto dir = temp_dir("r116stow_a");
         StoreOpen st(dir / "store");
         siaara_web_server_options o = server_options();
+        o.incomplete_policy = SIAARA_INCOMPLETE_REFUSE;
         siaara_web_server* ws = nullptr;
         REQUIRE(siaara_web_server_start(&o, st.store, &ws) == SIAARA_OK);
         uint32_t port = 0;
@@ -284,6 +285,36 @@ TEST_CASE("web/sec4 R-116 STOW-RS refuses an incomplete part by default, or stor
         CHECK(st.instances() == 1);
         siaara_web_server_free(ws);
     }
+    {  // Default (QUARANTINE): kept outside the archive; Warning Reason 0xB007 and no Retrieve URL.
+        const auto dir = temp_dir("r116stow_c");
+        StoreOpen st(dir / "store");
+        siaara_web_server_options o = server_options();
+        siaara_web_server* ws = nullptr;
+        REQUIRE(siaara_web_server_start(&o, st.store, &ws) == SIAARA_OK);
+        uint32_t port = 0;
+        REQUIRE(siaara_web_server_port(ws, &port) == SIAARA_OK);
+        auto rs = stow(static_cast<std::uint16_t>(port), {cut});
+        REQUIRE(rs.is_ok());
+        CHECK_EQ(rs->status, 202);
+        auto body = web::dataset_from_json(rs->body);
+        REQUIRE(body.is_ok());
+        const Element* ok = body->find(0x00081199);
+        REQUIRE(ok != nullptr);
+        REQUIRE(ok->items.size() == 1);
+        CHECK_EQ(ok->items[0].get_int(0x00081196).value_or(0), 0xB007);
+        CHECK(!ok->items[0].contains(0x00081190));
+        CHECK(st.instances() == 0);
+        uint32_t items = 0;
+        REQUIRE(siaara_store_quarantine_count(st.store, SIAARA_AREA_QUARANTINE, &items, nullptr) == SIAARA_OK);
+        CHECK_EQ(items, 1u);
+        siaara_quarantine_record rec;
+        std::memset(&rec, 0, sizeof rec);
+        rec.struct_size = sizeof rec;
+        REQUIRE(siaara_store_quarantine_get(st.store, SIAARA_AREA_QUARANTINE, 0, &rec) == SIAARA_OK);
+        CHECK(std::string(rec.source) == "STOW-RS");
+        CHECK(rec.size == cut.size());  // the part's bytes, unchanged
+        siaara_web_server_free(ws);
+    }
 }
 
 // ---------------------------------------------------------------- R-116, R-152 (retrieve to store)
@@ -303,7 +334,7 @@ TEST_CASE("web/sec4 R-116 R-152 retrieve-to-store applies the incomplete policy 
     siaara_web_client* wc = nullptr;
     REQUIRE(siaara_web_client_create(base.data(), base.size(), 5000, &wc) == SIAARA_OK);
     const char* as_stored[] = {"*"};
-    {  // Default: the truncated instance is not kept, and it is not reported as stored.
+    {  // Default (QUARANTINE): the truncated instance is not in the archive or the folder, and not reported as stored.
         StoreOpen dest(dir / "dest_a");
         const std::string folder = (dir / "files_a").string();
         std::filesystem::create_directories(folder);
