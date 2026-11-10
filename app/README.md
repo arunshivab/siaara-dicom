@@ -259,8 +259,10 @@ and kept exactly as received; only the screen formats them. Code: `Core/Network`
   address (empty = every interface), allowed senders, TLS identity. It does not start with an empty list unless
   "accept every AE title" is ticked; that tick shows a red warning and is audited (`scp.accept-any`, outcome
   `intent`) before it is saved. Starting writes `scp.start` (intent) first and does not start when that cannot be
-  written. Received data: the toolkit refuses instances whose data set is incomplete and C-STORE requests whose
-  command UIDs differ from the data set's; compressed transfer syntaxes are accepted and kept as received.
+  written. Received data: C-STORE requests whose command UIDs differ from the data set's are refused (strict UIDs);
+  compressed transfer syntaxes are accepted and kept as received; whether a data set is complete is decided by the
+  toolkit (the bindings have no "accept incomplete" switch for reception and the app sets none; no test here sends
+  a truncated data set to the receiver).
   Optional: let the allowed senders query and fetch from the local store (C-FIND / C-GET / C-MOVE served by the
   toolkit from the store; C-MOVE destinations are the DIMSE nodes). Live counters on the Network sheet; arriving
   images are one activity row per sender, closed after 5 quiet seconds and audited as `scp.receive`. The receiver

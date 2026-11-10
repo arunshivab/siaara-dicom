@@ -490,8 +490,9 @@ public sealed class TkScp : IDisposable
 
     internal StorageScp Binding => _scp;
 
-    /// <summary>Starts the SCP. Instances whose data set is incomplete are refused by the toolkit; C-STORE commands whose
-    /// UIDs differ from the data set's are refused; compressed transfer syntaxes are accepted and kept as received.</summary>
+    /// <summary>Starts the SCP. C-STORE commands whose UIDs differ from the data set's are refused; compressed transfer
+    /// syntaxes are accepted and kept as received. The bindings have no switch that makes the SCP accept incomplete
+    /// data sets, and none is set here.</summary>
     /// <param name="options">Options.</param>
     /// <param name="store">The store (must stay open while the SCP runs).</param>
     /// <returns>The running SCP.</returns>
