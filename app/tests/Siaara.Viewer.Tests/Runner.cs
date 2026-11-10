@@ -169,7 +169,8 @@ internal static class Program
                 filters.Add(a);
             }
         }
-        T.TempRoot = Path.Combine(Path.GetTempPath(), "siaara-viewer-tests-" + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        // Real path (macOS: /var -> /private/var), so paths the toolkit resolves compare equal.
+        T.TempRoot = Path.Combine(RealPath(Path.GetTempPath()), "siaara-viewer-tests-" + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Directory.CreateDirectory(T.TempRoot);
         try
         {
@@ -198,5 +199,19 @@ internal static class Program
             {
             }
         }
+    }
+
+    // Resolves symbolic links in every component of an existing directory path.
+    private static string RealPath(string path)
+    {
+        string full = Path.GetFullPath(path);
+        string cur = Path.GetPathRoot(full) ?? "";
+        foreach (string part in full.Substring(cur.Length).Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string next = Path.Combine(cur, part);
+            var info = new DirectoryInfo(next);
+            cur = info.LinkTarget is null ? next : (info.ResolveLinkTarget(true)?.FullName ?? next);
+        }
+        return cur;
     }
 }
