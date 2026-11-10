@@ -1,0 +1,15 @@
+# pkg-config file of the SIAARA DICOM Toolkit (C API). Relocatable: paths follow this file.
+#   pkg-config --cflags --libs siaara            shared library
+#   pkg-config --cflags --libs --static siaara   static library (libsiaara_static.a): link with
+#                                                -lsiaara_static in place of -lsiaara and add
+#                                                -DSIAARA_STATIC to the compile flags
+prefix=${pcfiledir}/../..
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+
+Name: siaara
+Description: SIAARA DICOM Toolkit (C API)
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lsiaara
+Libs.private: @SIAARA_PC_LIBS_PRIVATE@

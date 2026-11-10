@@ -36,3 +36,21 @@ if(SIAARA_BUILD_TESTS)
                                      -P ${CMAKE_CURRENT_SOURCE_DIR}/check_help.cmake)
   endforeach()
 endif()
+
+# docs/CONFORMANCE.md: its tables are generated from the code by tools/release/gen_conformance.py,
+# which asks this program (not installed) for the facts of the built library. The ctest fails when
+# the document has drifted from the code.
+if(SIAARA_BUILD_TESTS)
+  add_executable(siaara_conformance_dump release/conformance_dump.cpp)
+  target_link_libraries(siaara_conformance_dump PRIVATE siaara_static)
+  target_compile_options(siaara_conformance_dump PRIVATE ${SIAARA_WARN})
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    # The version has one source (the project() line); nothing else may carry a literal version.
+    add_test(NAME version_single_source
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/release/version.py --check)
+    add_test(NAME conformance_statement_up_to_date
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/release/gen_conformance.py
+                     --dump $<TARGET_FILE:siaara_conformance_dump> --check)
+  endif()
+endif()

@@ -14,10 +14,24 @@
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>0.1.0</Version>
-    <Authors>Arun Shiva B</Authors>
-    <Company>imagiQa Healthcare Services Pvt Ltd</Company>
+    <Authors>Sthraas Intelligence Pvt Ltd</Authors>
+    <Company>Sthraas Intelligence Pvt Ltd</Company>
+    <Copyright>Copyright (c) 2026 Sthraas Intelligence Pvt Ltd. All rights reserved.</Copyright>
     <Product>SIAARA DICOM Toolkit</Product>
+  </PropertyGroup>
+
+  <!-- Version: read from the project(siaara VERSION x.y.z) line of the top-level CMakeLists.txt,
+       the single source of the toolkit version (docs/RELEASING.md). Never set a version here. -->
+  <PropertyGroup>
+    <SiaaraCMakeListsText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../CMakeLists.txt'))</SiaaraCMakeListsText>
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($(SiaaraCMakeListsText), 'project\(siaara VERSION ([0-9]+\.[0-9]+\.[0-9]+)').Groups.get_Item(1).Value)</Version>
+    <SiaaraCMakeListsText></SiaaraCMakeListsText>
+  </PropertyGroup>
+
+  <!-- Release / CI builds (-p:ContinuousIntegrationBuild=true): no build-machine paths in the
+       assemblies or their embedded symbols. -->
+  <PropertyGroup Condition="'$(ContinuousIntegrationBuild)' == 'true'">
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))=/_/</PathMap>
   </PropertyGroup>
 
 </Project>

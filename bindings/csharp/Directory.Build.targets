@@ -12,6 +12,10 @@
     <SiaaraNativeLibrary Condition="'$(SiaaraNativeLibrary)' == '' and Exists('$(SiaaraNativeBuildDir)/$(SiaaraNativeFileName)')">$(SiaaraNativeBuildDir)/$(SiaaraNativeFileName)</SiaaraNativeLibrary>
     <SiaaraNativeLibrary Condition="'$(SiaaraNativeLibrary)' == '' and Exists('$(SiaaraNativeBuildDir)/Release/$(SiaaraNativeFileName)')">$(SiaaraNativeBuildDir)/Release/$(SiaaraNativeFileName)</SiaaraNativeLibrary>
   </PropertyGroup>
+  <Target Name="SiaaraVersionFromCMake" BeforeTargets="Build;Pack;GenerateNuspec;GetAssemblyVersion">
+    <Error Condition="'$(Version)' == ''"
+           Text="The toolkit version was not found in the project(siaara VERSION x.y.z) line of CMakeLists.txt" />
+  </Target>
   <!-- Zero external dependencies: fail the build if any project references a NuGet package.
        (Packs the SDK itself downloads for a RID-specific publish, such as the NativeAOT compiler,
        are SDK components, not PackageReference items.) -->

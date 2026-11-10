@@ -1,0 +1,120 @@
+# Changelog
+
+All notable changes of the SIAARA DICOM Toolkit, newest first. The topmost section is the text
+of the GitHub release notes of the release being cut (`tools/release/version.py
+--release-notes`). The first release's section carries no version number on purpose: its number
+is the owner's choice and lives in one place only (docs/RELEASING.md). Later sections are headed
+with their version (`## x.y.z`).
+
+## First release
+
+C ABI version 1 (`SIAARA_ABI_VERSION`).
+
+### What it contains
+
+**Interfaces and packaging**
+- C API in one header (`include/siaara/siaara.h`), shared and static library, CMake package
+  (`find_package(siaara)`), pkg-config file, ten command-line tools.
+- C# bindings for .NET 10 as one NuGet package (`Siaara`) carrying the native library for
+  win-x64, win-x86, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64; no package
+  dependencies; trimmable and NativeAOT compatible.
+- Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 12+ (universal).
+- Zero third-party dependencies. Reproducible archives, an SPDX 2.3 SBOM per archive, SHA-256
+  checksums, build provenance attestation.
+
+**Files and data sets**
+- Part 10 reading and writing with byte-for-byte fidelity for unedited files; lenient reading
+  with a full report of what was unusual and whether the read was complete; files that were not
+  read completely are never saved or sent as if whole unless explicitly allowed.
+- Data dictionary and UID registry from the standard; a private-tag dictionary built only from
+  vendor conformance statements (Siemens, GE, Philips, Canon/Toshiba, Varian, Elekta).
+- Access by tag, keyword, path and named module; DICOM JSON and XML.
+- Validation against the IOD of the SOP class, and a repair function with a report.
+- All Specific Character Sets of the standard, ISO 2022 code extensions included.
+
+**Pixel data**
+- Codecs written from the standards: RLE, JPEG baseline / extended / lossless, JPEG-LS, JPEG 2000,
+  HTJ2K, Deflate, encapsulated uncompressed. Decode, encode, transcode.
+- A lossy transcode makes a derived image as the standard requires (new SOP Instance UID, source
+  reference, derivation and lossy-compression attributes), with the history lists kept aligned or
+  the misalignment reported.
+- Rendering: Modality and VOI LUTs, windowing, palettes, overlays, shutters, Grayscale Softcopy
+  Presentation States; JPEG and PNG export.
+- Volumes from series, multi-planar reformatting, projections, fusion; optional GPU backends.
+- Stored value and modality value at a point (2D and 3D); geometry; RT Dose scaling.
+
+**Network**
+- DIMSE as SCU and SCP: Verification, Storage, Query/Retrieve (C-FIND, C-MOVE, C-GET; Patient
+  Root and Study Root), Modality Worklist, MPPS, Storage Commitment, Unified Procedure Step,
+  Instance Availability Notification.
+- DICOM over TLS and HTTPS with the operating system's TLS stack (PS3.15 B.12 / B.13 profiles).
+- DICOMweb client and server: QIDO-RS, WADO-RS (instances, metadata, frames, bulk data),
+  WADO-URI, STOW-RS.
+- Safe defaults: an SCP accepts only listed calling AE titles; incomplete data received is
+  quarantined; resource limits on every input; allow-lists per service.
+
+**Storage and media**
+- A local instance store with an index, duplicate policies, quota, verification and rebuild, and
+  a quarantine area for incomplete data.
+- DICOMDIR reading and writing (General Purpose CD and USB profiles); folder scanning.
+
+**Clinical objects and privacy**
+- Readers for Structured Reports, Segmentations, RT Structure Sets, RT Dose, waveforms, Key
+  Object Selection.
+- De-identification after PS3.15 Annex E (Basic Profile and options), with keyed, repeatable
+  UID and identifier replacement.
+
+### Known limitations
+
+Stated plainly, so that nobody finds them by surprise.
+
+**Not included**
+- **Video codecs and JPEG XL**: MPEG-2, MPEG-4 AVC / H.264, HEVC / H.265 and JPEG XL pixel data
+  is read, stored, sent and written untouched, but it cannot be decoded, displayed or encoded.
+  JPIP and SMPTE ST 2110 referenced pixel data is not fetched.
+- **DICOMweb**: rendered resources (`/rendered`, thumbnails) are not supported (the server
+  answers 406); UPS-RS is not supported; STOW-RS takes `application/dicom` parts only (no
+  metadata + bulk data form).
+- **Print Management is not in the C API or the C# bindings.** (The C++ core has a Print SCU;
+  it is not part of the installed interface. There is no Print SCP.)
+- **SUV and ROI calculations are intentionally not in the toolkit.** It gives stored values,
+  modality values, units and geometry; calculations on top belong to the application.
+- User Identity negotiation, and setting a product's own Implementation Class UID / Version
+  Name, are not available through the C API.
+- No audit trail (PS3.15 audit messages) and no user authentication: these are the product's.
+
+**Behaviour to know**
+- **MPPS and UPS state is held in memory** unless the product configures a state folder
+  (`state_folder`); without one it is lost when the SCP stops.
+- One recovery heuristic of the file reader (overlong element lengths as written by some GE
+  systems) is on, in a narrowed form, for local file reads and off for all network input.
+- Only 8- and 16-bit integer pixel data can be recoded by the transcoder; other pixel data is
+  carried unchanged or the transcode is refused.
+- A blocking C call occupies its thread; the C# `...Async` methods run it on a pool thread.
+  On macOS a TLS connect in progress runs to its timeout when cancelled.
+- musl-based Linux (Alpine) is not a supported target; 32-bit x86 Linux has no .NET package
+  (there is no such .NET runtime).
+
+**Platforms and assurance**
+- **Windows- and macOS-specific code is tested by CI only**, not on the developers' machines:
+  the SChannel TLS backend (`src/net/tls_schannel.cpp`), the Network.framework TLS backend
+  (`src/net/tls_apple.cpp`), the Metal GPU backend (`src/gpu/metal_backend.cpp`), Winsock and
+  the Windows parts of file handling (owner-only DACLs, atomic replace, long paths:
+  `src/core/secure_file.hpp`, `src/core/io.cpp`, `src/net/socket.cpp`, `src/net/spool.cpp`,
+  `src/store/`). CI builds and runs the full test suite on Windows x64 / x86 / ARM64 and macOS
+  (both slices of the universal binary). Reproducibility of the archives has been verified on
+  Linux only.
+- **linux-arm64 release binaries carry no BTI / PAC marking**: the code is compiled with
+  `-mbranch-protection=standard`, but the statically linked C/C++ runtime of the build image
+  lacks the marking, so the linker drops the property for the whole binary. The other hardening
+  measures are in place and checked.
+- **The binaries and the NuGet package are not code signed** in this release. Integrity is
+  given by `SHA256SUMS` and the build provenance attestation.
+- GPU rendering backends depend on the drivers of the machine; the CPU path is the reference.
+
+**Planned for the second release**
+- A programme of further configurability: an audit of the toolkit's fixed choices listed 257
+  items that are to become options (the "options audit"). They keep their present behaviour as
+  the default.
+- For incomplete data: a policy table by kind of damage, repair on receipt, and per-client
+  policy for STOW-RS.
