@@ -496,7 +496,6 @@ private:
             const std::uint32_t n = load_le32(p_ + at + 4);
             if (t == tags::SequenceDelimitationItem && n == 0 && at + 8 == vend && !frags.empty()) {
                 delimiter = true;
-                at = vend;
                 break;
             }
             if (t != tags::Item || n == kUndefinedLength || n > vend - at - 8) return false;
