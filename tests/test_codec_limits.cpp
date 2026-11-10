@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <string>
 #include <vector>
@@ -13,6 +14,8 @@
 #include "alloc_guard.hpp"
 #include "codec/codec.hpp"
 #include "codec/j2k.hpp"
+#include "codec/transcode.hpp"
+#include "core/dataset.hpp"
 #include "core/types.hpp"
 #include "test.hpp"
 
@@ -370,10 +373,13 @@ TEST_CASE("codec limits/R-027 decoders report OutOfMemory instead of throwing") 
         for (std::size_t limit : {std::size_t{1} << 10, std::size_t{4} << 10, std::size_t{16} << 10, std::size_t{100} << 10,
                                   std::size_t{300} << 10, std::size_t{700} << 10}) {
             Status st;
+            // Flushed, so a crash in CI names the codec and limit (stdout is buffered there).
+            std::printf("  %s: limit %zu\n", c.name, limit);
+            std::fflush(stdout);
             try {
                 siaara_test::AllocGuard guard(limit);
                 st = c.fn(*c.in, fi, out);
-            } catch (const std::bad_alloc&) {
+            } catch (...) {  // bad_alloc or anything else the standard library might throw
                 ++escaped;
                 continue;
             }
@@ -454,4 +460,101 @@ TEST_CASE("codec limits/R-011 R-050 FrameInfo max_scans and memory_budget") {
     CHECK_EQ(decode_j2k(cs, f2, o2).code, Errc::LimitExceeded);
     f2.memory_budget = 0;
     CHECK(decode_j2k(cs, f2, o2).is_ok());
+}
+
+// R-062 / R-027 (2026-11-10 review): encoders and transcoding report OutOfMemory instead of
+// throwing, and refuse frames whose working memory cannot fit the budget before allocating.
+TEST_CASE("codec limits/R-062 encoders and transcode report OutOfMemory instead of throwing") {
+    const FrameInfo fi = gray(256, 256, 16, 12);
+    Buf img(static_cast<std::size_t>(fi.frame_bytes()));
+    for (std::size_t i = 0; i < img.size(); i += 2) {
+        const unsigned v = static_cast<unsigned>((i * 7) % 4096);
+        img[i] = static_cast<std::uint8_t>(v);
+        img[i + 1] = static_cast<std::uint8_t>(v >> 8);
+    }
+    struct Enc {
+        const char* name;
+        Status (*fn)(std::span<const std::uint8_t>, const FrameInfo&, const EncodeParams&, std::vector<std::uint8_t>&);
+    };
+    const Enc encs[] = {{"jpeg", &encode_jpeg}, {"jpegls", &encode_jpegls}, {"j2k", &encode_j2k}};
+    EncodeParams p;
+    for (const Enc& e : encs) {
+        int escaped = 0, oom = 0;
+        for (std::size_t limit : {std::size_t{1} << 10, std::size_t{16} << 10, std::size_t{100} << 10, std::size_t{400} << 10}) {
+            std::printf("  %s encoder: limit %zu\n", e.name, limit);
+            std::fflush(stdout);
+            Status st;
+            Buf out;
+            try {
+                siaara_test::AllocGuard guard(limit);
+                st = e.fn(img, fi, p, out);
+            } catch (...) {
+                ++escaped;
+                continue;
+            }
+            if (st.code == Errc::OutOfMemory) ++oom;
+            else CHECK(st.is_ok());
+        }
+        CHECK_EQ(escaped, 0);
+        CHECK(oom > 0);
+        Buf out;
+        CHECK(e.fn(img, fi, p, out).is_ok());
+        // The budget is checked before the working memory is allocated.
+        FrameInfo tight = fi;
+        tight.memory_budget = 1024;
+        CHECK_EQ(e.fn(img, tight, p, out).code, Errc::LimitExceeded);
+    }
+    // Transcoding a whole data set.
+    Dataset ds;
+    (void)ds.set_string(siaara::tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    (void)ds.set_string(siaara::tags::SOPInstanceUID, VR::UI, "2.25.62");
+    (void)ds.set_uint16(siaara::tags::Rows, 256);
+    (void)ds.set_uint16(siaara::tags::Columns, 256);
+    (void)ds.set_uint16(siaara::tags::SamplesPerPixel, 1);
+    (void)ds.set_string(siaara::tags::PhotometricInterpretation, VR::CS, "MONOCHROME2");
+    (void)ds.set_uint16(siaara::tags::BitsAllocated, 16);
+    (void)ds.set_uint16(siaara::tags::BitsStored, 12);
+    (void)ds.set_uint16(siaara::tags::HighBit, 11);
+    (void)ds.set_uint16(siaara::tags::PixelRepresentation, 0);
+    (void)ds.set_bytes(siaara::tags::PixelData, VR::OW, Bytes::copy_of(img.data(), img.size()));
+    TranscodeParams tp;
+    int escaped = 0, oom = 0;
+    for (std::size_t limit : {std::size_t{1} << 10, std::size_t{64} << 10, std::size_t{300} << 10}) {
+        try {
+            siaara_test::AllocGuard guard(limit);
+            auto r = transcode_dataset(ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.90", tp);
+            if (!r && r.error().code == Errc::OutOfMemory) ++oom;
+        } catch (...) {
+            ++escaped;
+        }
+    }
+    CHECK_EQ(escaped, 0);
+    CHECK(oom > 0);
+    CHECK(transcode_dataset(ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.90", tp).is_ok());
+}
+
+// R-065: NaN / infinite JPEG 2000 quality or rate are argument errors.
+TEST_CASE("codec limits/R-065 J2K quality and rate must be finite") {
+    const FrameInfo fi = gray(32, 32, 8, 8);
+    Buf img(static_cast<std::size_t>(fi.frame_bytes()), 100);
+    for (double bad : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        j2k::EncodeOptions q;
+        q.lossless = false;
+        q.quality = bad;
+        Buf out;
+        CHECK_EQ(j2k::encode(img, fi, q, out).code, Errc::InvalidArgument);
+        j2k::EncodeOptions r;
+        r.lossless = false;
+        r.rate = bad;
+        CHECK_EQ(j2k::encode(img, fi, r, out).code, Errc::InvalidArgument);
+    }
+    j2k::EncodeOptions neg;
+    neg.lossless = false;
+    neg.rate = -1;
+    Buf out;
+    CHECK_EQ(j2k::encode(img, fi, neg, out).code, Errc::InvalidArgument);
+    j2k::EncodeOptions ok;
+    ok.lossless = false;
+    ok.rate = 1.5;
+    CHECK(j2k::encode(img, fi, ok, out).is_ok());
 }

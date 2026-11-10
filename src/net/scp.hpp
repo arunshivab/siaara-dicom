@@ -92,6 +92,8 @@ struct ScpConfig {
     std::size_t max_associations = 8;       // also the size of the association thread pool
     // Resource limits (NET-04); 0 = unlimited.
     std::size_t max_associations_per_ip = 4;            // concurrent (queued or served) per peer address
+    // Per-IP counting groups IPv6 peers by this prefix and IPv4-mapped addresses as IPv4 (R-016).
+    unsigned peer_ipv6_prefix_bits = 64;
     int max_association_lifetime_ms = 2 * 60 * 60 * 1000;  // from acceptance; then A-ABORT
     std::uint64_t max_operations_per_association = 100000;  // DIMSE requests; then A-ABORT
     // Presentation context policy. When empty it is derived from the handlers that are set:
@@ -112,6 +114,9 @@ struct ScpConfig {
     // ---- transcoding, streaming and negotiation extras
     // Received C-STORE data sets larger than spool->threshold are written to disk (net/spool.hpp).
     std::optional<SpoolConfig> spool;
+    // C-STORE requests whose command UIDs differ from the data set's: refuse (0xA900) instead of
+    // accepting them under the data set's UIDs with StoreRequest::uid_mismatch (R-073).
+    bool strict_store_uids = false;
     // When set, received instances are converted to this transfer syntax before on_store sees them
     // (left as received when the conversion is not possible).
     std::string preferred_store_ts;

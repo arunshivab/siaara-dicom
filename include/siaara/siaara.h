@@ -465,6 +465,10 @@ typedef struct siaara_store_options {
     int32_t durable;               /* 0/1: fsync every change (slower, survives power loss) */
     int32_t rebuild_if_corrupt;    /* 0/1: re-index the data folder if the index is unreadable */
     uint64_t compact_min_records;  /* 0 = default (50,000) */
+    /* Fields below are read only when struct_size covers them. */
+    uint64_t max_total_bytes;      /* copied instances may take at most this much; 0 = no cap. Adding
+                                      more fails with SIAARA_ERR_LIMIT_EXCEEDED (a Storage SCP answers 0xA700) */
+    uint64_t min_free_disk_bytes;  /* free space adding leaves on the volume; 0 = default (64 MiB) */
 } siaara_store_options;
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
@@ -1682,8 +1686,12 @@ enum { SIAARA_LOG_DEBUG = 0, SIAARA_LOG_INFO = 1, SIAARA_LOG_WARNING = 2, SIAARA
  * several threads at once and must not call siaara_set_log_callback. */
 typedef void (SIAARA_CALL* siaara_log_callback)(void* user, int32_t level, int32_t contains_phi, const char* message);
 /* Installs (cb NULL: removes) the process-wide log callback for messages at min_level and above.
- * Thread safety: any thread; a call already running may still use the previous callback. */
+ * Thread safety: any thread. Returns once calls of the previous callback still running have
+ * finished, so its `user` may be freed afterwards. */
 SIAARA_API siaara_status SIAARA_CALL siaara_set_log_callback(siaara_log_callback cb, void* user, int32_t min_level);
+/* Messages that may hold patient data (contains_phi) are delivered only when include_phi is 1;
+ * by default (0) they arrive as a fixed notice with contains_phi = 0 (PHI logging is off by default). */
+SIAARA_API siaara_status SIAARA_CALL siaara_set_log_include_phi(int32_t include_phi);
 
 /* ---------------------------------------------------------------- DIMSE networking (PS3.7, PS3.4) */
 /* Every SCU call opens one association to the peer, performs the operation and releases the
@@ -1749,12 +1757,18 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_move(const siaara_dimse_peer* 
 
 typedef struct siaara_get_options {
     uint32_t struct_size;            /* set to sizeof(siaara_get_options) */
-    int32_t duplicate_policy;        /* SIAARA_DUP_*, for the store */
+    int32_t duplicate_policy;        /* SIAARA_DUP_*, for the store and the folder: with KEEP an existing
+                                        <SOP Instance UID>.dcm is left unchanged (logged as a warning) */
     siaara_store* store;             /* received instances are added here (may be NULL) */
-    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL) */
+    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL),
+                                        owner-only (mode 0600 / owner-only DACL) */
     const char* const* sop_classes;  /* storage SOP classes to accept; NULL: the toolkit's list */
     uint32_t sop_class_count;
     int32_t native_only;             /* 0/1: propose only uncompressed transfer syntaxes */
+    /* Fields below are read only when struct_size covers them. */
+    int32_t strict_store_uids;       /* 0/1: refuse (0xA900) an instance whose C-STORE command UIDs differ from
+                                        (0008,0016)/(0008,0018) of its data set; 0: keep it under the data set's
+                                        UIDs and log a warning */
 } siaara_get_options;
 
 /* C-GET; the instances arrive on the same association. options->store or ->folder is required. */
@@ -1801,7 +1815,7 @@ typedef struct siaara_scp_options {
     const char* bind_address;        /* NULL: all interfaces */
     const char* const* allowed_calling_aes; /* peers accepted; empty needs allow_any_calling_ae */
     uint32_t allowed_count;
-    uint32_t max_associations;       /* 0 = 8 */
+    uint32_t max_associations;       /* 0 = 8; at most 64 */
     int32_t accept_any_called_ae;    /* 0/1: also accept associations addressed to another AE title */
     int32_t accept_any_sop_class;    /* 0/1: store any SOP class (default: the toolkit's storage list) */
     int32_t accept_compressed;       /* 0/1: also accept the compressed transfer syntaxes the toolkit knows */
@@ -1811,6 +1825,17 @@ typedef struct siaara_scp_options {
     uint32_t max_pdu;                /* 0 = 65536 */
     int32_t allow_any_calling_ae;    /* 0/1: with no allowed_calling_aes, accept any peer (else start fails) */
     const siaara_tls_options* tls;   /* NULL: plain TCP; else every connection must use TLS (needs an identity) */
+    /* Fields below are read only when struct_size covers them. */
+    int32_t strict_store_uids;       /* 0/1: refuse (0xA900) a C-STORE whose command UIDs differ from
+                                        (0008,0016)/(0008,0018) of the data set; 0: store it under the data set's
+                                        UIDs (event uid_mismatch, command UIDs reported) */
+    uint32_t reserved0;              /* set to 0 */
+    /* Data sets larger than spool_threshold are received to disk, so memory per association stays
+     * below it (at most max_associations x spool_threshold in all). */
+    const char* spool_directory;     /* NULL: a private per-user folder under the system temp folder */
+    uint64_t spool_threshold;        /* 0 = 16 MiB */
+    uint64_t spool_max_total_bytes;  /* all spool files together; 0 = no cap. Over it: 0xA700 */
+    uint64_t spool_min_free_disk_bytes; /* free space the spool leaves; 0 = default (64 MiB). Below: 0xA700 */
 } siaara_scp_options;
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
@@ -1824,9 +1849,17 @@ typedef struct siaara_scp_event {
     const char* sop_class_uid;       /* "" for SIAARA_SCP_ECHO */
     const char* sop_instance_uid;
     const char* peer_address;
+    /* Present when struct_size covers them. */
+    int32_t uid_mismatch;            /* 1: the C-STORE command's UIDs differed from the data set's; the instance
+                                        was stored under the data set's (sop_class_uid / sop_instance_uid) */
+    const char* command_sop_class_uid;    /* the command's Affected SOP Class UID ("" unless uid_mismatch) */
+    const char* command_sop_instance_uid; /* the command's Affected SOP Instance UID ("" unless uid_mismatch) */
 } siaara_scp_event;
 
-/* Called after each event, from the association's thread; never concurrently for one SCP. */
+/* Called after each event, in order, from one dispatcher thread of the SCP (never concurrently
+ * for one SCP), with no toolkit lock held: a slow callback delays only later events (and, once
+ * 1024 are queued, the associations). It must not call siaara_scp_stop (SIAARA_ERR_INVALID_ARGUMENT)
+ * or siaara_scp_free (ignored) on its own SCP. */
 typedef void (SIAARA_CALL* siaara_scp_callback)(void* user, const siaara_scp_event* event);
 
 typedef struct siaara_scp_stats {
@@ -1848,8 +1881,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
                                                       siaara_scp_callback cb, void* user, siaara_scp** out);
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_port(const siaara_scp* scp, uint32_t* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stats_get(const siaara_scp* scp, siaara_scp_stats* out);
-/* Stops accepting, aborts running associations and waits for the threads (no callback runs
- * afterwards). Idempotent. Do not call from the SCP callback. */
+/* Stops accepting, aborts running associations and waits for their threads. Events already
+ * queued are still delivered until siaara_scp_free. Idempotent. Not from the SCP callback. */
 SIAARA_API siaara_status SIAARA_CALL siaara_scp_stop(siaara_scp* scp);
 SIAARA_API void SIAARA_CALL siaara_scp_free(siaara_scp* scp) SIAARA_NOEXCEPT;
 

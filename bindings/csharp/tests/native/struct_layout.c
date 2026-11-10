@@ -87,6 +87,8 @@ int main(void) {
     printf("F siaara_store_options durable %u\n", (unsigned)offsetof(siaara_store_options, durable));
     printf("F siaara_store_options rebuild_if_corrupt %u\n", (unsigned)offsetof(siaara_store_options, rebuild_if_corrupt));
     printf("F siaara_store_options compact_min_records %u\n", (unsigned)offsetof(siaara_store_options, compact_min_records));
+    printf("F siaara_store_options max_total_bytes %u\n", (unsigned)offsetof(siaara_store_options, max_total_bytes));
+    printf("F siaara_store_options min_free_disk_bytes %u\n", (unsigned)offsetof(siaara_store_options, min_free_disk_bytes));
     printf("S siaara_store_filter %u\n", (unsigned)sizeof(siaara_store_filter));
     printf("F siaara_store_filter struct_size %u\n", (unsigned)offsetof(siaara_store_filter, struct_size));
     printf("F siaara_store_filter level %u\n", (unsigned)offsetof(siaara_store_filter, level));
@@ -524,6 +526,7 @@ int main(void) {
     printf("F siaara_get_options sop_classes %u\n", (unsigned)offsetof(siaara_get_options, sop_classes));
     printf("F siaara_get_options sop_class_count %u\n", (unsigned)offsetof(siaara_get_options, sop_class_count));
     printf("F siaara_get_options native_only %u\n", (unsigned)offsetof(siaara_get_options, native_only));
+    printf("F siaara_get_options strict_store_uids %u\n", (unsigned)offsetof(siaara_get_options, strict_store_uids));
     printf("S siaara_scp_options %u\n", (unsigned)sizeof(siaara_scp_options));
     printf("F siaara_scp_options struct_size %u\n", (unsigned)offsetof(siaara_scp_options, struct_size));
     printf("F siaara_scp_options port %u\n", (unsigned)offsetof(siaara_scp_options, port));
@@ -541,6 +544,12 @@ int main(void) {
     printf("F siaara_scp_options max_pdu %u\n", (unsigned)offsetof(siaara_scp_options, max_pdu));
     printf("F siaara_scp_options allow_any_calling_ae %u\n", (unsigned)offsetof(siaara_scp_options, allow_any_calling_ae));
     printf("F siaara_scp_options tls %u\n", (unsigned)offsetof(siaara_scp_options, tls));
+    printf("F siaara_scp_options strict_store_uids %u\n", (unsigned)offsetof(siaara_scp_options, strict_store_uids));
+    printf("F siaara_scp_options reserved0 %u\n", (unsigned)offsetof(siaara_scp_options, reserved0));
+    printf("F siaara_scp_options spool_directory %u\n", (unsigned)offsetof(siaara_scp_options, spool_directory));
+    printf("F siaara_scp_options spool_threshold %u\n", (unsigned)offsetof(siaara_scp_options, spool_threshold));
+    printf("F siaara_scp_options spool_max_total_bytes %u\n", (unsigned)offsetof(siaara_scp_options, spool_max_total_bytes));
+    printf("F siaara_scp_options spool_min_free_disk_bytes %u\n", (unsigned)offsetof(siaara_scp_options, spool_min_free_disk_bytes));
     printf("S siaara_scp_event %u\n", (unsigned)sizeof(siaara_scp_event));
     printf("F siaara_scp_event struct_size %u\n", (unsigned)offsetof(siaara_scp_event, struct_size));
     printf("F siaara_scp_event kind %u\n", (unsigned)offsetof(siaara_scp_event, kind));
@@ -550,6 +559,9 @@ int main(void) {
     printf("F siaara_scp_event sop_class_uid %u\n", (unsigned)offsetof(siaara_scp_event, sop_class_uid));
     printf("F siaara_scp_event sop_instance_uid %u\n", (unsigned)offsetof(siaara_scp_event, sop_instance_uid));
     printf("F siaara_scp_event peer_address %u\n", (unsigned)offsetof(siaara_scp_event, peer_address));
+    printf("F siaara_scp_event uid_mismatch %u\n", (unsigned)offsetof(siaara_scp_event, uid_mismatch));
+    printf("F siaara_scp_event command_sop_class_uid %u\n", (unsigned)offsetof(siaara_scp_event, command_sop_class_uid));
+    printf("F siaara_scp_event command_sop_instance_uid %u\n", (unsigned)offsetof(siaara_scp_event, command_sop_instance_uid));
     printf("S siaara_scp_stats %u\n", (unsigned)sizeof(siaara_scp_stats));
     printf("F siaara_scp_stats struct_size %u\n", (unsigned)offsetof(siaara_scp_stats, struct_size));
     printf("F siaara_scp_stats reserved0 %u\n", (unsigned)offsetof(siaara_scp_stats, reserved0));

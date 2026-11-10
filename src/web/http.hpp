@@ -5,10 +5,12 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -41,17 +43,24 @@ struct Limits {
     int body_rate_window_ms = 30000;
 };
 
-// Server-wide budget for request bodies held in memory at once (WEB-01). Thread safe.
+// Server-wide budget for request bodies held in memory at once (WEB-01). Bodies are charged as
+// their bytes arrive, not by the declared Content-Length (R-057), and one peer (group, see
+// net::peer_group) may hold at most `limit / peer_share` of it. Thread safe.
 class BodyBudget {
 public:
-    explicit BodyBudget(std::uint64_t limit) noexcept : limit_(limit) {}
-    bool take(std::uint64_t n) noexcept;
-    void give(std::uint64_t n) noexcept;
-    std::uint64_t in_use() const noexcept { return used_.load(); }
+    explicit BodyBudget(std::uint64_t limit, std::uint64_t peer_share = 4) noexcept
+        : limit_(limit), peer_limit_(peer_share > 1 ? limit / peer_share : limit) {}
+    bool take(std::uint64_t n, const std::string& peer = std::string()) noexcept;
+    void give(std::uint64_t n, const std::string& peer = std::string()) noexcept;
+    std::uint64_t in_use() const noexcept;
+    std::uint64_t in_use_by(const std::string& peer) const noexcept;
 
 private:
-    std::atomic<std::uint64_t> used_{0};
+    mutable std::mutex mu_;
+    std::uint64_t used_ = 0;
+    std::map<std::string, std::uint64_t> per_peer_;
     std::uint64_t limit_;
+    std::uint64_t peer_limit_;
 };
 
 struct Header {
@@ -131,9 +140,13 @@ public:
     ~Connection();
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
-    // Request bodies are charged to `budget` while held (until release_body_budget() or the next
-    // read_request()); a request that would exceed it fails with Errc::Rejected (503).
-    void set_body_budget(std::shared_ptr<BodyBudget> budget) noexcept { budget_ = std::move(budget); }
+    // Request bodies are charged to `budget` (as `peer`) while held (until release_body_budget() or
+    // the next read_request()), as their bytes arrive; a request that would exceed it fails with
+    // Errc::Rejected (503).
+    void set_body_budget(std::shared_ptr<BodyBudget> budget, std::string peer = std::string()) {
+        budget_ = std::move(budget);
+        budget_peer_ = std::move(peer);
+    }
     void release_body_budget() noexcept;
 
     // Reads one request. `first_byte_timeout_ms` bounds the wait for the start of the request
@@ -175,6 +188,7 @@ private:
     std::uint64_t window_bytes_ = 0;
     std::size_t last_read_ = 0;
     std::shared_ptr<BodyBudget> budget_;
+    std::string budget_peer_;
     std::uint64_t reserved_ = 0;
 
     Status fill(int timeout_ms);
@@ -188,7 +202,8 @@ private:
     int timeout_now(int base) const;
 };
 
-// True for "127.x.x.x", "::1", "[::1]" and "localhost".
+// True for "localhost" and literal loopback addresses (127.0.0.0/8, ::1, IPv4-mapped 127/8, with
+// or without brackets), parsed as addresses: "127.example.com" is not loopback (R-036).
 bool is_loopback_address(std::string_view host) noexcept;
 
 // Keep-alive decision for a message (RFC 9112 9.3).
@@ -236,8 +251,13 @@ struct ServerConfig {
     // Concurrent connections from one peer address (NET-04); further ones get 503. 0: unlimited.
     // (Browsers open up to 6 per host.)
     std::size_t max_connections_per_peer = 8;
+    // Per-peer limits (connections, body budget share) group IPv6 peers by this prefix length and
+    // count IPv4-mapped addresses as IPv4 (R-016); 128 = the exact address.
+    unsigned peer_ipv6_prefix_bits = 64;
     // Request bytes held in memory across all connections (WEB-01); over it: 503. 0: unlimited.
     std::uint64_t max_inflight_body_bytes = 1ull << 30;
+    // One peer (group) may hold at most max_inflight_body_bytes / this of it (R-057); 1 = all.
+    std::uint64_t max_inflight_body_peer_share = 4;
     Limits limits;
     int idle_timeout_ms = 15000;         // keep-alive wait for the next request
     std::uint32_t max_requests_per_connection = 1000;
@@ -280,6 +300,13 @@ private:
     std::atomic<bool> stopping_{false};
     std::mutex mu_;
     std::list<Worker> workers_;
+    // Busy connections are answered 503 by one reject thread with a bounded queue, never on the
+    // accept thread (R-058); when the queue is full they are closed at once.
+    std::thread reject_thread_;
+    std::mutex reject_mu_;
+    std::condition_variable reject_cv_;
+    std::list<std::unique_ptr<net::Transport>> reject_queue_;
+    void reject_loop();
     void accept_loop();
     void reap(bool all);
     void serve(Connection& c, const std::string& peer);

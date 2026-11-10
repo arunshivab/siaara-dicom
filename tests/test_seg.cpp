@@ -242,7 +242,7 @@ TEST_CASE("seg: FRACTIONAL and LABELMAP") {
     (void)l.set_bytes(siaara::tags::PixelData, VR::OB, Bytes::copy_of(lv, 4));
     auto ls = read_segmentation(l);
     REQUIRE(ls.is_ok());
-    CHECK(ls->segment(3) && ls->segment(3)->frames.size() == 1);
+    CHECK(ls->segment(3) && ls->segment(3)->frames.empty() && ls->frame_count(*ls->segment(3)) == 1);  // R-054
     CHECK((segment_mask(l, kTs, *ls, 0, 3).value() == std::vector<std::uint8_t>{0, 0, 1, 1}));
     CHECK((segment_mask(l, kTs, *ls, 0, 0).value() == std::vector<std::uint8_t>{0, 1, 3, 3}));
 }

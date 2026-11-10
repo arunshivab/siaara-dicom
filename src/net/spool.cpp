@@ -7,6 +7,7 @@
 #include <memory>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <random>
 #include <set>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "core/dataset.hpp"
+#include "core/secure_file.hpp"
 #include "core/writer.hpp"
 
 #if defined(_WIN32)
@@ -50,21 +52,7 @@ std::string utf8_of(const std::filesystem::path& p) {
 }
 
 std::string unique_name(const char* prefix = "siaara-spool-", const char* suffix = ".part") {
-    static std::atomic<std::uint64_t> counter{0};
-    static const std::uint64_t seed = [] {
-        std::random_device rd;
-        return (static_cast<std::uint64_t>(rd()) << 32) ^ rd();
-    }();
-    const std::uint64_t n = counter.fetch_add(1) + 1;
-    static const char* hex = "0123456789abcdef";
-    std::string s = prefix;
-    std::uint64_t v = seed ^ (n * 0x9E3779B97F4A7C15ull);
-    for (int i = 0; i < 16; ++i) {
-        s += hex[v & 15u];
-        v >>= 4;
-    }
-    s += '-' + std::to_string(n) + suffix;
-    return s;
+    return io::unique_name(prefix, suffix);
 }
 
 #if defined(_WIN32)
@@ -77,116 +65,10 @@ std::wstring widen(const std::string& s) {
     return w;
 }
 
-// Owner-only security descriptor (the current user's SID, full control; inheritance blocked).
-class OwnerOnlySecurity {
-public:
-    OwnerOnlySecurity() {
-        HANDLE token = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
-        DWORD len = 0;
-        (void)GetTokenInformation(token, TokenUser, nullptr, 0, &len);
-        user_.resize(len);
-        const bool got = len != 0 && GetTokenInformation(token, TokenUser, user_.data(), len, &len);
-        CloseHandle(token);
-        if (!got) return;
-        PSID sid = reinterpret_cast<TOKEN_USER*>(user_.data())->User.Sid;
-        const DWORD acl_len = static_cast<DWORD>(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + GetLengthSid(sid));
-        acl_.resize(acl_len);
-        PACL acl = reinterpret_cast<PACL>(acl_.data());
-        if (!InitializeAcl(acl, acl_len, ACL_REVISION)) return;
-        if (!AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE, GENERIC_ALL, sid)) return;
-        if (!InitializeSecurityDescriptor(&sd_, SECURITY_DESCRIPTOR_REVISION)) return;
-        if (!SetSecurityDescriptorDacl(&sd_, TRUE, acl, FALSE)) return;
-        if (!SetSecurityDescriptorControl(&sd_, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) return;
-        sa_.nLength = sizeof sa_;
-        sa_.lpSecurityDescriptor = &sd_;
-        sa_.bInheritHandle = FALSE;
-        ok_ = true;
-    }
-    SECURITY_ATTRIBUTES* get() noexcept { return ok_ ? &sa_ : nullptr; }
-
-private:
-    std::vector<std::uint8_t> user_;
-    std::vector<std::uint8_t> acl_;
-    SECURITY_DESCRIPTOR sd_{};
-    SECURITY_ATTRIBUTES sa_{};
-    bool ok_ = false;
-};
+using io::OwnerOnlySecurity;
 #endif
 
-// Native, exclusively created, owner-only file handle (R-005): O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC
-// with mode 0600 on POSIX; CREATE_NEW with an owner-only DACL on Windows.
-class ExclusiveFile {
-public:
-    ExclusiveFile() = default;
-    ~ExclusiveFile() { close(); }
-    ExclusiveFile(const ExclusiveFile&) = delete;
-    ExclusiveFile& operator=(const ExclusiveFile&) = delete;
-
-    Status create(const std::string& path) {
-#if defined(_WIN32)
-        const std::wstring w = widen(path);
-        if (w.empty()) return Status(Errc::InvalidArgument, "spool path is not valid UTF-8");
-        OwnerOnlySecurity sec;
-        if (!sec.get()) return Status(Errc::IoError, "cannot build an owner-only security descriptor");
-        h_ = CreateFileW(w.c_str(), GENERIC_WRITE, 0, sec.get(), CREATE_NEW,
-                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-        if (h_ == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot create spool file");
-#else
-        fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-        if (fd_ < 0) return Status(Errc::IoError, "cannot create spool file");
-#endif
-        return Status::ok();
-    }
-    Status write(const std::uint8_t* p, std::size_t n) {
-#if defined(_WIN32)
-        while (n > 0) {
-            const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(n, 1u << 30));
-            DWORD done = 0;
-            if (!WriteFile(h_, p, chunk, &done, nullptr) || done == 0) return Status(Errc::IoError, "cannot write spool file");
-            p += done;
-            n -= done;
-        }
-#else
-        while (n > 0) {
-            const ssize_t r = ::write(fd_, p, std::min<std::size_t>(n, 1u << 30));
-            if (r < 0 && errno == EINTR) continue;
-            if (r <= 0) return Status(Errc::IoError, "cannot write spool file");
-            p += r;
-            n -= static_cast<std::size_t>(r);
-        }
-#endif
-        return Status::ok();
-    }
-    // Closes; false when the final flush failed.
-    bool close() noexcept {
-#if defined(_WIN32)
-        if (h_ == INVALID_HANDLE_VALUE) return true;
-        const bool ok = CloseHandle(h_) != 0;
-        h_ = INVALID_HANDLE_VALUE;
-        return ok;
-#else
-        if (fd_ < 0) return true;
-        const bool ok = ::close(fd_) == 0;
-        fd_ = -1;
-        return ok;
-#endif
-    }
-    bool is_open() const noexcept {
-#if defined(_WIN32)
-        return h_ != INVALID_HANDLE_VALUE;
-#else
-        return fd_ >= 0;
-#endif
-    }
-
-private:
-#if defined(_WIN32)
-    HANDLE h_ = INVALID_HANDLE_VALUE;
-#else
-    int fd_ = -1;
-#endif
-};
+using io::ExclusiveFile;
 
 // Copies `from` to a new, exclusively created temporary name next to `to`, then renames it over
 // `to` (used when a plain rename is impossible, e.g. across volumes). The temporary name is
@@ -387,6 +269,7 @@ Result<std::shared_ptr<SpoolFile>> SpoolFile::open(const std::string& path, std:
 }
 
 SpoolFile::~SpoolFile() {
+    release_quota();
     if (!native_) return;
     const bool remove_file = !committed_ || delete_original_;
     const std::string& doomed = delete_original_ ? original_ : path_;
@@ -442,6 +325,7 @@ Status SpoolFile::commit(const std::string& target) {
         original_ = path_;
         path_ = target;
         committed_ = true;
+        release_quota();
         return Status::ok();
     }
 #else
@@ -452,11 +336,60 @@ Status SpoolFile::commit(const std::string& target) {
         original_ = path_;
         path_ = target;
         committed_ = true;
+        release_quota();
         return Status::ok();
     }
 #endif
     path_ = target;
     committed_ = true;
+    release_quota();
+    return Status::ok();
+}
+
+// ------------------------------------------------------------------ disk quota (R-074)
+
+struct SpoolQuota {
+    std::atomic<std::uint64_t> used{0};
+};
+
+namespace {
+std::mutex g_quota_mu;
+std::shared_ptr<SpoolQuota> quota_for(const std::string& dir) {
+    static std::map<std::string, std::shared_ptr<SpoolQuota>> all;
+    const std::lock_guard<std::mutex> l(g_quota_mu);
+    std::shared_ptr<SpoolQuota>& q = all[dir];
+    if (!q) q = std::make_shared<SpoolQuota>();
+    return q;
+}
+}  // namespace
+
+void SpoolFile::release_quota() noexcept {
+    if (quota_ && charged_) quota_->used.fetch_sub(charged_);
+    charged_ = 0;
+    quota_.reset();
+}
+
+Status SpoolWriter::charge(std::uint64_t n) {
+    if (!quota_) return Status::ok();
+    if (max_total_ != 0) {
+        std::uint64_t cur = quota_->used.load();
+        for (;;) {
+            if (n > max_total_ || cur > max_total_ - n)
+                return Status(Errc::LimitExceeded, "spool disk quota reached");
+            if (quota_->used.compare_exchange_weak(cur, cur + n)) break;
+        }
+    } else {
+        quota_->used.fetch_add(n);
+    }
+    charged_ += n;
+    if (min_free_ != 0 && written_ + prefix_size_ + n >= next_space_check_) {
+        std::error_code ec;
+        const std::filesystem::space_info si = std::filesystem::space(fs_path(dir_), ec);
+        // Checked every 16 MiB: keep that much headroom above the floor.
+        constexpr std::uint64_t kStep = 16ull << 20;
+        if (!ec && si.available < min_free_ + n + kStep) return Status(Errc::LimitExceeded, "spool disk free-space floor reached");
+        next_space_check_ = written_ + prefix_size_ + n + kStep;
+    }
     return Status::ok();
 }
 
@@ -468,6 +401,7 @@ struct SpoolWriter::Impl {
 };
 
 SpoolWriter::~SpoolWriter() {
+    if (quota_ && charged_) quota_->used.fetch_sub(charged_);
     if (impl_) {
         impl_->out.close();
         std::error_code ec;
@@ -485,6 +419,11 @@ Result<std::unique_ptr<SpoolWriter>> SpoolWriter::open(const SpoolConfig& cfg, c
         if (cleaned_dirs().insert(dir8.value()).second) (void)remove_stale_in(dir, cfg.stale_after_minutes);
     }
     std::unique_ptr<SpoolWriter> w(new SpoolWriter());
+    w->quota_ = quota_for(dir8.value());
+    w->max_total_ = cfg.max_total_bytes;
+    w->min_free_ = cfg.min_free_disk_bytes;
+    w->dir_ = dir8.value();
+    if (Status q = w->charge(prefix.size()); !q) return q;  // nothing created yet
     auto impl = std::make_unique<Impl>();
     const std::filesystem::path p = dir / unique_name();
     w->path_ = utf8_of(p);
@@ -499,6 +438,10 @@ Result<std::unique_ptr<SpoolWriter>> SpoolWriter::open(const SpoolConfig& cfg, c
 Status SpoolWriter::write(const std::uint8_t* data, std::size_t n) {
     if (!impl_) return Status(Errc::InvalidArgument, "spool file is closed");
     if (n == 0) return Status::ok();
+    if (Status q = charge(n); !q) {
+        impl_->failed = true;
+        return q;
+    }
     if (Status s = impl_->out.write(data, n); !s) {
         impl_->failed = true;
         return s;
@@ -520,6 +463,10 @@ Result<SpoolWriter::Finished> SpoolWriter::finish() {
     Result<std::shared_ptr<SpoolFile>> file = SpoolFile::open(path_, prefix_size_);
     if (!file) return file.take_error();
     std::shared_ptr<SpoolFile> sf = std::move(file.value());
+    // The file keeps the quota charge until it is committed or deleted.
+    sf->quota_ = std::move(quota_);
+    sf->charged_ = charged_;
+    charged_ = 0;
     if (sf->size() != prefix_size_ + written_) return Status(Errc::IoError, "spool file size mismatch");
     // Every view keeps the SpoolFile (and so the mapping) alive.
     Finished f;

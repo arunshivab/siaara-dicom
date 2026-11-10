@@ -9,10 +9,23 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "core/status.hpp"
 
 namespace siaara::net {
+
+// The key per-peer limits count connections by (R-016): an IPv4 address as is (an IPv4-mapped
+// IPv6 address "::ffff:a.b.c.d" as its IPv4 address), an IPv6 address by its first
+// `ipv6_prefix_bits` bits ("<hex of the prefix>/<bits>"; default /64, the usual allocation to one
+// site, so a peer cannot escape the limit by rotating addresses within it; 128 = exact). Anything
+// that does not parse as an address is returned unchanged.
+std::string peer_group(std::string_view address, unsigned ipv6_prefix_bits = 64);
+
+// True for "localhost" and for literal loopback addresses: IPv4 127.0.0.0/8, IPv6 ::1 and
+// IPv4-mapped 127.0.0.0/8, with or without [brackets]. Host names are not matched by text
+// ("127.example.com" is not loopback, R-036).
+bool is_loopback_literal(std::string_view host) noexcept;
 
 // Initialises the OS socket library once (WSAStartup on Windows; no-op elsewhere).
 // Thread safe; called automatically by every function below.

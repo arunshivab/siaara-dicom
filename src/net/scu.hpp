@@ -33,7 +33,20 @@ struct StoreRequest {
     // Set when the data set was received to disk (net/spool.hpp): a complete Part 10 file whose
     // mapping `raw` and `dataset` view. Move it into place with spool->commit(path).
     std::shared_ptr<SpoolFile> spool;
+    // The command's Affected SOP Class / Instance UIDs differed from (0008,0016) / (0008,0018) of
+    // the data set (R-073) and the request was accepted leniently: sop_class_uid and
+    // sop_instance_uid are the data set's (used for file names, file meta and indexes), these are
+    // the command's. A spooled file (whose meta was written from the command) is not offered then.
+    bool uid_mismatch = false;
+    std::string command_sop_class_uid, command_sop_instance_uid;
 };
+
+// Compares the command's Affected SOP Class / Instance UIDs (already in rq.sop_class_uid /
+// rq.sop_instance_uid) with the decoded data set (R-073). Equal: Success. Otherwise strict mode
+// answers DataSetDoesNotMatch (0xA900); lenient mode switches rq to the data set UIDs (where the
+// data set has them), keeps the command's in command_sop_*, sets uid_mismatch and returns Success.
+// `note` receives a description of the difference.
+std::uint16_t check_store_uids(StoreRequest& rq, bool strict, std::string& note);
 
 // Builds a Part 10 file (file meta + data set) from a received instance.
 DicomFile to_part10(const StoreRequest& rq);
@@ -75,6 +88,9 @@ struct ScuConfig {
         return p;
     }();
     std::optional<SpoolConfig> spool;                       // C-GET: receive large instances to disk
+    // C-GET sub-operations whose command UIDs differ from the data set's: refuse (0xA900) instead of
+    // accepting them under the data set's UIDs with StoreRequest::uid_mismatch (R-073).
+    bool strict_store_uids = false;
     std::optional<AsyncWindow> async_window;                // propose an Asynchronous Operations Window
     std::vector<ExtendedNegotiation> extended_negotiation;  // SOP Class Extended Negotiation items
 };

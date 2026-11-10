@@ -1005,6 +1005,22 @@ struct Store::Impl {
         return Status::ok();
     }
 
+    // R-074: the store's byte cap and the volume's free-space floor.
+    Status check_disk_limits(std::uint64_t n) {
+        if (opt.max_total_bytes != 0) {
+            std::shared_lock<std::shared_mutex> g(rw);
+            if (n > opt.max_total_bytes || st.data_bytes > opt.max_total_bytes - n)
+                return Status(Errc::LimitExceeded, "store disk quota reached");
+        }
+        if (opt.min_free_disk_bytes != 0) {
+            std::error_code ec;
+            const fs::space_info si = fs::space(root, ec);
+            if (!ec && si.available < opt.min_free_disk_bytes + n)
+                return Status(Errc::LimitExceeded, "store disk free-space floor reached");
+        }
+        return Status::ok();
+    }
+
     Result<AddOutcome> add_bytes(const Bytes& src, DuplicatePolicy policy, AddMode mode, const std::string& ref_path) {
         IndexRecord rec;
         if (Status s = extract_index(src, rec); !s) return s;
@@ -1039,6 +1055,7 @@ struct Store::Impl {
         fs::path final_path, tmp;
         std::error_code ec;
         if (mode == AddMode::Copy) {
+            if (Status q = check_disk_limits(data.size()); !q) return q;
             final_path = root / u8path(instance_relative_path(uid));
             fs::create_directories(final_path.parent_path(), ec);
             if (ec) return Status(Errc::IoError, "cannot create data folder");

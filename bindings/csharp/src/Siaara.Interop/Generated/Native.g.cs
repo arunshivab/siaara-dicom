@@ -556,6 +556,8 @@ internal struct siaara_store_options
     public int durable;
     public int rebuild_if_corrupt;
     public ulong compact_min_records;
+    public ulong max_total_bytes;
+    public ulong min_free_disk_bytes;
 }
 
 /// <summary>siaara_store_filter (blittable, C layout).</summary>
@@ -1178,6 +1180,7 @@ internal struct siaara_get_options
     public nint sop_classes;
     public uint sop_class_count;
     public int native_only;
+    public int strict_store_uids;
 }
 
 /// <summary>siaara_scp_options (blittable, C layout).</summary>
@@ -1200,6 +1203,12 @@ internal struct siaara_scp_options
     public uint max_pdu;
     public int allow_any_calling_ae;
     public nint tls;
+    public int strict_store_uids;
+    public uint reserved0;
+    public nint spool_directory;
+    public ulong spool_threshold;
+    public ulong spool_max_total_bytes;
+    public ulong spool_min_free_disk_bytes;
 }
 
 /// <summary>siaara_scp_event (blittable, C layout).</summary>
@@ -1214,6 +1223,9 @@ internal struct siaara_scp_event
     public nint sop_class_uid;
     public nint sop_instance_uid;
     public nint peer_address;
+    public int uid_mismatch;
+    public nint command_sop_class_uid;
+    public nint command_sop_instance_uid;
 }
 
 /// <summary>siaara_scp_stats (blittable, C layout).</summary>
@@ -1882,6 +1894,10 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_set_log_callback")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_set_log_callback(delegate* unmanaged[Cdecl]<void*, int, int, byte*, void> cb, void* user, int min_level);
+
+    [LibraryImport(Library, EntryPoint = "siaara_set_log_include_phi")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_set_log_include_phi(int include_phi);
 
     [LibraryImport(Library, EntryPoint = "siaara_dimse_echo")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -3205,6 +3221,11 @@ internal static unsafe class Native
     internal static int siaara_set_log_callback(nint cb, nint user, int min_level)
     {
         return Raw.siaara_set_log_callback((delegate* unmanaged[Cdecl]<void*, int, int, byte*, void>)cb, (void*)user, min_level);
+    }
+
+    internal static int siaara_set_log_include_phi(int include_phi)
+    {
+        return Raw.siaara_set_log_include_phi(include_phi);
     }
 
     internal static int siaara_dimse_echo(in siaara_dimse_peer peer, nint cancel, ref siaara_dimse_result result)

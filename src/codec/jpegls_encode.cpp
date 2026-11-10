@@ -46,7 +46,9 @@ void load_row(std::span<const std::uint8_t> in, const FrameInfo& info, int comp,
 }  // namespace
 
 Status jpegls::encode(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeOptions& opt,
-                      std::vector<std::uint8_t>& out) {
+                      std::vector<std::uint8_t>& out) try {
+    if (info.frame_bytes() != 0 && !info.encode_fits_budget(4))
+        return Status(Errc::LimitExceeded, "JPEG-LS encoder: frame exceeds the memory budget");  // R-062
     if (Status s = validate_frame_info(info); !s) return s;
     if (in.size() != info.frame_bytes())
         return Status(Errc::InvalidArgument, "JPEG-LS: input size does not match the frame");
@@ -171,6 +173,8 @@ Status jpegls::encode(std::span<const std::uint8_t> in, const FrameInfo& info, c
     }
     put_marker(out, kEOI);
     return Status::ok();
+} catch (...) {
+    return Status::out_of_memory("JPEG-LS encoder: out of memory");  // R-062: never thrown
 }
 
 Status encode_jpegls(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,

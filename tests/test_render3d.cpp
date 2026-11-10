@@ -749,3 +749,25 @@ TEST_CASE("render3d: C API argument checks") {
     CHECK(siaara_volume_info(nullptr, nullptr) == SIAARA_ERR_INVALID_ARGUMENT);
     siaara_view_free(nullptr);
 }
+
+TEST_CASE("render3d: R-061 sample distance floor and per-frame sample budget") {
+    auto vol = make_volume({16, 16, 16}, {1.0, 1.0, 1.0}, kOrigin, rotated_axes(0.0, 0.0), VoxelType::Float32,
+                           [](std::uint32_t i, std::uint32_t, std::uint32_t) { return static_cast<float>(i); });
+    auto v = View::create(vol, 32, 32);
+    REQUIRE(v.is_ok());
+    REQUIRE(v->set_mode(ViewMode::VolumeMip).is_ok());
+    RenderSettings tiny;
+    tiny.sample_distance = 1e-9;  // a billion samples per ray
+    CHECK_EQ(v->set_render_settings(tiny).code, Errc::InvalidArgument);
+    RenderSettings ok;
+    ok.sample_distance = 1.0 / 64.0;
+    REQUIRE(v->set_render_settings(ok).is_ok());
+    std::vector<float> out(32 * 32);
+    CHECK(v->render_values(out, 0.0f).is_ok());
+    RenderSettings capped = ok;
+    capped.max_frame_samples = 1000;
+    REQUIRE(v->set_render_settings(capped).is_ok());
+    CHECK_EQ(v->render_values(out, 0.0f).code, Errc::LimitExceeded);
+    std::vector<std::uint8_t> rgba(32 * 32 * 4);
+    CHECK_EQ(v->render_rgba8(rgba).code, Errc::LimitExceeded);
+}

@@ -545,10 +545,13 @@ Status encode_lossy(std::span<const std::uint8_t> in, const FrameInfo& info, con
 }  // namespace
 
 Status encode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,
-                      const JpegEncodeOptions& opt, std::vector<std::uint8_t>& out) {
+                      const JpegEncodeOptions& opt, std::vector<std::uint8_t>& out) try {
     if (Status st = check_input(in, info); !st) return st;
+    if (!info.encode_fits_budget(8)) return Status(Errc::LimitExceeded, "JPEG encoder: frame exceeds the memory budget");
     if (p.lossless) return encode_lossless(in, info, p, opt, out);
     return encode_lossy(in, info, p, opt, out);
+} catch (...) {
+    return Status::out_of_memory("JPEG encoder: out of memory");  // R-062: never thrown
 }
 
 Status encode_jpeg(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,

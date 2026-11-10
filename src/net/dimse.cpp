@@ -494,6 +494,7 @@ Result<DimseReceived> receive_dimse(Association& a, int timeout_ms, const SpoolC
     out.message.has_data = r->message.has_data;
     out.message.data = std::move(r->message.data);
     out.message.spool = std::move(r->message.spool);
+    out.message.discarded = r->message.discarded;
     if (const NegotiatedContext* pc = a.context(out.message.context_id)) {
         out.message.transfer_syntax = pc->transfer_syntax;
         out.message.abstract_syntax = pc->abstract_syntax;

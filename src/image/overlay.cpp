@@ -2,6 +2,8 @@
 // C.7.6.11, C.7.6.15 and C.10.7.1.1 (CIELab encoding).
 #include "image/overlay.hpp"
 
+#include "image/raster.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -155,7 +157,7 @@ constexpr Tag kShutterShape = 0x00181600;
 constexpr Tag kLeft = 0x00181602, kRight = 0x00181604, kUpper = 0x00181606, kLower = 0x00181608;
 constexpr Tag kCenter = 0x00181610, kRadius = 0x00181612, kVertices = 0x00181620;
 constexpr Tag kPresentationValue = 0x00181622, kOverlayGroup = 0x00181623, kLab = 0x00181624;
-constexpr std::size_t kMaxVertices = 65536;
+constexpr std::size_t kMaxVertices = 4096;  // R-084
 }  // namespace
 
 Result<Shutters> read_shutters(const Dataset& ds, bool lenient) {
@@ -200,7 +202,10 @@ Result<Shutters> read_shutters(const Dataset& ds, bool lenient) {
     if (sh.polygonal) {
         const std::size_t vm = ds.value_multiplicity(kVertices);
         if (vm < 6 || vm % 2 != 0 || vm / 2 > kMaxVertices) {
-            if (Status s = drop(sh.polygonal, "polygonal shutter needs at least three vertices"); !s) return s;
+            if (Status s = drop(sh.polygonal, vm / 2 > kMaxVertices ? "polygonal shutter has more than 4096 vertices"
+                                                                     : "polygonal shutter needs at least three vertices");
+                !s)
+                return s;
         } else {
             try {
                 sh.vertices.reserve(vm / 2);
@@ -239,64 +244,49 @@ Result<Shutters> read_shutters(const Dataset& ds, bool lenient) {
 
 namespace {
 
-// Clips segment (r0,c0)-(r1,c1) to the box [lo_r,hi_r] x [lo_c,hi_c] (Liang-Barsky). False if outside.
-bool clip(double& r0, double& c0, double& r1, double& c1, double lo_r, double hi_r, double lo_c, double hi_c) {
-    double t0 = 0, t1 = 1;
-    const double dr = r1 - r0, dc = c1 - c0;
-    const double p[4] = {-dc, dc, -dr, dr};
-    const double q[4] = {c0 - lo_c, hi_c - c0, r0 - lo_r, hi_r - r0};
-    for (int i = 0; i < 4; ++i) {
-        if (p[i] == 0) {
-            if (q[i] < 0) return false;
-            continue;
-        }
-        const double t = q[i] / p[i];
-        if (p[i] < 0) t0 = std::max(t0, t);
-        else t1 = std::min(t1, t);
-        if (t0 > t1) return false;
-    }
-    const double nr0 = r0 + t0 * dr, nc0 = c0 + t0 * dc;
-    r1 = r0 + t1 * dr;
-    c1 = c0 + t1 * dc;
-    r0 = nr0;
-    c0 = nc0;
-    return true;
-}
-
-void polygon_inside(const std::vector<std::pair<double, double>>& v, std::uint32_t rows, std::uint32_t cols,
-                    std::vector<std::uint8_t>& in, std::vector<double>& xs) {
-    // Scanline fill at each pixel row centre (row coordinate y = 1..rows), even-odd rule.
+// Pixels inside the polygon (row coordinate y = 1..rows, column x = 1..cols, centres at integer
+// coordinates), even-odd rule, boundary pixels included. An edge-table scan (R-084): cost is the
+// edges plus the active edges per row, not rows x vertices, charged to `budget` with the pixels
+// marked; false when the budget ran out. All double -> integer conversions are clamped (R-083).
+bool polygon_inside(const std::vector<std::pair<double, double>>& v, std::uint32_t rows, std::uint32_t cols,
+                    std::vector<std::uint8_t>& in, raster::WorkBudget& budget) {
     const std::size_t n = v.size();
-    for (std::uint32_t r = 0; r < rows; ++r) {
-        const double y = r + 1.0;
-        xs.clear();
-        for (std::size_t i = 0; i < n; ++i) {
-            const auto& a = v[i];
-            const auto& b = v[(i + 1) % n];
-            const double ya = a.first, yb = b.first;
-            if ((ya <= y && y < yb) || (yb <= y && y < ya))
-                xs.push_back(a.second + (y - ya) * (b.second - a.second) / (yb - ya));
-        }
-        std::sort(xs.begin(), xs.end());
-        for (std::size_t k = 0; k + 1 < xs.size(); k += 2) {
-            const double c_lo = std::max(1.0, std::ceil(xs[k]));
-            const double c_hi = std::min(static_cast<double>(cols), std::floor(xs[k + 1]));
-            for (double c = c_lo; c <= c_hi; c += 1.0)
-                in[std::size_t{r} * cols + static_cast<std::size_t>(c) - 1] = 1;
-        }
-    }
-    // Boundary pixels count as inside: mark them by stepping along each (clipped) edge.
+    std::vector<raster::Edge> edges;
+    edges.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
+        const auto& a = v[i];
+        const auto& b = v[(i + 1) % n];
+        edges.push_back({a.second, a.first, b.second, b.first});
+    }
+    const double dc = static_cast<double>(cols);
+    bool ok = raster::scan_polygon(std::move(edges), 0, static_cast<std::int64_t>(rows) - 1, 1.0, budget,
+                                   [&](std::int64_t r, const std::vector<double>& xs) {
+                                       for (std::size_t k = 0; k + 1 < xs.size(); k += 2) {
+                                           const std::int64_t c_lo = std::max<std::int64_t>(1, raster::clamp_to_i64(std::ceil(xs[k]), 0.0, dc + 1.0));
+                                           const std::int64_t c_hi = std::min<std::int64_t>(static_cast<std::int64_t>(cols), raster::clamp_to_i64(std::floor(xs[k + 1]), 0.0, dc + 1.0));
+                                           if (c_hi < c_lo || !budget.charge(static_cast<std::uint64_t>(c_hi - c_lo + 1))) continue;
+                                           for (std::int64_t c = c_lo; c <= c_hi; ++c)
+                                               in[static_cast<std::size_t>(r) * cols + static_cast<std::size_t>(c) - 1] = 1;
+                                       }
+                                   });
+    // Boundary pixels count as inside: mark them by stepping along each (clipped) edge.
+    for (std::size_t i = 0; ok && i < n; ++i) {
         double r0 = v[i].first, c0 = v[i].second, r1 = v[(i + 1) % n].first, c1 = v[(i + 1) % n].second;
-        if (!clip(r0, c0, r1, c1, 0.5, rows + 0.5, 0.5, cols + 0.5)) continue;
+        if (!raster::clip_segment(c0, r0, c1, r1, 0.5, cols + 0.5, 0.5, rows + 0.5)) continue;
         const double steps = std::ceil(std::max(std::fabs(r1 - r0), std::fabs(c1 - c0)) * 2) + 1;
-        for (double s = 0; s <= steps; s += 1.0) {
-            const double t = steps > 0 ? s / steps : 0;
-            const double rr = std::floor(r0 + (r1 - r0) * t + 0.5), cc = std::floor(c0 + (c1 - c0) * t + 0.5);
+        if (!budget.charge(static_cast<std::uint64_t>(steps) + 1)) {
+            ok = false;
+            break;
+        }
+        for (double st = 0; st <= steps; st += 1.0) {
+            const double t = steps > 0 ? st / steps : 0;
+            const std::int64_t rr = raster::clamp_to_i64(std::floor(r0 + (r1 - r0) * t + 0.5), 0.0, rows + 1.0);
+            const std::int64_t cc = raster::clamp_to_i64(std::floor(c0 + (c1 - c0) * t + 0.5), 0.0, cols + 1.0);
             if (rr >= 1 && rr <= rows && cc >= 1 && cc <= cols)
                 in[static_cast<std::size_t>(rr - 1) * cols + static_cast<std::size_t>(cc - 1)] = 1;
         }
     }
+    return ok && !budget.exceeded;
 }
 
 }  // namespace
@@ -329,9 +319,10 @@ Status shutter_mask(const Shutters& sh, const PixelInfo& pi, std::uint32_t frame
     try {
         if (sh.polygonal && sh.vertices.size() >= 3) {
             std::vector<std::uint8_t> inside(static_cast<std::size_t>(n), 0);
-            std::vector<double> xs;
-            xs.reserve(sh.vertices.size());
-            polygon_inside(sh.vertices, rows, cols, inside, xs);
+            raster::WorkBudget budget;
+            budget.remaining = std::max<std::uint64_t>(std::uint64_t{1} << 26, 4 * n);
+            if (!polygon_inside(sh.vertices, rows, cols, inside, budget))
+                return Status(Errc::LimitExceeded, "shutter: polygon exceeds the work budget");
             for (std::size_t i = 0; i < n; ++i)
                 if (!inside[i]) visible[i] = 0;
         }

@@ -104,7 +104,7 @@ The shared library exports only the C API (`siaara_*`): a linker version script 
 |---|---|
 | Dependency allow-list | `python3 tools/ci/check_binaries.py deps <binaries>`: `readelf -d` / `otool -L` / `dumpbin /dependents` against `tools/ci/deps_allowlist.json`; on Linux `libssl`/`libcrypto` must never be linked. |
 | Exported-symbol baseline | `python3 tools/ci/check_binaries.py symbols --header include/siaara/siaara.h <shared library>`: only `siaara_*`, equal to `tools/ci/abi/exported_symbols.txt`. After a planned C API change run it with `--update` and commit the baseline diff. |
-| Sanitizers | ASan+UBSan job, TSan job, fuzz smoke test (60 s per target with libFuzzer) |
+| Sanitizers | ASan+UBSan jobs (Linux GCC, macOS Apple clang, Windows MSVC ASan), TSan job (including `tls/`), fuzz smoke test (60 s per target with libFuzzer) and the same targets again with assertions on (`fuzz-asserts`, no `NDEBUG`) |
 | Hardening | `python3 tools/ci/check_binaries.py hardening [--fortify] <binaries>`: `readelf` (RELRO + BIND_NOW, NX stack, PIE, stack protector, FORTIFY wrappers), `dumpbin /headers /loadconfig` (DYNAMICBASE, NX, CFG, x64 high-entropy VA and CET), `otool -hv`. |
 | Release runtime | `deps --profile release`: no `libstdc++`/`libgcc_s` (Linux) and no MSVC runtime DLLs (Windows) in release binaries. |
 | Generated tables | `tools/ci/fetch_standard.py` downloads PS3.6/7/15/16 XML pinned by SHA-256 (`tools/ci/dicom_standard.json`); the dictionary and the de-identification table must equal the generators' output. |

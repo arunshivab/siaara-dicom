@@ -34,6 +34,12 @@ struct FrameInfo {
     static constexpr std::uint64_t kDefaultMemoryBudget = std::uint64_t{4} << 30;  // 4 GiB
     static constexpr std::uint32_t kDefaultMaxScans = 1000;
     std::uint64_t effective_memory_budget() const noexcept { return memory_budget ? memory_budget : kDefaultMemoryBudget; }
+    // Encoders: LimitExceeded unless `factor` times the frame size fits the memory budget, an
+    // upper bound of their working memory checked before they allocate it (R-062).
+    bool encode_fits_budget(std::uint64_t factor) const noexcept {
+        const std::uint64_t fb = frame_bytes();
+        return fb != 0 && fb <= effective_memory_budget() / factor;
+    }
     std::uint32_t effective_max_scans() const noexcept { return max_scans ? max_scans : kDefaultMaxScans; }
 
     // Exact native frame size in bytes, or 0 on overflow / invalid parameters.

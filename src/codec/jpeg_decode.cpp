@@ -1020,8 +1020,10 @@ Status decode_jpeg_ex(std::span<const std::uint8_t> in, const FrameInfo& info, s
     Status st = dec->run();
     bad_codes = dec->bad_codes_;
     return st;
-} catch (const std::bad_alloc&) {
-    return Status(Errc::OutOfMemory, "JPEG: out of memory");
+} catch (...) {
+    // Allocation failure (or any other exception from the standard library) is reported, never
+    // thrown, and reporting it cannot throw again (decision 13.1).
+    return Status::out_of_memory("JPEG: out of memory");
 }
 
 Status jpeg_read_header(std::span<const std::uint8_t> in, JpegHeaderInfo& hdr) {

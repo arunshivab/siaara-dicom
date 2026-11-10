@@ -43,6 +43,7 @@ constexpr std::uint16_t OutOfResourcesMatches = 0xA701;
 constexpr std::uint16_t OutOfResourcesSubOps = 0xA702;
 constexpr std::uint16_t MoveDestinationUnknown = 0xA801;
 constexpr std::uint16_t IdentifierDoesNotMatch = 0xA900;
+constexpr std::uint16_t DataSetDoesNotMatch = 0xA900;  // C-STORE: Data Set does not match SOP Class
 constexpr std::uint16_t UnableToProcess = 0xC000;
 constexpr std::uint16_t CannotUnderstand = 0xC000;
 constexpr std::uint16_t ProcessingFailure = 0x0110;
@@ -160,6 +161,7 @@ struct Message {
     std::string transfer_syntax;  // of the presentation context
     std::string abstract_syntax;
     std::shared_ptr<SpoolFile> spool;  // set when the data set was received to disk (net/spool.hpp)
+    bool discarded = false;  // data set drained, not kept: spool quota / free-space floor (R-074)
 };
 
 enum class DimseKind { Message, PeerReleaseRequest };

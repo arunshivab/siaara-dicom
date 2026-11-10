@@ -687,3 +687,58 @@ TEST_CASE("lenient F2: encapsulated pixel data without items, without delimiter,
     REQUIRE(ds.is_ok());
     CHECK(decode_ok(d));
 }
+
+// ================================================================ R-055 crop margin and shared budget
+
+TEST_CASE("lenient: R-055 a codestream far larger than Rows x Columns is Malformed, not decoded and cropped") {
+    for (Enc e : {Enc::J2k, Enc::JpegLs, Enc::JpegLossless}) {
+        const auto big = fi(512, 512, 1, 8, 8, false);
+        const Buf cs = encode(e, samples(big, [](std::size_t) { return 7u; }), big);
+        const Dataset ds = dataset(16, 16, 1, 8, 8, false, {cs});
+        const Outcome o = run(ds, ts_of(e));
+        CHECK(o.strict_refused);
+        CHECK(!o.lenient_ok);
+        CHECK(o.lenient_status.code == Errc::Malformed);
+        CHECK(o.lenient_status.message.find("crop margin") != std::string::npos);
+        // Within the margin (2x per axis by default) it is still cropped.
+        const auto near = fi(32, 30, 1, 8, 8, false);
+        const Outcome ok = run(dataset(16, 16, 1, 8, 8, false, {encode(e, samples(near, [](std::size_t i) { return ramp(i, 256); }), near)}), ts_of(e));
+        CHECK(ok.lenient_ok);
+        CHECK(has(ok.decode_warnings, W::CodestreamCropped));
+        // The margin is configurable.
+        FrameOptions wide;
+        wide.threads = 1;
+        wide.max_crop_factor = 32;
+        auto r = FrameReader::open(ds, ts_of(e), wide);
+        REQUIRE(r);
+        CHECK(r->decode(0).is_ok());
+        FrameOptions none;
+        none.max_crop_factor = 0;
+        auto n = FrameReader::open(dataset(16, 16, 1, 8, 8, false, {encode(e, samples(near, [](std::size_t i) { return ramp(i, 256); }), near)}), ts_of(e), none);
+        REQUIRE(n);
+        CHECK(n->decode(0).error().code == Errc::Malformed);
+    }
+}
+
+TEST_CASE("lenient: R-055 parallel decode_range shares the memory budget and matches serial decoding") {
+    const auto f = fi(24, 24, 1, 16, 12, false);
+    std::vector<Buf> frames;
+    for (std::uint32_t k = 0; k < 8; ++k)
+        frames.push_back(encode(Enc::J2k, samples(f, [k](std::size_t i) { return ramp(i + k, 4096); }), f));
+    const Dataset ds = dataset(16, 16, 1, 16, 12, false, frames);
+    for (std::uint64_t budget : {std::uint64_t{4} << 30, std::uint64_t{256} << 10}) {
+        FrameOptions serial;
+        serial.threads = 1;
+        serial.memory_budget = budget;
+        FrameOptions par = serial;
+        par.threads = 4;
+        auto a = FrameReader::open(ds, kJ2k, serial);
+        auto b = FrameReader::open(ds, kJ2k, par);
+        REQUIRE(a && b);
+        auto ra = a->decode_range(0, 8);
+        auto rb = b->decode_range(0, 8);
+        REQUIRE(ra.is_ok() == rb.is_ok());
+        if (ra.is_ok()) CHECK(*ra == *rb);
+        CHECK(ra.is_ok());
+    }
+}

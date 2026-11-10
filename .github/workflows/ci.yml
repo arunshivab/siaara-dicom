@@ -136,10 +136,43 @@ jobs:
             fuzz-work/*/fuzz.log
           if-no-files-found: ignore
 
+  fuzz-asserts:
+    # The fuzz targets again with assert() enabled (no NDEBUG): parser invariants such as "the
+    # cursor never passes its parent" abort here instead of passing silently (R-051).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Install clang with the sanitizer and libFuzzer runtimes
+        run: sudo apt-get update && sudo apt-get install -y clang-18 libclang-rt-18-dev
+      - name: Configure (RelWithDebInfo without -DNDEBUG)
+        run: >
+          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O1 -g" "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g"
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DSIAARA_FUZZ=ON -DSIAARA_BUILD_TESTS=OFF -DSIAARA_BUILD_TOOLS=OFF
+      - name: Assertions are on
+        run: |
+          grep -q '^SIAARA_LIBFUZZER:INTERNAL=1' build-fuzz/CMakeCache.txt
+          if grep -q -- '-DNDEBUG' build-fuzz/compile_commands.json; then echo "NDEBUG is defined"; exit 1; fi
+      - name: Build
+        run: cmake --build build-fuzz --parallel
+      - name: Fuzz every target for 30 s
+        run: python3 fuzz/run_fuzzers.py --bin build-fuzz/fuzz --seconds 30 --jobs 4 --hang-seconds 10 --rss-mb 2048 --work fuzz-work
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-asserts-findings
+          path: |
+            fuzz-work/*/artifacts/
+            fuzz-work/*/fuzz.log
+          if-no-files-found: ignore
+
   tsan:
     # ThreadSanitizer over the tests that run threads: DIMSE and DICOMweb loopback servers, the
-    # store (concurrent adders/readers), the folder scanner, parallel frame decoding and volumes.
-    # TLS tests are left out: the system OpenSSL is not instrumented, which gives false reports.
+    # store (concurrent adders/readers), the folder scanner, parallel frame decoding, volumes and
+    # TLS (R-012; the system OpenSSL is not instrumented, but the 19 tls/ tests run clean without
+    # suppressions as of 2026-11-10).
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -157,7 +190,7 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1 history_size=4
         run: |
           set -e
-          for f in "net/" "web/loopback" "store:" "scan:" "image: parallel" "volume"; do
+          for f in "net/" "web/loopback" "tls/" "store:" "scan:" "image: parallel" "volume"; do
             echo "::group::$f"
             build-tsan/tests/siaara_tests --data tests/data "$f"
             echo "::endgroup::"
@@ -230,6 +263,24 @@ jobs:
         run: |
           if grep -rnE '^\s*(-\s*)?uses:\s*[^./][^@]*@' .github/workflows | grep -vE '@[0-9a-f]{40}(\s|$)'; then
             echo "Pin these actions to a full commit SHA"; exit 1; fi
+
+  macos-asan:
+    # Apple clang AddressSanitizer + UndefinedBehaviorSanitizer over the full test suite (R-012).
+    # LeakSanitizer is not available with Apple clang on arm64, so leak detection stays off here
+    # (the Linux ASan job covers it).
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSIAARA_SANITIZE=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
 
   windows-asan:
     # MSVC AddressSanitizer (/fsanitize=address) over the full test suite.

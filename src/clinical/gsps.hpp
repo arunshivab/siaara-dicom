@@ -154,6 +154,10 @@ struct PsRenderOptions {
     bool displayed_area = true;       // crop / pad to the displayed area
     std::array<std::uint8_t, 4> default_color{255, 255, 0, 255};  // layers without a colour
     std::array<std::uint8_t, 4> overlay_color{255, 255, 255, 255};
+    // Work (points, line steps, scan-line edge visits, filled pixels) one render may spend on
+    // graphic annotations; beyond it the render fails with LimitExceeded (R-056). 0 = default.
+    std::uint64_t max_draw_work = 0;
+    static constexpr std::uint64_t kDefaultMaxDrawWork = std::uint64_t{1} << 27;
 };
 
 struct PlacedText {

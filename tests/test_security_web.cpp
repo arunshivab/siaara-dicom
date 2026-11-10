@@ -272,21 +272,22 @@ TEST_CASE("R-018: request body defaults and the server-wide in-flight body budge
     CHECK(http::Limits{}.max_body <= (256ull << 20));
     http::ServerConfig cfg;
     cfg.max_inflight_body_bytes = 1000;  // R-018 option
+    cfg.max_inflight_body_peer_share = 1;  // R-057 option: all clients here are one loopback peer
     cfg.limits.read_timeout_ms = 3000;
     http::Server s;
     REQUIRE(s.start(cfg, [](const http::Request& rq, http::Response& rs) { rs.body = std::to_string(rq.body.size()); }).is_ok());
-    // A holds 800 bytes of budget while its body is still arriving.
+    // A holds the 700 bytes of its body that have arrived (R-057: charged as they arrive).
     auto a = net::tcp_connect("127.0.0.1", s.port(), 2000);
     REQUIRE(a);
     const std::string head = "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 800\r\n\r\n";
-    const std::string part = head + std::string(100, 'a');
+    const std::string part = head + std::string(700, 'a');
     REQUIRE((*a)->write_all(reinterpret_cast<const std::uint8_t*>(part.data()), part.size(), 2000).is_ok());
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     // B would exceed the budget: 503.
     const std::string b = raw_exchange(s.port(), head + std::string(800, 'b'), 1500);
     CHECK(b.rfind("HTTP/1.1 503", 0) == 0);
     // A completes; afterwards the budget is free again.
-    const std::string rest(700, 'a');
+    const std::string rest(100, 'a');
     REQUIRE((*a)->write_all(reinterpret_cast<const std::uint8_t*>(rest.data()), rest.size(), 2000).is_ok());
     std::string ra;
     std::uint8_t buf[512];
@@ -429,6 +430,34 @@ TEST_CASE("R-039: CORS \"*\" is refused together with authorize") {
     {
         DicomwebServer s;
         CHECK(s.start(cfg, {}).is_ok());
+        s.stop();
+    }
+}
+
+// ------------------------------------------------------------------ R-052 (2026-11-10 review)
+
+TEST_CASE("R-052: study/series/instance retrieve, metadata and bulk data responses are capped") {
+    siaara_test_web::MemoryStore mem;
+    const std::string inst = two_frame_instance();
+    REQUIRE(mem.add_part10(Bytes::copy_of(reinterpret_cast<const std::uint8_t*>(inst.data()), inst.size())).is_ok());
+    const std::string i = "/dicomweb/studies/2.25.10/series/2.25.20/instances/2.25.31";
+    const std::vector<std::string> targets = {"/dicomweb/studies/2.25.10", "/dicomweb/studies/2.25.10/series/2.25.20", i,
+                                              i + "/bulkdata/7FE00010"};
+    for (std::uint64_t cap : {std::uint64_t{1} << 30, std::uint64_t{200}}) {
+        DicomwebServerConfig cfg;
+        cfg.max_response_bytes = cap;
+        DicomwebServer s;
+        REQUIRE(s.start(cfg, mem.make_store()).is_ok());
+        for (const auto& t : targets) {
+            http::Response rs;
+            s.handle(get(t), rs);
+            CHECK_EQ(rs.status, cap == 200 ? 413 : 200);
+            if (cap == 200) CHECK(rs.body.size() < 1000);
+        }
+        http::Response rs;
+        http::Request rq = get("/dicomweb/studies/2.25.10/metadata");
+        s.handle(rq, rs);
+        CHECK_EQ(rs.status, cap == 200 ? 413 : 200);
         s.stop();
     }
 }

@@ -874,13 +874,12 @@ public:
             w.rep.written = true;
             return;
         }
-        std::error_code ec;
-        if (fs::exists(fs_path(w.out_path), ec) && !opt_.overwrite) {
-            w.rep.error = "output file exists (use overwrite to replace it)";
-            return;
-        }
-        if (Status s = io::write_file_atomic(w.out_path, buf.data(), buf.size()); !s) {
-            w.rep.error = "writing the output failed: " + s.message;
+        // Without overwrite the existence check and the write are one step (R-078): an output that
+        // appears meanwhile is never replaced.
+        const auto mode = opt_.overwrite ? io::WriteMode::Replace : io::WriteMode::NoReplace;
+        if (Status s = io::write_file_atomic(w.out_path, buf.data(), buf.size(), mode); !s) {
+            w.rep.error = s.code == Errc::Rejected ? "output file exists (use overwrite to replace it)"
+                                                   : "writing the output failed: " + s.message;
             return;
         }
         w.rep.written = true;

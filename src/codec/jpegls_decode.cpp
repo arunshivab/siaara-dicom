@@ -318,8 +318,8 @@ Status decode_jpegls(std::span<const std::uint8_t> in, const FrameInfo& info, st
     // Allocation failure is reported, never thrown (decision 13.1).
     try {
         return decode_jpegls_impl(in, info, out);
-    } catch (const std::bad_alloc&) {
-        return Status(Errc::OutOfMemory, "JPEG-LS: out of memory");
+    } catch (...) {
+        return Status::out_of_memory("JPEG-LS: out of memory");
     }
 }
 

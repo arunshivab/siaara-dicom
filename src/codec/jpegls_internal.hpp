@@ -258,7 +258,9 @@ class BitWriter {
 public:
     explicit BitWriter(std::vector<std::uint8_t>& out) noexcept : out_(out) {}
 
-    void put(std::uint64_t v, int n) noexcept {  // 0 <= n <= 56, v < 2^n
+    // Not noexcept: writing may grow the output vector, and std::bad_alloc must reach the
+    // encoder entry's handler instead of terminating (R-062).
+    void put(std::uint64_t v, int n) {  // 0 <= n <= 56, v < 2^n
         acc_ = (acc_ << n) | v;
         count_ += n;
         for (;;) {
@@ -277,7 +279,7 @@ public:
         }
     }
 
-    void zeros(int n) noexcept {
+    void zeros(int n) {
         while (n > 48) {
             put(0, 48);
             n -= 48;
@@ -285,7 +287,7 @@ public:
         put(0, n);
     }
 
-    void golomb(std::uint32_t m, int k, int glimit, int qbpp) noexcept {
+    void golomb(std::uint32_t m, int k, int glimit, int qbpp) {
         const std::uint32_t high = m >> k;
         const auto max_zeros = static_cast<std::uint32_t>(glimit - qbpp - 1);
         if (high < max_zeros) {
@@ -301,7 +303,7 @@ public:
 
     // Pads the last byte with zero bits. A trailing 0xFF gets a zero byte after it so the
     // following marker cannot be mistaken for data.
-    void flush() noexcept {
+    void flush() {
         const int need = last_ff_ ? 7 : 8;
         if (count_ > 0) put(0, need - count_);
         if (last_ff_) put(0, 7);

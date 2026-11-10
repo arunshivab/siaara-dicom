@@ -708,14 +708,18 @@ Status TileEncoder::encode(std::uint32_t index, std::int64_t x0, std::int64_t y0
 }  // namespace
 
 Status j2k::encode(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeOptions& opt,
-                   std::vector<std::uint8_t>& out) {
+                   std::vector<std::uint8_t>& out) try {
     if (info.frame_bytes() == 0) return invalid("invalid frame parameters");
+    if (!info.encode_fits_budget(16)) return Status(Errc::LimitExceeded, "JPEG 2000 encoder: frame exceeds the memory budget");
     if (in.size() != info.frame_bytes()) return invalid("input size differs from the frame size");
     if (info.bits_allocated != 8 && info.bits_allocated != 16) return invalid("BitsAllocated must be 8 or 16");
     if (info.bits_stored < 1 || info.bits_stored > info.bits_allocated) return invalid("bad BitsStored");
     if (info.samples_per_pixel > 16384) return invalid("too many samples per pixel");
     if (opt.ht && !opt.lossless) return invalid("the HTJ2K encoder is lossless only");
     if (opt.layers < 1 || opt.layers > 64) return invalid("layers must be 1..64");
+    // NaN or infinite values reached the step size and a double-to-integer budget cast (R-065).
+    if (!std::isfinite(opt.quality) || !std::isfinite(opt.rate) || opt.rate < 0.0 || opt.rate > 1e6)
+        return invalid("quality and rate must be finite (rate 0..1e6 bits per sample)");
     if (opt.levels < 0 || opt.levels > kMaxLevels) return invalid("levels must be 0..32");
     if (opt.cblk_width_exp < 2 || opt.cblk_height_exp < 2 || opt.cblk_width_exp > 10 || opt.cblk_height_exp > 10 ||
         opt.cblk_width_exp + opt.cblk_height_exp > 12)
@@ -821,6 +825,8 @@ Status j2k::encode(std::span<const std::uint8_t> in, const FrameInfo& info, cons
     out.insert(out.end(), tiles.begin(), tiles.end());
     put16(out, kEOC);
     return Status::ok();
+} catch (...) {
+    return Status::out_of_memory("JPEG 2000 encoder: out of memory");  // R-062: never thrown
 }
 
 Status encode_j2k(std::span<const std::uint8_t> in, const FrameInfo& info, const EncodeParams& p,

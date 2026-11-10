@@ -3,6 +3,7 @@
 // the DICOMweb additions (metadata, frames, retrieve, WADO-URI, cancel).
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -265,6 +266,14 @@ TEST_CASE("capi/net: Storage SCP, C-ECHO, allowed peers, C-STORE with transcodin
     CHECK(r.completed == 1);
     siaara_file_free(mem);
     CHECK(st.instances() == 3);
+    // Events arrive on the SCP's dispatcher thread (R-070): wait for them.
+    for (int i = 0; i < 200; ++i) {
+        {
+            std::lock_guard<std::mutex> l(ev.mu);
+            if (ev.stored.size() == 3 && ev.echoes == 1) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     {
         std::lock_guard<std::mutex> l(ev.mu);
         CHECK(ev.stored.size() == 3 && ev.echoes == 1);
@@ -672,4 +681,189 @@ TEST_CASE("capi/long calls: volume build, store verify / rebuild, DICOMDIR write
                                      &warnings) == SIAARA_OK);
     CHECK(calls == 8 && std::filesystem::exists(dir / "media2" / "DICOMDIR"));
     siaara_cancel_free(c);
+}
+
+namespace {
+struct LogText {
+    std::mutex mu;
+    std::vector<std::string> lines;
+};
+void SIAARA_CALL on_log_text(void* user, int32_t, int32_t, const char* m) {
+    auto* s = static_cast<LogText*>(user);
+    std::lock_guard<std::mutex> l(s->mu);
+    s->lines.emplace_back(m);
+}
+std::string file_text(const std::filesystem::path& p) {
+    std::string s;
+    if (FILE* f = std::fopen(p.string().c_str(), "rb")) {
+        char buf[4096];
+        std::size_t n = 0;
+        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+        std::fclose(f);
+    }
+    return s;
+}
+}  // namespace
+
+TEST_CASE("capi/net: R-072 C-GET into a folder honours SIAARA_DUP_KEEP") {
+    const auto dir = temp_dir("r072");
+    std::vector<std::shared_ptr<const DicomFile>> files;
+    for (int i = 0; i < 2; ++i) files.push_back(std::make_shared<const DicomFile>(make_ct(30 + i, "2.25.710", "2.25.711")));
+    net::ScpHandlers h;
+    h.on_get = [&](const net::QueryRequest&, std::vector<net::RetrieveItem>& items) -> std::uint16_t {
+        for (const auto& f : files) items.push_back({std::string(), f});
+        return net::dimse_status::Success;
+    };
+    net::ScpServer srv(qr_config(), h);
+    REQUIRE(srv.start().is_ok());
+    siaara_dimse_peer p = peer(srv.port(), "QR_SCP");
+    siaara_file* idf = nullptr;
+    REQUIRE(siaara_file_create(&idf) == SIAARA_OK);
+    siaara_dataset* id = nullptr;
+    REQUIRE(siaara_file_dataset(idf, &id) == SIAARA_OK);
+    REQUIRE(siaara_dataset_set_string(id, 0x00080052, "CS", "STUDY", 5) == SIAARA_OK);
+    REQUIRE(siaara_dataset_set_string(id, 0x0020000D, "UI", "2.25.710", 8) == SIAARA_OK);
+
+    const auto folder = dir / "folder";
+    std::filesystem::create_directories(folder);
+    const auto existing = folder / "2.25.60030.dcm";
+    {
+        FILE* f = std::fopen(existing.string().c_str(), "wb");
+        REQUIRE(f);
+        std::fputs("EXISTING", f);
+        std::fclose(f);
+    }
+    const std::string folder_s = folder.string();
+    siaara_get_options go;
+    std::memset(&go, 0, sizeof go);
+    go.struct_size = sizeof go;
+    go.folder = folder_s.c_str();
+    go.duplicate_policy = SIAARA_DUP_KEEP;
+    LogText logs;
+    REQUIRE(siaara_set_log_include_phi(1) == SIAARA_OK);  // the warning names the instance (R-075)
+    REQUIRE(siaara_set_log_callback(on_log_text, &logs, SIAARA_LOG_DEBUG) == SIAARA_OK);
+    siaara_dimse_result r = result();
+    CHECK(siaara_dimse_get(&p, SIAARA_QR_STUDY_ROOT, id, &go, nullptr, nullptr, nullptr, &r) == SIAARA_OK);
+    CHECK(r.completed == 2 && r.failed == 0);
+    CHECK_EQ(file_text(existing), std::string("EXISTING"));            // kept
+    CHECK(file_text(folder / "2.25.60031.dcm").size() > 132);          // the new one written
+    REQUIRE(siaara_set_log_callback(nullptr, nullptr, SIAARA_LOG_DEBUG) == SIAARA_OK);
+    REQUIRE(siaara_set_log_include_phi(0) == SIAARA_OK);
+    bool logged = false;
+    for (const auto& l : logs.lines)
+        if (l.find("already exists") != std::string::npos) logged = true;
+    CHECK(logged);
+    // REPLACE overwrites it.
+    go.duplicate_policy = SIAARA_DUP_REPLACE;
+    r = result();
+    CHECK(siaara_dimse_get(&p, SIAARA_QR_STUDY_ROOT, id, &go, nullptr, nullptr, nullptr, &r) == SIAARA_OK);
+    const std::string replaced = file_text(existing);
+    CHECK(replaced.size() > 132 && replaced.compare(128, 4, "DICM") == 0);
+    srv.stop();
+    siaara_file_free(idf);
+}
+
+TEST_CASE("capi/net: R-074 store quota through siaara_store_options; SCP association ceiling and spool options") {
+    const auto dir = temp_dir("r074");
+    siaara_store_options so;
+    std::memset(&so, 0, sizeof so);
+    so.struct_size = sizeof so;
+    so.create = 1;
+    so.max_total_bytes = 1;
+    siaara_store* store = nullptr;
+    const std::string root = (dir / "store").string();
+    REQUIRE(siaara_store_open(root.c_str(), root.size(), &so, &store) == SIAARA_OK);
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(write_part10(make_ct(40), bytes).is_ok());
+    CHECK(siaara_store_add_memory(store, bytes.data(), bytes.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_ERR_LIMIT_EXCEEDED);
+    // An older, smaller struct_size is still accepted (the new fields keep their defaults).
+    so.struct_size = static_cast<uint32_t>(offsetof(siaara_store_options, max_total_bytes));
+    siaara_store* old = nullptr;
+    const std::string root2 = (dir / "store2").string();
+    REQUIRE(siaara_store_open(root2.c_str(), root2.size(), &so, &old) == SIAARA_OK);
+    CHECK(siaara_store_add_memory(old, bytes.data(), bytes.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_OK);
+    siaara_store_free(old);
+
+    siaara_scp_options o;
+    std::memset(&o, 0, sizeof o);
+    o.struct_size = sizeof o;
+    o.ae_title = "CAPI_SCP";
+    o.bind_address = "127.0.0.1";
+    o.allow_any_calling_ae = 1;
+    o.max_associations = 100;
+    siaara_scp* scp = nullptr;
+    CHECK(siaara_scp_start(&o, store, nullptr, nullptr, &scp) == SIAARA_ERR_INVALID_ARGUMENT);
+    o.max_associations = 4;
+    const std::string spool = (dir / "spool").string();
+    std::filesystem::create_directories(spool);
+    o.spool_directory = spool.c_str();
+    o.spool_threshold = 4096;
+    REQUIRE(siaara_scp_start(&o, store, nullptr, nullptr, &scp) == SIAARA_OK);
+    siaara_scp_free(scp);
+    siaara_store_free(store);
+}
+
+namespace {
+struct Gate {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open = false;
+    int events = 0;
+    siaara_scp* scp = nullptr;
+    siaara_status stop_from_cb = SIAARA_OK;
+};
+void SIAARA_CALL gated_cb(void* user, const siaara_scp_event* e) {
+    auto* g = static_cast<Gate*>(user);
+    std::unique_lock<std::mutex> l(g->mu);
+    ++g->events;
+    if (e->kind == SIAARA_SCP_STORED && g->events == 1) {
+        g->stop_from_cb = siaara_scp_stop(g->scp);  // must be refused, not deadlock
+        g->cv.wait_for(l, std::chrono::seconds(20), [&] { return g->open; });
+    }
+}
+}  // namespace
+
+TEST_CASE("capi/net: R-070 a slow SCP callback does not stall other associations") {
+    const auto dir = temp_dir("r070");
+    StoreOpen st(dir / "store");
+    REQUIRE(st.store);
+    Gate gate;
+    siaara_scp_options o;
+    std::memset(&o, 0, sizeof o);
+    o.struct_size = sizeof o;
+    o.ae_title = "CAPI_SCP";
+    o.bind_address = "127.0.0.1";
+    o.allow_any_calling_ae = 1;
+    o.idle_timeout_ms = 10000;
+    siaara_scp* scp = nullptr;
+    REQUIRE(siaara_scp_start(&o, st.store, gated_cb, &gate, &scp) == SIAARA_OK);
+    {
+        std::lock_guard<std::mutex> l(gate.mu);
+        gate.scp = scp;
+    }
+    uint32_t port = 0;
+    REQUIRE(siaara_scp_port(scp, &port) == SIAARA_OK);
+    siaara_dimse_peer p = peer(port);
+    p.dimse_timeout_ms = 3000;
+    auto store_one = [&](int i) {
+        siaara_file* f = to_capi(make_ct(50 + i));
+        siaara_dimse_result r = result();
+        const siaara_status s = f ? siaara_dimse_store(&p, f, nullptr, &r) : SIAARA_ERR_INTERNAL;
+        siaara_file_free(f);
+        return s;
+    };
+    // The first event blocks in the callback; both stores still complete.
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(store_one(0) == SIAARA_OK);
+    CHECK(store_one(1) == SIAARA_OK);
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+    {
+        std::lock_guard<std::mutex> l(gate.mu);
+        gate.open = true;
+    }
+    gate.cv.notify_all();
+    siaara_scp_free(scp);  // delivers the queued event, then returns
+    std::lock_guard<std::mutex> l(gate.mu);
+    CHECK_EQ(gate.events, 2);
+    CHECK(gate.stop_from_cb == SIAARA_ERR_INVALID_ARGUMENT);
 }

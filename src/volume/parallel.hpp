@@ -12,12 +12,17 @@
 
 namespace siaara::volume::detail {
 
-// Threads to use for a request: 0 = hardware concurrency (at most 16).
+// Most workers any request gets (R-060): per-worker buffers (a 2 MB counter table for 16-bit
+// histograms, a frame per worker when building) are sized by this, not by the caller's value.
+constexpr unsigned kMaxThreads = 64;
+
+// Threads to use for a request: 0 = hardware concurrency (at most 16); otherwise the request
+// clamped to min(kMaxThreads, 2 x hardware concurrency) (R-060).
 inline unsigned resolve_threads(unsigned requested) noexcept {
-    if (requested != 0) return requested;
-    unsigned t = std::thread::hardware_concurrency();
-    if (t == 0) t = 1;
-    return std::min(t, 16u);
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 1;
+    if (requested == 0) return std::min(hw, 16u);
+    return std::min({requested, kMaxThreads, std::max(2u * hw, 2u)});
 }
 
 // Runs fn(i, worker) for i in [0, count). Returns the number of workers that ran (>= 1).

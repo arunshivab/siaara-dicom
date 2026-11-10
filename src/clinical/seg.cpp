@@ -15,6 +15,24 @@ namespace {
 constexpr Tag kNumberOfFrames = 0x00280008, kRows = 0x00280010, kColumns = 0x00280011;
 constexpr Tag kPerFrame = 0x52009230;
 
+// Frames the Pixel Data element can hold: native data by its size, encapsulated data by its
+// fragment count (every frame has at least one fragment after the Basic Offset Table). Empty when
+// the data set carries no Pixel Data (read without pixels) or the frame size is unknown.
+std::optional<std::uint64_t> frames_in_pixel_data(const Dataset& ds, std::uint32_t rows, std::uint32_t columns) {
+    const Element* px = ds.find(::siaara::tags::PixelData);
+    if (!px) return std::nullopt;
+    if (px->is_encapsulated()) return px->fragments.empty() ? 0u : static_cast<std::uint64_t>(px->fragments.size() - 1);
+    const std::uint64_t bits = static_cast<std::uint64_t>(std::clamp<std::int64_t>(ds.get_int(::siaara::tags::BitsAllocated).value_or(0), 0, 64));
+    const std::uint64_t spp = static_cast<std::uint64_t>(std::clamp<std::int64_t>(ds.get_int(::siaara::tags::SamplesPerPixel).value_or(1), 1, 4));
+    const std::uint64_t frame_bits = static_cast<std::uint64_t>(rows) * columns * bits * spp;  // < 2^46
+    if (frame_bits == 0) return std::nullopt;
+    const std::uint64_t have = static_cast<std::uint64_t>(px->value.size()) * 8u;
+    return (have + frame_bits - 1) / frame_bits;  // a short last frame still counts (decoding reports it)
+}
+
+// Memory the frame table of one segmentation may take (R-054); larger tables are LimitExceeded.
+constexpr std::uint64_t kSegFrameTableBudget = 512ull << 20;
+
 std::vector<SourceReference> source_refs(const Dataset& item, Tag seq) {
     std::vector<SourceReference> out;
     for (const Dataset& r : items_of(item, seq)) {
@@ -30,6 +48,10 @@ std::vector<SourceReference> source_refs(const Dataset& item, Tag seq) {
 }
 
 }  // namespace
+
+std::uint32_t Segmentation::frame_count(const Segment& s) const noexcept {
+    return type == SegmentationType::Labelmap ? number_of_frames : static_cast<std::uint32_t>(s.frames.size());
+}
 
 const Segment* Segmentation::segment(std::uint32_t number) const noexcept {
     for (const auto& s : segments)
@@ -94,9 +116,33 @@ Result<Segmentation> read_segmentation(const Dataset& ds, bool lenient) {
     seg.columns = static_cast<std::uint32_t>(std::clamp<std::int64_t>(ds.get_int(kColumns).value_or(0), 0, 65535));
     const auto nf = ds.get_int(kNumberOfFrames).value_or(1);
     if (nf < 1 || nf > (1 << 24)) return Status(Errc::Malformed, "Number of Frames out of range");
-    seg.number_of_frames = static_cast<std::uint32_t>(nf);
+    seg.declared_number_of_frames = static_cast<std::uint32_t>(nf);
+    // Number of Frames is only a claim (R-054): read no more frames than there are per-frame
+    // functional group items and than the pixel data can hold.
+    std::uint64_t n_frames = static_cast<std::uint64_t>(nf);
+    const bool enhanced = ds.contains(kPerFrame);
+    const ItemList& per_frame = items_of(ds, kPerFrame);
+    if (enhanced && per_frame.size() < n_frames) {
+        if (!lenient) return Status(Errc::Malformed, "Number of Frames exceeds the Per-Frame Functional Groups items");
+        seg.warnings.push_back("Number of Frames " + std::to_string(nf) + " exceeds the " + std::to_string(per_frame.size()) +
+                               " Per-Frame Functional Groups items; frames limited to the items");
+        n_frames = per_frame.size();
+    }
+    if (const auto px = frames_in_pixel_data(ds, seg.rows, seg.columns); px && *px < n_frames) {
+        if (!lenient) return Status(Errc::Malformed, "Number of Frames exceeds what the Pixel Data holds");
+        seg.warnings.push_back("Number of Frames " + std::to_string(nf) + " exceeds the " + std::to_string(*px) +
+                               " frames the Pixel Data holds; frames limited to the Pixel Data");
+        n_frames = *px;
+    }
+    std::uint64_t table_bytes = 0;
+    if (!checked_mul(n_frames, sizeof(SegFrame), table_bytes) || table_bytes > kSegFrameTableBudget)
+        return Status(Errc::LimitExceeded, "SEG frame table exceeds the memory budget");
+    seg.number_of_frames = static_cast<std::uint32_t>(n_frames);
     seg.frame_of_reference_uid = get_text(ds, tags::FrameOfReferenceUid).value_or("");
     const charset::CharacterSet cs = charset::character_set_of(ds);
+    // Segment Number (1..65535) -> index into seg.segments + 1 (0 = undefined): constant-time
+    // lookups for duplicates and for every frame (R-054).
+    std::vector<std::uint32_t> index_of(65536, 0);
     for (const Dataset& it : items_of(ds, tags::SegmentSequence)) {
         Segment s;
         const auto num = it.get_int(tags::SegmentNumber);
@@ -116,23 +162,24 @@ Result<Segmentation> read_segmentation(const Dataset& ds, bool lenient) {
         s.type = read_code(it, tags::SegmentedPropertyTypeCodeSequence);
         if (auto lab = get_numbers_n(it, tags::RecommendedDisplayCielabValue, 3)) {
             std::array<std::uint16_t, 3> l{};
-            for (std::size_t k = 0; k < 3; ++k) l[k] = static_cast<std::uint16_t>(std::clamp((*lab)[k], 0.0, 65535.0));
+            const std::vector<double>& vals = *lab;
+            for (std::size_t k = 0; k < 3; ++k) l[k] = static_cast<std::uint16_t>(std::clamp(vals[k], 0.0, 65535.0));
             s.cielab = l;
             s.rgb = cielab_to_rgb8(l[0], l[1], l[2]);
         }
-        if (seg.segment(s.number)) {
+        if (index_of[s.number] != 0) {
             if (!lenient) return Status(Errc::Malformed, "duplicate Segment Number");
-            seg.warnings.push_back("duplicate Segment Number ignored");
+            if (seg.warnings.size() < 100) seg.warnings.push_back("duplicate Segment Number ignored");
             continue;
         }
         seg.segments.push_back(std::move(s));
+        index_of[seg.segments.back().number] = static_cast<std::uint32_t>(seg.segments.size());
     }
     // Common instance reference: Referenced Series Sequence > Referenced Instance Sequence (0008,114A).
     for (const Dataset& s : items_of(ds, tags::ReferencedSeriesSequence)) {
         auto r = source_refs(s, 0x0008114A);
         seg.referenced_images.insert(seg.referenced_images.end(), r.begin(), r.end());
     }
-    const bool enhanced = ds.contains(kPerFrame);
     seg.frames.resize(seg.number_of_frames);
     for (std::uint32_t f = 0; f < seg.number_of_frames; ++f) {
         SegFrame& fr = seg.frames[f];
@@ -144,25 +191,21 @@ Result<Segmentation> read_segmentation(const Dataset& ds, bool lenient) {
                 if (seg.warnings.size() < 100) seg.warnings.push_back("frame without Referenced Segment Number");
             } else {
                 fr.segment = static_cast<std::uint32_t>(*n);
-                auto it = std::find_if(seg.segments.begin(), seg.segments.end(),
-                                       [&](const Segment& x) { return x.number == fr.segment; });
-                if (it != seg.segments.end()) it->frames.push_back(f);
+                if (const std::uint32_t k = index_of[fr.segment]; k != 0) seg.segments[k - 1].frames.push_back(f);
                 else if (seg.warnings.size() < 100) seg.warnings.push_back("frame references an undefined segment");
             }
         }
         if (enhanced) {
-            const auto& per = items_of(ds, kPerFrame);
-            if (f < per.size())
-                for (const Dataset& d : items_of(per[f], tags::DerivationImageSequence)) {
+            if (f < per_frame.size())
+                for (const Dataset& d : items_of(per_frame[f], tags::DerivationImageSequence)) {
                     auto r = source_refs(d, tags::SourceImageSequence);
                     fr.sources.insert(fr.sources.end(), r.begin(), r.end());
                 }
         }
         if (auto g = frame_geometry(ds, f)) fr.geometry = std::move(g).value();
     }
-    if (seg.type == SegmentationType::Labelmap)
-        for (auto& s : seg.segments)
-            for (std::uint32_t f = 0; f < seg.number_of_frames; ++f) s.frames.push_back(f);
+    // LABELMAP: every frame carries every segment, so no per-segment frame lists are built
+    // (frames x segments entries, R-054); Segmentation::frame_count gives the count.
     return seg;
 }
 

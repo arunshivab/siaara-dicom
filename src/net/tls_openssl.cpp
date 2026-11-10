@@ -21,6 +21,7 @@
 #include <mutex>
 
 #include "core/io.hpp"
+#include "core/system_library.hpp"
 #include "net/tls_internal.hpp"
 
 namespace siaara::net::detail {
@@ -175,60 +176,10 @@ bool resolve(void* lib, const char* name, F& fn, std::string& missing) {
 
 #define SIAARA_SSL_SYM(lib, name) ok = resolve(lib, #name, a.name, missing) && ok
 
-// The system library folders searched for OpenSSL, most specific first. Only these absolute
-// paths are ever passed to dlopen: LD_LIBRARY_PATH, the executable's RUNPATH/RPATH and the
-// current directory play no part, so a planted libcrypto.so.3 cannot run its constructors in
-// this process (dlopen runs them before any check after it could). A folder holding a library of
-// the wrong ELF class (32/64-bit) fails dlopen without running anything; the next one is tried.
-#if defined(__x86_64__) && defined(__ILP32__)
-#define SIAARA_LIB_TRIPLET "x86_64-linux-gnux32"
-#elif defined(__x86_64__)
-#define SIAARA_LIB_TRIPLET "x86_64-linux-gnu"
-#elif defined(__i386__)
-#define SIAARA_LIB_TRIPLET "i386-linux-gnu"
-#elif defined(__aarch64__)
-#define SIAARA_LIB_TRIPLET "aarch64-linux-gnu"
-#elif defined(__arm__) && defined(__ARM_PCS_VFP)
-#define SIAARA_LIB_TRIPLET "arm-linux-gnueabihf"
-#elif defined(__arm__)
-#define SIAARA_LIB_TRIPLET "arm-linux-gnueabi"
-#elif defined(__riscv) && __riscv_xlen == 64
-#define SIAARA_LIB_TRIPLET "riscv64-linux-gnu"
-#elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
-#define SIAARA_LIB_TRIPLET "powerpc64le-linux-gnu"
-#elif defined(__s390x__)
-#define SIAARA_LIB_TRIPLET "s390x-linux-gnu"
-#elif defined(__loongarch64)
-#define SIAARA_LIB_TRIPLET "loongarch64-linux-gnu"
-#endif
-
-const char* const kLibDirs[] = {
-#if defined(SIAARA_LIB_TRIPLET)
-    "/usr/lib/" SIAARA_LIB_TRIPLET "/",
-    "/lib/" SIAARA_LIB_TRIPLET "/",
-#endif
-#if UINTPTR_MAX > 0xFFFFFFFFu
-    "/usr/lib64/",
-    "/lib64/",
-#else
-    "/usr/lib32/",
-#endif
-    "/usr/lib/",
-    "/lib/",
-    "/usr/local/lib64/",
-    "/usr/local/lib/",
-};
-
-// dlopen of `soname` from the first system folder that has a loadable copy, or null.
+// The system library folders and the checks before dlopen are shared with the Vulkan loader:
+// core/system_library.hpp (R-021, R-063).
 void* open_system_library(const char* soname, std::string& path) {
-    for (const char* dir : kLibDirs) {
-        const std::string p = std::string(dir) + soname;
-        if (void* h = ::dlopen(p.c_str(), RTLD_NOW | RTLD_LOCAL)) {
-            path = p;
-            return h;
-        }
-    }
-    return nullptr;
+    return siaara::sys::open_system_library(soname, path);
 }
 
 // The file a symbol of `lib` lives in, or empty.

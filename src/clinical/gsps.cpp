@@ -10,6 +10,7 @@
 #include "charset/charset.hpp"
 #include "clinical/common.hpp"
 #include "core/transfer_syntax.hpp"
+#include "image/raster.hpp"
 #include "image/samples.hpp"
 
 namespace siaara::clinical {
@@ -169,8 +170,14 @@ std::vector<SoftcopyVoi> read_voi(const Dataset& d, std::vector<std::string>& wa
     return out;
 }
 
+// Graphic Data caps (R-056): Number of Graphic Points is US, so one object has at most 65535
+// points; a presentation state holds at most kMaxGraphicPointsTotal points in all.
+constexpr std::size_t kMaxGraphicPoints = 65535;
+constexpr std::size_t kMaxGraphicPointsTotal = std::size_t{1} << 20;
+
 Status read_annotations(const Dataset& ds, PresentationState& ps, bool lenient) {
     std::size_t k = 0;
+    std::size_t total_points = 0;
     for (const Dataset& item : items_of(ds, tags::GraphicAnnotationSequence)) {
         ++k;
         GraphicAnnotation a;
@@ -210,9 +217,18 @@ Status read_annotations(const Dataset& ds, PresentationState& ps, bool lenient) 
             const AnnotationUnits pu = pu_opt.value_or(AnnotationUnits::Pixel);
             const GraphicType pt = pt_opt.value_or(GraphicType::Polyline);
             const auto dims = g.get_int(tags::GraphicDimensions).value_or(2);
-            auto data = get_numbers(g, tags::GraphicData, 1u << 24);
+            const Element* gd = g.find(tags::GraphicData);
+            if (gd && (gd->vr == VR::FL || gd->vr == VR::OF) && gd->value.size() / 4 > 2 * kMaxGraphicPoints) {
+                if (!lenient) return Status(Errc::LimitExceeded, "graphic object " + std::to_string(k) + " has more than 65535 points");
+                ps.warnings.push_back("graphic object with more than 65535 points skipped");
+                continue;
+            }
+            auto data = get_numbers(g, tags::GraphicData, 2 * kMaxGraphicPoints);
             const auto npts = g.get_int(tags::NumberOfGraphicPoints);
             bool ok = have_units && have_type && dims == 2 && data && data->size() % 2 == 0;
+            if (data) total_points += data->size() / 2;
+            if (total_points > kMaxGraphicPointsTotal)
+                return Status(Errc::LimitExceeded, "presentation state has more than 2^20 graphic points");
             if (ok && npts && static_cast<std::size_t>(*npts) * 2 != data->size()) ok = false;
             if (ok) {
                 for (std::size_t i = 0; i + 1 < data->size(); i += 2) {
@@ -384,32 +400,54 @@ Point2 PsRendered::map(Point2 p) const noexcept {
 
 namespace {
 
+namespace raster = image::raster;
+
+// Annotation drawing on one canvas. Every segment is clipped to the canvas before it is stepped,
+// polygons are filled with an edge-table scan-line walk, and all work (points, steps, edge visits,
+// pixels) is charged to the render's budget: once it is spent nothing more is drawn and the render
+// fails with LimitExceeded (R-056).
 struct Canvas {
     std::uint8_t* px;
     std::int64_t w, h;
+    raster::WorkBudget* budget;
     void set(std::int64_t x, std::int64_t y, const std::array<std::uint8_t, 4>& c) const noexcept {
         if (x < 0 || y < 0 || x >= w || y >= h) return;
         std::uint8_t* p = px + 4 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x));
         p[0] = c[0], p[1] = c[1], p[2] = c[2], p[3] = c[3];
     }
     void line(Point2 a, Point2 b, const std::array<std::uint8_t, 4>& c) const noexcept {
+        // Pixel (x, y) covers [x, x+1) x [y, y+1); a one-pixel margin keeps the end pixels.
+        if (!raster::clip_segment(a.x, a.y, b.x, b.y, -1.0, static_cast<double>(w) + 1.0, -1.0,
+                                  static_cast<double>(h) + 1.0))
+            return;
         const double dx = b.x - a.x, dy = b.y - a.y;
-        const double steps = std::min(1e6, std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
-        const auto n = static_cast<std::int64_t>(steps);
+        const auto n = raster::clamp_to_i64(std::ceil(std::max(std::fabs(dx), std::fabs(dy))), 0.0, 1e9);
+        if (!budget->charge(static_cast<std::uint64_t>(n) + 1)) return;
         for (std::int64_t i = 0; i <= n; ++i) {
             const double t = n ? static_cast<double>(i) / static_cast<double>(n) : 0.0;
-            set(static_cast<std::int64_t>(std::floor(a.x + t * dx)), static_cast<std::int64_t>(std::floor(a.y + t * dy)), c);
+            set(raster::clamp_to_i64(std::floor(a.x + t * dx), -1.0, 1e9),
+                raster::clamp_to_i64(std::floor(a.y + t * dy), -1.0, 1e9), c);
         }
     }
+    // Even-odd fill of pixels whose centres are inside (the rule roi_mask uses).
     void fill(const std::vector<Point2>& poly, const std::array<std::uint8_t, 4>& c) const {
-        if (w <= 0 || h <= 0 || w > 65536 || h > 65536) return;
-        auto m = roi_mask(static_cast<std::uint32_t>(h), static_cast<std::uint32_t>(w), Roi::polygon(poly));
-        if (!m) return;
-        for (std::size_t i = 0; i < m->size(); ++i)
-            if ((*m)[i] > 0.0f) {
-                std::uint8_t* p = px + 4 * i;
-                p[0] = c[0], p[1] = c[1], p[2] = c[2], p[3] = c[3];
+        if (w <= 0 || h <= 0 || poly.size() < 3) return;
+        for (const auto& q : poly)
+            if (!std::isfinite(q.x) || !std::isfinite(q.y)) return;
+        std::vector<raster::Edge> edges;
+        edges.reserve(poly.size());
+        for (std::size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++)
+            edges.push_back({poly[j].x, poly[j].y, poly[i].x, poly[i].y});
+        const double wd = static_cast<double>(w);
+        (void)raster::scan_polygon(std::move(edges), 0, h - 1, 0.5, *budget, [&](std::int64_t r, const std::vector<double>& xs) {
+            for (std::size_t k = 0; k + 1 < xs.size(); k += 2) {
+                const std::int64_t ca = std::max<std::int64_t>(0, raster::clamp_to_i64(std::ceil(xs[k] - 0.5), -1.0, wd));
+                const std::int64_t cb =
+                    std::min<std::int64_t>(w - 1, raster::clamp_to_i64(std::ceil(xs[k + 1] - 0.5), -1.0, wd + 1.0) - 1);
+                if (cb < ca || !budget->charge(static_cast<std::uint64_t>(cb - ca + 1))) continue;
+                for (std::int64_t x = ca; x <= cb; ++x) set(x, r, c);
             }
+        });
     }
 };
 
@@ -426,6 +464,7 @@ std::vector<Point2> ellipse_points(Point2 c, double a, double b, double ang, std
 // Draws one graphic object whose points are already in canvas coordinates.
 void draw_graphic(const Canvas& cv, GraphicType type, const std::vector<Point2>& p, bool filled,
                   const std::array<std::uint8_t, 4>& c) {
+    if (!cv.budget->charge(p.size() + 1)) return;
     auto closed = [&](const std::vector<Point2>& v) {
         for (std::size_t i = 0; i < v.size(); ++i) cv.line(v[i], v[(i + 1) % v.size()], c);
     };
@@ -561,7 +600,12 @@ Result<PsRendered> render_with_presentation_state(const image::Image& img, const
         if (Status s = image::render_2d(img, p, base); !s) return s;
     }
     const auto W = static_cast<std::int64_t>(pi.columns), H = static_cast<std::int64_t>(pi.rows);
-    const Canvas image_cv{base.data(), W, H};
+    // One work budget for all annotation drawing of this render (R-056).
+    // The default grows with the canvas so that a few full-canvas fills always fit.
+    raster::WorkBudget budget;
+    budget.remaining = opt.max_draw_work ? opt.max_draw_work
+                                         : std::max<std::uint64_t>(PsRenderOptions::kDefaultMaxDrawWork, 4 * n);
+    const Canvas image_cv{base.data(), W, H, &budget};
     // Shutters of the presentation state (the image's own are not applied).
     if (ps.shutters.any()) {
         std::vector<std::uint8_t> visible(static_cast<std::size_t>(n));
@@ -655,7 +699,7 @@ Result<PsRendered> render_with_presentation_state(const image::Image& img, const
             d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = s[3];
         }
     // Post-transformation annotations (DISPLAY units) and text placement.
-    const Canvas out_cv{out.rgba.data(), out.width, out.height};
+    const Canvas out_cv{out.rgba.data(), out.width, out.height, &budget};
     auto to_out = [&](AnnotationUnits u, Point2 p) {
         if (u == AnnotationUnits::Display) return Point2{p.x * ow, p.y * oh};
         return out.map(p);
@@ -685,6 +729,7 @@ Result<PsRendered> render_with_presentation_state(const image::Image& img, const
             out.texts.push_back(std::move(pt));
         }
     }
+    if (budget.exceeded) return Status(Errc::LimitExceeded, "graphic annotations exceed the drawing work budget");
     return out;
 }
 

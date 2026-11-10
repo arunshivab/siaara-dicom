@@ -63,3 +63,17 @@ FORTIFY_SOURCE, full RELRO, CFG/CET where the platform has them; checked on the 
 the C/C++ runtime statically and otherwise only OS libraries (checked), export only the C API
 (checked against a baseline), and come with SHA-256 checksums, an SPDX SBOM and GitHub build
 provenance attestations.
+
+## Optional OS libraries loaded at run time
+
+On Linux the system OpenSSL 3 (TLS) and, on Linux and macOS, the Vulkan loader (GPU rendering)
+are opened with `dlopen` only by absolute path from a fixed list of system library folders
+(`src/core/system_library.hpp`): `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, RUNPATH/RPATH and the
+current directory are never searched. Before opening, the file (after resolving symlinks) and its
+folder must be owned by root or by the effective user and must not be writable by group or
+others; a library that fails a later check is closed again. Windows loads both from System32 only.
+
+The Vulkan loader then chooses GPU drivers and layers from its own environment variables
+(`VK_ICD_FILENAMES` / `VK_DRIVER_FILES`, `VK_LAYER_PATH`, `VK_ADD_LAYER_PATH`,
+`VK_INSTANCE_LAYERS`). Whoever controls the process environment therefore chooses the driver code
+that runs in the process: services that use GPU rendering should start with a clean environment.

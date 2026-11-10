@@ -118,6 +118,8 @@ internal static class StructLayouts
             r.Add("F siaara_store_options durable " + Offset(ref s, ref s.durable).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options rebuild_if_corrupt " + Offset(ref s, ref s.rebuild_if_corrupt).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options compact_min_records " + Offset(ref s, ref s.compact_min_records).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options max_total_bytes " + Offset(ref s, ref s.max_total_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options min_free_disk_bytes " + Offset(ref s, ref s.min_free_disk_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_store_filter);
@@ -666,6 +668,7 @@ internal static class StructLayouts
             r.Add("F siaara_get_options sop_classes " + Offset(ref s, ref s.sop_classes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_get_options sop_class_count " + Offset(ref s, ref s.sop_class_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_get_options native_only " + Offset(ref s, ref s.native_only).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_get_options strict_store_uids " + Offset(ref s, ref s.strict_store_uids).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_options);
@@ -686,6 +689,12 @@ internal static class StructLayouts
             r.Add("F siaara_scp_options max_pdu " + Offset(ref s, ref s.max_pdu).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options allow_any_calling_ae " + Offset(ref s, ref s.allow_any_calling_ae).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_options tls " + Offset(ref s, ref s.tls).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options strict_store_uids " + Offset(ref s, ref s.strict_store_uids).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options spool_directory " + Offset(ref s, ref s.spool_directory).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options spool_threshold " + Offset(ref s, ref s.spool_threshold).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options spool_max_total_bytes " + Offset(ref s, ref s.spool_max_total_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_options spool_min_free_disk_bytes " + Offset(ref s, ref s.spool_min_free_disk_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_event);
@@ -698,6 +707,9 @@ internal static class StructLayouts
             r.Add("F siaara_scp_event sop_class_uid " + Offset(ref s, ref s.sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_event sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_scp_event peer_address " + Offset(ref s, ref s.peer_address).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event uid_mismatch " + Offset(ref s, ref s.uid_mismatch).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event command_sop_class_uid " + Offset(ref s, ref s.command_sop_class_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_scp_event command_sop_instance_uid " + Offset(ref s, ref s.command_sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_scp_stats);

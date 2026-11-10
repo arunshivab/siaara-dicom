@@ -340,7 +340,7 @@ bool encoding_is_lossy(std::string_view ts_uid, const TranscodeParams& p) noexce
 }
 
 Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts, std::string_view target_ts,
-                                  const TranscodeParams& p, TranscodeReport* report) {
+                                  const TranscodeParams& p, TranscodeReport* report) try {
     TranscodeReport local;
     TranscodeReport& rep = report ? *report : local;
     rep = TranscodeReport{};
@@ -602,9 +602,11 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
         (void)out.set_string(image::tags::LossyImageCompression, VR::CS, "01");  // never reset once lossy
     }
     return out;
+} catch (...) {
+    return Status::out_of_memory("transcode: out of memory");  // R-027: never thrown
 }
 
-Status transcode_file(DicomFile& file, std::string_view target_ts, const TranscodeParams& p, TranscodeReport* report) {
+Status transcode_file(DicomFile& file, std::string_view target_ts, const TranscodeParams& p, TranscodeReport* report) try {
     TranscodeReport local;
     if (!report) report = &local;
     Result<Dataset> r = transcode_dataset(file.dataset, file.transfer_syntax, target_ts, p, report);
@@ -616,6 +618,8 @@ Status transcode_file(DicomFile& file, std::string_view target_ts, const Transco
         if (Status s = file.meta.set_string(tags::MediaStorageSOPInstanceUID, VR::UI, report->new_sop_instance_uid); !s)
             return s;
     return Status::ok();
+} catch (...) {
+    return Status::out_of_memory("transcode: out of memory");  // R-027: never thrown
 }
 
 }  // namespace siaara::codec
