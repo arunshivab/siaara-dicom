@@ -50,6 +50,10 @@ struct StoreRequest {
     std::uint32_t read_loss = 0;
     std::uint64_t read_loss_offset = 0;
     std::string read_warning;  // the first read warning (a fixed code and offsets; no patient data)
+    // SCP side, read_loss != 0 and the instance accepted as received: the status the sender is
+    // answered with when the handler returns Success (the "kept" answer: a warning, a failure
+    // status or Success, as configured). 0 otherwise. For events and logs of the handler.
+    std::uint16_t kept_answer = 0;
 };
 
 // What Scu::store sent (R-093): a lossy transcode on the way gives the instance a new SOP

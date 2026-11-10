@@ -551,6 +551,7 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                     log("kept received transfer syntax: " + cs.message);
                 else if (!history_note.empty()) log("C-STORE conversion: " + history_note);
             }
+            if (rq.read_loss != 0) rq.kept_answer = kept_answer();
             st = h_.on_store(rq);
             // Accepted although incomplete: stored verbatim and flagged; the sender is told.
             if (rq.read_loss != 0 && st == dimse_status::Success) {

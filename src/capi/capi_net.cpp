@@ -689,7 +689,9 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
                     capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid +
                                                             " stored under its data set's UIDs; the C-STORE command said " +
                                                             rq.command_sop_class_uid + " / " + rq.command_sop_instance_uid);
-                raw->event(SIAARA_SCP_STORED, s, outcome, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, rq.peer_address,
+                // The status the sender is actually answered with (an accepted incomplete
+                // instance is answered with the "kept" status, not 0x0000).
+                raw->event(SIAARA_SCP_STORED, rq.read_loss != 0 ? rq.kept_answer : s, outcome, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid, rq.peer_address,
                            &rq);
             } else {
                 raw->failures.fetch_add(1, std::memory_order_relaxed);

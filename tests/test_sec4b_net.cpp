@@ -706,8 +706,13 @@ TEST_CASE("net2: sec4 R-116 a truncated C-STORE data set is refused by default, 
         CHECK_EQ(raw_store(port, "INC_SCP", kMR, "2.25.47001", dataset_bytes(whole)), 0x0000);
         REQUIRE(ev.wait_for(SIAARA_SCP_STORED, 2));
         for (const auto& e : ev.of(SIAARA_SCP_STORED)) {
-            if (e.inst == "2.25.47002") CHECK((e.read_loss & SIAARA_READ_INPUT_TRUNCATED) != 0);
-            else CHECK_EQ(e.read_loss, 0u);
+            if (e.inst == "2.25.47002") {
+                CHECK((e.read_loss & SIAARA_READ_INPUT_TRUNCATED) != 0);
+                CHECK_EQ(e.status, 0xB007u);  // P3-2: the status the sender was answered with, not 0x0000
+            } else {
+                CHECK_EQ(e.read_loss, 0u);
+                CHECK_EQ(e.status, 0x0000u);
+            }
         }
         siaara_scp_free(scp);
         // The incomplete one kept its transfer syntax and its bytes; the complete one was converted.
