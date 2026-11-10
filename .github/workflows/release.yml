@@ -63,7 +63,7 @@ jobs:
       - name: Configure
         run: cmake -S . -B build ${{ matrix.cmake }} -DSIAARA_REPRODUCIBLE=ON -DSIAARA_STATIC_RUNTIME=ON -DSIAARA_HARDENING=ON
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Test the x86_64 slice under Rosetta (universal macOS build)

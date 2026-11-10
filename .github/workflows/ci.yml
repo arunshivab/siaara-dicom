@@ -46,7 +46,7 @@ jobs:
           fi
           cmake -S . -B build ${{ matrix.cmake }} $launcher
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure --timeout 1500
       - name: TLS tests with the 32-bit system OpenSSL (loaded at run time)
@@ -68,7 +68,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pydicom
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel 4
       - run: python tests/crosscheck/pydicom_crosscheck.py build/tools/siaara-dump
 
   standard-tables:
@@ -106,7 +106,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Install oracles (DCMTK built with OpenSSL; openssl and curl command line tools)
         run: sudo apt-get update && sudo apt-get install -y dcmtk openssl curl
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel 4
       - name: OpenSSL is not linked at build time (loaded with dlopen when TLS is first used)
         run: |
           if readelf -d build/libsiaara.so | grep -E 'NEEDED.*(libssl|libcrypto)'; then exit 1; fi
@@ -131,7 +131,7 @@ jobs:
       - name: libFuzzer was found
         run: grep -q '^SIAARA_LIBFUZZER:INTERNAL=1' build-fuzz/CMakeCache.txt
       - name: Build
-        run: cmake --build build-fuzz --parallel
+        run: cmake --build build-fuzz --parallel 4
       - name: Fuzz every target for 60 s
         run: python3 fuzz/run_fuzzers.py --bin build-fuzz/fuzz --seconds 60 --jobs 4 --hang-seconds 10 --rss-mb 2048 --work fuzz-work
       - name: Upload findings
@@ -163,7 +163,7 @@ jobs:
           grep -q '^SIAARA_LIBFUZZER:INTERNAL=1' build-fuzz/CMakeCache.txt
           if grep -q -- '-DNDEBUG' build-fuzz/compile_commands.json; then echo "NDEBUG is defined"; exit 1; fi
       - name: Build
-        run: cmake --build build-fuzz --parallel
+        run: cmake --build build-fuzz --parallel 4
       - name: Fuzz every target for 30 s
         run: python3 fuzz/run_fuzzers.py --bin build-fuzz/fuzz --seconds 30 --jobs 4 --hang-seconds 10 --rss-mb 2048 --work fuzz-work
       - name: Upload findings
@@ -192,7 +192,7 @@ jobs:
           cmake -S . -B build-tsan -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSIAARA_TSAN=ON -DSIAARA_BUILD_TOOLS=OFF
       - name: Build
-        run: cmake --build build-tsan --parallel --target siaara_tests
+        run: cmake --build build-tsan --parallel 4 --target siaara_tests
       - name: Threaded tests under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1 history_size=4
@@ -228,7 +228,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $db.DirectoryName
       # Same configuration as the release workflow: static C/C++ runtime, hardening on.
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIAARA_BUILD_TESTS=OFF -DSIAARA_STATIC_RUNTIME=ON
-      - run: cmake --build build --config Release --parallel
+      - run: cmake --build build --config Release --parallel 4
       - name: Check runtime dependencies (release profile - no C/C++ runtime DLLs/shared objects)
         shell: bash
         run: python3 tools/ci/check_binaries.py deps --profile release ${{ matrix.lib }} ${{ matrix.tools }}
@@ -257,7 +257,7 @@ jobs:
           $db = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
           Add-Content -Path $env:GITHUB_PATH -Value $db.DirectoryName
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIAARA_BUILD_TESTS=OFF -DSIAARA_BUILD_TOOLS=OFF
-      - run: cmake --build build --config Release --parallel --target siaara
+      - run: cmake --build build --config Release --parallel 4 --target siaara
       - name: Compare with the baseline
         shell: bash
         run: python3 tools/ci/check_binaries.py symbols --header include/siaara/siaara.h ${{ matrix.lib }}
@@ -283,7 +283,7 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSIAARA_SANITIZE=ON
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel 4
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
@@ -303,7 +303,7 @@ jobs:
           $db = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter clang_rt.asan_dynamic-x86_64.dll | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
           Add-Content -Path $env:GITHUB_PATH -Value $db.DirectoryName
       - run: cmake -S . -B build -A x64 -DSIAARA_SANITIZE=ON
-      - run: cmake --build build --config RelWithDebInfo --parallel
+      - run: cmake --build build --config RelWithDebInfo --parallel 4
       - run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
 
   clang-tidy:
@@ -339,7 +339,7 @@ jobs:
       - name: Build the native library and the struct-layout printer (Release)
         run: |
           cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-rel --config Release --parallel --target siaara siaara_csharp_struct_layout
+          cmake --build build-rel --config Release --parallel 4 --target siaara siaara_csharp_struct_layout
       - name: Generated interop is up to date
         shell: bash
         run: |
@@ -379,7 +379,7 @@ jobs:
       - name: Build the native library (Release)
         run: |
           cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-rel --config Release --parallel --target siaara
+          cmake --build build-rel --config Release --parallel 4 --target siaara
       - name: Vendored pack matches its checksum
         shell: bash
         run: |
