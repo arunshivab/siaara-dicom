@@ -8,8 +8,10 @@
 //  - text against the Specific Character Set (PS3.3 C.12.1.1.2, PS3.5 6.1);
 //  - File Meta Information content (PS3.10 7.1) and its agreement with the data set;
 //  - the IOD's modules and attributes (PS3.3, generated tables in repair/iod.hpp): Type 1, 1C, 2,
-//    2C requirements (conditions of a few simple shapes are evaluated; the others are counted and
-//    reported once per module as "condition not evaluated") and Enumerated Values;
+//    2C requirements (the machine-checkable conditions are evaluated - docs/VALIDATION.md lists
+//    them; the others are counted and reported once per module as "condition not evaluated", an
+//    Info), 1C/2C attributes present although their condition does not hold
+//    ("present-condition-unmet", PS3.5 7.4.4 / 7.4.6) and Enumerated Values;
 //  - header-to-pixel consistency (repair/pixels.hpp).
 // Messages never contain values from the data set.
 #pragma once

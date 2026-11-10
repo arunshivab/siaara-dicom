@@ -273,6 +273,14 @@ struct IodChecker {
     std::string module_name;
     std::size_t not_evaluated = 0;
     const std::map<Tag, AttrType>* overrides = nullptr;  // top-level Type overrides from other modules
+    // Top-level attributes present although a 1C/2C condition of theirs does not hold (and the
+    // module does not allow them otherwise), and those another row allows (any present module of
+    // the IOD lists them unconditionally, its condition holds or cannot be evaluated).
+    struct Unmet {
+        std::map<Tag, std::string> unmet;  // tag -> module name
+        std::set<Tag> allowed;
+    };
+    Unmet* unmet = nullptr;
 
     const Element* find(const Dataset& ds, const ReqNode& n) const {
         if (n.mask == 0xFFFFFFFFu) return ds.find(n.tag);
@@ -281,16 +289,47 @@ struct IodChecker {
         return nullptr;
     }
 
-    // Values of the condition's attribute: looked up in the item first, then the top level.
-    const Element* cond_element(const Dataset& ds, const Condition& c) const {
-        auto look = [&](const Dataset& d) -> const Element* {
-            if (c.mask == 0xFFFFFFFFu) return d.find(c.tag);
-            for (const Element& e : d.elements())
-                if ((e.tag & c.mask) == c.tag) return &e;
-            return nullptr;
-        };
-        if (const Element* e = look(ds)) return e;
-        return &ds == &top ? nullptr : look(top);
+    // The data sets enclosing the one being checked (outermost first; empty at the top level).
+    std::vector<const Dataset*> ancestors;
+    // Functional group items enclosing it (Shared / Per-Frame Functional Groups Sequence items).
+    std::vector<const Dataset*> fg_items;
+
+    static const Element* look(const Dataset& d, const CondTerm& c) {
+        if (c.mask == 0xFFFFFFFFu) return d.find(c.tag);
+        for (const Element& e : d.elements())
+            if ((e.tag & c.mask) == c.tag) return &e;
+        return nullptr;
+    }
+    // Anywhere below `d` (functional group macros sit one sequence item down).
+    static const Element* look_deep(const Dataset& d, const CondTerm& c, int depth) {
+        if (const Element* e = look(d, c)) return e;
+        if (depth <= 0) return nullptr;
+        for (const Element& e : d.elements())
+            if (e.is_sequence())
+                for (const Dataset& item : e.items)
+                    if (const Element* x = look_deep(item, c, depth - 1)) return x;
+        return nullptr;
+    }
+
+    // The condition's attribute: in the item being checked, then the enclosing items outwards,
+    // then the top level; inside functional groups also anywhere in the frame's functional group
+    // item and in the shared functional group items. "at the image level": the top level only.
+    // `scope_complete` is false when the lookup could not see every place the attribute may be.
+    const Element* cond_element(const Dataset& ds, const CondTerm& c) const {
+        if (c.scope == 1) return look(top, c);
+        if (c.scope == 2) return look_deep(top, c, 8);
+        if (const Element* e = look(ds, c)) return e;
+        for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
+            if (const Element* e = look(**it, c)) return e;
+        if (&ds != &top)
+            if (const Element* e = look(top, c)) return e;
+        for (const Dataset* f : fg_items)
+            if (const Element* e = look_deep(*f, c, 2)) return e;
+        if (!fg_items.empty())
+            if (const Element* sh = top.find(Tag{0x52009229u}); sh && sh->is_sequence())
+                for (const Dataset& item : sh->items)
+                    if (const Element* e = look_deep(item, c, 2)) return e;
+        return nullptr;
     }
 
     static std::vector<std::string> values_of(const Element& e) {
@@ -312,6 +351,16 @@ struct IodChecker {
                 case VR::SS: v = static_cast<std::int16_t>(load_le16(e.value.data() + i)); break;
                 case VR::UL: v = load_le32(e.value.data() + i); break;
                 case VR::SL: v = static_cast<std::int32_t>(load_le32(e.value.data() + i)); break;
+                case VR::AT: {
+                    // Tags as 8 upper-case hex digits (group then element), for IncludesTag.
+                    const std::uint32_t t = (std::uint32_t{load_le16(e.value.data() + i)} << 16) |
+                                            load_le16(e.value.data() + i + 2);
+                    static constexpr char kHex[] = "0123456789ABCDEF";
+                    std::string h(8, '0');
+                    for (int k = 0; k < 8; ++k) h[static_cast<std::size_t>(k)] = kHex[(t >> (28 - 4 * k)) & 0xFu];
+                    out.push_back(std::move(h));
+                    continue;
+                }
                 default: return out;
             }
             out.push_back(std::to_string(v));
@@ -319,48 +368,110 @@ struct IodChecker {
         return out;
     }
 
-    // true / false, or nullopt when not evaluable.
-    std::optional<bool> evaluate(const Dataset& ds, const ReqNode& n) const {
-        if (!n.condition || n.condition->op == CondOp::None) return std::nullopt;
-        const Condition& c = *n.condition;
+    // A condition value for a binary attribute: decimal ("1") or hexadecimal ("0001H").
+    static std::optional<std::int64_t> term_number(std::string_view t) {
+        if (t.size() > 1 && t.size() <= 9 && t.back() == 'H') {
+            std::int64_t v = 0;
+            for (char ch : t.substr(0, t.size() - 1)) {
+                const int d = (ch >= '0' && ch <= '9') ? ch - '0' : (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
+                if (d < 0) return std::nullopt;
+                v = v * 16 + d;
+            }
+            return v;
+        }
+        return to_int(t);
+    }
+
+    // Whole decimal integer (optional sign, DS / IS padding already trimmed), or nullopt.
+    static std::optional<std::int64_t> to_int(std::string_view s) {
+        bool neg = false;
+        std::size_t k = 0;
+        if (!s.empty() && (s[0] == '-' || s[0] == '+')) {
+            neg = s[0] == '-';
+            k = 1;
+        }
+        if (k >= s.size() || s.size() - k > 18) return std::nullopt;
+        std::int64_t v = 0;
+        for (; k < s.size(); ++k) {
+            if (s[k] < '0' || s[k] > '9') return std::nullopt;
+            v = v * 10 + (s[k] - '0');
+        }
+        return neg ? -v : v;
+    }
+
+    // One term: true / false, or nullopt when not evaluable.
+    std::optional<bool> evaluate_term(const Dataset& ds, const CondTerm& c) const {
         const Element* e = cond_element(ds, c);
+        auto pick = [&](const std::vector<std::string>& vals) -> std::vector<std::string> {
+            if (c.value_index == 0) return vals;
+            if (vals.size() < c.value_index) return {};
+            return {vals[c.value_index - 1u]};
+        };
+        auto equals = [&](const Element& el) -> std::optional<bool> {
+            const auto vals = values_of(el);
+            if (vals.empty()) return el.is_sequence() || el.is_encapsulated() ? std::nullopt : std::optional<bool>(false);
+            const auto chosen = pick(vals);
+            if (chosen.empty()) return false;  // fewer values than the one the condition names
+            for (const auto& v : chosen)
+                for (std::string_view want : c.values) {
+                    if (v == want) return true;
+                    if (!vr_is_string(el.vr) && el.vr != VR::AT) {
+                        const auto a = to_int(v);
+                        const auto b = term_number(want);
+                        if (a && b && *a == *b) return true;
+                    }
+                }
+            return false;
+        };
         switch (c.op) {
             case CondOp::Present: return e != nullptr;
             case CondOp::Absent: return e == nullptr;
-            case CondOp::Equals:
+            case CondOp::HasValue: return e != nullptr && !element_empty(*e);
+            case CondOp::Equals: return e ? equals(*e) : std::optional<bool>(false);
+            case CondOp::AbsentOrEquals: return e ? equals(*e) : std::optional<bool>(true);
             case CondOp::NotEquals: {
                 if (!e) return false;
-                const auto vals = values_of(*e);
-                if (vals.empty()) return std::nullopt;
-                bool any = false;
-                for (const auto& v : vals)
-                    for (std::string_view want : c.values)
-                        if (v == want) any = true;
-                return c.op == CondOp::Equals ? any : !any;
+                const auto r = equals(*e);
+                if (!r) return std::nullopt;
+                if (values_of(*e).empty()) return false;  // present without a value: not "other than"
+                return !*r;
             }
             case CondOp::Greater: {
-                if (!e || c.values.empty()) return std::nullopt;
-                const auto vals = values_of(*e);
-                if (vals.empty()) return std::nullopt;
-                std::int64_t lim = 0;
-                for (char ch : c.values[0]) lim = lim * 10 + (ch - '0');
-                std::int64_t v = 0;
-                bool neg = false;
-                std::size_t k = 0;
-                const std::string& s = vals[0];
-                if (!s.empty() && (s[0] == '-' || s[0] == '+')) {
-                    neg = s[0] == '-';
-                    k = 1;
-                }
-                for (; k < s.size(); ++k) {
-                    if (s[k] < '0' || s[k] > '9') return std::nullopt;
-                    v = v * 10 + (s[k] - '0');
-                }
-                return (neg ? -v : v) > lim;
+                if (!e || c.values.empty()) return e ? std::nullopt : std::optional<bool>(false);
+                const auto lim = to_int(c.values[0]);
+                const auto vals = pick(values_of(*e));
+                if (!lim) return std::nullopt;
+                if (vals.empty()) return false;
+                const auto v = to_int(vals[0]);
+                if (!v) return std::nullopt;
+                return *v > *lim;
+            }
+            case CondOp::IncludesTag: {
+                if (!e || c.values.empty()) return false;
+                for (const auto& v : values_of(*e))
+                    if (v == c.values[0]) return true;
+                return false;
             }
             case CondOp::None: break;
         }
         return std::nullopt;
+    }
+
+    // The condition: AND / OR of its terms; nullopt when it cannot be decided.
+    std::optional<bool> evaluate(const Dataset& ds, const Condition* cond) const {
+        if (!cond || cond->terms.empty()) return std::nullopt;
+        bool unknown = false;
+        for (const CondTerm& t : cond->terms) {
+            const auto r = evaluate_term(ds, t);
+            if (!r) {
+                unknown = true;
+                continue;
+            }
+            if (cond->any && *r) return true;
+            if (!cond->any && !*r) return false;
+        }
+        if (unknown) return std::nullopt;
+        return !cond->any;
     }
 
     static bool enum_match(std::string_view value, VR vr, std::string_view term) {
@@ -403,26 +514,20 @@ struct IodChecker {
             bool guard_unknown = n.guard_unevaluated;
             bool guard_false = false;
             for (const Condition* g : n.guards) {
-                ReqNode probe;
-                probe.condition = g;
-                const auto r = evaluate(ds, probe);
+                const auto r = evaluate(ds, g);
                 if (!r.has_value()) guard_unknown = true;
                 else if (!*r) guard_false = true;
             }
             if (guard_false) continue;  // the macro does not apply here
             if (guard_unknown) {
+                if (e && path.empty() && unmet) unmet->allowed.insert(n.tag);
                 if (!e && (n.type == AttrType::T1 || n.type == AttrType::T2 || n.type == AttrType::T1C ||
                            n.type == AttrType::T2C))
                     ++not_evaluated;
                 if (e && (n.type == AttrType::T1 || n.type == AttrType::T1C) && element_empty(*e))
                     sink.add(Severity::Error, "empty-type1", 0, here,
                              "Type " + std::string(attr_type_name(n.type)) + " attribute has no value", module_name);
-                if (e && e->is_sequence() && !n.children.empty())
-                    for (std::size_t i = 0; i < e->items.size(); ++i) {
-                        Path ip = here;
-                        ip.back().item = static_cast<std::int32_t>(i);
-                        check_list(e->items[i], n.children, ip);
-                    }
+                if (e && e->is_sequence() && !n.children.empty()) descend(ds, *e, n, here);
                 continue;
             }
             switch (n.type) {
@@ -430,17 +535,23 @@ struct IodChecker {
                 case AttrType::T2: required = true; break;
                 case AttrType::T1C:
                 case AttrType::T2C: {
-                    const auto r = evaluate(ds, n);
+                    const auto r = evaluate(ds, n.condition);
                     if (r.has_value()) {
                         required = *r;
                         value_required = *r && n.type == AttrType::T1C;
                     } else if (!e) {
                         ++not_evaluated;
                     }
+                    if (e && path.empty() && unmet) {
+                        if (r.has_value() && !*r && n.absent_unless_required) unmet->unmet.emplace(n.tag, module_name);
+                        else unmet->allowed.insert(n.tag);
+                    }
                     if (e && n.type == AttrType::T1C) value_required = true;  // present 1C must have a value
                     break;
                 }
-                default: break;
+                default:
+                    if (e && path.empty() && unmet) unmet->allowed.insert(n.tag);
+                    break;
             }
             if (n.mask != 0xFFFFFFFFu && !e) continue;  // repeating groups: only when one is present
             if (!e) {
@@ -473,14 +584,22 @@ struct IodChecker {
                                  module_name);
                 }
             }
-            if (e->is_sequence() && !n.children.empty()) {
-                for (std::size_t i = 0; i < e->items.size(); ++i) {
-                    Path ip = here;
-                    ip.back().item = static_cast<std::int32_t>(i);
-                    check_list(e->items[i], n.children, ip);
-                }
-            }
+            if (e->is_sequence() && !n.children.empty()) descend(ds, *e, n, here);
         }
+    }
+
+    // Checks every item of sequence `seq` (an element of `parent`) against n.children.
+    void descend(const Dataset& parent, const Element& seq, const ReqNode& n, const Path& here) {
+        const bool fg = &parent == &top && (seq.tag == Tag{0x52009229u} || seq.tag == Tag{0x52009230u});
+        ancestors.push_back(&parent);
+        for (std::size_t i = 0; i < seq.items.size(); ++i) {
+            Path ip = here;
+            ip.back().item = static_cast<std::int32_t>(i);
+            if (fg) fg_items.push_back(&seq.items[i]);
+            check_list(seq.items[i], n.children, ip);
+            if (fg) fg_items.pop_back();
+        }
+        ancestors.pop_back();
     }
 };
 
@@ -523,10 +642,11 @@ void check_iod_into(const DicomFile& f, Sink& sink) {
             if (n.overrides) overrides[n.tag] = n.type;
         }
     }
+    IodChecker::Unmet unmet;
     for (const ModuleReq& m : iod->modules) {
         if (!m.attributes) continue;
         if (m.usage != ModuleUsage::M && !module_present(ds, m, mandatory_tags)) continue;
-        IodChecker c{sink, ds, std::string(m.name) + " Module", 0, &overrides};
+        IodChecker c{sink, ds, std::string(m.name) + " Module", 0, &overrides, &unmet, {}, {}};
         c.check_list(ds, *m.attributes, {});
         if (c.not_evaluated)
             sink.add(Severity::Info, "condition-not-evaluated", 0, {},
@@ -534,6 +654,13 @@ void check_iod_into(const DicomFile& f, Sink& sink) {
                          " absent Type 1C/2C attribute(s) whose condition was not evaluated automatically",
                      c.module_name);
     }
+    // PS3.5 7.4.4 / 7.4.6: a Type 1C / 2C attribute whose condition does not hold shall not be
+    // present, unless its description says it may be present otherwise.
+    for (const auto& [tag, module] : unmet.unmet)
+        if (!unmet.allowed.count(tag))
+            sink.add(Severity::Error, "present-condition-unmet", 0, child({}, tag),
+                     "Type 1C/2C attribute is present although its condition does not hold (and it may not be present otherwise)",
+                     module);
 }
 
 }  // namespace

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -16,14 +17,34 @@ namespace siaara::repair {
 enum class AttrType : std::uint8_t { None = 0, T1 = 1, T1C = 2, T2 = 3, T2C = 4, T3 = 5 };
 std::string_view attr_type_name(AttrType t) noexcept;
 
-enum class CondOp : std::uint8_t { None, Present, Absent, Equals, NotEquals, Greater };
+// Condition terms (tools/gen_iod.py; docs/VALIDATION.md lists the PS3.3 wordings behind them):
+//   Present         the attribute is present (an empty value counts)
+//   HasValue        present with a non-empty value (a sequence: at least one item)
+//   Absent          not present
+//   Equals          a value (value_index: that value only, 1-based) is one of `values`
+//   NotEquals       present with values, none of them (or value value_index) in `values`
+//   Greater         the (first / value_index) value is an integer greater than values[0]
+//   AbsentOrEquals  Absent, or Equals
+//   IncludesTag     an AT attribute (Frame Increment Pointer) lists the tag in values[0] (8 hex digits)
+enum class CondOp : std::uint8_t { None, Present, Absent, Equals, NotEquals, Greater, HasValue, AbsentOrEquals, IncludesTag };
 enum class ModuleUsage : std::uint8_t { M = 1, U = 2, C = 3 };
 
-struct Condition {
+struct CondTerm {
     CondOp op = CondOp::None;
     Tag tag = 0;
     Tag mask = 0xFFFFFFFFu;
+    std::uint8_t value_index = 0;  // 0: any value; else the 1-based value the condition names
+    // Where the attribute is looked for: 0 the item, its enclosing items, the top level (and the
+    // functional groups); 1 "at the image level": the top-level data set only; 2 anywhere.
+    std::uint8_t scope = 0;
     std::span<const std::string_view> values;
+};
+
+// A Type 1C/2C condition (or the condition of a conditional Include row): its terms joined by
+// AND (any == false) or OR (any == true). Mixed AND / OR wording is not parsed.
+struct Condition {
+    bool any = false;
+    std::vector<CondTerm> terms;
 };
 
 // One attribute of a module after Include rows are expanded, with its sequence children.
@@ -41,6 +62,9 @@ struct ReqNode {
     // This row's Type replaces the Type other modules of the IOD give the attribute (PS3.3 wording
     // "This type definition shall override the definition in the ... Module").
     bool overrides = false;
+    // Type 1C / 2C without "may be present otherwise": shall not be present when the condition
+    // does not hold (PS3.5 7.4.4 / 7.4.6).
+    bool absent_unless_required = false;
     std::vector<ReqNode> children;                 // attributes of each item, when a sequence
     bool matches(Tag t) const noexcept { return (t & mask) == tag; }
 };
