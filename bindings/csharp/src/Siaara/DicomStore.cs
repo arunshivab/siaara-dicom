@@ -30,8 +30,12 @@ public enum QuarantineArea
 /// <param name="Size">Bytes.</param>
 /// <param name="ReadLoss">SIAARA_READ_* loss bits.</param>
 /// <param name="Warning">The first read warning.</param>
+/// <param name="RecordMissing">The item's bytes are there but its record is not (e.g. a crash between the two
+/// writes): only <paramref name="Id"/>, <paramref name="Size"/> and <paramref name="Time"/> are known. Such items are
+/// kept, never deleted silently; release, export or delete them like any other.</param>
 public sealed record QuarantineItem(string Id, QuarantineArea Area, DateTimeOffset Time, string Source, string CallingAeTitle,
-                                    string PeerAddress, string SopClassUid, string SopInstanceUid, long Size, int ReadLoss, string Warning);
+                                    string PeerAddress, string SopClassUid, string SopInstanceUid, long Size, int ReadLoss, string Warning,
+                                    bool RecordMissing = false);
 
 /// <summary>Options for opening a store (siaara_store_options).</summary>
 public sealed record DicomStoreOptions
@@ -577,7 +581,8 @@ public sealed class DicomStore : IDisposable
             }
             Status.Check(st);
             list.Add(new QuarantineItem(Fixed(r.id), area, DateTimeOffset.FromUnixTimeSeconds(r.time), Fixed(r.source), Fixed(r.calling_ae),
-                Fixed(r.peer), Fixed(r.sop_class_uid), Fixed(r.sop_instance_uid), (long)r.size, (int)r.read_loss, Fixed(r.warning)));
+                Fixed(r.peer), Fixed(r.sop_class_uid), Fixed(r.sop_instance_uid), (long)r.size, (int)r.read_loss, Fixed(r.warning),
+                r.record_missing != 0));
         }
         return list;
     }
@@ -604,12 +609,15 @@ public sealed class DicomStore : IDisposable
     /// <param name="id">The item's id.</param>
     /// <param name="replaceDuplicates">Replace an instance already in the archive.</param>
     /// <param name="area">Which area.</param>
-    public void QuarantineRelease(string id, bool replaceDuplicates = false, QuarantineArea area = QuarantineArea.Quarantine)
+    /// <returns>The SOP Instance UID the instance is stored under.</returns>
+    public string QuarantineRelease(string id, bool replaceDuplicates = false, QuarantineArea area = QuarantineArea.Quarantine)
     {
         ArgumentException.ThrowIfNullOrEmpty(id);
         using var l = new HandleLease(_handle);
+        Span<byte> uid = stackalloc byte[65];
         Status.Check(Native.siaara_store_quarantine_release(l.Pointer, (int)area, System.Text.Encoding.UTF8.GetBytes(id + "\0"),
-            replaceDuplicates ? C.SIAARA_DUP_REPLACE : C.SIAARA_DUP_KEEP, out _));
+            replaceDuplicates ? C.SIAARA_DUP_REPLACE : C.SIAARA_DUP_KEEP, out _, uid, out _));
+        return Fixed(uid);
     }
 
     /// <summary>Writes an item's bytes, unchanged, to folder/&lt;id&gt;.dcm; the item stays.</summary>

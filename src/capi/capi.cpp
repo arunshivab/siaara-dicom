@@ -1212,6 +1212,15 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_open(const char* root, size_t 
             if (options->rejected_max_bytes) rl.max_bytes = options->rejected_max_bytes;
             if (options->rejected_max_items) rl.max_items = options->rejected_max_items;
         }
+        if (options && options->struct_size >= offsetof(siaara_store_options, rejected_sender_share_percent) + sizeof(uint32_t)) {
+            if (options->quarantine_sender_share_percent > 100 || options->rejected_sender_share_percent > 100)
+                return fail(Errc::InvalidArgument, "quarantine_sender_share_percent / rejected_sender_share_percent: 0 .. 100");
+            ql.sender_share_percent = options->quarantine_sender_share_percent;
+            rl.sender_share_percent = options->rejected_sender_share_percent;
+        }
+        // R-165: the areas keep the store's free-space floor; what they find at load is logged.
+        ql.min_free_disk_bytes = rl.min_free_disk_bytes = o.min_free_disk_bytes;
+        ql.note = rl.note = [](const std::string& m) { siaara::capi::log(SIAARA_LOG_WARNING, false, m); };
         handle->quarantine = std::make_unique<st::Quarantine>(handle->store->root(), ql);
         handle->rejected = std::make_unique<st::Quarantine>(handle->store->root(), rl, "rejected");
         // R-135: permissions wider than asked for, tightened or left as they are.

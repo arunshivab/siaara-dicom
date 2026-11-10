@@ -527,7 +527,7 @@ web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool r
     };
     if (!read_only)
         w.store = [sp, policy](const DicomFile&, const Bytes& part10) -> std::uint16_t {
-            auto r = sp->add_buffer(part10, policy);
+            auto r = sp->add_buffer(part10, policy, 0, siaara::store::network_extract_options());
             if (!r) return r.error().code == Errc::LimitExceeded ? net::dimse_status::OutOfResources : 0x0110;
             return 0;
         };

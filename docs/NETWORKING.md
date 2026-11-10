@@ -255,6 +255,8 @@ Options around it (each default is one named constant in `src/core/incomplete_po
 | `incomplete_failure_status` (`kIncompleteFailureStatus`) | 0xC000 | any failure status (0xA900 ...) |
 | `siaara_store_options.quarantine_max_items` / `_max_bytes` | 10000 / 4 GiB | caps of the quarantine; `rejected_max_*` for the rejected area |
 | `quarantine_when_full` / `rejected_when_full` (`kDefaultQuarantineEvictOldest`) | refuse (C-STORE 0xA700, STOW-RS Failure Reason 0xA700) | refuse, or evict the oldest items |
+| `quarantine_sender_share_percent` / `rejected_sender_share_percent` (`kDefaultQuarantineSenderSharePercent`) | 0 = no share limit | 1 .. 100: the share of the area's byte and item caps one sender (calling AE title; peer address for DICOMweb) may hold, so one sender cannot fill the area and lock the others out |
+| free-space floor of both areas (`siaara_store_options.min_free_disk_bytes`, `kDefaultQuarantineMinFreeDiskBytes`) | 64 MiB | an item that would leave less free space is refused (0xA700) before anything is written |
 | Storage Commitment for flagged instances (`kCommitFlaggedIncomplete`, compile-time) | committed | quarantined and rejected copies are never committed (they are not in the archive: Failure Reason 0x0112) |
 | network read recovery (`kRecoverOverlongLengthsNetwork`, compile-time) | off | the overlong-length recovery heuristic is not applied to data received over the network |
 
@@ -265,7 +267,25 @@ data. `siaara_store_quarantine_count / _get / _bytes / _release / _export / _del
 `DicomStore.QuarantineList / QuarantineBytes / QuarantineRelease / QuarantineExport /
 QuarantineDelete`) take the area (`SIAARA_AREA_QUARANTINE`, `SIAARA_AREA_REJECTED`). Release
 stores the bytes unchanged in the archive, flagged `SIAARA_IDXF_INCOMPLETE`; an item without a
-Part 10 preamble cannot be stored unchanged and stays (`SIAARA_ERR_UNSUPPORTED`).
+Part 10 preamble cannot be stored unchanged and stays (`SIAARA_ERR_UNSUPPORTED`). Release
+returns the SOP Instance UID the instance is stored under; releases of one area run one at a
+time, so a second release of the same item answers `SIAARA_ERR_NOT_FOUND`. Export writes
+`<id>.dcm` for every item, also one without a Part 10 preamble: the extension says nothing about
+the content.
+
+Memory and disk: an incomplete instance is checked against the area's caps, the sender's share
+and the free-space floor from its size alone, before any byte of it is copied or written, and is
+then streamed to an owner-only temporary file while its SHA-256 is computed - a spooled data set
+of many GB is never held in memory. Room is reserved while the bytes are written, so senders do
+not wait for each other and the caps hold under concurrent receives. The two areas have their own
+caps; they do not count toward the store's `max_total_bytes`.
+
+If the process dies between writing an item's bytes and its record, the bytes stay without a
+record. They are never deleted silently: the item is listed with `record_missing` (C#
+`QuarantineItem.RecordMissing`; only id, size and time are known), a warning
+`QUARANTINE_RECORD_MISSING` is logged when the area is first read, it counts toward the caps, and
+it can be released, exported or deleted like any other item. If the same bytes arrive again the
+record is written then.
 
 Incomplete data is never transcoded and never rewritten, under any policy. A STOW-RS or WADO-RS
 part without a Part 10 preamble that is incomplete is therefore never stored in the archive

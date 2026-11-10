@@ -76,7 +76,11 @@ std::uint16_t check_store_uids(StoreRequest& rq, bool strict, std::string& note)
 // Builds a Part 10 file (file meta + data set) from a received instance.
 DicomFile to_part10(const StoreRequest& rq);
 // Encodes a received instance as a Part 10 stream whose data set is the received bytes, unchanged.
+// Copies the whole data set: for small instances only.
 Status encode_received_part10(const StoreRequest& rq, std::vector<std::uint8_t>& out);
+// Only the head of that stream (preamble, "DICM", file meta): the received bytes (rq.raw) follow
+// it unchanged. For callers that stream a large (spooled) data set instead of copying it (R-159).
+Status encode_received_meta(const StoreRequest& rq, std::vector<std::uint8_t>& out);
 
 struct RetrieveProgress {
     std::uint16_t status = 0;

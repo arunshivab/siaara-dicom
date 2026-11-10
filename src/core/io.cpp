@@ -27,6 +27,30 @@
 
 namespace siaara::io {
 
+namespace {
+// Writes the pieces in order, in chunks; `observe` sees each chunk first.
+Status write_slices(ExclusiveFile& f, const Slice* parts, std::size_t part_count,
+                    const std::function<void(const std::uint8_t*, std::size_t)>& observe) {
+    for (std::size_t i = 0; i < part_count; ++i) {
+        const std::uint8_t* p = parts[i].data;
+        std::size_t left = parts[i].size;
+        while (left > 0) {
+            const std::size_t n = std::min(left, kWriteChunk);
+            if (observe) observe(p, n);
+            if (Status s = f.write(p, n); !s) return s;
+            p += n;
+            left -= n;
+        }
+    }
+    return Status::ok();
+}
+}  // namespace
+
+Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
+    const Slice one{data, size};
+    return write_parts_atomic(utf8_path, &one, 1, {}, [&utf8_path]() -> Result<std::string> { return utf8_path; }, mode);
+}
+
 #if defined(_WIN32)
 namespace {
 std::wstring widen(const std::string& s) {
@@ -160,15 +184,15 @@ bool posix_rename_unsupported(DWORD e) {
 }
 }  // namespace
 
-Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
-    const std::wstring w = widen(utf8_path);
-    if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
-    const std::wstring full = full_path_of(w);
-    if (full.empty()) return Status(Errc::InvalidArgument, "cannot resolve the target path");
+Status write_parts_atomic(const std::string& folder_path, const Slice* parts, std::size_t part_count,
+                          const std::function<void(const std::uint8_t*, std::size_t)>& observe,
+                          const std::function<Result<std::string>()>& final_path, WriteMode mode) {
+    if (widen(folder_path).empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
+    if (full_path_of(widen(folder_path)).empty()) return Status(Errc::InvalidArgument, "cannot resolve the target path");
     ExclusiveFile f;
     std::string tmp;
     for (int attempt = 0;; ++attempt) {
-        tmp = folder_of(utf8_path) + unique_name(".siaara-tmp-", ".part");
+        tmp = folder_of(folder_path) + unique_name(".siaara-tmp-", ".part");
         bool exists = false;
         Status s = f.create(tmp, &exists);
         if (s) break;
@@ -176,7 +200,7 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
     }
     const std::wstring wtmp = widen(tmp);
     std::uint64_t volume = 0, index = 0;
-    Status st = f.write(data, size);
+    Status st = write_slices(f, parts, part_count, observe);
     if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
     const bool have_identity = st && f.identity(volume, index);
     // R-133: the handle the rename goes through is taken from the open file itself (no second
@@ -192,6 +216,22 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
         close_rename_handle();
         DeleteFileW(wtmp.c_str());
         return Status(Errc::IoError, "write failed");
+    }
+    // The target is known only now (it may depend on the content just written).
+    std::wstring full;
+    {
+        Result<std::string> target = final_path();
+        Status ts = target ? Status::ok() : target.error();
+        if (ts) {
+            const std::wstring w = widen(*target);
+            full = w.empty() ? std::wstring() : full_path_of(w);
+            if (full.empty()) ts = Status(Errc::InvalidArgument, "cannot resolve the target path");
+        }
+        if (!ts) {
+            close_rename_handle();
+            DeleteFileW(wtmp.c_str());
+            return ts;
+        }
     }
     const bool replace = mode == WriteMode::Replace;
     // POSIX-semantics rename through a handle first: the target is replaced even while readers hold
@@ -320,11 +360,11 @@ std::string folder_of(const std::string& p) {
 
 // Exclusive create of `path` itself, then write: the no-replace fallback for file systems
 // without hard links. Not atomic against crashes, but never replaces an existing file.
-Status write_exclusive_in_place(const std::string& path, const std::uint8_t* data, std::size_t size) {
+Status write_exclusive_slices(const std::string& path, const Slice* parts, std::size_t part_count) {
     ExclusiveFile f;
     bool exists = false;
     if (Status s = f.create(path, &exists); !s) return exists ? Status(Errc::Rejected, "file exists") : s;
-    Status st = f.write(data, size);
+    Status st = write_slices(f, parts, part_count, {});
     if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
     if (!f.close() && st) st = Status(Errc::IoError, "close failed");
     if (!st) ::unlink(path.c_str());
@@ -332,24 +372,33 @@ Status write_exclusive_in_place(const std::string& path, const std::uint8_t* dat
 }
 }  // namespace
 
-Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
-    if (utf8_path.empty()) return Status(Errc::InvalidArgument, "path is empty");
+Status write_parts_atomic(const std::string& folder_path, const Slice* parts, std::size_t part_count,
+                          const std::function<void(const std::uint8_t*, std::size_t)>& observe,
+                          const std::function<Result<std::string>()>& final_path, WriteMode mode) {
+    if (folder_path.empty()) return Status(Errc::InvalidArgument, "path is empty");
     ExclusiveFile f;
     std::string tmp;
     for (int attempt = 0;; ++attempt) {
-        tmp = folder_of(utf8_path) + unique_name(".siaara-tmp-", ".part");
+        tmp = folder_of(folder_path) + unique_name(".siaara-tmp-", ".part");
         bool exists = false;
         Status s = f.create(tmp, &exists);
         if (s) break;
         if (!exists || attempt >= 8) return Status(Errc::IoError, "cannot create file");
     }
-    Status st = f.write(data, size);
+    Status st = write_slices(f, parts, part_count, observe);
     if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
     if (!f.close() && st) st = Status(Errc::IoError, "close failed");
     if (!st) {
         ::unlink(tmp.c_str());
         return st;
     }
+    // The target is known only now (it may depend on the content just written).
+    Result<std::string> target = final_path();
+    if (!target || target->empty()) {
+        ::unlink(tmp.c_str());
+        return target ? Status(Errc::InvalidArgument, "path is empty") : target.error();
+    }
+    const std::string& utf8_path = *target;
     if (mode == WriteMode::Replace) {
         // rename() replaces a symlink at the target itself, it never writes through it.
         if (::rename(tmp.c_str(), utf8_path.c_str()) != 0) {
@@ -372,7 +421,7 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
     no_links = no_links || e == ENOTSUP;
 #endif
     if (no_links)
-        return write_exclusive_in_place(utf8_path, data, size);
+        return write_exclusive_slices(utf8_path, parts, part_count);
     return Status(Errc::IoError, "rename failed");
 }
 

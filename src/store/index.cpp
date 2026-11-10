@@ -5,6 +5,7 @@
 
 #include "charset/charset.hpp"
 #include "core/dataset.hpp"
+#include "core/incomplete_policy.hpp"
 #include "core/io.hpp"
 #include "core/reader.hpp"
 #include "store/common.hpp"
@@ -128,7 +129,7 @@ Status extract_index(const Bytes& data, IndexRecord& out, const ExtractOptions& 
     out.file_size = data.size();
     if (!looks_like_dicom(data.data(), data.size(), opt.allow_raw_dataset))
         return Status(Errc::NotDicom, "not a DICOM file");
-    ReadOptions ro;
+    ReadOptions ro = opt.network_input ? network_read_options() : ReadOptions{};
     ro.allow_raw_dataset = opt.allow_raw_dataset;
     auto r = read_part10(data, ro);
     if (!r) return r.take_error();

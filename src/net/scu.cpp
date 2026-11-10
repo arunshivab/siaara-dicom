@@ -78,7 +78,7 @@ DicomFile to_part10(const StoreRequest& rq) {
     return f;
 }
 
-Status encode_received_part10(const StoreRequest& rq, std::vector<std::uint8_t>& out) {
+Status encode_received_meta(const StoreRequest& rq, std::vector<std::uint8_t>& out) {
     DicomFile f = to_part10(rq);
     f.dataset = Dataset{};
     if (Status s = write_part10(f, out); !s) return s;
@@ -87,6 +87,11 @@ Status encode_received_part10(const StoreRequest& rq, std::vector<std::uint8_t>&
     const std::uint64_t meta_end = 144ull + load_le32(out.data() + 140);
     if (meta_end > out.size()) return Status(Errc::Internal, "file meta length mismatch");
     out.resize(static_cast<std::size_t>(meta_end));
+    return Status::ok();
+}
+
+Status encode_received_part10(const StoreRequest& rq, std::vector<std::uint8_t>& out) {
+    if (Status s = encode_received_meta(rq, out); !s) return s;
     out.insert(out.end(), rq.raw.data(), rq.raw.data() + rq.raw.size());
     return Status::ok();
 }

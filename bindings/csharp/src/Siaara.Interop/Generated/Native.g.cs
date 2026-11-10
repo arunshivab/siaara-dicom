@@ -12,6 +12,7 @@ internal static class C
 {
     public const uint SIAARA_ABI_VERSION = 1u;
     public const int SIAARA_INDEX_MAX_STRINGS = 32;
+    public const uint SIAARA_AREA_SENDER_SHARE_DEFAULT = 0u;
     public const uint SIAARA_QUERY_NO_TOTAL = 1u;
     public const uint SIAARA_DEID_ALL_FRAMES = 0xFFFFFFFFu;
     public const uint SIAARA_SORT_EXPAND_FRAMES = 1u;
@@ -749,6 +750,8 @@ internal struct siaara_store_options
     public ulong rejected_max_bytes;
     public uint rejected_max_items;
     public uint rejected_when_full;
+    public uint quarantine_sender_share_percent;
+    public uint rejected_sender_share_percent;
 }
 
 /// <summary>siaara_quarantine_record (blittable, C layout).</summary>
@@ -767,6 +770,7 @@ internal struct siaara_quarantine_record
     public FixedArray65OfByte sop_instance_uid;
     public FixedArray256OfByte warning;
     public int area;
+    public int record_missing;
 }
 
 /// <summary>siaara_store_filter (blittable, C layout).</summary>
@@ -2146,7 +2150,7 @@ internal static unsafe partial class Raw
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_release")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
-    internal static partial int siaara_store_quarantine_release(nint store, int area, byte* id, int policy, int* outcome);
+    internal static partial int siaara_store_quarantine_release(nint store, int area, byte* id, int policy, int* outcome, byte* buf, nuint cap, nuint* needed);
 
     [LibraryImport(Library, EntryPoint = "siaara_store_quarantine_delete")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -3382,13 +3386,16 @@ internal static unsafe class Native
             return Raw.siaara_store_quarantine_bytes(store, area, (byte*)p_id, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
-    internal static int siaara_store_quarantine_release(nint store, int area, ReadOnlySpan<byte> id, int policy, out int outcome)
+    internal static int siaara_store_quarantine_release(nint store, int area, ReadOnlySpan<byte> id, int policy, out int outcome, Span<byte> buf, out nuint needed)
     {
         if (!id.IsEmpty && id.IndexOf((byte)0) < 0) throw new ArgumentException("id must be NUL-terminated", nameof(id));
         outcome = default;
+        needed = default;
         fixed (byte* p_id = id)
         fixed (int* p_outcome = &outcome)
-            return Raw.siaara_store_quarantine_release(store, area, (byte*)p_id, policy, p_outcome);
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_store_quarantine_release(store, area, (byte*)p_id, policy, p_outcome, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
     internal static int siaara_store_quarantine_delete(nint store, int area, ReadOnlySpan<byte> id)

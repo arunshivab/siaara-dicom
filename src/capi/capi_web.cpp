@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "capi/capi_internal.hpp"
+#include "core/incomplete_policy.hpp"
 #include "core/reader.hpp"
 #include "web/dicom_model.hpp"
 
@@ -236,7 +237,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_open_file(const siaara_web
         *out = nullptr;
         if (index >= parts->parts.size()) return fail(Errc::NotFound, "part index out of range");
         const std::string& d = parts->parts[index].data;
-        auto r = siaara::read_part10(siaara::Bytes::copy_of(d.data(), d.size()));
+        // Bytes from the network: no overlong-length recovery (R-163).
+        auto r = siaara::read_part10(siaara::Bytes::copy_of(d.data(), d.size()), siaara::network_read_options());
         if (!r) return fail(r.error());
         auto f = std::make_unique<siaara_file>();
         f->file = std::move(r).value();
@@ -257,7 +259,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_parts_add_to_store(const siaara_
         uint32_t a = 0, f = 0;
         Status first = Status::ok();
         for (const web::BulkPart& p : parts->parts) {
-            auto r = store->store->add_buffer(siaara::Bytes::copy_of(p.data.data(), p.data.size()), pol);
+            auto r = store->store->add_buffer(siaara::Bytes::copy_of(p.data.data(), p.data.size()), pol, 0,
+                                              siaara::store::network_extract_options());
             if (r) {
                 ++a;
             } else {

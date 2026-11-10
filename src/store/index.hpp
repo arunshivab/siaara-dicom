@@ -85,7 +85,18 @@ constexpr std::string_view kMediaStorageDirectoryUid = "1.2.840.10008.1.3.10";
 
 struct ExtractOptions {
     bool allow_raw_dataset = true;  // accept files without preamble / "DICM"
+    // The bytes arrived over the network (C-STORE / C-GET / C-MOVE receive, STOW-RS, WADO-RS
+    // retrieve-to-store): read with network_read_options() (core/incomplete_policy.hpp), i.e.
+    // without the overlong-length recovery heuristic of local files (R-163). false (default):
+    // a local file, read with the local defaults.
+    bool network_input = false;
 };
+// The options of every receive path.
+inline ExtractOptions network_extract_options() {
+    ExtractOptions o;
+    o.network_input = true;
+    return o;
+}
 
 // Parses `data` (a whole Part 10 file, or a raw data set) and fills `out`. `file_size` is stored
 // as is (pass data.size() for buffers). NotDicom when the bytes are not DICOM.

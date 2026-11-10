@@ -313,7 +313,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_c
                 }
             }
             if (s && store) {
-                auto r = store->store->add_buffer(bytes, pol);
+                auto r = store->store->add_buffer(bytes, pol, 0, st::network_extract_options());
                 if (!r) {
                     s = r.error();
                     // R-152: a part the store refused leaves no file behind.

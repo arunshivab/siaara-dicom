@@ -106,6 +106,15 @@ inline siaara_status quarantine_response(std::int32_t v, QuarantineResponse& out
 // Keeps a received instance (Part 10 bytes exactly as they will be released) in the quarantine
 // of `store`. Returns 0, 0xA700 when the quarantine is full, 0x0110 otherwise.
 // `rejected`: the "rejected" area (copies of refused instances) instead of the quarantine.
+// The same for an item in pieces (streamed, never copied into one buffer; R-159).
+std::uint16_t quarantine_parts(siaara_store* store, const store::QuarantinePart* parts, std::size_t part_count, const char* source,
+                               const std::string& calling_ae, const std::string& peer, const std::string& sop_class,
+                               const std::string& sop_instance, std::uint32_t read_loss, const std::string& warning,
+                               bool rejected = false);
+// A received C-STORE / C-GET data set: its file meta followed by the bytes as received, streamed
+// from where they are (memory or the spool file's mapping).
+std::uint16_t quarantine_request(siaara_store* store, const net::StoreRequest& rq, const char* source, const std::string& peer,
+                                 bool rejected = false);
 std::uint16_t quarantine_bytes(siaara_store* store, const Bytes& bytes, const char* source, const std::string& calling_ae,
                                const std::string& peer, const std::string& sop_class, const std::string& sop_instance,
                                std::uint32_t read_loss, const std::string& warning, bool rejected = false);

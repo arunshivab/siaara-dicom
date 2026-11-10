@@ -1492,7 +1492,7 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
     }
     // Release: stored unchanged, flagged incomplete in the index, gone from the quarantine.
     int32_t outcome = -1;
-    REQUIRE(siaara_store_quarantine_release(st.store, SIAARA_AREA_QUARANTINE, items[0].id, SIAARA_DUP_KEEP, &outcome) == SIAARA_OK);
+    REQUIRE(siaara_store_quarantine_release(st.store, SIAARA_AREA_QUARANTINE, items[0].id, SIAARA_DUP_KEEP, &outcome, nullptr, 0, nullptr) == SIAARA_OK);
     CHECK(outcome == SIAARA_ADD_ADDED);
     CHECK(quarantine_list(st.store).empty());
     CHECK(st.instances() == 2);
@@ -1522,7 +1522,7 @@ TEST_CASE("net2: sec4 R-116 quarantine keeps incomplete instances outside the ar
         }
         CHECK(flagged);
     }
-    CHECK(siaara_store_quarantine_release(st.store, SIAARA_AREA_QUARANTINE, items[0].id, SIAARA_DUP_KEEP, nullptr) == SIAARA_ERR_NOT_FOUND);
+    CHECK(siaara_store_quarantine_release(st.store, SIAARA_AREA_QUARANTINE, items[0].id, SIAARA_DUP_KEEP, nullptr, nullptr, 0, nullptr) == SIAARA_ERR_NOT_FOUND);
     // Delete.
     CHECK_EQ(raw_store(port, "Q_SCP", kMR, "2.25.57003", cut2), 0xB007);
     items = quarantine_list(st.store);

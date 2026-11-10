@@ -21,6 +21,7 @@
 #endif
 
 #include "core/dataset.hpp"
+#include "core/incomplete_policy.hpp"
 #include "core/io.hpp"
 #include "core/reader.hpp"
 #include "core/writer.hpp"
@@ -1027,21 +1028,23 @@ struct Store::Impl {
     }
 
     Result<AddOutcome> add_bytes(const Bytes& src, DuplicatePolicy policy, AddMode mode, const std::string& ref_path,
-                                 std::uint32_t extra_flags = 0) {
+                                 std::uint32_t extra_flags = 0, const ExtractOptions& xo = {}) {
         IndexRecord rec;
-        if (Status s = extract_index(src, rec); !s) return s;
+        if (Status s = extract_index(src, rec, xo); !s) return s;
         rec.flags |= extra_flags;
         Bytes data = src;
         if (mode == AddMode::Copy && !(rec.flags & kHadPreamble)) {
             // Raw data set: store a proper Part 10 file.
-            auto f = read_part10(src);
+            ReadOptions ro = xo.network_input ? network_read_options() : ReadOptions{};
+            ro.allow_raw_dataset = xo.allow_raw_dataset;
+            auto f = read_part10(src, ro);
             if (!f) return f.take_error();
             std::vector<std::uint8_t> out;
             if (Status s = write_part10(*f, out); !s) return s;
             auto holder = std::make_shared<std::vector<std::uint8_t>>(std::move(out));
             const std::uint8_t* q = holder->data();
             data = Bytes(std::shared_ptr<const void>(holder, holder.get()), q, holder->size());
-            if (Status s = extract_index(data, rec); !s) return s;
+            if (Status s = extract_index(data, rec, xo); !s) return s;
             rec.flags |= extra_flags;
         }
         const std::string uid = rec[Str::SopInstanceUid];
@@ -1309,8 +1312,9 @@ Result<AddOutcome> Store::add_file(const std::string& utf8_path, DuplicatePolicy
     return impl_->add_bytes(*bytes, policy, mode, ref);
 }
 
-Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy, std::uint32_t extra_flags) {
-    return impl_->add_bytes(data, policy, AddMode::Copy, {}, extra_flags & kIncompleteRead);
+Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy, std::uint32_t extra_flags,
+                                     const ExtractOptions& read) {
+    return impl_->add_bytes(data, policy, AddMode::Copy, {}, extra_flags & kIncompleteRead, read);
 }
 
 Result<std::size_t> Store::add_records(const std::vector<IndexRecord>& records) {

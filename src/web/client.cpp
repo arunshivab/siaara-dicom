@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/incomplete_policy.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "net/store_support.hpp"
@@ -303,7 +304,8 @@ Result<std::vector<DicomFile>> DicomwebClient::retrieve(std::string_view study, 
     std::vector<DicomFile> out;
     out.reserve(raw->size());
     for (auto& r : raw.value()) {
-        auto f = read_part10(detail::to_bytes(std::move(r)));
+        // Bytes from the network: no overlong-length recovery (R-163).
+        auto f = read_part10(detail::to_bytes(std::move(r)), network_read_options());
         if (!f) return f.take_error();
         out.push_back(std::move(f).value());
     }

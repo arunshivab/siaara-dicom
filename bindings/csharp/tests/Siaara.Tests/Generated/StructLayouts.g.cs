@@ -162,6 +162,8 @@ internal static class StructLayouts
             r.Add("F siaara_store_options rejected_max_bytes " + Offset(ref s, ref s.rejected_max_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options rejected_max_items " + Offset(ref s, ref s.rejected_max_items).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_store_options rejected_when_full " + Offset(ref s, ref s.rejected_when_full).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options quarantine_sender_share_percent " + Offset(ref s, ref s.quarantine_sender_share_percent).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_store_options rejected_sender_share_percent " + Offset(ref s, ref s.rejected_sender_share_percent).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_quarantine_record);
@@ -178,6 +180,7 @@ internal static class StructLayouts
             r.Add("F siaara_quarantine_record sop_instance_uid " + Offset(ref s, ref s.sop_instance_uid).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_quarantine_record warning " + Offset(ref s, ref s.warning).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_quarantine_record area " + Offset(ref s, ref s.area).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_quarantine_record record_missing " + Offset(ref s, ref s.record_missing).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_store_filter);

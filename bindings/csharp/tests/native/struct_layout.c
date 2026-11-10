@@ -125,6 +125,8 @@ int main(void) {
     printf("F siaara_store_options rejected_max_bytes %u\n", (unsigned)offsetof(siaara_store_options, rejected_max_bytes));
     printf("F siaara_store_options rejected_max_items %u\n", (unsigned)offsetof(siaara_store_options, rejected_max_items));
     printf("F siaara_store_options rejected_when_full %u\n", (unsigned)offsetof(siaara_store_options, rejected_when_full));
+    printf("F siaara_store_options quarantine_sender_share_percent %u\n", (unsigned)offsetof(siaara_store_options, quarantine_sender_share_percent));
+    printf("F siaara_store_options rejected_sender_share_percent %u\n", (unsigned)offsetof(siaara_store_options, rejected_sender_share_percent));
     printf("S siaara_quarantine_record %u\n", (unsigned)sizeof(siaara_quarantine_record));
     printf("F siaara_quarantine_record struct_size %u\n", (unsigned)offsetof(siaara_quarantine_record, struct_size));
     printf("F siaara_quarantine_record read_loss %u\n", (unsigned)offsetof(siaara_quarantine_record, read_loss));
@@ -138,6 +140,7 @@ int main(void) {
     printf("F siaara_quarantine_record sop_instance_uid %u\n", (unsigned)offsetof(siaara_quarantine_record, sop_instance_uid));
     printf("F siaara_quarantine_record warning %u\n", (unsigned)offsetof(siaara_quarantine_record, warning));
     printf("F siaara_quarantine_record area %u\n", (unsigned)offsetof(siaara_quarantine_record, area));
+    printf("F siaara_quarantine_record record_missing %u\n", (unsigned)offsetof(siaara_quarantine_record, record_missing));
     printf("S siaara_store_filter %u\n", (unsigned)sizeof(siaara_store_filter));
     printf("F siaara_store_filter struct_size %u\n", (unsigned)offsetof(siaara_store_filter, struct_size));
     printf("F siaara_store_filter level %u\n", (unsigned)offsetof(siaara_store_filter, level));

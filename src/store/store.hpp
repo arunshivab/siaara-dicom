@@ -171,8 +171,10 @@ public:
                                 AddMode mode = AddMode::Copy);
     // Buffers are always copied into the store (raw data sets are re-written as Part 10 files).
     // `extra_flags`: index flags the caller knows and the header scan cannot (kIncompleteRead).
+    // `read`: how the bytes are read for indexing. Receive paths pass network_extract_options()
+    // (no overlong-length recovery, R-163); a local import keeps the default.
     Result<AddOutcome> add_buffer(const Bytes& data, DuplicatePolicy policy = DuplicatePolicy::Keep,
-                                  std::uint32_t extra_flags = 0);
+                                  std::uint32_t extra_flags = 0, const ExtractOptions& read = {});
 
     // Bulk-indexes records of files kept in place (as AddMode::Reference, without reading the
     // files): each record needs SopInstanceUid, SeriesInstanceUid, StudyInstanceUid and an

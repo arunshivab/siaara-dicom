@@ -375,7 +375,8 @@ std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st
     }
     if (store) {
         // An instance accepted although incomplete is flagged in the index (SIAARA_IDXF_INCOMPLETE).
-        auto r = store->store->add_buffer(bytes_of(std::move(bytes)), policy, rq.read_loss != 0 ? st::kIncompleteRead : 0u);
+        auto r = store->store->add_buffer(bytes_of(std::move(bytes)), policy, rq.read_loss != 0 ? st::kIncompleteRead : 0u,
+                                          st::network_extract_options());
         if (!r) {
             error = r.error().message;
             return 0xA700;
@@ -718,11 +719,7 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
         // outside the archive.
         hd.on_store_quarantine = [raw](const net::StoreRequest& rq, std::uint16_t answer) noexcept -> std::uint16_t {
           try {
-            std::vector<std::uint8_t> bytes;
-            if (Status s = net::encode_received_part10(rq, bytes); !s) return 0x0110;
-            const std::uint16_t kept = capi::quarantine_bytes(raw->store, bytes_of(std::move(bytes)), "C-STORE", rq.calling_ae,
-                                                              rq.peer_address, rq.sop_class_uid, rq.sop_instance_uid,
-                                                              rq.read_loss, rq.read_warning);
+            const std::uint16_t kept = capi::quarantine_request(raw->store, rq, "C-STORE", rq.peer_address);
             if (kept != 0) {
                 raw->failures.fetch_add(1, std::memory_order_relaxed);
                 raw->event(SIAARA_SCP_STORE_FAILED, kept, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid,
@@ -741,10 +738,7 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
         // RefuseKeepCopy: a copy of the refused instance for diagnosis (best effort).
         hd.on_store_keep_rejected = [raw](const net::StoreRequest& rq) noexcept {
           try {
-            std::vector<std::uint8_t> bytes;
-            if (!net::encode_received_part10(rq, bytes)) return;
-            (void)capi::quarantine_bytes(raw->store, bytes_of(std::move(bytes)), "C-STORE", rq.calling_ae, rq.peer_address,
-                                         rq.sop_class_uid, rq.sop_instance_uid, rq.read_loss, rq.read_warning, true);
+            (void)capi::quarantine_request(raw->store, rq, "C-STORE", rq.peer_address, true);
           } catch (...) {
             capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
           }
@@ -1042,10 +1036,7 @@ siaara_status get_impl(const siaara_dimse_peer* peer, int32_t model,
         if (siaara_store* qstore = options->store)
             c.on_quarantine = [qstore](const net::StoreRequest& rq) noexcept -> std::uint16_t {
                 try {
-                    std::vector<std::uint8_t> bytes;
-                    if (Status s = net::encode_received_part10(rq, bytes); !s) return 0x0110;
-                    return capi::quarantine_bytes(qstore, bytes_of(std::move(bytes)), "C-GET", rq.calling_ae, std::string(),
-                                                  rq.sop_class_uid, rq.sop_instance_uid, rq.read_loss, rq.read_warning);
+                    return capi::quarantine_request(qstore, rq, "C-GET", std::string());
                 } catch (...) {
                     capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
                     return net::dimse_status::OutOfResources;

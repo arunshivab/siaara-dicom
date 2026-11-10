@@ -578,7 +578,16 @@ typedef struct siaara_store_options {
     uint64_t rejected_max_bytes;   /* 0 = 4 GiB */
     uint32_t rejected_max_items;   /* 0 = 10000 */
     uint32_t rejected_when_full;   /* SIAARA_AREA_FULL_*; default refuse (the copy is then not kept) */
+    /* The share of an area's caps one sender may take, in percent (R-165). 0 (default,
+     * SIAARA_AREA_SENDER_SHARE_DEFAULT) = no share limit; 1 .. 100: the items of one sender (the
+     * calling AE title; the peer address for DICOMweb) together hold at most this share of the
+     * area's byte cap and of its item cap (at least one item), so one sender cannot fill the area
+     * and lock every other sender out. Past its share a sender is refused like a full area (with
+     * SIAARA_AREA_FULL_EVICT_OLDEST its own oldest items make room). Values above 100 are an error. */
+    uint32_t quarantine_sender_share_percent;
+    uint32_t rejected_sender_share_percent;
 } siaara_store_options;
+#define SIAARA_AREA_SENDER_SHARE_DEFAULT 0u
 enum { SIAARA_AREA_FULL_REFUSE = 0, SIAARA_AREA_FULL_EVICT_OLDEST = 1 };
 /* The two areas of the siaara_store_quarantine_* functions. */
 enum { SIAARA_AREA_QUARANTINE = 0, SIAARA_AREA_REJECTED = 1 };
@@ -588,7 +597,15 @@ enum { SIAARA_AREA_QUARANTINE = 0, SIAARA_AREA_REJECTED = 1 };
  * retrieve returns them, and Storage Commitment answers "not committed" for them. An item is
  * identified by the SHA-256 of its bytes (the same bytes arriving again are one item).
  * SIAARA_INCOMPLETE_REFUSE_KEEP_COPY keeps copies of refused instances the same way in a second
- * area, <root>/rejected. Every function takes the area (SIAARA_AREA_*). */
+ * area, <root>/rejected. Every function takes the area (SIAARA_AREA_*).
+ *
+ * Limits (R-159, R-165): an item is checked against the area's caps, the sender's share and the
+ * store's free-space floor (siaara_store_options.min_free_disk_bytes) from its size alone, before
+ * any of it is copied or written; it is then streamed to disk (a spooled data set of many GB is
+ * never held in memory). The areas have their own caps and do not count toward max_total_bytes.
+ * A crash between writing an item's bytes and its record leaves bytes without a record: they are
+ * never deleted silently - the item is listed with record_missing = 1 (only id, size and time are
+ * known), counts toward the caps, and can be released, exported or deleted like any other. */
 typedef struct siaara_quarantine_record {
     uint32_t struct_size;          /* set to sizeof(siaara_quarantine_record) */
     uint32_t read_loss;            /* SIAARA_READ_* loss bits */
@@ -602,6 +619,10 @@ typedef struct siaara_quarantine_record {
     char sop_instance_uid[65];
     char warning[256];             /* the first read warning (a fixed code and offsets; no patient data) */
     int32_t area;                  /* SIAARA_AREA_* */
+    /* Read only when struct_size covers it. 1: the item's bytes are there but its record is not
+     * (R-166); source, calling_ae, peer and the UIDs are then "" and warning is
+     * "QUARANTINE_RECORD_MISSING". */
+    int32_t record_missing;
 } siaara_quarantine_record;
 /* Number of items and their total size (either pointer may be NULL). Thread safety: any thread. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_count(const siaara_store* store, int32_t area,
@@ -616,13 +637,18 @@ SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_bytes(const siaara_
 /* Moves an item to the archive: the bytes are stored unchanged (policy SIAARA_DUP_*) and indexed
  * with SIAARA_IDXF_INCOMPLETE; the item then leaves the quarantine. An item without a Part 10
  * preamble cannot be stored unchanged: SIAARA_ERR_UNSUPPORTED, the item stays. *outcome (may be
- * NULL): SIAARA_ADD_*. */
+ * NULL): SIAARA_ADD_*. buf (may be NULL with cap 0; otherwise cap must be at least 65, checked
+ * before anything is done) receives the SOP Instance UID the instance is stored under,
+ * NUL-terminated; *needed (may be NULL) its length. Releases of one area run one at a time: a
+ * second release of the same item answers SIAARA_ERR_NOT_FOUND. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_release(siaara_store* store, int32_t area, const char* id,
-                                                                     int32_t policy, int32_t* outcome);
+                                                                     int32_t policy, int32_t* outcome,
+                                                                     char* buf, size_t cap, size_t* needed);
 /* Deletes an item (bytes and record). */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_delete(siaara_store* store, int32_t area, const char* id);
 /* Writes an item's bytes, unchanged, to folder/<id>.dcm (owner-only, replaced atomically); the
- * item stays where it is. */
+ * item stays where it is. The name ends in ".dcm" for every item, also one whose bytes have no
+ * Part 10 preamble (a raw data set as received): the extension says nothing about the content. */
 SIAARA_API siaara_status SIAARA_CALL siaara_store_quarantine_export(const siaara_store* store, int32_t area,
                                                                     const char* id, const char* folder);
 
