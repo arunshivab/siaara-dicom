@@ -4,7 +4,7 @@
 #
 #   GCC/Clang:  -fstack-protector-strong -fstack-clash-protection -D_FORTIFY_SOURCE=3 (optimised
 #               builds; 2 on Apple) -fcf-protection=full (x86) -mbranch-protection=standard
-#               (ARM64); Linux linker: -z relro -z now -z noexecstack
+#               (ARM64, not Apple); Linux linker: -z relro -z now -z noexecstack
 #   MSVC:       /guard:cf /Qspectre /sdl; linker /DYNAMICBASE /NXCOMPAT /GUARD:CF, and on x64
 #               /HIGHENTROPYVA /CETCOMPAT /guard:ehcont (ARM64: /HIGHENTROPYVA)
 #   Debug:      _GLIBCXX_ASSERTIONS (libstdc++), _LIBCPP_HARDENING_MODE=EXTENSIVE (libc++), all targets
@@ -68,7 +68,12 @@ else()
       target_compile_options(siaara_hardening INTERFACE -fcf-protection=full)
     endif()
   endif()
-  if(_siaara_arm64 AND NOT _siaara_x86)
+  # Not on Apple platforms: Apple's arm64 ABI does not use PAC-RET/BTI (return-address signing is
+  # part of the separate arm64e ABI, with the B key), and the system unwinder cannot step through
+  # frames whose return address -mbranch-protection signed with the A key. Every C++ exception
+  # thrown through such a frame then ends in std::terminate (macos-arm64 CI, R-027: a bad_alloc
+  # from a vector inside the JPEG decoder never reached the decoder's catch handler).
+  if(_siaara_arm64 AND NOT _siaara_x86 AND NOT APPLE)
     check_cxx_compiler_flag(-mbranch-protection=standard SIAARA_HAS_BRANCH_PROTECTION)
     if(SIAARA_HAS_BRANCH_PROTECTION)
       target_compile_options(siaara_hardening INTERFACE -mbranch-protection=standard)

@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -72,16 +75,26 @@ Result<Bytes> map_file(const std::string& utf8_path, bool read_ahead) {
 Result<Bytes> read_file(const std::string& utf8_path) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, w.c_str(), L"rb") != 0 || !f) return Status(Errc::IoError, "cannot open file");
-    std::unique_ptr<FILE, int (*)(FILE*)> guard(f, &std::fclose);
-    if (_fseeki64(f, 0, SEEK_END) != 0) return Status(Errc::IoError, "seek failed");
-    const long long len = _ftelli64(f);
-    if (len < 0) return Status(Errc::IoError, "tell failed");
-    _fseeki64(f, 0, SEEK_SET);
-    auto store = std::make_shared<std::vector<std::uint8_t>>(static_cast<std::size_t>(len));
-    if (len > 0 && std::fread(store->data(), 1, store->size(), f) != store->size())
-        return Status(Errc::IoError, "read failed");
+    // Full sharing, FILE_SHARE_DELETE included: reading a file never stops write_file_atomic (or
+    // anyone else) from renaming a new version over it (R-071).
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return Status(Errc::IoError, "cannot open file");
+    std::unique_ptr<void, decltype(&CloseHandle)> guard(h, &CloseHandle);
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0) return Status(Errc::IoError, "cannot get file size");
+    if (static_cast<unsigned long long>(size.QuadPart) > static_cast<unsigned long long>(SIZE_MAX))
+        return Status(Errc::OutOfMemory, "file too large for memory");
+    auto store = std::make_shared<std::vector<std::uint8_t>>(static_cast<std::size_t>(size.QuadPart));
+    std::size_t got = 0;
+    while (got < store->size()) {
+        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(store->size() - got, 1u << 30));
+        DWORD n = 0;
+        if (!ReadFile(h, store->data() + got, chunk, &n, nullptr)) return Status(Errc::IoError, "read failed");
+        if (n == 0) break;  // the file shrank while being read
+        got += n;
+    }
+    if (got != store->size()) return Status(Errc::IoError, "read failed");
     const std::uint8_t* p = store->data();
     return Bytes(std::shared_ptr<const void>(store, store.get()), p, store->size());
 }
@@ -92,11 +105,58 @@ std::string folder_of(const std::string& p) {
     const std::size_t k = p.find_last_of("/\\");
     return k == std::string::npos ? std::string() : p.substr(0, k + 1);
 }
+
+// The absolute form of a path (SetFileInformationByHandle renames want one); empty on failure.
+std::wstring full_path_of(const std::wstring& w) {
+    const DWORD n = GetFullPathNameW(w.c_str(), 0, nullptr, nullptr);
+    if (n == 0) return {};
+    std::wstring full(n, L'\0');
+    const DWORD m = GetFullPathNameW(w.c_str(), n, full.data(), nullptr);
+    if (m == 0 || m >= n) return {};
+    full.resize(m);
+    return full;
+}
+
+// How long one write_file_atomic call keeps retrying a replace that fails with a sharing error.
+constexpr DWORD kReplaceRetryBudgetMs = 5000;
+
+// Opens the finished temporary file again for the rename: DELETE access only and full sharing, so
+// that while this handle exists (it ends up naming the target for a moment) readers that share
+// delete can still open the target. Reparse points are not followed, and the file must be the
+// one this writer created (same volume and file index): another writer's or a planted file is
+// never renamed.
+HANDLE reopen_for_rename(const std::wstring& wtmp, std::uint64_t volume, std::uint64_t index) {
+    HANDLE h = CreateFileW(wtmp.c_str(), DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return h;
+    BY_HANDLE_FILE_INFORMATION fi{};
+    const bool same = GetFileInformationByHandle(h, &fi) && fi.dwVolumeSerialNumber == volume &&
+                      ((static_cast<std::uint64_t>(fi.nFileIndexHigh) << 32) | fi.nFileIndexLow) == index &&
+                      (fi.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+    if (!same) {
+        CloseHandle(h);
+        SetLastError(ERROR_FILE_INVALID);  // not ours: never renamed, never deleted
+        return INVALID_HANDLE_VALUE;
+    }
+    return h;
+}
+
+bool is_sharing_error(DWORD e) {
+    return e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION ||
+           e == ERROR_USER_MAPPED_FILE;
+}
+
+bool posix_rename_unsupported(DWORD e) {
+    return e == ERROR_INVALID_PARAMETER || e == ERROR_INVALID_FUNCTION || e == ERROR_NOT_SUPPORTED ||
+           e == ERROR_CALL_NOT_IMPLEMENTED;
+}
 }  // namespace
 
 Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data, std::size_t size, WriteMode mode) {
     const std::wstring w = widen(utf8_path);
     if (w.empty()) return Status(Errc::InvalidArgument, "path is empty or not valid UTF-8");
+    const std::wstring full = full_path_of(w);
+    if (full.empty()) return Status(Errc::InvalidArgument, "cannot resolve the target path");
     ExclusiveFile f;
     std::string tmp;
     for (int attempt = 0;; ++attempt) {
@@ -107,22 +167,51 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
         if (!exists || attempt >= 8) return Status(Errc::IoError, "cannot create file");
     }
     const std::wstring wtmp = widen(tmp);
+    std::uint64_t volume = 0, index = 0;
     Status st = f.write(data, size);
     if (st && !f.sync()) st = Status(Errc::IoError, "flush failed");
+    if (st && !f.identity(volume, index)) st = Status(Errc::IoError, "cannot identify the temporary file");
     if (!f.close() && st) st = Status(Errc::IoError, "close failed");
     if (!st) {
         DeleteFileW(wtmp.c_str());
         return Status(Errc::IoError, "write failed");
     }
-    const DWORD flags = MOVEFILE_WRITE_THROUGH | (mode == WriteMode::Replace ? MOVEFILE_REPLACE_EXISTING : 0);
-    if (!MoveFileExW(wtmp.c_str(), w.c_str(), flags)) {
-        const DWORD e = GetLastError();
-        DeleteFileW(wtmp.c_str());
-        if (mode == WriteMode::NoReplace && (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS))
-            return Status(Errc::Rejected, "file exists");
-        return Status(Errc::IoError, "rename failed");
+    const bool replace = mode == WriteMode::Replace;
+    // POSIX-semantics rename through a handle first: the target is replaced even while readers hold
+    // it open with FILE_SHARE_DELETE (as every reader in the toolkit does), and the target name
+    // always names one whole file. Without POSIX renames (before Windows 10 1607, FAT, some network
+    // shares) MoveFileExW does the replace. Either way another writer's rename at the same moment,
+    // or a reader that did not share delete, makes the replace fail briefly with a sharing error:
+    // retry, within a bounded time.
+    bool posix = true;
+    DWORD e = ERROR_SUCCESS;
+    DWORD waited_ms = 0;
+    for (unsigned attempt = 0;; ++attempt) {
+        if (posix) {
+            HANDLE h = reopen_for_rename(wtmp, volume, index);
+            if (h == INVALID_HANDLE_VALUE) {
+                e = GetLastError();
+            } else {
+                e = posix_rename_by_handle(h, full, replace);
+                CloseHandle(h);
+            }
+            if (posix_rename_unsupported(e)) {
+                posix = false;
+                continue;
+            }
+        } else {
+            const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+            e = MoveFileExW(wtmp.c_str(), full.c_str(), flags) ? ERROR_SUCCESS : GetLastError();
+        }
+        if (e == ERROR_SUCCESS) return Status::ok();
+        if (!is_sharing_error(e) || waited_ms >= kReplaceRetryBudgetMs) break;
+        const DWORD pause = std::min<DWORD>(DWORD{1} << std::min(attempt, 5u), 25);  // 1, 2, 4 ... 25 ms
+        Sleep(pause);
+        waited_ms += pause;
     }
-    return Status::ok();
+    if (e != ERROR_FILE_INVALID) DeleteFileW(wtmp.c_str());
+    if (!replace && (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS)) return Status(Errc::Rejected, "file exists");
+    return Status(Errc::IoError, "rename failed");
 }
 
 #else  // POSIX

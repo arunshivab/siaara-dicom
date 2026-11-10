@@ -9,11 +9,15 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "alloc_guard.hpp"
 #include "codec/codec.hpp"
+#include "codec/deflate.hpp"
 #include "codec/j2k.hpp"
+#include "codec/jpeg.hpp"
+#include "codec/jpegls.hpp"
 #include "codec/transcode.hpp"
 #include "core/dataset.hpp"
 #include "core/types.hpp"
@@ -460,6 +464,55 @@ TEST_CASE("codec limits/R-011 R-050 FrameInfo max_scans and memory_budget") {
     CHECK_EQ(decode_j2k(cs, f2, o2).code, Errc::LimitExceeded);
     f2.memory_budget = 0;
     CHECK(decode_j2k(cs, f2, o2).is_ok());
+}
+
+// R-027 (defensive): a codec entry point may be noexcept only if it never allocates. A noexcept
+// function that allocates turns std::bad_alloc into std::terminate; the allocating entries instead
+// catch and report Errc::OutOfMemory. Every allocating entry is checked not to be noexcept here
+// (at compile time), and the noexcept ones are run under an allocation guard of 0 bytes.
+namespace {
+template <class F> struct fn_is_noexcept : std::false_type {};
+template <class R, class... A> struct fn_is_noexcept<R(A...) noexcept> : std::true_type {};
+template <class F> constexpr bool noexcept_fn(F*) { return fn_is_noexcept<F>::value; }
+using DecodeFn = Status(std::span<const std::uint8_t>, const FrameInfo&, std::span<std::uint8_t>);
+using EncodeFn = Status(std::span<const std::uint8_t>, const FrameInfo&, const EncodeParams&, std::vector<std::uint8_t>&);
+static_assert(!noexcept_fn<DecodeFn>(&decode_rle) && !noexcept_fn<DecodeFn>(&decode_jpeg) &&
+              !noexcept_fn<DecodeFn>(&decode_jpegls) && !noexcept_fn<DecodeFn>(&decode_j2k));
+static_assert(!noexcept_fn<EncodeFn>(&encode_rle) && !noexcept_fn<EncodeFn>(&encode_jpeg) &&
+              !noexcept_fn<EncodeFn>(&encode_jpegls) && !noexcept_fn<EncodeFn>(&encode_j2k));
+static_assert(!noexcept_fn(&decode_rle_lenient) && !noexcept_fn(&encode_jpeg_ex) && !noexcept_fn(&jpeg_read_header));
+static_assert(!noexcept_fn<Status(std::span<const std::uint8_t>, const FrameInfo&, std::span<std::uint8_t>,
+                                   const JpegDecodeOptions&, std::uint64_t&)>(&decode_jpeg_ex));
+static_assert(!noexcept_fn<Status(std::span<const std::uint8_t>, const FrameInfo&, const JpegDecodeOptions&,
+                                   std::span<std::uint8_t>)>(&decode_jpeg_ex));
+static_assert(!noexcept_fn(&jpegls::encode) && !noexcept_fn(&jpegls::probe));
+static_assert(!noexcept_fn(&j2k::encode) && !noexcept_fn(&j2k::probe) && !noexcept_fn(&j2k::decode_components));
+static_assert(!noexcept_fn(&inflate_raw) && !noexcept_fn(&deflate_raw));
+static_assert(!noexcept_fn(&transcode_dataset) && !noexcept_fn(&transcode_file));
+// The noexcept entries, exercised below.
+static_assert(noexcept_fn(&can_encode) && noexcept_fn(&can_decode) && noexcept_fn(&encoding_is_lossy));
+}  // namespace
+
+TEST_CASE("codec limits/R-027 noexcept codec entry points never allocate") {
+    const char* uids[] = {"1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.50", "1.2.840.10008.1.2.4.70",
+                          "1.2.840.10008.1.2.4.80", "1.2.840.10008.1.2.4.81", "1.2.840.10008.1.2.4.90",
+                          "1.2.840.10008.1.2.4.91", "1.2.840.10008.1.2.5", "1.2.3.4.unknown", ""};
+    TranscodeParams p;  // constructed before the guard: only the calls themselves are measured
+    int encodable = 0, decodable = 0, lossy = 0;
+    bool refused = false;
+    {
+        siaara_test::AllocGuard guard(0);
+        for (const char* u : uids) {
+            encodable += can_encode(u) ? 1 : 0;
+            decodable += can_decode(u) ? 1 : 0;
+            lossy += encoding_is_lossy(u, p) ? 1 : 0;
+        }
+        refused = guard.refused() || guard.peak() != 0;
+    }
+    CHECK(!refused);
+    CHECK(encodable > 0);
+    CHECK(decodable > 0);
+    CHECK(lossy > 0);
 }
 
 // R-062 / R-027 (2026-11-10 review): encoders and transcoding report OutOfMemory instead of

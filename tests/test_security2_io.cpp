@@ -1,5 +1,6 @@
 // Regression tests for the 2026-11-10 02:15 security review, file output (R-071).
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -101,13 +102,34 @@ TEST_CASE("R-071: concurrent writers of one target never clobber each other's te
     constexpr int kThreads = 6, kRounds = 30;
     std::vector<std::string> payloads;
     for (int t = 0; t < kThreads; ++t) payloads.emplace_back(std::size_t{1} << 18, static_cast<char>('A' + t));
-    std::atomic<int> failures{0}, torn{0};
+    std::atomic<int> failures{0}, torn{0}, unreadable{0};
     std::vector<std::thread> pool;
     for (int t = 0; t < kThreads; ++t)
         pool.emplace_back([&, t] {
             for (int r = 0; r < kRounds; ++r) {
                 if (!write(target, payloads[static_cast<std::size_t>(t)])) ++failures;
-                const std::string now = slurp(target);
+                // Half the threads read like the toolkit (io::read_file shares read, write and
+                // delete: never refused), half like other programs (std::ifstream; MSVC's opens
+                // without FILE_SHARE_DELETE). On Windows such an open is refused while any rename
+                // handle of the file exists: retried, as that is not a torn file.
+                std::string now;
+                if (t % 2 == 0) {
+                    Result<Bytes> b = io::read_file(target.string());
+                    if (!b) ++unreadable;
+                    else now.assign(reinterpret_cast<const char*>(b.value().data()), b.value().size());
+                } else {
+                    bool opened = false;
+                    for (int i = 0; i < 1000 && !opened; ++i) {
+                        std::ifstream in(target, std::ios::binary);
+                        if (!in.is_open()) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            continue;
+                        }
+                        opened = true;
+                        now.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+                    }
+                    if (!opened) ++unreadable;
+                }
                 bool whole = false;
                 for (const auto& p : payloads) whole = whole || now == p;
                 if (!whole) ++torn;
@@ -115,6 +137,7 @@ TEST_CASE("R-071: concurrent writers of one target never clobber each other's te
         });
     for (auto& th : pool) th.join();
     CHECK_EQ(failures.load(), 0);
+    CHECK_EQ(unreadable.load(), 0);
     CHECK_EQ(torn.load(), 0);
     CHECK_EQ(entries(d), 1u);  // no temporary files left behind
     std::error_code ec;

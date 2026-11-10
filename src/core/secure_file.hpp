@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <random>
 #include <string>
 #include <string_view>
@@ -59,6 +60,36 @@ inline std::wstring widen_utf8(const std::string& s) {
     std::wstring w(static_cast<std::size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), w.data(), n);
     return w;
+}
+
+// Renames the file open as `h` (opened with DELETE access) to `full_target`, an absolute path, with
+// POSIX semantics (FileRenameInfoEx, Windows 10 1607+): an existing target is replaced even while
+// others hold it open with FILE_SHARE_DELETE, and the target name never goes missing. `replace`
+// false refuses an existing target (ERROR_ALREADY_EXISTS). Returns ERROR_SUCCESS or the Win32
+// error; ERROR_INVALID_PARAMETER, ERROR_INVALID_FUNCTION or ERROR_NOT_SUPPORTED mean that the
+// system or the file system has no POSIX rename (callers fall back to MoveFileExW).
+inline DWORD posix_rename_by_handle(HANDLE h, const std::wstring& full_target, bool replace) {
+    constexpr DWORD kReplaceIfExists = 0x1;  // FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+    constexpr DWORD kPosixSemantics = 0x2;   // FILE_RENAME_FLAG_POSIX_SEMANTICS
+    constexpr int kFileRenameInfoEx = 22;    // FILE_INFO_BY_HANDLE_CLASS FileRenameInfoEx
+    const std::size_t name_bytes = full_target.size() * sizeof(WCHAR);
+    if (full_target.empty() || name_bytes > 0xFFFF0000u) return ERROR_INVALID_NAME;
+    const std::size_t need =
+        std::max(sizeof(FILE_RENAME_INFO), offsetof(FILE_RENAME_INFO, FileName) + name_bytes + sizeof(WCHAR));
+    std::vector<std::uint64_t> buf((need + 7) / 8, 0);  // zeroed and 8-byte aligned
+    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buf.data());
+    // The first member is a union of BOOLEAN ReplaceIfExists and DWORD Flags (older SDKs declare
+    // only the BOOLEAN): store the flags as the DWORD it really is.
+    const DWORD flags = kPosixSemantics | (replace ? kReplaceIfExists : 0);
+    std::memcpy(buf.data(), &flags, sizeof flags);
+    info->RootDirectory = nullptr;
+    info->FileNameLength = static_cast<DWORD>(name_bytes);
+    std::memcpy(reinterpret_cast<std::uint8_t*>(buf.data()) + offsetof(FILE_RENAME_INFO, FileName),
+                full_target.data(), name_bytes);
+    if (SetFileInformationByHandle(h, static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileRenameInfoEx), info,
+                                   static_cast<DWORD>(need)))
+        return ERROR_SUCCESS;
+    return GetLastError();
 }
 
 // Owner-only security descriptor (the current user's SID, full control; inheritance blocked).
@@ -173,6 +204,17 @@ public:
         return ok;
 #endif
     }
+#if defined(_WIN32)
+    // The file's identity (volume serial number and file index), to recognise it when it is
+    // opened again by name; false when unknown.
+    bool identity(std::uint64_t& volume, std::uint64_t& index) const noexcept {
+        BY_HANDLE_FILE_INFORMATION fi{};
+        if (h_ == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h_, &fi)) return false;
+        volume = fi.dwVolumeSerialNumber;
+        index = (static_cast<std::uint64_t>(fi.nFileIndexHigh) << 32) | fi.nFileIndexLow;
+        return true;
+    }
+#endif
     bool is_open() const noexcept {
 #if defined(_WIN32)
         return h_ != INVALID_HANDLE_VALUE;
