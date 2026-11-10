@@ -210,15 +210,16 @@
             _selected = null;
             await Requery().ConfigureAwait(true);
         }
-        catch (Siaara.Viewer.Core.Toolkit.TkException e)
+        catch (Exception e) when (e is Siaara.Viewer.Core.Toolkit.TkException or IOException or UnauthorizedAccessException or OperationCanceledException
+                                     or ObjectDisposedException)
         {
-            _error = "Delete failed: " + e.Message;
+            _error = "Delete failed: " + ViewerSession.Plain(e) + ".";
         }
     }
 
     private void OnStudiesChanged(object? sender, StudiesChangedEventArgs e)
     {
-        _ = InvokeAsync(async () =>
+        Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(async () =>
         {
             bool onPage = _page is null || e.Rebuilt || _page.Rows.Count < PageSize || _page.Rows.Any(r => e.Studies.Contains(r.StudyInstanceUid)) || _offset == 0;
             if (!onPage)
@@ -230,7 +231,7 @@
                 _new.Add(s);
             }
             await Requery().ConfigureAwait(true);
-        });
+        }), "browser", "refreshing the study list");
     }
 
     public void Dispose()

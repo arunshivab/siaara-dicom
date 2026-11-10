@@ -28,7 +28,7 @@ public sealed class MeasureContext
     /// <summary>Frame index for ROI statistics.</summary>
     public int Frame { get; init; }
     /// <summary>Gives the full (pixel data) file for ROI statistics; null = no ROI statistics.</summary>
-    public Func<TkFile>? PixelFile { get; init; }
+    public Func<Imaging.FileLease>? PixelFile { get; init; }
 
     /// <summary>The spacing tag sent to the browser for the icon.</summary>
     public string SpacingTag => CalibrationMmPerPixel is not null ? "manual" : Source switch
@@ -220,7 +220,8 @@ public static class MeasureService
         }
         try
         {
-            return ctx.PixelFile().ComputeRoi(ctx.Frame, shape, prm, partialWeighting: a.Kind != AnnotationKind.Probe);
+            using Imaging.FileLease f = ctx.PixelFile();
+            return f.File.ComputeRoi(ctx.Frame, shape, prm, partialWeighting: a.Kind != AnnotationKind.Probe);
         }
         catch (TkException)
         {

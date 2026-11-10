@@ -86,9 +86,20 @@ siaara-viewer --generate-samples DIR [--full]
 
 Start-up: ABI check ("toolkit version mismatch" and exit), single-instance lock (a second start
 opens the running instance's window and exits), store open (create, durable, rebuild if corrupt),
-Kestrel on 127.0.0.1 at a random port, a random 256-bit launch secret in the opening URL that the
-browser swaps for an HttpOnly SameSite=Strict cookie, then the window: Edge / Chrome / Chromium with
-`--app=URL` when found, else the default browser (`BrowserLauncher`, the only class that knows).
+Kestrel on 127.0.0.1 at a random port, then the window: Edge / Chrome / Chromium with `--app=URL`
+when found, else the default browser (`BrowserLauncher`, the only class that knows).
+
+Launch URLs are single-use (m1-review): each holds a random 256-bit secret that `/launch` trades
+once for an HttpOnly, SameSite=Strict, host-only session cookie named after the port, after which
+the secret is gone, so a URL seen in the process list or shell history is worthless. The URL for
+this start is valid for 5 minutes. The per-user `instance.url` file is created owner-only (0600 /
+protected ACL) before anything is written to it and renamed into place; it always holds a fresh,
+unused URL for a second start, renewed each time it is used. Requests must carry exactly
+`Host: 127.0.0.1:<port>`; WebSocket upgrades and non-GET requests need the exact Origin. Every
+response is `Cache-Control: no-store` (pages, thumbnails and API answers can hold patient data),
+except the static framework files. Note: browsers send cookies for 127.0.0.1 to every port, so a
+different local server the user browses to could receive the cookie; only TLS with `__Host-`
+cookies would close that.
 
 ## Test
 
@@ -115,8 +126,8 @@ Against a running host:
 
 ```
 dotnet .../siaara-viewer.dll --data-dir /tmp/sv --import SAMPLES/folder --no-browser --print-url --no-idle-exit &
-python3 app/tools/smoke.py LAUNCH_URL STUDY_UID
-python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_URL STUDY_UID /tmp/shots
+python3 app/tools/smoke.py LAUNCH_URL STUDY_UID                      # uses the printed URL (single use)
+python3 app/tools/browser_check.py /usr/bin/google-chrome @/tmp/sv/instance.url STUDY_UID /tmp/shots
 ```
 
 ## How it works (short)
@@ -143,6 +154,21 @@ python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_URL STUDY_UID /
   log: append-only JSON lines, each with the SHA-256 of the previous line, patient key from the
   store. Blazor's data-protection keys are kept in memory only. The app refuses to start when crash
   dumps are enabled through `DOTNET_DbgEnableMiniDump`.
+
+## Robustness (m1-review)
+
+- Render cache: frames and full file handles are handed out as ref-counted leases
+  (`FrameLease`, `FileLease`); eviction drops the cache's reference, and the object is disposed when
+  the last lease ends. A finished decode takes one reference per waiting caller in the same locked
+  step as its insert, so nothing can release a frame between its decode and its use.
+- Background work is observed (`ViewerSession.Observe`): failures are logged (type and toolkit
+  status only) and shown (status bar, or the viewport when its picture depends on it). Loading always
+  ends in images or a message; one unreadable series does not stop the others. A process-wide handler
+  logs any task failure nobody observed.
+- Header handles are released when a session closes; deleting a study or patient first closes its
+  viewer sessions and releases cached handles and thumbnails, so no file stays open.
+- Audit entries carry `outcome` (success / failure / cancelled) and, for failures, a plain-word
+  `reason`; failed deletes are audited.
 
 ## M1.1 (review P0)
 

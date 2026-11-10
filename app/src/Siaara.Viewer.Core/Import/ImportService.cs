@@ -211,7 +211,8 @@ public sealed class ImportService
         ImportProgress p = job.Progress;
         AppLog.Info("import", string.Create(CultureInfo.InvariantCulture,
             $"import finished: seen {p.FilesSeen}, instances {p.Instances}, added {p.Added}, duplicates {p.Duplicates}, skipped {p.Skipped}, errors {p.Errors}, cancelled {p.Cancelled}, {p.Elapsed.TotalSeconds:F1} s"));
-        _audit?.Append("import", new Dictionary<string, string>
+        string outcome = p.Cancelled ? AuditOutcome.Cancelled : job.Fault is not null ? AuditOutcome.Failure : AuditOutcome.Success;
+        _audit?.Append("import", outcome, new Dictionary<string, string>
         {
             ["root"] = root,
             ["mode"] = job.Request.IndexInPlace ? "reference" : "copy",
@@ -223,7 +224,7 @@ public sealed class ImportService
             ["skipped"] = p.Skipped.ToString(CultureInfo.InvariantCulture),
             ["errors"] = p.Errors.ToString(CultureInfo.InvariantCulture),
             ["cancelled"] = p.Cancelled ? "yes" : "no",
-        });
+        }, job.Fault);
     }
 
     private static void Post(ChannelWriter<string> writer, string path, CancellationToken ct)

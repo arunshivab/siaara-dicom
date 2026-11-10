@@ -128,6 +128,15 @@ public sealed class ViewerSession : IDisposable
     /// <summary>Loading problem in plain words, or null.</summary>
     public string? LoadError { get; private set; }
 
+    /// <summary>Last failure of a background task in plain words (shown in the status bar), or null.</summary>
+    public string? BackgroundError { get; private set; }
+
+    /// <summary>Background task failures so far (tests and diagnostics).</summary>
+    public int BackgroundFailures => Volatile.Read(ref _backgroundFailures);
+
+    private int _backgroundFailures;
+    private bool _disposed;
+
     /// <summary>Last touched (idle clean-up).</summary>
     public DateTime LastActivityUtc { get; private set; } = DateTime.UtcNow;
 
@@ -165,6 +174,73 @@ public sealed class ViewerSession : IDisposable
 
     private UserPrefs Prefs => _svc.Settings.Current;
 
+    /// <summary>
+    /// Watches a background task: a failure is logged (exception type and toolkit status only) and
+    /// shown in the viewer (status bar, or the viewport when one is given) instead of disappearing.
+    /// Cancellation because the session closed is not a failure.
+    /// </summary>
+    /// <param name="task">The task.</param>
+    /// <param name="what">What it does, in plain words ("saving the measurement").</param>
+    /// <param name="viewport">Viewport whose picture depends on it, or null.</param>
+    public void Observe(Task task, string what, Viewport? viewport = null)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        if (task.IsCompletedSuccessfully)
+        {
+            return;
+        }
+        _ = task.ContinueWith(t => Report(t, what, viewport), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private void Report(Task t, string what, Viewport? viewport)
+    {
+        if (!t.IsFaulted || t.Exception is not AggregateException agg)
+        {
+            return;
+        }
+        Exception e = agg.GetBaseException();
+        if (e is OperationCanceledException || (e is ObjectDisposedException && _closedToken.IsCancellationRequested))
+        {
+            return;
+        }
+        Interlocked.Increment(ref _backgroundFailures);
+        AppLog.Error("viewer", what + " failed", e);
+        string text = char.ToUpperInvariant(what[0]) + what[1..] + " failed: " + Plain(e) + ".";
+        lock (_gate)
+        {
+            BackgroundError = text;
+        }
+        if (viewport is not null)
+        {
+            SendStateOnly(viewport, text);
+        }
+        RaiseUi();
+    }
+
+    /// <summary>Plain words for an exception: the toolkit's status text, else the exception type (never a message that could hold a path or a value).</summary>
+    /// <param name="e">Exception.</param>
+    /// <returns>Text.</returns>
+    public static string Plain(Exception e) => e switch
+    {
+        TkException tk => tk.Message,
+        OutOfMemoryException => "out of memory",
+        UnauthorizedAccessException => "access denied",
+        IOException => "file system error",
+        ObjectDisposedException => "the image was closed",
+        null => "unknown error",
+        _ => e.GetType().Name,
+    };
+
+    /// <summary>Clears the background error shown in the status bar.</summary>
+    public void ClearBackgroundError()
+    {
+        lock (_gate)
+        {
+            BackgroundError = null;
+        }
+        RaiseUi();
+    }
+
     private void RaiseUi()
     {
         try
@@ -188,6 +264,7 @@ public sealed class ViewerSession : IDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _closedToken);
         CancellationToken ct = linked.Token;
+        var failedSeries = new List<string>();
         try
         {
             Study = await _svc.Store.GetStudyAsync(StudyInstanceUid, ct).ConfigureAwait(false);
@@ -204,35 +281,78 @@ public sealed class ViewerSession : IDisposable
             var tasks = imageRows.Select((row, i) => LoadSeriesAsync(row, i < visible ? WorkPriority.Normal : WorkPriority.Background, ct)).ToArray();
             for (int i = 0; i < tasks.Length; i++)
             {
-                IReadOnlyList<SeriesSource> loaded = await tasks[i].ConfigureAwait(false);
+                IReadOnlyList<SeriesSource> loaded;
+                try
+                {
+                    loaded = await tasks[i].ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    // One unreadable series must not stop the others; it is named in the warning.
+                    AppLog.Error("viewer", "series load failed", e);
+                    failedSeries.Add((imageRows[i].SeriesNumber?.ToString(CultureInfo.InvariantCulture) ?? "-") + " (" + Plain(e) + ")");
+                    continue;
+                }
+                bool keep;
                 lock (_gate)
                 {
-                    _series.AddRange(loaded.Where(s => s.Images.Count > 0));
-                    AssignDefaults();
+                    keep = !_disposed;
+                    if (keep)
+                    {
+                        _series.AddRange(loaded.Where(s => s.Images.Count > 0));
+                        AssignDefaults();
+                    }
+                }
+                if (!keep)
+                {
+                    DisposeHeaders(loaded);
+                    return;
                 }
                 RaiseUi();
                 InvalidateAll();
             }
-            lock (_gate)
-            {
-                Loaded = true;
-                if (_series.Count == 0)
-                {
-                    LoadError = "This study has no images that can be shown.";
-                }
-            }
-            RaiseUi();
-            InvalidateAll();
         }
         catch (OperationCanceledException)
         {
             // Session closed while loading.
         }
-        catch (TkException e)
+#pragma warning disable CA1031 // Any failure must end in a message on screen, never in "Loading..." forever.
+        catch (Exception e)
+#pragma warning restore CA1031
         {
-            LoadError = "The study could not be read: " + e.Message;
+            lock (_gate)
+            {
+                LoadError = "The study could not be read: " + Plain(e) + ".";
+            }
             AppLog.Error("viewer", "study load failed", e);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                Loaded = true;
+                if (failedSeries.Count > 0)
+                {
+                    BackgroundError = "Series that could not be read: " + string.Join(", ", failedSeries) + ".";
+                }
+                if (_series.Count == 0 && LoadError is null && !_disposed)
+                {
+                    LoadError = failedSeries.Count > 0 ? "The series of this study could not be read." : "This study has no images that can be shown.";
+                }
+            }
+        }
+        if (!_closedToken.IsCancellationRequested)
+        {
             RaiseUi();
+            InvalidateAll();
+        }
+    }
+
+    private static void DisposeHeaders(IEnumerable<SeriesSource> series)
+    {
+        foreach (ImageInstance i in series.SelectMany(s => s.Images).Select(x => x.Instance).Distinct())
+        {
+            i.Dispose();
         }
     }
 
@@ -289,7 +409,7 @@ public sealed class ViewerSession : IDisposable
             }
             if (vp.MagnifierFlow.Reset())
             {
-                _ = MagnifierAsync(vp);
+                Observe(MagnifierAsync(vp), "the magnifier");
             }
         }
     }
@@ -349,7 +469,7 @@ public sealed class ViewerSession : IDisposable
             Viewport mv = _viewports[viewport - MagnifierViewportBase];
             if (mv.MagnifierFlow.Ack(seq))
             {
-                _ = MagnifierAsync(mv);
+                Observe(MagnifierAsync(mv), "the magnifier");
             }
             return;
         }
@@ -364,7 +484,7 @@ public sealed class ViewerSession : IDisposable
         }
     }
 
-    private void StartRender(Viewport vp) => _ = RenderAsync(vp);
+    private void StartRender(Viewport vp) => Observe(RenderAsync(vp), "showing the image", vp);
 
     private sealed record RenderJob(SeriesImage? Image, DisplayState State, int Width, int Height, int ImageIndex, int ImageCount, bool Visible,
                                     bool Playing, string? Message);
@@ -423,7 +543,8 @@ public sealed class ViewerSession : IDisposable
             SendStateOnly(vp, job.Message);
             return false;
         }
-        TkFrame frame = await _svc.Cache.GetFrameAsync(job.Image, WorkPriority.Normal, _closedToken).ConfigureAwait(false);
+        using FrameLease lease = await _svc.Cache.GetFrameAsync(job.Image, WorkPriority.Normal, _closedToken).ConfigureAwait(false);
+        TkFrame frame = lease.Frame;
         AnnotationDocument doc = await GetDocumentAsync(job.Image.Key).ConfigureAwait(false);
         WarmPlanes(vp);
         IViewSink? sink;
@@ -621,10 +742,16 @@ public sealed class ViewerSession : IDisposable
         {
             img = vp.CurrentImage;
         }
-        if (img is null || !_svc.Cache.TryGetDecoded(img.Key, out TkFrame? frame))
+        if (img is null)
         {
             return;
         }
+        using FrameLease? held = _svc.Cache.TryLease(img.Key);
+        if (held is null)
+        {
+            return;
+        }
+        TkFrame frame = held.Frame;
         WarmPlanes(vp);
         AnnotationDocument? doc;
         lock (_gate)
@@ -902,7 +1029,7 @@ public sealed class ViewerSession : IDisposable
         }
         if (cross is PointD point)
         {
-            _ = CrossReferenceAsync(vp, point);
+            Observe(CrossReferenceAsync(vp, point), "cross-reference");
         }
     }
 
@@ -968,7 +1095,7 @@ public sealed class ViewerSession : IDisposable
         }
         if (link)
         {
-            _ = LinkedScrollAsync(vp);
+            Observe(LinkedScrollAsync(vp), "linked scrolling");
         }
         else if (active)
         {
@@ -1093,7 +1220,7 @@ public sealed class ViewerSession : IDisposable
     {
         if (vp.MagnifierFlow.Request())
         {
-            _ = MagnifierAsync(vp);
+            Observe(MagnifierAsync(vp), "the magnifier");
         }
     }
 
@@ -1139,7 +1266,8 @@ public sealed class ViewerSession : IDisposable
         {
             return false;
         }
-        TkFrame frame = await _svc.Cache.GetFrameAsync(img, WorkPriority.Normal, _closedToken).ConfigureAwait(false);
+        using FrameLease lease = await _svc.Cache.GetFrameAsync(img, WorkPriority.Normal, _closedToken).ConfigureAwait(false);
+        TkFrame frame = lease.Frame;
         RenderSpec spec = MagnifierSpec(frame.Info, st, t, mx, my, dpr, frame.Voi.Count);
         int pixelBytes = spec.Width * spec.Height * (spec.Gray ? 1 : 4);
         int header = sink.FrameHeaderBytes;
@@ -1204,7 +1332,7 @@ public sealed class ViewerSession : IDisposable
     {
         foreach (Viewport v in vps.ToArray())
         {
-            _ = Task.Run(() => Invalidate(v));
+            Observe(Task.Run(() => Invalidate(v)), "redrawing a viewport");
         }
     }
 
@@ -1212,11 +1340,11 @@ public sealed class ViewerSession : IDisposable
     {
         if (committed is not null)
         {
-            _ = CommitAsync(vp, committed);
+            Observe(CommitAsync(vp, committed), "saving the measurement");
         }
         else if (roi)
         {
-            _ = UpdateDrawingAsync(vp);
+            Observe(UpdateDrawingAsync(vp), "measuring");
         }
         if (render)
         {
@@ -1498,8 +1626,8 @@ public sealed class ViewerSession : IDisposable
         switch (e.Key)
         {
             case 87: SetToolLocked(ViewerTool.WindowLevel, ref ui); break;   // W
-            case 90 when ctrl: _ = Task.Run(Undo); break;                    // Ctrl+Z
-            case 89 when ctrl: _ = Task.Run(Redo); break;                    // Ctrl+Y
+            case 90 when ctrl: Observe(Task.Run(Undo), "undo"); break;       // Ctrl+Z
+            case 89 when ctrl: Observe(Task.Run(Redo), "redo"); break;       // Ctrl+Y
             case 90: SetToolLocked(ViewerTool.Zoom, ref ui); break;          // Z
             case 80: SetToolLocked(ViewerTool.Pan, ref ui); break;           // P
             case 76: SetToolLocked(ViewerTool.Length, ref ui); break;        // L
@@ -1714,7 +1842,7 @@ public sealed class ViewerSession : IDisposable
         {
             case "undo": Undo(); return;
             case "redo": Redo(); return;
-            case "clearAnnotations": _ = ClearAnnotationsAsync(vp); return;
+            case "clearAnnotations": Observe(ClearAnnotationsAsync(vp), "clearing the measurements"); return;
         }
         if (all)
         {
@@ -1883,14 +2011,10 @@ public sealed class ViewerSession : IDisposable
             ["patientKey"] = Study?.PatientKey ?? "",
             ["study"] = StudyInstanceUid,
             ["sop"] = img?.Instance.SopInstanceUid ?? "",
-            ["outcome"] = succeeded ? AuditOutcome.Success : AuditOutcome.Failure,
         };
-        if (!succeeded && !string.IsNullOrEmpty(reason))
-        {
-            // Browser error names only ("NotAllowedError"); never image or patient data.
-            fields["reason"] = new string([.. reason.Where(char.IsAsciiLetterOrDigit).Take(64)]);
-        }
-        _svc.Audit?.Append("image.export", fields);
+        // Browser error names only ("NotAllowedError"); never image or patient data.
+        string? why = succeeded || string.IsNullOrEmpty(reason) ? null : new string([.. reason.Where(char.IsAsciiLetterOrDigit).Take(64)]);
+        _svc.Audit?.Append("image.export", succeeded ? AuditOutcome.Success : AuditOutcome.Failure, fields, why);
     }
 
     /// <summary>Sets the cine rate of the active viewport.</summary>
@@ -1933,7 +2057,7 @@ public sealed class ViewerSession : IDisposable
         vp.Cine.Play(vp.ImageIndex, s.Images.Count);
         var cts = new CancellationTokenSource();
         vp.CineStop = cts;
-        _ = CineLoopAsync(vp, cts.Token);
+        Observe(CineLoopAsync(vp, cts.Token), "cine");
     }
 
     private static void RestartCineLocked(Viewport vp)
@@ -2027,7 +2151,8 @@ public sealed class ViewerSession : IDisposable
     {
         try
         {
-            return _svc.Cache.GetFullFile(img.Instance).ComputeSuv(img.Frame);
+            using FileLease f = _svc.Cache.GetFullFile(img.Instance);
+            return f.File.ComputeSuv(img.Frame);
         }
         catch (TkException)
         {
@@ -2043,7 +2168,11 @@ public sealed class ViewerSession : IDisposable
             return;
         }
         AnnotationDocument doc;
-        TkFrameInfo? info = _svc.Cache.TryGetDecoded(key, out TkFrame? f) ? f.Info : null;
+        TkFrameInfo? info;
+        using (FrameLease? f = _svc.Cache.TryLease(key))
+        {
+            info = f?.Frame.Info;
+        }
         lock (_gate)
         {
             doc = _docs[key];
@@ -2246,10 +2375,10 @@ public sealed class ViewerSession : IDisposable
     }
 
     /// <summary>Undoes the last annotation change.</summary>
-    public void Undo() => _ = SwapAsync(_undo, _redo, useBefore: true);
+    public void Undo() => Observe(SwapAsync(_undo, _redo, useBefore: true), "undo");
 
     /// <summary>Redoes the last undone change.</summary>
-    public void Redo() => _ = SwapAsync(_redo, _undo, useBefore: false);
+    public void Redo() => Observe(SwapAsync(_redo, _undo, useBefore: false), "redo");
 
     private async Task SwapAsync(Stack<(FrameKey Key, List<Annotation> Before, List<Annotation> After)> from,
                                  Stack<(FrameKey Key, List<Annotation> Before, List<Annotation> After)> to, bool useBefore)
@@ -2296,15 +2425,27 @@ public sealed class ViewerSession : IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
+        List<SeriesSource> series;
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
             foreach (Viewport vp in _viewports)
             {
                 StopCineLocked(vp);
+                vp.Series = null;
             }
             _sink = null;
+            series = [.. _series];
+            _series.Clear();
         }
         _closed.Cancel();
+        // Header handles (one per instance) are released now; work still running on them sees
+        // ObjectDisposedException after the cancellation and stops quietly.
+        DisposeHeaders(series);
         _closed.Dispose();
     }
 }

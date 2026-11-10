@@ -125,7 +125,7 @@ public static class InputRouter
                 && at.TryGetProperty("id", out JsonElement tid) && tid.GetString() is string textId)
             {
                 string? text = at.TryGetProperty("text", out JsonElement tv) && tv.ValueKind == JsonValueKind.String ? tv.GetString() : null;
-                _ = session.SetAnnotationTextAsync(textId, text);
+                session.Observe(session.SetAnnotationTextAsync(textId, text), "saving the label");
             }
             if (r.TryGetProperty("exported", out JsonElement ex) && ex.ValueKind == JsonValueKind.Object
                 && ex.TryGetProperty("mode", out JsonElement em) && em.GetString() is string mode)
@@ -140,7 +140,7 @@ public static class InputRouter
                 double mm = c.TryGetProperty("mm", out JsonElement m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble()
                     : c.TryGetProperty("mm", out m) && m.ValueKind == JsonValueKind.String
                       && double.TryParse(m.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed : 0;
-                _ = session.CalibrateAsync(id, mm);
+                session.Observe(session.CalibrateAsync(id, mm), "calibration");
             }
         }
     }

@@ -7,11 +7,11 @@
 # Then the M1.1 pieces: the intended-use label, the right-click menu and a colour map, the magnifier,
 # reference lines and cross-reference on the CT study's axial / sagittal / coronal series, arrow and
 # text annotations, the About box, and an exported PNG (with the label band).
-# Usage: browser_check.py CHROME_BINARY LAUNCH_URL STUDY_UID OUT_DIR
+# Usage: browser_check.py CHROME_BINARY LAUNCH_URL|@INSTANCE_FILE STUDY_UID OUT_DIR
 import base64, json, os, socket, struct, subprocess, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from smoke import ws_connect, ws_send, recv_exact  # noqa: E402
+from smoke import ws_connect, ws_send, recv_exact, resolve_launch  # noqa: E402
 
 def ws_recv_full(s):
     data = b""
@@ -162,6 +162,7 @@ def m11(c, out):
 
 def main():
     chrome, launch, study, out = sys.argv[1:5]
+    launch = resolve_launch(launch)
     os.makedirs(out, exist_ok=True)
     port = 9333
     proc = subprocess.Popen([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", f"--remote-debugging-port={port}",

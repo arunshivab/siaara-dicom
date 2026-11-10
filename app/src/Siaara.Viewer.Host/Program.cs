@@ -92,7 +92,9 @@ internal static class Program
         }
         await using (viewer.ConfigureAwait(false))
         {
-            instance.PublishUrl(viewer.Security.LaunchUrl);
+            // Single-use launch URLs: one for this start (valid 5 minutes), and a separate one in the
+            // owner-only instance file for a second start, renewed every time it is used.
+            instance.KeepFresh(viewer.Security);
             if (import is not null)
             {
                 // Same path as the import sheet (scan or DICOMDIR, copy into the store, audited).
@@ -102,14 +104,15 @@ internal static class Program
                 await Console.Out.WriteLineAsync(string.Create(CultureInfo.InvariantCulture,
                     $"import: {p.Added} added, {p.Duplicates} duplicates, {p.Skipped} skipped, {p.Errors} errors")).ConfigureAwait(false);
             }
+            Uri launch = viewer.Security.IssueLaunchUrl(TimeSpan.FromMinutes(5));
             if (printUrl)
             {
-                await Console.Out.WriteLineAsync(viewer.Security.LaunchUrl.AbsoluteUri).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(launch.AbsoluteUri).ConfigureAwait(false);
             }
-            if (!noBrowser && !BrowserLauncher.Open(viewer.Security.LaunchUrl) && !printUrl)
+            if (!noBrowser && !BrowserLauncher.Open(launch) && !printUrl)
             {
                 await Console.Out.WriteLineAsync("No browser could be started. Open this address in a browser on this computer:").ConfigureAwait(false);
-                await Console.Out.WriteLineAsync(viewer.Security.LaunchUrl.AbsoluteUri).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(launch.AbsoluteUri).ConfigureAwait(false);
             }
             await viewer.App.WaitForShutdownAsync().ConfigureAwait(false);
         }
