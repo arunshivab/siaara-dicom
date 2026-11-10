@@ -927,6 +927,9 @@ int main(void) {
     printf("F siaara_web_server_options min_response_rate %u\n", (unsigned)offsetof(siaara_web_server_options, min_response_rate));
     printf("F siaara_web_server_options incomplete_policy %u\n", (unsigned)offsetof(siaara_web_server_options, incomplete_policy));
     printf("F siaara_web_server_options quarantine_response %u\n", (unsigned)offsetof(siaara_web_server_options, quarantine_response));
+    printf("F siaara_web_server_options default_transfer_syntax %u\n", (unsigned)offsetof(siaara_web_server_options, default_transfer_syntax));
+    printf("F siaara_web_server_options streamed_response_timeout_ms %u\n", (unsigned)offsetof(siaara_web_server_options, streamed_response_timeout_ms));
+    printf("F siaara_web_server_options max_decode_memory_bytes %u\n", (unsigned)offsetof(siaara_web_server_options, max_decode_memory_bytes));
     printf("S siaara_web_limits %u\n", (unsigned)sizeof(siaara_web_limits));
     printf("F siaara_web_limits struct_size %u\n", (unsigned)offsetof(siaara_web_limits, struct_size));
     printf("F siaara_web_limits read_timeout_ms %u\n", (unsigned)offsetof(siaara_web_limits, read_timeout_ms));

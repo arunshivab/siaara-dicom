@@ -947,9 +947,10 @@ Status append_headers(std::string& out, const Headers& h) {
     return Status::ok();
 }
 
-void Connection::begin_send() {
+void Connection::begin_send(bool streamed) {
     sending_ = true;
-    send_deadline_ms_ = lim_.send_timeout_ms > 0 ? now_ms() + lim_.send_timeout_ms : 0;
+    const int overall = streamed ? lim_.stream_send_timeout_ms : lim_.send_timeout_ms;
+    send_deadline_ms_ = overall > 0 ? now_ms() + overall : 0;
     send_blocked_ms_ = 0;
     send_window_bytes_ = 0;
 }
@@ -1078,7 +1079,7 @@ Status Connection::write_streamed_response(const Response& rs, bool head, bool c
     if (chunked) out += "Transfer-Encoding: chunked\r\n";
     if (close_after || http10) out += "Connection: close\r\n";
     out += "\r\n";
-    begin_send();
+    begin_send(true);  // R-168: no whole-message deadline unless one is configured for streams
     const SendScope scope([this] { end_send(); });
     if (Status st = write_raw(out); !st) return st;
     if (head) return Status::ok();

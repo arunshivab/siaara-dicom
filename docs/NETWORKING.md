@@ -385,15 +385,25 @@ or client certificates (`require_client_certificate`), unless `allow_insecure_re
 `authorize` callback sees method, target and the Authorization header for every request
 (401 when it returns 0). CORS only for a named origin.
 
-Retrieves (R-110): the instances under a study / series / instance are listed from the store's
-index with their sizes; a request whose instances are larger in total than `max_response_bytes`
-(1 GiB) is answered 413 before any file is opened. Otherwise the multipart reply is written part
-by part with chunked transfer coding from memory-mapped files, one instance open at a time (an
-instance that must be decompressed for the requested transfer syntax is converted in memory, one
-at a time). Metadata is produced one mapped instance at a time and never reads pixel data. A
-response must be written within `response_timeout_ms` (10 minutes) and the client must read at
-least `min_response_rate` bytes per second (1024, averaged over 30 s); a slower client is
-disconnected (R-120). QIDO-RS results carry Retrieve URL (0008,1190) for their level, built from
+Retrieves (R-110, R-161): the instances under a study / series / instance are listed from the
+store's index with their sizes. The reply is sized *as it will be sent* before anything is read:
+an instance that goes out as stored counts with its stored size, one that has to be decoded for
+the reply counts with its decoded size (Rows x Columns x Number of Frames x bytes per sample x
+Samples per Pixel from the index; a store without those values has the instance's header read,
+never its pixel data). A request larger in total than `max_response_bytes` (1 GiB), or with more
+than 65,535 instances under the key, is answered 413 - up front, never as a 200 that is cut in
+the middle. Otherwise the multipart reply is written part by part with chunked transfer coding
+from memory-mapped files, one instance open at a time.
+
+| Option (default constant) | Default | Choices |
+|---|---|---|
+| `default_transfer_syntax` (`kDefaultWadoTransferSyntax`; C# `DefaultTransferSyntaxAsStored`) | `SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE`: with no transfer syntax in Accept the reply is Explicit VR Little Endian (PS3.18), so compressed instances are decoded | `SIAARA_WEB_DEFAULT_TS_AS_STORED`: every instance in the transfer syntax it is stored in; nothing is decoded |
+| `max_decode_memory_bytes` (`kDefaultWebDecodeMemoryBytes`) | 2 GiB | memory all connections together may use for decoding; an instance is charged twice its decoded size while its part is produced and sent, a retrieve waits up to 60 s (`kDefaultWebDecodeWaitMs`) for room, and an instance that does not fit at all is 413 up front |
+| `response_timeout_ms` | 10 minutes | overall limit of every response that is not streamed; -1 = none |
+| `streamed_response_timeout_ms` (`kDefaultStreamSendTimeoutMs`) | 0 = none | overall limit of streamed retrieves; by default a large reply to a client that keeps reading is never cut (R-168) |
+| `min_response_rate` | 1024 bytes/s averaged over 30 s | what ends a reply the client does not read (R-120) |
+
+Metadata is produced one mapped instance at a time and never reads pixel data. QIDO-RS results carry Retrieve URL (0008,1190) for their level, built from
 `public_base_url`, or from the request's Host header when none is set (T-P3-1). STOW-RS parts
 follow `incomplete_policy` (2.3b). Freeing the store while a server or SCP still uses it is
 deferred until that server is freed (R-150).

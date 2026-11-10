@@ -126,6 +126,14 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_se
         if (has(offsetof(siaara_web_server_options, quarantine_response) + sizeof(int32_t)))
             if (siaara_status ps = capi::quarantine_response(o->quarantine_response, cfg.quarantine_response); ps != SIAARA_OK)
                 return ps;
+        if (has(offsetof(siaara_web_server_options, max_decode_memory_bytes) + sizeof(uint64_t))) {
+            if (o->default_transfer_syntax == SIAARA_WEB_DEFAULT_TS_AS_STORED) cfg.default_transfer_syntax = web::DefaultTransferSyntax::AsStored;
+            else if (o->default_transfer_syntax != SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE)
+                return fail(Errc::InvalidArgument, "default_transfer_syntax: SIAARA_WEB_DEFAULT_TS_*");
+            if (o->streamed_response_timeout_ms < 0) return fail(Errc::InvalidArgument, "streamed_response_timeout_ms: 0 or a time");
+            cfg.http.limits.stream_send_timeout_ms = o->streamed_response_timeout_ms;
+            if (o->max_decode_memory_bytes) cfg.max_decode_memory = o->max_decode_memory_bytes;
+        }
         auto h = std::make_unique<siaara_web_server>();
         h->attach_store(store);
         h->authorize = o->authorize;

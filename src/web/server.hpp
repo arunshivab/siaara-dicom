@@ -14,8 +14,11 @@
 // Error bodies are fixed text: request content is never echoed back.
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -57,6 +60,41 @@ struct StoredInstance {
     std::string path;             // what Store::open takes (a file path for the default open)
     std::uint64_t size = 0;       // bytes of the stored Part 10 stream
     std::string transfer_syntax;  // UID as indexed; empty when unknown
+    // R-161: the size of the Part 10 stream once its pixel data is decoded to a native transfer
+    // syntax (the other elements plus Rows x Columns x Number of Frames x bytes per sample x
+    // Samples per Pixel), from the index. 0: not known - the server then reads the instance's
+    // header (not its pixel data) when it has to know.
+    std::uint64_t decoded_size = 0;
+};
+
+// What a study / series / instance retrieve sends when the Accept header names no transfer
+// syntax (R-161).
+enum class DefaultTransferSyntax : std::uint8_t {
+    ExplicitVrLittleEndian = 0,  // PS3.18's default: compressed instances are decoded for the reply
+    AsStored = 1,                // each instance in the transfer syntax it is stored in (nothing is decoded)
+};
+// The defaults. Change them here only.
+inline constexpr DefaultTransferSyntax kDefaultWadoTransferSyntax = DefaultTransferSyntax::ExplicitVrLittleEndian;
+// Memory all connections together may use for decoding instances for retrieves.
+inline constexpr std::uint64_t kDefaultWebDecodeMemoryBytes = 2ull << 30;
+// How long a retrieve waits for its share of that memory before the reply is abandoned.
+inline constexpr int kDefaultWebDecodeWaitMs = 60 * 1000;
+
+// Server-wide budget for memory used to decode instances for retrieve replies (R-161): one
+// decoded instance per connection used to be bounded only by the number of connections.
+class DecodeBudget {
+public:
+    explicit DecodeBudget(std::uint64_t limit) noexcept : limit_(limit) {}
+    std::uint64_t limit() const noexcept { return limit_; }
+    // Waits up to `wait_ms` for `n` bytes; false when they did not become free (or n > limit).
+    bool take(std::uint64_t n, int wait_ms);
+    void give(std::uint64_t n) noexcept;
+
+private:
+    const std::uint64_t limit_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::uint64_t used_ = 0;
 };
 
 // Callbacks the server is backed by. Every callback may be called from several threads at once.
@@ -100,6 +138,17 @@ struct DicomwebServerConfig {
     // total - decided from the index sizes before any file is read when the store has `locate`
     // (R-110). Also the cap of every response built in memory (metadata, bulk data; R-052).
     std::uint64_t max_response_bytes = 1ull << 30;
+    // R-161. A retrieve whose instances have to be decoded for the reply (Explicit VR Little
+    // Endian asked for, or nothing asked for and default_transfer_syntax says so) is sized from
+    // the decoded sizes - index values, or the instance headers - and answered 413 before
+    // anything is sent when that passes max_response_bytes or one instance cannot be decoded
+    // within max_decode_memory.
+    DefaultTransferSyntax default_transfer_syntax = kDefaultWadoTransferSyntax;
+    // Memory all connections together may use for decoding instances for retrieve replies. One
+    // instance is charged twice its decoded size (the decoded frames and the stream built from
+    // them) while its part is produced and sent; a retrieve waits up to decode_wait_ms for room.
+    std::uint64_t max_decode_memory = kDefaultWebDecodeMemoryBytes;
+    int decode_wait_ms = kDefaultWebDecodeWaitMs;
     // STOW-RS parts whose read was not complete (R-116): Refuse lists them in the Failed SOP
     // Sequence with Failure Reason 0xC000; AcceptAsReceived stores the part's bytes unchanged and
     // adds Warning Reason 0xB006 to its item. A part without a Part 10 preamble that is
@@ -138,6 +187,7 @@ public:
 private:
     DicomwebServerConfig cfg_;
     Store store_;
+    std::shared_ptr<DecodeBudget> decode_budget_ = std::make_shared<DecodeBudget>(kDefaultWebDecodeMemoryBytes);
     http::Server http_;
 };
 

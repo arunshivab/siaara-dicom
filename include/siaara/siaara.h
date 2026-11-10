@@ -3119,15 +3119,36 @@ typedef struct siaara_web_server_options {
     uint32_t max_qido_results;       /* 0 = 10000 */
     uint64_t max_body_bytes;         /* STOW-RS request body; 0 = 256 MiB */
     /* ---- appended (security review 4); read only when struct_size includes them */
-    uint64_t max_response_bytes;     /* a retrieve whose stored instances are larger in total is answered 413
-                                        before anything is read; 0 = 1 GiB */
-    int32_t response_timeout_ms;     /* the whole response must be written within this; 0 = 10 minutes, -1 = no
-                                        limit (R-120) */
+    uint64_t max_response_bytes;     /* a retrieve whose instances - as they will be sent: stored size, or
+                                        decoded size where they are decoded for the reply - are larger in total
+                                        is answered 413 before anything is read; 0 = 1 GiB. More than 65,535
+                                        instances under one key: 413 too */
+    int32_t response_timeout_ms;     /* a response that is not streamed must be written within this; 0 = 10
+                                        minutes, -1 = no limit (R-120). Streamed retrieves:
+                                        streamed_response_timeout_ms below */
     uint32_t min_response_rate;      /* bytes per second a client must read, averaged over 30 s windows;
                                         0 = 1024. Slower: the connection is closed */
     int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for STOW-RS parts */
     int32_t quarantine_response;     /* SIAARA_QUARANTINE_ANSWER_* */
+    /* ---- appended (release-candidate review); read only when struct_size includes them */
+    /* What a study / series / instance retrieve sends when the Accept header names no transfer
+     * syntax: SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE (0, the default; PS3.18: compressed instances are
+     * decoded for the reply) or SIAARA_WEB_DEFAULT_TS_AS_STORED (each instance in the transfer
+     * syntax it is stored in; nothing is decoded). */
+    int32_t default_transfer_syntax;
+    /* The overall time limit of a streamed response (study / series / instance retrieves, written
+     * part by part): 0 (default) = none - such a reply ends only when the client stops reading
+     * (min_response_rate); > 0: milliseconds. response_timeout_ms above applies to every other
+     * response. */
+    int32_t streamed_response_timeout_ms;
+    /* Memory all connections together may use for decoding instances for retrieve replies; 0 =
+     * 2 GiB. An instance is charged twice its decoded size while its part is produced and sent.
+     * A retrieve that needs decoding is sized from the decoded sizes (Rows x Columns x frames x
+     * bytes per sample x samples, from the index) BEFORE anything is sent: 413 when the reply
+     * would pass max_response_bytes or one instance does not fit this memory. */
+    uint64_t max_decode_memory_bytes;
 } siaara_web_server_options;
+enum { SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE = 0, SIAARA_WEB_DEFAULT_TS_AS_STORED = 1 };
 
 /* Starts the server; store must outlive it. Caller owns *out: free with siaara_web_server_free
  * (stops it). Thread safety: the server runs on its own threads. */

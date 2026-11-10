@@ -38,9 +38,9 @@ public sealed record DicomWebServerOptions
     public int MaxQidoResults { get; init; }
     /// <summary>STOW-RS request body limit; 0 = 256 MiB.</summary>
     public long MaxBodyBytes { get; init; }
-    /// <summary>A retrieve whose stored instances are larger in total is answered 413 before anything is read; 0 = 1 GiB.</summary>
+    /// <summary>A retrieve whose instances, as they will be sent (decoded where the reply needs that), are larger in total is answered 413 before anything is read; 0 = 1 GiB.</summary>
     public long MaxResponseBytes { get; init; }
-    /// <summary>The whole response must be written within this; default 10 minutes; a negative value = no limit.</summary>
+    /// <summary>A response that is not streamed must be written within this; default 10 minutes; a negative value = no limit. Streamed retrieves: <see cref="StreamedResponseTimeout"/>.</summary>
     public TimeSpan ResponseTimeout { get; init; }
     /// <summary>Bytes per second a client must read (averaged over 30 s); 0 = 1024. Slower clients are disconnected.</summary>
     public int MinResponseRate { get; init; }
@@ -48,6 +48,16 @@ public sealed record DicomWebServerOptions
     public Network.IncompletePolicy IncompletePolicy { get; init; }
     /// <summary>What the client is told when an incomplete part was kept (quarantined).</summary>
     public Network.IncompleteAnswer IncompleteAnswer { get; init; }
+    /// <summary>A retrieve whose Accept header names no transfer syntax: false (default) answers in Explicit VR
+    /// Little Endian as PS3.18 says (compressed instances are decoded for the reply); true sends every instance in
+    /// the transfer syntax it is stored in (nothing is decoded).</summary>
+    public bool DefaultTransferSyntaxAsStored { get; init; }
+    /// <summary>Overall time limit of a streamed retrieve; default none (it ends when the client stops reading, see
+    /// <see cref="MinResponseRate"/>). <see cref="ResponseTimeout"/> applies to every other response.</summary>
+    public TimeSpan StreamedResponseTimeout { get; init; }
+    /// <summary>Memory all connections together may use for decoding instances for retrieves; 0 = 2 GiB. A retrieve
+    /// that needs decoding is sized from the decoded sizes before anything is sent (413 when it does not fit).</summary>
+    public long MaxDecodeMemoryBytes { get; init; }
 }
 
 /// <summary>
@@ -98,6 +108,9 @@ public sealed class DicomWebServer : IDisposable
             min_response_rate = (uint)Math.Max(0, options.MinResponseRate),
             incomplete_policy = (int)options.IncompletePolicy,
             quarantine_response = (int)options.IncompleteAnswer,
+            default_transfer_syntax = options.DefaultTransferSyntaxAsStored ? C.SIAARA_WEB_DEFAULT_TS_AS_STORED : C.SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE,
+            streamed_response_timeout_ms = options.StreamedResponseTimeout <= TimeSpan.Zero ? 0 : (int)Math.Min(int.MaxValue, options.StreamedResponseTimeout.TotalMilliseconds),
+            max_decode_memory_bytes = (ulong)Math.Max(0, options.MaxDecodeMemoryBytes),
         };
         if (options.Tls is not null)
         {

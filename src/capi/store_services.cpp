@@ -518,6 +518,18 @@ web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool r
                 inst.path = row[Str::FilePath];
                 inst.size = row.file_size;
                 inst.transfer_syntax = row[Str::TransferSyntaxUid];
+                // R-161: what the instance takes once decoded, from the index alone.
+                if ((row.flags & store::kEncapsulated) != 0) {
+                    const auto mul = [](std::uint64_t a, std::uint64_t b) { return a != 0 && b > UINT64_MAX / a ? UINT64_MAX : a * b; };
+                    const std::uint64_t pixels =
+                        mul(mul(mul(row.rows, row.columns), std::max<std::uint64_t>(row.number_of_frames, 1)),
+                            mul(std::max<std::uint64_t>(row.samples_per_pixel, 1), (std::uint64_t{row.bits_allocated} + 7) / 8));
+                    const std::uint64_t other = (row.flags & store::kPixelOffsetKnown) != 0 && row.pixel_data_length <= row.file_size
+                                                    ? row.file_size - row.pixel_data_length
+                                                    : row.file_size;
+                    inst.decoded_size = pixels > UINT64_MAX - other ? UINT64_MAX : pixels + other;
+                    if (inst.decoded_size == 0) inst.decoded_size = 1;
+                }
                 out.push_back(std::move(inst));
             }
             if (r->rows.size() < kCandidatePage) break;

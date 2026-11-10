@@ -1150,6 +1150,9 @@ internal static class StructLayouts
             r.Add("F siaara_web_server_options min_response_rate " + Offset(ref s, ref s.min_response_rate).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_server_options incomplete_policy " + Offset(ref s, ref s.incomplete_policy).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_web_server_options quarantine_response " + Offset(ref s, ref s.quarantine_response).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options default_transfer_syntax " + Offset(ref s, ref s.default_transfer_syntax).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options streamed_response_timeout_ms " + Offset(ref s, ref s.streamed_response_timeout_ms).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_web_server_options max_decode_memory_bytes " + Offset(ref s, ref s.max_decode_memory_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_web_limits);

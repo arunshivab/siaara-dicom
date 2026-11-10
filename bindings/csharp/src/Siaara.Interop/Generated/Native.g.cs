@@ -469,6 +469,8 @@ internal static class C
     public const int SIAARA_N_ACTION = 0x0130;
     public const int SIAARA_N_CREATE = 0x0140;
     public const int SIAARA_N_DELETE = 0x0150;
+    public const int SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE = 0;
+    public const int SIAARA_WEB_DEFAULT_TS_AS_STORED = 1;
 }
 
 [InlineArray(3)]
@@ -1865,6 +1867,9 @@ internal struct siaara_web_server_options
     public uint min_response_rate;
     public int incomplete_policy;
     public int quarantine_response;
+    public int default_transfer_syntax;
+    public int streamed_response_timeout_ms;
+    public ulong max_decode_memory_bytes;
 }
 
 /// <summary>siaara_web_limits (blittable, C layout).</summary>

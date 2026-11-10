@@ -26,6 +26,9 @@
 
 namespace siaara::web::http {
 
+// Overall deadline of a streamed message; 0 = none. Change it here only.
+inline constexpr int kDefaultStreamSendTimeoutMs = 0;
+
 struct Limits {
     std::size_t max_request_line = 8192;      // request-line / status-line, bytes (414 when exceeded)
     std::size_t max_header_bytes = 64 * 1024; // whole header section (431)
@@ -45,6 +48,11 @@ struct Limits {
     // average rate (bytes/s) the peer must take over each send_rate_window_ms (0: none). A peer
     // that reads a byte every few seconds no longer holds a worker for hours.
     int send_timeout_ms = 10 * 60 * 1000;
+    // The overall deadline of a streamed message (a response written piece by piece as it is
+    // produced, e.g. a WADO-RS study retrieve; R-168): 0 (default, kDefaultStreamSendTimeoutMs)
+    // = none - a large reply to a healthy client is not cut after send_timeout_ms; the minimum
+    // rate below is what ends a streamed reply the peer does not read.
+    int stream_send_timeout_ms = kDefaultStreamSendTimeoutMs;
     std::uint32_t min_send_rate = 1024;
     int send_rate_window_ms = 30000;
 };
@@ -223,7 +231,7 @@ private:
     std::int64_t send_deadline_ms_ = 0;     // 0: none
     std::int64_t send_blocked_ms_ = 0;      // time spent inside writes in the current rate window
     std::uint64_t send_window_bytes_ = 0;   // bytes the peer took in it
-    void begin_send();
+    void begin_send(bool streamed = false);
     void end_send() noexcept;
     Status flush_sink(std::string& out, bool all);
 

@@ -2,6 +2,7 @@
 #include "web/server.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -55,7 +56,8 @@ std::string origin_of(const http::Request& rq, bool tls) {
 // Converts a stored instance to the wanted transfer syntax ("" = Explicit VR Little Endian, the
 // PS3.18 default; "*" = as stored). Native targets only: compressed data is decompressed with
 // the codec layer, compressing is not offered.
-Result<Bytes> convert_instance(const Bytes& raw, const std::string& want, std::string& out_ts) {
+Result<Bytes> convert_instance(const Bytes& raw, const std::string& want, std::string& out_ts,
+                               std::uint64_t decode_memory = 0) {
     auto f = read_part10(raw);
     if (!f) return f.take_error();
     const std::string stored = f->transfer_syntax;
@@ -72,7 +74,9 @@ Result<Bytes> convert_instance(const Bytes& raw, const std::string& want, std::s
     if (from->encapsulated) {
         Element* px = copy.dataset.find(tags::PixelData);
         if (px && px->is_encapsulated()) {
-            auto fr = image::FrameReader::open(copy.dataset, stored);
+            image::FrameOptions fo;
+            if (decode_memory != 0) fo.memory_budget = std::min(fo.memory_budget, decode_memory);
+            auto fr = image::FrameReader::open(copy.dataset, stored, fo);
             if (!fr) return fr.take_error();
             auto frames = fr->decode_range(0, fr->frame_count());
             if (!frames) return frames.take_error();
@@ -145,10 +149,39 @@ void add_cors(const DicomwebServerConfig& cfg, http::Response& rs) {
 }
 
 // ---------------------------------------------------------------- request handler
+std::uint64_t sat_mul(std::uint64_t a, std::uint64_t b) noexcept {
+    return a != 0 && b > UINT64_MAX / a ? UINT64_MAX : a * b;
+}
+std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) noexcept { return b > UINT64_MAX - a ? UINT64_MAX : a + b; }
+
+// R-161: the size of the instance's Part 10 stream once its pixel data is decoded, from its
+// header alone (the pixel data is not read). 0 when it has no encapsulated pixel data.
+std::uint64_t decoded_size_from_header(const Bytes& raw) {
+    ReadOptions ro;
+    ro.stop_before_pixel_data = true;
+    auto f = read_part10(raw, ro);
+    if (!f) return 0;
+    const auto* ts_info = find_transfer_syntax(f->transfer_syntax);
+    if (!ts_info || !ts_info->encapsulated) return 0;
+    const Dataset& ds = f->dataset;
+    const auto num = [&](Tag t, std::uint64_t fallback) -> std::uint64_t {
+        const auto v = ds.get_int(t);
+        return v && *v >= 0 ? static_cast<std::uint64_t>(*v) : fallback;
+    };
+    const std::uint64_t rows = num(tags::Rows, 0), cols = num(tags::Columns, 0);
+    const std::uint64_t samples = num(tags::SamplesPerPixel, 1);
+    const std::uint64_t bits = num(tags::BitsAllocated, 8);
+    const std::uint64_t frames = std::max<std::uint64_t>(num(tags::NumberOfFrames, 1), 1);
+    const std::uint64_t pixels = sat_mul(sat_mul(sat_mul(rows, cols), frames), sat_mul(std::max<std::uint64_t>(samples, 1), (bits + 7) / 8));
+    // The header's own bytes stand for the other elements (the stream up to Pixel Data).
+    return sat_add(pixels, std::min<std::uint64_t>(raw.size(), std::uint64_t{64} << 20));
+}
+
 class Handler {
 public:
-    Handler(const DicomwebServerConfig& cfg, const Store& store, const http::Request& rq, http::Response& rs)
-        : cfg_(cfg), store_(store), rq_(rq), rs_(rs) {}
+    Handler(const DicomwebServerConfig& cfg, const Store& store, const http::Request& rq, http::Response& rs,
+            std::shared_ptr<DecodeBudget> decode_budget)
+        : cfg_(cfg), store_(store), rq_(rq), rs_(rs), decode_budget_(std::move(decode_budget)) {}
 
     void run() {
         auto t = http::parse_target(rq_.target);
@@ -191,6 +224,7 @@ private:
     const Store& store_;
     const http::Request& rq_;
     http::Response& rs_;
+    std::shared_ptr<DecodeBudget> decode_budget_;
     http::Target target_;
     std::vector<std::string> seg_;
     std::string base_url_;
@@ -361,8 +395,15 @@ private:
     bool locate(const InstanceKey& key, std::vector<StoredInstance>& out) {
         Status st = store_.locate(key, out);
         if (st.code == Errc::NotFound || (st && out.empty())) { fail(rs_, 404, "not found"); return false; }
+        // R-182: more instances under the key than a reply may hold is the request's size, not a server fault.
+        if (st.code == Errc::LimitExceeded) { fail(rs_, 413, "response too large"); return false; }
         if (!st) { fail(rs_, 500, "retrieve failed"); return false; }
         return true;
+    }
+
+    // Is the instance sent as it is stored for the Accept candidate `want`?
+    static bool sent_as_stored(const std::string& stored, const std::string& want) {
+        return want == "*" || (!stored.empty() && want == stored) || (want.empty() && stored == ts::ExplicitVRLittleEndian);
     }
 
     static Result<Bytes> open_instance(const Store& store, const StoredInstance& inst) {
@@ -420,19 +461,63 @@ private:
             if (all) { chosen = &want; break; }
         }
         if (!chosen) return fail(rs_, 406, "requested transfer syntax not available");
+        // R-161: instances that are decoded for the reply count with their decoded size, known
+        // before anything is sent: from the index, else from the instance's header. 413 up front
+        // when the reply would pass the cap or one instance cannot be decoded within the
+        // server's decode memory - never a 200 that is cut in the middle.
+        std::vector<std::uint64_t> charge(list.size(), 0);  // decode memory per instance; 0: sent as stored
+        std::uint64_t reply_total = 0;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const StoredInstance& inst = list[i];
+            std::uint64_t part = inst.size;
+            const auto* stored_ts = find_transfer_syntax(inst.transfer_syntax);
+            if (!sent_as_stored(inst.transfer_syntax, *chosen) && (inst.transfer_syntax.empty() || (stored_ts && stored_ts->encapsulated))) {
+                std::uint64_t decoded = inst.decoded_size;
+                if (decoded == 0) {
+                    Result<Bytes> raw = open_instance(store_, inst);
+                    if (!raw) return fail(rs_, 500, "retrieve failed");
+                    decoded = decoded_size_from_header(*raw);
+                }
+                if (decoded != 0) {
+                    part = decoded;
+                    charge[i] = sat_mul(decoded, 2);  // the decoded frames and the stream built from them
+                    if (charge[i] > cfg_.max_decode_memory) return fail(rs_, 413, "response too large");
+                }
+            }
+            if (part > cfg_.max_response_bytes - std::min(reply_total, cfg_.max_response_bytes))
+                return fail(rs_, 413, "response too large");
+            reply_total += part;
+        }
         const std::string boundary = multipart::make_boundary();
         rs_.status = 200;
         rs_.set("Content-Type", "multipart/related; type=" + http::quote_if_needed(media::Dicom) +
                                     "; boundary=" + http::quote_if_needed(boundary));
         const Store* store = &store_;  // the server's own, alive while it serves
         const std::uint64_t max_bytes = cfg_.max_response_bytes;
-        rs_.stream = [store, list = std::move(list), want = *chosen, boundary, max_bytes](const http::BodyWriter& write) -> Status {
+        const std::uint64_t decode_memory = cfg_.max_decode_memory;
+        const int decode_wait_ms = cfg_.decode_wait_ms;
+        rs_.stream = [store, list = std::move(list), charge = std::move(charge), want = *chosen, boundary, max_bytes, decode_memory,
+                      decode_wait_ms, budget = decode_budget_](const http::BodyWriter& write) -> Status {
             std::uint64_t total = 0;
-            for (const StoredInstance& inst : list) {
+            for (std::size_t i = 0; i < list.size(); ++i) {
+                const StoredInstance& inst = list[i];
+                // The decode memory of this instance is held until its part has been sent.
+                struct Held {
+                    DecodeBudget* b;
+                    std::uint64_t n;
+                    ~Held() {
+                        if (b && n) b->give(n);
+                    }
+                } held{nullptr, 0};
+                if (charge[i] != 0 && budget) {
+                    if (!budget->take(charge[i], decode_wait_ms)) return Status(Errc::LimitExceeded, "decode memory is in use");
+                    held.b = budget.get();
+                    held.n = charge[i];
+                }
                 Result<Bytes> raw = open_instance(*store, inst);
                 if (!raw) return raw.take_error();
                 std::string ts_out;
-                Result<Bytes> conv = convert_instance(*raw, want, ts_out);
+                Result<Bytes> conv = convert_instance(*raw, want, ts_out, decode_memory);
                 if (!conv) return conv.take_error();
                 total += conv->size();
                 if (total > max_bytes) return Status(Errc::LimitExceeded, "response too large");
@@ -453,6 +538,11 @@ private:
         std::vector<std::string> candidates;
         if (!instance_candidates(rq_, candidates))
             return fail(rs_, 406, "acceptable media type: multipart/related; type=\"application/dicom\"");
+        // R-161, option: no transfer syntax named in Accept means "as stored" instead of PS3.18's
+        // Explicit VR Little Endian (nothing is decoded then).
+        if (cfg_.default_transfer_syntax == DefaultTransferSyntax::AsStored)
+            for (std::string& c : candidates)
+                if (c.empty()) c = "*";
         if (store_.locate) return retrieve_streamed(key, candidates);
         std::vector<Bytes> raw;
         if (!load(key, raw)) return;
@@ -880,6 +970,7 @@ private:
 Status DicomwebServer::start(const DicomwebServerConfig& cfg, Store store) {
     cfg_ = cfg;
     store_ = std::move(store);
+    decode_budget_ = std::make_shared<DecodeBudget>(cfg_.max_decode_memory);
     while (!cfg_.base_path.empty() && cfg_.base_path.back() == '/') cfg_.base_path.pop_back();
     while (!cfg_.public_base_url.empty() && cfg_.public_base_url.back() == '/') cfg_.public_base_url.pop_back();
     if (!cfg_.base_path.empty() && cfg_.base_path[0] != '/') return Status(Errc::InvalidArgument, "base_path must start with '/'");
@@ -896,8 +987,25 @@ Status DicomwebServer::start(const DicomwebServerConfig& cfg, Store store) {
     return http_.start(cfg_.http, [this](const http::Request& rq, http::Response& rs) { handle(rq, rs); });
 }
 
+bool DecodeBudget::take(std::uint64_t n, int wait_ms) {
+    if (n > limit_) return false;
+    std::unique_lock<std::mutex> l(mu_);
+    const auto fits = [&] { return used_ <= limit_ - n; };
+    if (!cv_.wait_for(l, std::chrono::milliseconds(std::max(wait_ms, 0)), fits)) return false;
+    used_ += n;
+    return true;
+}
+
+void DecodeBudget::give(std::uint64_t n) noexcept {
+    {
+        const std::lock_guard<std::mutex> l(mu_);
+        used_ -= std::min(used_, n);
+    }
+    cv_.notify_all();
+}
+
 void DicomwebServer::handle(const http::Request& rq, http::Response& rs) const {
-    Handler h(cfg_, store_, rq, rs);
+    Handler h(cfg_, store_, rq, rs, decode_budget_);
     h.run();
 }
 
