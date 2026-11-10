@@ -4,6 +4,8 @@
   <PropertyGroup>
     <AssemblyName>Siaara.Viewer.Core</AssemblyName>
     <RootNamespace>Siaara.Viewer.Core</RootNamespace>
+    <!-- LibraryImport (source-generated P/Invoke) for the OS key stores and the peer-user check. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="$(SiaaraBindingsSrc)Siaara/Siaara.csproj" />

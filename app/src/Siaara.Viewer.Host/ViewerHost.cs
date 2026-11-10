@@ -33,6 +33,12 @@ internal sealed record HostOptions
     public TimeSpan? IdleExit { get; init; }
     /// <summary>Echo the app log to stderr.</summary>
     public bool Verbose { get; init; }
+    /// <summary>Serve as 127.0.0.1 with a port-named cookie instead of a random *.localhost name (the documented fallback).</summary>
+    public bool IpHost { get; init; }
+    /// <summary>Audit key source (tests use the key file); null = the OS key store.</summary>
+    public IAuditKeySource? AuditKeys { get; init; }
+    /// <summary>Peer-user check (tests replace it to act as another user); null = the one of this OS.</summary>
+    public Core.Platform.IPeerUserCheck? Peers { get; init; }
 }
 
 /// <summary>A started viewer: Kestrel on 127.0.0.1 at a random port.</summary>
@@ -93,6 +99,7 @@ internal sealed class RunningViewer : IAsyncDisposable
         Runtime.Dispose();
         Runtime.Store.Dispose();
         Runtime.Audit.Dispose();
+        Security.Dispose();
         _scheduler.Dispose();
     }
 }
@@ -127,6 +134,12 @@ internal sealed class CircuitCounter : CircuitHandler
 /// <summary>Composition of the host (also used by the end-to-end tests).</summary>
 internal static class ViewerHost
 {
+    /// <summary>Kestrel's limit of open (not upgraded) connections.</summary>
+    public const int MaxConnections = 64;
+
+    /// <summary>Kestrel's limit of open WebSocket connections (Blazor circuits and /ws/view).</summary>
+    public const int MaxUpgradedConnections = 32;
+
     private static int s_unobservedHooked;
 
     /// <summary>Opens the store and starts Kestrel. Throws <see cref="StoreLockedException"/> when another process has the store.</summary>
@@ -161,7 +174,7 @@ internal static class ViewerHost
         {
             scheduler = new ToolkitScheduler();
             store = StoreService.Open(storeRoot, scheduler);
-            audit = new AuditLog(paths.AuditFile);
+            audit = new AuditLog(paths.AuditFile, o.AuditKeys ?? AuditKeys.OsStore);
             runtime = new ViewerRuntime(paths, settings, scheduler, store, audit);
             app = await BuildAndStartAsync(runtime, o, args).ConfigureAwait(false);
             LaunchSecurity security = app.Services.GetRequiredService<LaunchSecurity>();
@@ -170,9 +183,22 @@ internal static class ViewerHost
                 ["version"] = typeof(ViewerHost).Assembly.GetName().Version?.ToString() ?? "",
                 ["toolkit"] = Tk.Version,
                 ["abi"] = Tk.AbiVersion.ToString(CultureInfo.InvariantCulture),
-                ["store"] = storeRoot,
+                // Never the path itself (AuditLog.PathReference).
+                ["store"] = audit.PathReference(storeRoot),
+                ["host"] = security.IpHost ? "ip" : "localhost-name",
+                ["peerCheck"] = security.PeerCheckMethod,
+                ["auditKey"] = audit.KeyProtection.ToString(),
             });
-            AppLog.Info("host", "listening on the loopback interface");
+            if (runtime.DataFolderWarning is not null)
+            {
+                AppLog.Warn("security", "the data folder can be reached by other users of this computer");
+                audit.Alert("data-folder-not-private");
+            }
+            if (security.IpHost)
+            {
+                AppLog.Warn("security", "serving as 127.0.0.1: the session cookie is visible to other programs listening on 127.0.0.1");
+            }
+            AppLog.Info("host", "listening on the loopback interface; peer check: " + security.PeerCheckMethod);
             var running = new RunningViewer(app, runtime, security, scheduler);
             if (o.IdleExit is TimeSpan idle)
             {
@@ -196,7 +222,10 @@ internal static class ViewerHost
 
     private static async Task<WebApplication> BuildAndStartAsync(ViewerRuntime runtime, HostOptions o, string[]? args)
     {
-        var security = new LaunchSecurity();
+        // Owned by the RunningViewer (disposed with it); the service container only holds a reference.
+#pragma warning disable CA2000
+        var security = new LaunchSecurity(runtime.Audit, o.Peers, o.IpHost);
+#pragma warning restore CA2000
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             Args = args ?? [],
@@ -209,9 +238,14 @@ internal static class ViewerHost
         builder.WebHost.UseStaticWebAssets();
         builder.WebHost.ConfigureKestrel(k =>
         {
-            k.Listen(IPAddress.Loopback, 0);
+            // Bound to 127.0.0.1 only, whatever host name the app is served under. HTTP/1.1 only (no TLS, so no HTTP/2).
+            k.Listen(IPAddress.Loopback, 0, l => l.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
             k.AddServerHeader = false;
             k.Limits.MaxRequestBodySize = 1024 * 1024;
+            // One user, a few windows: a browser keeps at most six connections per host, plus one socket per
+            // Blazor circuit and one per viewer session (R-145).
+            k.Limits.MaxConcurrentConnections = MaxConnections;
+            k.Limits.MaxConcurrentUpgradedConnections = MaxUpgradedConnections;
         });
         var circuits = new CircuitCounter();
         builder.Services.AddSingleton(circuits);

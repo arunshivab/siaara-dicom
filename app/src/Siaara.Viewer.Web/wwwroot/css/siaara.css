@@ -151,3 +151,6 @@ button, input, select { font: inherit; color: inherit; }
 .magnifier { position: absolute; pointer-events: none; border: 2px solid var(--accent); border-radius: 50%; background: #000; z-index: 3; display: none; }
 .vptoast { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); background: rgba(0, 0, 0, 0.8); color: #e6edf3; padding: 4px 10px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 4; }
 .vp canvas.magnifier { inset: auto; }
+.banner { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.banner.warning { border-left: 4px solid var(--danger); }
+.banner > span { flex: 1; }

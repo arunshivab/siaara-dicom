@@ -92,6 +92,32 @@ public sealed class SettingsStore
         return p;
     }
 
+    /// <summary>Names (as in settings.json) of the top-level settings whose value differs between two snapshots.</summary>
+    /// <param name="before">Earlier settings.</param>
+    /// <param name="after">Later settings.</param>
+    /// <returns>Changed names, sorted.</returns>
+    public static IReadOnlyList<string> ChangedNames(UserPrefs before, UserPrefs after)
+    {
+        using var a = JsonDocument.Parse(Serialize(before));
+        using var b = JsonDocument.Parse(Serialize(after));
+        var names = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (JsonProperty p in a.RootElement.EnumerateObject())
+        {
+            if (!b.RootElement.TryGetProperty(p.Name, out JsonElement other) || other.GetRawText() != p.Value.GetRawText())
+            {
+                names.Add(p.Name);
+            }
+        }
+        foreach (JsonProperty p in b.RootElement.EnumerateObject())
+        {
+            if (!a.RootElement.TryGetProperty(p.Name, out _))
+            {
+                names.Add(p.Name);
+            }
+        }
+        return [.. names];
+    }
+
     private static UserPrefs Clone(UserPrefs p) =>
         JsonSerializer.Deserialize(Serialize(p), SettingsJsonContext.Default.UserPrefs) ?? new UserPrefs();
 }

@@ -24,7 +24,7 @@ internal sealed class TestEnv : IDisposable
         Scheduler = new ToolkitScheduler();
         Store = StoreService.Open(Path.Combine(Root, "store"), Scheduler);
         Settings = new SettingsStore(Paths.SettingsFile);
-        Audit = new AuditLog(Paths.AuditFile);
+        Audit = new AuditLog(Paths.AuditFile, AuditKeys.KeyFile);
         Cache = new RenderCache(Scheduler, 512L * 1024 * 1024, 32);
         Annotations = new AnnotationStore(Paths.AnnotationFolder, "tester");
         Import = new ImportService(Store, Scheduler, Audit);

@@ -3,20 +3,32 @@
 #
 # Scripted smoke test against a running host (no browser needed). Usage:
 #   smoke.py LAUNCH_URL STUDY_UID
-# Launch URLs are single-use: pass "@DATA_DIR/instance.url" to read the running instance's current
-# (fresh) URL from its owner-only instance file instead of a URL that may have been used already.
-# Exchanges the launch secret for the cookie, fetches the browser page and the scripts, checks the
-# refusals (no cookie, foreign Origin), opens the study through POST /api/sessions, connects to
-# /ws/view with a hand-written WebSocket client (standard library only), sends a resize and reads
-# the first frame and state message.
+# LAUNCH_URL is what --print-url printed (single use), or "@DATA_DIR/instance.url" to read the running
+# instance's current (fresh) secret from its owner-only instance file.
+# The app is served under a random <hex>.localhost name bound to 127.0.0.1. Browsers resolve such
+# names themselves; this script connects to 127.0.0.1 and sends the name in the Host header, so it
+# does not depend on the system resolver.
+# Posts the launch secret for the cookie (as the launch page does), fetches the browser page and the
+# scripts, checks the refusals (no cookie, plain 127.0.0.1 Host, foreign Origin, repeated secret) and the
+# Content-Security-Policy, opens the study through POST /api/sessions (UID in the body, never in an
+# address), connects to /ws/view with a hand-written WebSocket client (standard library only), sends
+# a resize and reads the first frame and state message, then signs out and checks the cookie is dead.
 import base64, http.client, json, os, socket, struct, sys, urllib.parse
 
-def request(host, port, method, path, headers=None):
-    c = http.client.HTTPConnection(host, port, timeout=10)
-    c.request(method, path, headers=headers or {})
+def request(authority, method, path, headers=None, body=None):
+    """One request to 127.0.0.1:<port> with Host: <authority> (authority = host:port of the app)."""
+    port = int(authority.rsplit(":", 1)[1])
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    h = {"Host": authority}
+    h.update(headers or {})
+    c.request(method, path, body=body, headers=h)
     r = c.getresponse()
-    body = r.read()
-    return r.status, dict(r.getheaders()), body
+    data = r.read()
+    # Repeated headers are joined, so a second Content-Security-Policy would show.
+    hs = {}
+    for k, v in r.getheaders():
+        hs[k] = hs[k] + " || " + v if k in hs else v
+    return r.status, hs, data
 
 def resolve_launch(arg):
     """A launch URL, or "@file" to read the instance file's current single-use URL."""
@@ -25,10 +37,11 @@ def resolve_launch(arg):
             return f.read().strip()
     return arg
 
-def ws_connect(host, port, path, headers):
-    s = socket.create_connection((host, port), timeout=10)
+def ws_connect(host, port, path, headers, authority=None):
+    """WebSocket handshake. With authority, connects to 127.0.0.1:<port> and names the app in Host."""
+    s = socket.create_connection(("127.0.0.1" if authority else host, port), timeout=10)
     key = base64.b64encode(os.urandom(16)).decode()
-    req = [f"GET {path} HTTP/1.1", f"Host: {host}:{port}", "Upgrade: websocket", "Connection: Upgrade",
+    req = [f"GET {path} HTTP/1.1", f"Host: {authority or f'{host}:{port}'}", "Upgrade: websocket", "Connection: Upgrade",
            f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13"] + [f"{k}: {v}" for k, v in headers.items()]
     s.sendall(("\r\n".join(req) + "\r\n\r\n").encode())
     resp = b""
@@ -68,30 +81,40 @@ def ws_recv(s):
 def main():
     launch, study = resolve_launch(sys.argv[1]), sys.argv[2]
     u = urllib.parse.urlsplit(launch)
-    host, port, origin = u.hostname, u.port, f"http://{u.hostname}:{u.port}"
-    st, _, _ = request(host, port, "GET", "/")
+    authority, port, origin = u.netloc, u.port, f"http://{u.netloc}"
+    secret = urllib.parse.parse_qs(u.query)["k"][0]
+    form = {"Content-Type": "application/x-www-form-urlencoded"}
+    print(f"host name is a random *.localhost label: {u.hostname.endswith('.localhost') and len(u.hostname) == 42}")
+    st, _, _ = request(authority, "GET", "/")
     print(f"GET / without cookie -> {st}")
-    st, h, _ = request(host, port, "GET", u.path + "?" + u.query)
+    st, h, body = request(authority, "POST", "/launch", form, "k=" + secret)
     cookie = h["Set-Cookie"].split(";")[0]
-    print(f"GET /launch -> {st}, cookie attributes: {'; '.join(h['Set-Cookie'].split('; ')[1:])}")
-    st2, _, _ = request(host, port, "GET", u.path + "?" + u.query)
-    print(f"GET /launch again with the same secret -> {st2} (single use)")
-    st, _, body = request(host, port, "GET", "/", {"Cookie": cookie})
+    print(f"POST /launch -> {st}, cookie name {cookie.split('=')[0]}, attributes: {'; '.join(h['Set-Cookie'].split('; ')[1:])}, "
+          f"moves on by meta refresh: {b'http-equiv=\"refresh\"' in body}")
+    st2, _, body2 = request(authority, "POST", "/launch", form, "k=" + secret)
+    print(f"POST /launch again with the same secret -> {st2} (single use), says so: {b'already used' in body2}")
+    st, h, body = request(authority, "GET", "/", {"Cookie": cookie})
     page = body.decode()
-    print(f"GET / with cookie -> {st}, {len(body)} bytes, grid header present: {'Patient name' in page}")
+    print(f"GET / with cookie -> {st}, {len(body)} bytes, grid header present: {'Patient name' in page}, study UID in the page: {study in page}")
+    print(f"Content-Security-Policy: {h.get('Content-Security-Policy')}")
+    st, _, _ = request(f"127.0.0.1:{port}", "GET", "/", {"Cookie": cookie})
+    print(f"GET / with cookie but Host 127.0.0.1:<port> -> {st}")
     for p in ["/_framework/blazor.web.js", "/_content/Siaara.Viewer.Web/js/siaara-view.js", "/_content/Siaara.Viewer.Web/css/siaara.css"]:
-        st, _, body = request(host, port, "GET", p, {"Cookie": cookie})
+        st, _, body = request(authority, "GET", p, {"Cookie": cookie})
         print(f"GET {p} -> {st}, {len(body)} bytes")
-    st, _, body = request(host, port, "GET", "/viewer/" + urllib.parse.quote(study), {"Cookie": cookie})
-    print(f"GET /viewer/<study> -> {st}, {len(body)} bytes")
-    st, _, body = request(host, port, "POST", "/api/sessions?study=" + urllib.parse.quote(study), {"Cookie": cookie, "Origin": origin})
-    sid = json.loads(body)["id"]
-    print(f"POST /api/sessions -> {st}")
-    _, st = ws_connect(host, port, "/ws/view?s=" + sid, {"Origin": origin})
+    st, _, body = request(authority, "POST", "/api/sessions?study=" + urllib.parse.quote(study), {"Cookie": cookie, "Origin": origin})
+    print(f"POST /api/sessions with the UID in the address -> {st}")
+    st, _, body = request(authority, "POST", "/api/sessions", {"Cookie": cookie, "Origin": origin, "Content-Type": "text/plain"}, study)
+    opened = json.loads(body)
+    sid = opened["id"]
+    print(f"POST /api/sessions (UID in the body) -> {st}")
+    st, _, body = request(authority, "GET", "/viewer/" + opened["ref"], {"Cookie": cookie})
+    print(f"GET /viewer/<per-run id> -> {st}, {len(body)} bytes")
+    _, st = ws_connect(None, port, "/ws/view?s=" + sid, {"Origin": origin}, authority)
     print(f"/ws/view without cookie -> {st}")
-    _, st = ws_connect(host, port, "/ws/view?s=" + sid, {"Cookie": cookie, "Origin": "http://evil.example"})
+    _, st = ws_connect(None, port, "/ws/view?s=" + sid, {"Cookie": cookie, "Origin": "http://evil.example"}, authority)
     print(f"/ws/view with a foreign Origin -> {st}")
-    s, st = ws_connect(host, port, "/ws/view?s=" + sid, {"Cookie": cookie, "Origin": origin})
+    s, st = ws_connect(None, port, "/ws/view?s=" + sid, {"Cookie": cookie, "Origin": origin}, authority)
     print(f"/ws/view with cookie and Origin -> {st}")
     resize = struct.pack("<BHIBhhBhHBHH", 4, 0, 1, 5, 0, 0, 0, 0, 0, 0, 400, 300)
     ws_send(s, resize)
@@ -113,6 +136,9 @@ def main():
             if got_frame and seq > 0:
                 break
     s.close()
+    st, _, body = request(authority, "POST", "/signout", {"Cookie": cookie, "Origin": origin})
+    st2, _, _ = request(authority, "GET", "/", {"Cookie": cookie})
+    print(f"POST /signout -> {st} (to the signed-out page); GET / with the old cookie -> {st2}")
 
 if __name__ == "__main__":
     main()

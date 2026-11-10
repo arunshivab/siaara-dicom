@@ -41,8 +41,12 @@ public readonly record struct BrowserMessage(MessageType Type, int Viewport, uin
 /// </summary>
 public static class FrameProtocol
 {
-    /// <summary>Largest message accepted or sent.</summary>
-    public const int MaxMessageBytes = 64 * 1024 * 1024;
+    /// <summary>Largest message accepted from the browser (acks, input events and small JSON commands): 64 KB.</summary>
+    public const int MaxInboundMessageBytes = 64 * 1024;
+
+    /// <summary>Messages (frames, states) that may wait to be sent on one socket. Frames are limited by the flow
+    /// control to one in flight per viewport, so a queue this long means the browser has stopped reading.</summary>
+    public const int MaxQueuedOutbound = 128;
 
     /// <summary>Frame header size.</summary>
     public const int FrameHeaderBytes = 12;

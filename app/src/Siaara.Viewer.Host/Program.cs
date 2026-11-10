@@ -10,7 +10,7 @@ using Siaara.Viewer.Core.Toolkit;
 namespace Siaara.Viewer.Host;
 
 /// <summary>
-/// siaara-viewer [--data-dir DIR] [--store DIR] [--import DIR] [--no-browser] [--print-url] [--no-idle-exit] [--verbose]
+/// siaara-viewer [--data-dir DIR] [--store DIR] [--import DIR] [--no-browser] [--print-url] [--print-launch-file] [--host auto|name|ip] [--no-idle-exit] [--verbose]
 /// siaara-viewer --generate-samples DIR [--full]
 /// </summary>
 internal static class Program
@@ -18,7 +18,8 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         string? dataDir = null, store = null, samples = null, import = null;
-        bool noBrowser = false, printUrl = false, noIdle = false, verbose = false, full = false;
+        string hostMode = "auto";
+        bool noBrowser = false, printUrl = false, printFile = false, noIdle = false, verbose = false, full = false;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -27,9 +28,11 @@ internal static class Program
                 case "--store" when i + 1 < args.Length: store = args[++i]; break;
                 case "--generate-samples" when i + 1 < args.Length: samples = args[++i]; break;
                 case "--import" when i + 1 < args.Length: import = args[++i]; break;
+                case "--host" when i + 1 < args.Length && args[i + 1] is "auto" or "name" or "ip": hostMode = args[++i]; break;
                 case "--full": full = true; break;
                 case "--no-browser": noBrowser = true; break;
                 case "--print-url": printUrl = true; break;
+                case "--print-launch-file": printFile = true; break;
                 case "--no-idle-exit": noIdle = true; break;
                 case "--verbose": verbose = true; break;
                 default:
@@ -79,12 +82,17 @@ internal static class Program
             return await BringForwardAsync(paths, noBrowser).ConfigureAwait(false);
         }
 
+        // The app is served under a random *.localhost name (host-only cookie). 127.0.0.1 only on request, or when
+        // an unknown default browser would have to ask a system resolver that does not know such names.
+        bool ipHost = Core.Platform.LocalhostNames.UseIpFallback(hostMode, opensBrowser: !noBrowser, appBrowserFound: BrowserLauncher.FindAppBrowser() is not null,
+            () => Core.Platform.LocalhostNames.SystemResolves("siaara-probe.localhost"));
         RunningViewer? viewer = await TryStartAsync(new HostOptions
         {
             DataDir = dataDir,
             StoreRoot = store,
             IdleExit = noIdle ? null : TimeSpan.FromSeconds(60),
             Verbose = verbose,
+            IpHost = ipHost,
         }).ConfigureAwait(false);
         if (viewer is null)
         {
@@ -92,8 +100,13 @@ internal static class Program
         }
         await using (viewer.ConfigureAwait(false))
         {
-            // Single-use launch URLs: one for this start (valid 5 minutes), and a separate one in the
-            // owner-only instance file for a second start, renewed every time it is used.
+            // Single-use launch secrets: one for this start (valid 5 minutes), and a separate one in the
+            // owner-only instance file for a second start, renewed every time it is used. Neither ever
+            // appears on a command line: the browser is opened on an owner-only one-shot page file.
+            using var pages = new LaunchPages(paths.LaunchFolder);
+            pages.StartSweeping();
+            viewer.Security.LaunchUsed += (_, used) => pages.Delete(used.Secret);
+            pages.Expired += instance.RenewIfFingerprint;
             instance.KeepFresh(viewer.Security);
             if (import is not null)
             {
@@ -104,15 +117,29 @@ internal static class Program
                 await Console.Out.WriteLineAsync(string.Create(CultureInfo.InvariantCulture,
                     $"import: {p.Added} added, {p.Duplicates} duplicates, {p.Skipped} skipped, {p.Errors} errors")).ConfigureAwait(false);
             }
-            Uri launch = viewer.Security.IssueLaunchUrl(TimeSpan.FromMinutes(5));
+            Web.Security.LaunchTicket launch = viewer.Security.IssueLaunch(LaunchPages.Lifetime);
             if (printUrl)
             {
-                await Console.Out.WriteLineAsync(launch.AbsoluteUri).ConfigureAwait(false);
+                // Asked for: the address (with its single-use secret) goes to standard output, and whoever can
+                // read that output within 5 minutes can open the viewer once. See README, "Launch and session".
+                await Console.Out.WriteLineAsync(launch.Url.AbsoluteUri).ConfigureAwait(false);
             }
-            if (!noBrowser && !BrowserLauncher.Open(launch) && !printUrl)
+            if (printFile)
             {
-                await Console.Out.WriteLineAsync("No browser could be started. Open this address in a browser on this computer:").ConfigureAwait(false);
-                await Console.Out.WriteLineAsync(launch.AbsoluteUri).ConfigureAwait(false);
+                // The path of an owner-only one-shot page (no secret on standard output): open it in a browser on this
+                // computer within 5 minutes. For scripts and for starting the window by other means.
+                Web.Security.LaunchTicket forFile = viewer.Security.IssueLaunch(LaunchPages.Lifetime);
+                await Console.Out.WriteLineAsync(pages.Write(forFile.Endpoint, forFile.Secret)).ConfigureAwait(false);
+            }
+            if (!noBrowser && !BrowserLauncher.Open(pages.Write(launch.Endpoint, launch.Secret)))
+            {
+                pages.Delete(launch.Secret);
+                if (!printUrl)
+                {
+                    // Last resort, same exposure as --print-url (documented).
+                    await Console.Out.WriteLineAsync("No browser could be started. Open this address in a browser on this computer within 5 minutes:").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync(launch.Url.AbsoluteUri).ConfigureAwait(false);
+                }
             }
             await viewer.App.WaitForShutdownAsync().ConfigureAwait(false);
         }
@@ -134,15 +161,18 @@ internal static class Program
 
     private static async Task<int> BringForwardAsync(AppPaths paths, bool noBrowser)
     {
-        Uri? url = InstanceLock.ReadUrl(paths.InstanceLaunchFile);
-        if (url is null)
+        InstanceEntry? running = InstanceLock.Read(paths.InstanceLaunchFile);
+        if (running is null)
         {
             await Console.Error.WriteLineAsync("SIAARA Viewer is already running (or its store is in use by another program).").ConfigureAwait(false);
             return 3;
         }
         if (!noBrowser)
         {
-            BrowserLauncher.Open(url);
+            // The same one-shot page as a first start; the running instance deletes it when the secret is used or
+            // after 5 minutes (and then withdraws the secret).
+            using var pages = new LaunchPages(paths.LaunchFolder);
+            BrowserLauncher.Open(pages.Write(running.Endpoint, running.Secret));
         }
         await Console.Out.WriteLineAsync("SIAARA Viewer is already running; its window was brought forward.").ConfigureAwait(false);
         return 0;

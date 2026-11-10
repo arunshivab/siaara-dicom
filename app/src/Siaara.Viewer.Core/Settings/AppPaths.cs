@@ -51,19 +51,34 @@ public sealed class AppPaths
     /// <summary>Single-instance lock file (held open while running).</summary>
     public string InstanceLockFile => Path.Combine(BaseFolder, "instance.lock");
 
-    /// <summary>Launch URL of the running instance (owner-only permissions).</summary>
+    /// <summary>Address and an unused launch secret of the running instance, for a second start (owner-only).</summary>
     public string InstanceLaunchFile => Path.Combine(BaseFolder, "instance.url");
 
-    /// <summary>Creates the base folder (owner-only on Unix).</summary>
+    /// <summary>Folder of the one-shot launch pages the browser is opened on (owner-only; each page is deleted after use).</summary>
+    public string LaunchFolder => Path.Combine(BaseFolder, "launch");
+
+    /// <summary>Creates the base folder and the app's own sub-folders for the current user only (0700 / owner-only ACL).
+    /// Existing folders keep their permissions; <see cref="AccessWarning"/> reports them when they are wider.</summary>
     public void EnsureCreated()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(BaseFolder);
-        }
-        else
-        {
-            Directory.CreateDirectory(BaseFolder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        Platform.OwnerOnly.CreateDirectory(BaseFolder);
+        Platform.OwnerOnly.CreateDirectory(LogFolder);
+        Platform.OwnerOnly.CreateDirectory(Path.GetDirectoryName(AuditFile)!);
+        Platform.OwnerOnly.CreateDirectory(AnnotationFolder);
+        Platform.OwnerOnly.CreateDirectory(LaunchFolder);
+    }
+
+    /// <summary>
+    /// A warning in plain words when the data folder can be reached by other users (group or world
+    /// mode bits on Unix, other accounts in the access list on Windows), or null. The folder holds
+    /// patient images, the audit trail and the annotations; the app does not change the permissions of
+    /// a folder it did not create.
+    /// </summary>
+    /// <returns>The warning or null.</returns>
+    public string? AccessWarning()
+    {
+        string? wide = Platform.OwnerOnly.WiderAccess(BaseFolder);
+        return wide is null ? null
+            : "The SIAARA data folder is not private: " + wide + ". Patient data in it can be read by others. Restrict the folder to your own account.";
     }
 }

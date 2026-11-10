@@ -14,7 +14,7 @@
         @foreach (var s in _series)
         {
             <figure class="thumb">
-                <img src="@($"api/thumb?series={Uri.EscapeDataString(s.SeriesInstanceUid)}")" width="128" height="128" alt="" loading="lazy" />
+                <img src="@($"api/thumb?series={Rt.Ids.For(s.SeriesInstanceUid)}")" width="128" height="128" alt="" loading="lazy" />
                 <figcaption>@(s.SeriesNumber?.ToString(CultureInfo.InvariantCulture) ?? "-") @s.Modality @s.Description<br /><span class="muted">@s.Instances images</span></figcaption>
             </figure>
         }

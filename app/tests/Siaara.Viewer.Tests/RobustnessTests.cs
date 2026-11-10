@@ -17,27 +17,7 @@ namespace Siaara.Viewer.Tests;
 
 internal static class RobustnessTests
 {
-    private static HttpClient Client(RunningViewer v, bool cookie)
-    {
-        HttpClientHandler? handler = null;
-        try
-        {
-            handler = new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false };
-#pragma warning disable CA5399 // Plain HTTP on the loopback interface.
-            var c = new HttpClient(handler, disposeHandler: true) { BaseAddress = v.BaseUrl };
-#pragma warning restore CA5399
-            handler = null;
-            if (cookie)
-            {
-                c.DefaultRequestHeaders.Add("Cookie", v.Security.CookieName + "=" + v.Security.CookieValue);
-            }
-            return c;
-        }
-        finally
-        {
-            handler?.Dispose();
-        }
-    }
+    private static HttpClient Client(RunningViewer v, bool cookie) => TestHost.Client(v, cookie);
 
     private static async Task<bool> WaitUntilAsync(Func<bool> probe, int timeoutMs = 5000)
     {
@@ -57,7 +37,7 @@ internal static class RobustnessTests
         T.Case("security: the instance file is owner-only from creation and always holds a fresh single-use launch URL", async () =>
         {
             string data = T.NewTempDir("instfile");
-            RunningViewer v = await ViewerHost.StartAsync(new HostOptions { DataDir = data, MapStaticAssets = false }).ConfigureAwait(false);
+            RunningViewer v = await TestHost.StartAsync(data).ConfigureAwait(false);
             await using (v.ConfigureAwait(false))
             {
                 string lockFile = Path.Combine(data, "test.lock"), urlFile = Path.Combine(data, "test.url");
@@ -70,20 +50,37 @@ internal static class RobustnessTests
                 }
                 // No temporary file left behind.
                 T.Eq(Directory.GetFiles(data, "*.tmp").Length + Directory.GetFiles(data, ".*.tmp").Length, 0);
-                Uri first = InstanceLock.ReadUrl(urlFile)!;
+                InstanceEntry first = InstanceLock.Read(urlFile)!;
+                T.Eq(first.Endpoint.AbsoluteUri, v.Security.Origin + "/launch");
                 using HttpClient anon = Client(v, cookie: false);
-                T.Eq((await anon.GetAsync(first).ConfigureAwait(false)).StatusCode, HttpStatusCode.Redirect);
-                // Used once: the file now holds a different URL, and the old one is refused.
-                T.Check(await WaitUntilAsync(() => InstanceLock.ReadUrl(urlFile) is Uri u && u != first).ConfigureAwait(false));
-                Uri second = InstanceLock.ReadUrl(urlFile)!;
-                T.Eq((await anon.GetAsync(first).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
-                T.Eq((await anon.GetAsync(second).ConfigureAwait(false)).StatusCode, HttpStatusCode.Redirect);
+                using (HttpResponseMessage ok = await TestHost.PostLaunchAsync(anon, first.Secret).ConfigureAwait(false))
+                {
+                    T.Eq(ok.StatusCode, HttpStatusCode.OK);
+                    T.Check(ok.Headers.Contains("Set-Cookie"));
+                }
+                // Used once: the file now holds a different secret, and the old one is refused.
+                T.Check(await WaitUntilAsync(() => InstanceLock.Read(urlFile) is InstanceEntry e && e.Secret != first.Secret).ConfigureAwait(false));
+                InstanceEntry second = InstanceLock.Read(urlFile)!;
+                using (HttpResponseMessage again = await TestHost.PostLaunchAsync(anon, first.Secret).ConfigureAwait(false))
+                {
+                    T.Eq(again.StatusCode, HttpStatusCode.Forbidden);
+                }
+                using (HttpResponseMessage next = await TestHost.PostLaunchAsync(anon, second.Secret).ConfigureAwait(false))
+                {
+                    T.Eq(next.StatusCode, HttpStatusCode.OK);
+                }
                 if (!OperatingSystem.IsWindows())
                 {
                     T.Eq(File.GetUnixFileMode(urlFile), UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 }
-                // A second start reads it and brings the window forward with that fresh URL.
-                T.Check(InstanceLock.ReadUrl(urlFile) != second);
+                // A second start reads it and brings the window forward with that fresh secret.
+                T.Check(InstanceLock.Read(urlFile)!.Secret != second.Secret);
+                if (!OperatingSystem.IsWindows())
+                {
+                    // An instance file that others can read is not trusted by a second start.
+                    File.SetUnixFileMode(urlFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+                    T.Check(InstanceLock.Read(urlFile) is null);
+                }
             }
         });
 
@@ -92,14 +89,14 @@ internal static class RobustnessTests
             string data = T.NewTempDir("nostore");
             string dir = Path.Combine(data, "in");
             SampleData.WriteCtSeries(dir, SampleData.Patient("NOSTORE^CT", "NST1"), 3, 32);
-            RunningViewer v = await ViewerHost.StartAsync(new HostOptions { DataDir = data, MapStaticAssets = false }).ConfigureAwait(false);
+            RunningViewer v = await TestHost.StartAsync(data).ConfigureAwait(false);
             await using (v.ConfigureAwait(false))
             {
                 await v.Runtime.Import.Start(new Core.Import.ImportRequest(dir)).Completion.ConfigureAwait(false);
                 StudyPage page = await v.Runtime.Store.QueryStudiesAsync(new StudyQuery { Text = "NST1" }).ConfigureAwait(false);
                 IReadOnlyList<SeriesRow> series = await v.Runtime.Store.GetSeriesAsync(page.Rows[0].StudyInstanceUid).ConfigureAwait(false);
                 using HttpClient c = Client(v, cookie: true);
-                foreach (string path in new[] { "/api/thumb?series=" + Uri.EscapeDataString(series[0].SeriesInstanceUid), "/api/health", "/" })
+                foreach (string path in new[] { "/api/thumb?series=" + v.Runtime.Ids.For(series[0].SeriesInstanceUid), "/api/health", "/" })
                 {
                     using HttpResponseMessage r = await c.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
                     T.Eq(r.StatusCode, HttpStatusCode.OK);
@@ -242,7 +239,7 @@ internal static class RobustnessTests
             string data = T.NewTempDir("delrel");
             string dir = Path.Combine(data, "in");
             SampleData.WriteCtSeries(dir, SampleData.Patient("DELREL^CT", "DRL1"), 4, 32);
-            RunningViewer v = await ViewerHost.StartAsync(new HostOptions { DataDir = data, MapStaticAssets = false }).ConfigureAwait(false);
+            RunningViewer v = await TestHost.StartAsync(data).ConfigureAwait(false);
             await using (v.ConfigureAwait(false))
             {
                 await v.Runtime.Import.Start(new Core.Import.ImportRequest(dir)).Completion.ConfigureAwait(false);
@@ -274,12 +271,15 @@ internal static class RobustnessTests
                 T.Check(threw);
             }
             string[] lines = File.ReadAllLines(Path.Combine(data, "audit", "audit.jsonl"));
-            string[] deletes = [.. lines.Where(l => l.Contains("\"study.delete\"", StringComparison.Ordinal))];
-            T.Eq(deletes.Length, 2);
+            // Each delete: the intent first, then its outcome.
+            string[] all = [.. lines.Where(l => l.Contains("\"study.delete\"", StringComparison.Ordinal))];
+            T.Eq(all.Length, 4);
+            T.Check(all[0].Contains("\"outcome\":\"intent\"", StringComparison.Ordinal) && all[2].Contains("\"outcome\":\"intent\"", StringComparison.Ordinal));
+            string[] deletes = [all[1], all[3]];
             T.Check(deletes[0].Contains("\"outcome\":\"success\"", StringComparison.Ordinal));
             T.Check(deletes[1].Contains("\"outcome\":\"failure\"", StringComparison.Ordinal) && deletes[1].Contains("\"reason\":", StringComparison.Ordinal));
             T.Check(lines.All(l => l.Contains("\"outcome\":", StringComparison.Ordinal)));
-            T.Check(AuditLog.Verify(Path.Combine(data, "audit", "audit.jsonl")).IsIntact);
+            T.Check(AuditLog.Verify(Path.Combine(data, "audit", "audit.jsonl"), AuditKeys.KeyFile).IsIntact);
         });
     }
 }

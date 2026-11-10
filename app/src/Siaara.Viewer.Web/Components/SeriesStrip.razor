@@ -1,4 +1,5 @@
 @* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Series of the study; drag one onto a viewport or click to show it in the active one. *@
+@inject ViewerRuntime Rt
 <aside class="seriesstrip">
     @{ var list = Session.Series; }
     @for (int i = 0; i < list.Count; i++)
@@ -7,7 +8,7 @@
         var s = list[i];
         <div class="series @(Session.GetViewport(Session.ActiveViewport).SeriesIndex == idx ? "on" : "")" draggable="true"
              @ondragstart="() => OnDragSeries.InvokeAsync(idx)" @onclick="() => Session.AssignSeries(Session.ActiveViewport, idx)">
-            <img src="@($"api/thumb?series={Uri.EscapeDataString(s.SeriesInstanceUid)}")" width="96" height="96" alt="" draggable="false" />
+            <img src="@($"api/thumb?series={Rt.Ids.For(s.SeriesInstanceUid)}")" width="96" height="96" alt="" draggable="false" />
             <div class="label">@s.Label</div>
             <div class="muted small">@s.Images.Count images @(s.IsMultiFrame ? "(cine)" : "")</div>
             @if (s.AnyLossy)

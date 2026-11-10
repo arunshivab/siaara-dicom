@@ -7,31 +7,41 @@ namespace Siaara.Viewer.Host;
 
 /// <summary>
 /// Decision A1, option (a): open the window in the installed browser. Edge or Chrome / Chromium
-/// with --app=URL when found (a window without browser chrome), else the default browser. This is
-/// the only class that knows how the window is opened, so option (b), a native web-view shell per
-/// OS, can replace it without touching anything else.
+/// with --app=FILE when found (a window without browser chrome), else the default browser. What is
+/// opened is always the one-shot launch page FILE (<see cref="LaunchPages"/>), never an address
+/// with the launch secret: command lines are readable by every local user (R-113). This is the only
+/// class that knows how the window is opened, so option (b), a native web-view shell per OS, can
+/// replace it without touching anything else.
 /// </summary>
 internal static class BrowserLauncher
 {
-    /// <summary>Opens the URL. Returns false when no browser could be started (the URL is then printed).</summary>
-    /// <param name="url">Launch URL (contains the launch secret: never logged).</param>
+    /// <summary>The command line an app-mode browser is started with (tests check that it holds no secret).</summary>
+    /// <param name="launchPage">The one-shot launch page file.</param>
+    /// <returns>Arguments.</returns>
+    public static string[] AppArguments(string launchPage) => ["--app=" + new Uri(Path.GetFullPath(launchPage)).AbsoluteUri, "--new-window"];
+
+    /// <summary>Opens the launch page file. Returns false when no browser could be started.</summary>
+    /// <param name="launchPage">The one-shot launch page (a local, owner-only file).</param>
     /// <returns>True when a browser was started.</returns>
-    public static bool Open(Uri url)
+    public static bool Open(string launchPage)
     {
         string? app = FindAppBrowser();
-        if (app is not null && TryStart(app, "--app=" + url.AbsoluteUri, "--new-window"))
+        if (app is not null && TryStart(app, AppArguments(launchPage)))
         {
             AppLog.Info("host", "window opened with an app-mode browser");
             return true;
         }
-        bool ok = OperatingSystem.IsWindows() ? TryShell(url.AbsoluteUri)
-            : OperatingSystem.IsMacOS() ? TryStart("open", url.AbsoluteUri)
-            : TryStart("xdg-open", url.AbsoluteUri);
+        string file = Path.GetFullPath(launchPage);
+        bool ok = OperatingSystem.IsWindows() ? TryShell(file)
+            : OperatingSystem.IsMacOS() ? TryStart("open", file)
+            : TryStart("xdg-open", file);
         AppLog.Info("host", ok ? "window opened with the default browser" : "no browser could be started");
         return ok;
     }
 
-    private static string? FindAppBrowser()
+    /// <summary>An installed Edge / Chrome / Chromium that can open an app-mode window, or null.</summary>
+    /// <returns>Path or null.</returns>
+    public static string? FindAppBrowser()
     {
         var candidates = new List<string>();
         if (OperatingSystem.IsWindows())

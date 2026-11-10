@@ -1,0 +1,13 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Leaves the page for the signed-out page when the user signs out in any window (the cookie no longer works). *@
+@implements IDisposable
+@inject Siaara.Viewer.Web.Security.LaunchSecurity Sec
+@inject NavigationManager Nav
+
+@code {
+    protected override void OnInitialized() => Sec.SignedOut += OnSignedOut;
+
+    private void OnSignedOut(object? sender, EventArgs e) =>
+        Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(() => Nav.NavigateTo(Siaara.Viewer.Web.Security.LaunchSecurity.SignedOutPath, forceLoad: true)), "security", "leaving the page after sign-out");
+
+    public void Dispose() => Sec.SignedOut -= OnSignedOut;
+}

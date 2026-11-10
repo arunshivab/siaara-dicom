@@ -1,5 +1,5 @@
 @* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. The 2D viewer: patient bar, toolbar, series strip, viewport grid, cine bar, status bar. *@
-@page "/viewer/{StudyUid}"
+@page "/viewer/{StudyRef}"
 @implements IAsyncDisposable
 @inject ViewerRuntime Rt
 @inject IJSRuntime JS
@@ -24,13 +24,18 @@
             <span>@s.DisplayDate</span>
             <span class="desc">@s.Description</span>
         }
-        else
+        else if (_openError is null)
         {
             <span class="muted">Loading study...</span>
         }
         <span class="spacer"></span>
         <button class="btn" @onclick="() => _aboutOpen = true">About</button>
     </div>
+    <SessionGuard />
+    @if (_openError is not null)
+    {
+        <div class="banner warning" role="alert"><span>@_openError</span></div>
+    }
     @if (_session is not null)
     {
         <Toolbar Session="_session" />
@@ -49,13 +54,15 @@
 </div>
 
 @code {
-    [Parameter] public string StudyUid { get; set; } = "";
+    /// <summary>Per-run id of the study (ViewerRuntime.Ids); the Study Instance UID is never in the address.</summary>
+    [Parameter] public string StudyRef { get; set; } = "";
+    private string? _openError;
     private ViewerSession? _session;
     private int _dragSeries = -1;
     private bool _connected, _aboutOpen;
     private readonly System.Diagnostics.Stopwatch _openClock = System.Diagnostics.Stopwatch.StartNew();
 
-    private string StatusLeft => _session is null ? "" : _session.LoadError ?? _session.BackgroundError
+    private string StatusLeft => _session is null ? _openError ?? "" : _session.LoadError ?? _session.BackgroundError
         ?? (_session.Loaded ? $"{_session.Series.Count} series" : "Reading headers...");
 
     protected override async Task OnInitializedAsync()
@@ -65,7 +72,21 @@
         {
             return;
         }
-        _session = await Rt.OpenStudyAsync(Uri.UnescapeDataString(StudyUid)).ConfigureAwait(true);
+        string? studyUid = Rt.Ids.Resolve(StudyRef);
+        if (studyUid is null)
+        {
+            _openError = "This address belongs to an earlier run of SIAARA Viewer. Open the study from the study list.";
+            return;
+        }
+        try
+        {
+            _session = await Rt.OpenStudyAsync(studyUid).ConfigureAwait(true);
+        }
+        catch (SessionLimitException e)
+        {
+            _openError = e.Message;
+            return;
+        }
         _session.UiChanged += OnUi;
     }
 

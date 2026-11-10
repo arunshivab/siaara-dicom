@@ -63,6 +63,22 @@ public static class InputRouter
         }
     }
 
+    // The text of a JSON string; null for any other kind of value (GetString would throw on a number or an object).
+    private static string? Str(JsonElement e) => e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+
+    // TryGetInt32 / TryGetDouble throw on anything that is not a JSON number.
+    private static bool Int(JsonElement e, out int value)
+    {
+        value = 0;
+        return e.ValueKind == JsonValueKind.Number && e.TryGetInt32(out value);
+    }
+
+    private static bool Num(JsonElement e, out double value)
+    {
+        value = 0;
+        return e.ValueKind == JsonValueKind.Number && e.TryGetDouble(out value);
+    }
+
     private static void Command(ViewerSession session, int viewport, ReadOnlyMemory<byte> json)
     {
         JsonDocument doc;
@@ -81,35 +97,35 @@ public static class InputRouter
             {
                 return;
             }
-            if (r.TryGetProperty("activate", out JsonElement act) && act.TryGetInt32(out int a))
+            if (r.TryGetProperty("activate", out JsonElement act) && Int(act, out int a))
             {
                 session.Activate(a);
             }
-            if (r.TryGetProperty("tool", out JsonElement t) && TryParseTool(t.GetString(), out ViewerTool tool))
+            if (r.TryGetProperty("tool", out JsonElement t) && TryParseTool(Str(t), out ViewerTool tool))
             {
                 session.SetTool(tool);
             }
-            if (r.TryGetProperty("preset", out JsonElement p) && p.TryGetInt32(out int n))
+            if (r.TryGetProperty("preset", out JsonElement p) && Int(p, out int n))
             {
                 session.ApplyPreset(n);
             }
-            if (r.TryGetProperty("layout", out JsonElement l) && LayoutModel.TryParse(l.GetString(), out LayoutModel layout))
+            if (r.TryGetProperty("layout", out JsonElement l) && LayoutModel.TryParse(Str(l), out LayoutModel layout))
             {
                 session.SetLayout(layout);
             }
-            if (r.TryGetProperty("action", out JsonElement ac) && ac.GetString() is string action)
+            if (r.TryGetProperty("action", out JsonElement ac) && Str(ac) is string action)
             {
                 session.RunAction(action);
             }
-            if (r.TryGetProperty("fps", out JsonElement f) && f.TryGetDouble(out double fps))
+            if (r.TryGetProperty("fps", out JsonElement f) && Num(f, out double fps))
             {
                 session.SetCineFps(fps);
             }
-            if (r.TryGetProperty("dpr", out JsonElement d) && d.TryGetDouble(out double dpr))
+            if (r.TryGetProperty("dpr", out JsonElement d) && Num(d, out double dpr))
             {
                 session.SetDevicePixelRatio(dpr);
             }
-            if (r.TryGetProperty("series", out JsonElement s) && s.TryGetInt32(out int si))
+            if (r.TryGetProperty("series", out JsonElement s) && Int(s, out int si))
             {
                 session.AssignSeries(viewport, si);
             }
@@ -122,20 +138,20 @@ public static class InputRouter
                 session.SetSyncMember(viewport, sm.GetBoolean());
             }
             if (r.TryGetProperty("annotationText", out JsonElement at) && at.ValueKind == JsonValueKind.Object
-                && at.TryGetProperty("id", out JsonElement tid) && tid.GetString() is string textId)
+                && at.TryGetProperty("id", out JsonElement tid) && Str(tid) is string textId)
             {
                 string? text = at.TryGetProperty("text", out JsonElement tv) && tv.ValueKind == JsonValueKind.String ? tv.GetString() : null;
                 session.Observe(session.SetAnnotationTextAsync(textId, text), "saving the label");
             }
             if (r.TryGetProperty("exported", out JsonElement ex) && ex.ValueKind == JsonValueKind.Object
-                && ex.TryGetProperty("mode", out JsonElement em) && em.GetString() is string mode)
+                && ex.TryGetProperty("mode", out JsonElement em) && Str(em) is string mode)
             {
                 bool ok = ex.TryGetProperty("ok", out JsonElement eo) && eo.ValueKind == JsonValueKind.True;
                 string? reason = ex.TryGetProperty("reason", out JsonElement er) && er.ValueKind == JsonValueKind.String ? er.GetString() : null;
                 session.ReportExport(mode, ok, reason);
             }
             if (r.TryGetProperty("calibrate", out JsonElement c) && c.ValueKind == JsonValueKind.Object
-                && c.TryGetProperty("id", out JsonElement cid) && cid.GetString() is string id)
+                && c.TryGetProperty("id", out JsonElement cid) && Str(cid) is string id)
             {
                 double mm = c.TryGetProperty("mm", out JsonElement m) && m.ValueKind == JsonValueKind.Number ? m.GetDouble()
                     : c.TryGetProperty("mm", out m) && m.ValueKind == JsonValueKind.String
