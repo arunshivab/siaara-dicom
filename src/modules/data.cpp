@@ -340,7 +340,7 @@ Result<RawChannel> raw_channel(const Dataset& ds, std::uint32_t group, std::uint
     auto wg = waveform_group(ds, group);
     if (!wg) return wg.error();
     RawChannel r;
-    r.group = std::move(wg.value());
+    r.group = wg.value();
     const WaveformGroup& g = r.group;
     if (channel >= g.channels) return Status(Errc::NotFound, "channel index out of range");
     r.bytes = waveform_sample_bytes(g.bits_allocated, g.interpretation);

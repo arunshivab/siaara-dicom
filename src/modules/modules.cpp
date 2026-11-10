@@ -214,9 +214,7 @@ Result<std::vector<Segment>> parse_path(std::string_view p) {
                 const auto* d = dict::lookup_keyword(t);
                 // Repeating groups (Overlay 60xx, Curve 50xx): the keyword names the first group
                 // (6000 / 5000); another group is addressed by its tag, e.g. (6002,0010).
-                if (d && d->mask == 0xFF00FFFFu) {
-                    s.tag = d->tag;
-                } else if (!d || d->mask != 0xFFFFFFFFu) {
+                if (!d || (d->mask != 0xFFFFFFFFu && d->mask != 0xFF00FFFFu)) {
                     std::string m = "unknown keyword: " + std::string(t.substr(0, 80));
                     if (d) m += " (a repeating-element keyword: use the tag)";
                     // R-157: creator:gggg,xx with a '.', '[' or ']' in an unquoted creator ends
@@ -224,9 +222,8 @@ Result<std::vector<Segment>> parse_path(std::string_view p) {
                     if (p.find(':', start) != std::string_view::npos)
                         m += " (a private creator that contains '.', '[' or ']' must be quoted: \"creator\":gggg,xx)";
                     return Status(Errc::NotFound, std::move(m));
-                } else {
-                    s.tag = d->tag;
                 }
+                s.tag = d->tag;
             }
         }
         if (i < p.size() && p[i] == '[') {
