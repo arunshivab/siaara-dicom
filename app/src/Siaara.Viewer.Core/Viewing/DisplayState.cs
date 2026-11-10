@@ -34,6 +34,9 @@ public sealed record DisplayState
     /// <summary>Bilinear interpolation.</summary>
     public bool Linear { get; init; } = true;
 
+    /// <summary>Colour map for grayscale images (Gray = none).</summary>
+    public TkColormap Colormap { get; init; }
+
     /// <summary>The render spec for a viewport size.</summary>
     /// <param name="width">Width.</param>
     /// <param name="height">Height.</param>
@@ -58,6 +61,7 @@ public sealed record DisplayState
         Invert = Invert,
         NoOverlays = !ShowOverlays,
         NoShutters = !ShowOverlays,
+        Colormap = Colormap,
     };
 }
 

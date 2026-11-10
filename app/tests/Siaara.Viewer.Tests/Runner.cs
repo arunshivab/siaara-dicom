@@ -177,6 +177,7 @@ internal static class Program
             StoreImportTests.Register();
             ImagingTests.Register();
             MeasureTests.Register();
+            ViewerFeatureTests.Register();
             ProtocolTests.Register();
             HostTests.Register();
             PerfTests.Register();

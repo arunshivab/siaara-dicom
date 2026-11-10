@@ -26,6 +26,10 @@ public static class InputRouter
         ["freehand"] = ViewerTool.Freehand,
         ["probe"] = ViewerTool.Probe,
         ["calibrate"] = ViewerTool.Calibrate,
+        ["magnify"] = ViewerTool.Magnify,
+        ["arrow"] = ViewerTool.Arrow,
+        ["text"] = ViewerTool.Text,
+        ["xref"] = ViewerTool.CrossReference,
     };
 
     /// <summary>Tool by name.</summary>
@@ -108,6 +112,27 @@ public static class InputRouter
             if (r.TryGetProperty("series", out JsonElement s) && s.TryGetInt32(out int si))
             {
                 session.AssignSeries(viewport, si);
+            }
+            if (r.TryGetProperty("colormap", out JsonElement cm) && cm.ValueKind == JsonValueKind.String)
+            {
+                session.SetColormap(cm.GetString() ?? "");
+            }
+            if (r.TryGetProperty("syncMember", out JsonElement sm) && sm.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                session.SetSyncMember(viewport, sm.GetBoolean());
+            }
+            if (r.TryGetProperty("annotationText", out JsonElement at) && at.ValueKind == JsonValueKind.Object
+                && at.TryGetProperty("id", out JsonElement tid) && tid.GetString() is string textId)
+            {
+                string? text = at.TryGetProperty("text", out JsonElement tv) && tv.ValueKind == JsonValueKind.String ? tv.GetString() : null;
+                _ = session.SetAnnotationTextAsync(textId, text);
+            }
+            if (r.TryGetProperty("exported", out JsonElement ex) && ex.ValueKind == JsonValueKind.Object
+                && ex.TryGetProperty("mode", out JsonElement em) && em.GetString() is string mode)
+            {
+                bool ok = ex.TryGetProperty("ok", out JsonElement eo) && eo.ValueKind == JsonValueKind.True;
+                string? reason = ex.TryGetProperty("reason", out JsonElement er) && er.ValueKind == JsonValueKind.String ? er.GetString() : null;
+                session.ReportExport(mode, ok, reason);
             }
             if (r.TryGetProperty("calibrate", out JsonElement c) && c.ValueKind == JsonValueKind.Object
                 && c.TryGetProperty("id", out JsonElement cid) && cid.GetString() is string id)

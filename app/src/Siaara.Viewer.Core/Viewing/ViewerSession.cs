@@ -2,6 +2,8 @@
 
 using System.Buffers;
 using System.Globalization;
+using Siaara.Viewer.Core.Audit;
+using Siaara.Viewer.Core.Geometry;
 using Siaara.Viewer.Core.Imaging;
 using Siaara.Viewer.Core.Logging;
 using Siaara.Viewer.Core.Measure;
@@ -18,7 +20,22 @@ namespace Siaara.Viewer.Core.Viewing;
 /// <param name="Scheduler">Scheduler.</param>
 /// <param name="Settings">Settings.</param>
 /// <param name="Annotations">Annotation store.</param>
-public sealed record ViewerServices(StoreService Store, RenderCache Cache, ToolkitScheduler Scheduler, SettingsStore Settings, AnnotationStore Annotations);
+/// <param name="Audit">Audit log for image exports, or null (tests).</param>
+public sealed record ViewerServices(StoreService Store, RenderCache Cache, ToolkitScheduler Scheduler, SettingsStore Settings, AnnotationStore Annotations,
+                                    AuditLog? Audit = null);
+
+/// <summary>Which display properties the viewports of the sync group share.</summary>
+/// <param name="Members">Viewport indexes in the group.</param>
+/// <param name="WindowLevel">Window centre / width (and file VOI choice).</param>
+/// <param name="Zoom">Zoom factor.</param>
+/// <param name="Pan">Pan.</param>
+public sealed record SyncGroup(IReadOnlySet<int> Members, bool WindowLevel, bool Zoom, bool Pan)
+{
+    /// <summary>True when the viewport shares something with others.</summary>
+    /// <param name="viewport">Viewport index.</param>
+    /// <returns>Membership.</returns>
+    public bool Has(int viewport) => Members.Contains(viewport) && (WindowLevel || Zoom || Pan);
+}
 
 /// <summary>
 /// One open study in one browser tab: series, layout, viewports, tools, annotations, cine. The
@@ -30,6 +47,17 @@ public sealed record ViewerServices(StoreService Store, RenderCache Cache, Toolk
 public sealed class ViewerSession : IDisposable
 {
     private const int MaxViewports = LayoutModel.MaxSide * LayoutModel.MaxSide;
+
+    /// <summary>Magnifier frames travel as viewport index + this value (frame and ack messages).</summary>
+    public const int MagnifierViewportBase = 0x4000;
+
+    /// <summary>Magnification of the magnifier glass relative to the viewport's zoom.</summary>
+    public const double MagnifierFactor = 3.0;
+
+    /// <summary>Magnifier glass side in CSS pixels (times the device pixel ratio on the wire).</summary>
+    public const int MagnifierCssSize = 200;
+
+    private static readonly string[] s_colormaps = ["gray", "inverseGray", "hotIron", "pet", "hotMetalBlue", "pet20Step"];
     private readonly ViewerServices _svc;
     private readonly Lock _gate = new();
     private readonly Viewport[] _viewports = new Viewport[MaxViewports];
@@ -78,6 +106,18 @@ public sealed class ViewerSession : IDisposable
 
     /// <summary>Privacy mode (F8): all text hidden.</summary>
     public bool Privacy { get; private set; }
+
+    /// <summary>The sync group (W/L, zoom, pan shared by chosen viewports).</summary>
+    public SyncGroup Sync { get; private set; } = new(new HashSet<int>(), true, true, true);
+
+    /// <summary>Linked scrolling by frame of reference.</summary>
+    public bool LinkScroll { get; private set; }
+
+    /// <summary>Reference lines of the active viewport's slice are drawn on the other viewports.</summary>
+    public bool ShowReferenceLines { get; private set; } = true;
+
+    // Cross-reference point (patient space) and its frame of reference, or null.
+    private (Vec3 Point, string FrameOfReference)? _cross;
 
     /// <summary>Device pixel ratio of the browser (true-size zoom).</summary>
     public double DevicePixelRatio { get; private set; } = 1;
@@ -247,6 +287,10 @@ public sealed class ViewerSession : IDisposable
             {
                 StartRender(vp);
             }
+            if (vp.MagnifierFlow.Reset())
+            {
+                _ = MagnifierAsync(vp);
+            }
         }
     }
 
@@ -300,6 +344,15 @@ public sealed class ViewerSession : IDisposable
     /// <param name="seq">Sequence number.</param>
     public void Ack(int viewport, uint seq)
     {
+        if (viewport >= MagnifierViewportBase && viewport < MagnifierViewportBase + MaxViewports)
+        {
+            Viewport mv = _viewports[viewport - MagnifierViewportBase];
+            if (mv.MagnifierFlow.Ack(seq))
+            {
+                _ = MagnifierAsync(mv);
+            }
+            return;
+        }
         if (viewport < 0 || viewport >= MaxViewports)
         {
             return;
@@ -372,6 +425,7 @@ public sealed class ViewerSession : IDisposable
         }
         TkFrame frame = await _svc.Cache.GetFrameAsync(job.Image, WorkPriority.Normal, _closedToken).ConfigureAwait(false);
         AnnotationDocument doc = await GetDocumentAsync(job.Image.Key).ConfigureAwait(false);
+        WarmPlanes(vp);
         IViewSink? sink;
         lock (_gate)
         {
@@ -381,7 +435,7 @@ public sealed class ViewerSession : IDisposable
         {
             return false;
         }
-        bool gray = frame.Info.Monochrome;
+        bool gray = frame.Info.Monochrome && job.State.Colormap == TkColormap.Gray;
         RenderSpec spec = ResolveSpec(vp, frame, job);
         int pixelBytes = job.Width * job.Height * (gray ? 1 : 4);
         int header = sink.FrameHeaderBytes;
@@ -454,7 +508,7 @@ public sealed class ViewerSession : IDisposable
     }
 
     private static string RingKey(RenderSpec s, RenderJob j) => string.Create(CultureInfo.InvariantCulture,
-        $"{j.Image?.Instance.SopInstanceUid}|{j.Width}x{j.Height}|{s.Zoom}|{s.PanX}|{s.PanY}|{s.Rotation}|{s.FlipHorizontal}|{s.FlipVertical}|{s.Voi}|{s.VoiIndex}|{s.WindowCenter}|{s.WindowWidth}|{s.Invert}|{s.NoOverlays}|{s.Linear}");
+        $"{j.Image?.Instance.SopInstanceUid}|{j.Width}x{j.Height}|{s.Zoom}|{s.PanX}|{s.PanY}|{s.Rotation}|{s.FlipHorizontal}|{s.FlipVertical}|{s.Voi}|{s.VoiIndex}|{s.WindowCenter}|{s.WindowWidth}|{s.Invert}|{s.NoOverlays}|{s.Linear}|{s.Colormap}");
 
     private RenderSpec ResolveSpec(Viewport vp, TkFrame frame, RenderJob job)
     {
@@ -482,7 +536,7 @@ public sealed class ViewerSession : IDisposable
                 vp.WindowName = name;
             }
         }
-        RenderSpec spec = st.ToSpec(job.Width, job.Height, frame.Info.Monochrome);
+        RenderSpec spec = st.ToSpec(job.Width, job.Height, frame.Info.Monochrome && st.Colormap == TkColormap.Gray);
         return st.Voi == TkVoiSource.File && frame.Voi.Count == 0 ? spec with { Voi = TkVoiSource.FullRange } : spec;
     }
 
@@ -571,6 +625,7 @@ public sealed class ViewerSession : IDisposable
         {
             return;
         }
+        WarmPlanes(vp);
         AnnotationDocument? doc;
         lock (_gate)
         {
@@ -589,7 +644,7 @@ public sealed class ViewerSession : IDisposable
                 return;
             }
             RenderJob job = new(img, vp.State, vp.Width, vp.Height, vp.ImageIndex, vp.Series?.Images.Count ?? 0, true, vp.Cine.IsPlaying, null);
-            RenderSpec spec = vp.State.ToSpec(vp.Width, vp.Height, frame.Info.Monochrome);
+            RenderSpec spec = vp.State.ToSpec(vp.Width, vp.Height, frame.Info.Monochrome && vp.State.Colormap == TkColormap.Gray);
             st = BuildStateLocked(vp, job, frame, spec, vp.Transform, doc);
             seq = vp.Flow.LastSent;
         }
@@ -622,9 +677,11 @@ public sealed class ViewerSession : IDisposable
             views.Add(new AnnotationView(a.Id, a.Kind.ToString().ToLowerInvariant(), pts, closed && !(drawing && a.Kind == AnnotationKind.Polygon),
                 Privacy ? "" : a.Label, a.Spacing, [.. a.Warnings], drawing));
         }
-        _ = frame;
         return new ViewportStateMessage
         {
+            ReferenceLines = ReferenceLinesLocked(vp, img, t),
+            Menu = MenuLocked(vp, frame.Info.Monochrome),
+            TextPrompt = vp.TextPrompt,
             OverlayText = text,
             Orientation = orient,
             Annotations = views,
@@ -636,6 +693,90 @@ public sealed class ViewerSession : IDisposable
             ImageCount = job.ImageCount,
             CalibrationPrompt = vp.CalibrationPrompt,
         };
+    }
+
+    // Under the lock. Planes come from the per-instance cache; a plane not cached yet is read from the
+    // header (a short toolkit call on already-parsed attributes, no I/O).
+    private List<ReferenceLineView> ReferenceLinesLocked(Viewport vp, SeriesImage img, ScreenImageTransform t)
+    {
+        var lines = new List<ReferenceLineView>();
+        ImagePlane? target = img.Plane;
+        if (target is null)
+        {
+            return lines;
+        }
+        if (ShowReferenceLines && vp.Index != ActiveViewport && _viewports[ActiveViewport].CurrentImage is { } src
+            && src.Plane is { } source && PlaneMath.ReferenceLine(source, target) is var (a, b))
+        {
+            PointD sa = t.ToScreen(a), sb = t.ToScreen(b);
+            string label = _viewports[ActiveViewport].Series?.SeriesNumber?.ToString(CultureInfo.InvariantCulture) ?? "";
+            lines.Add(new ReferenceLineView("scout", [Math.Round(sa.X, 1), Math.Round(sa.Y, 1), Math.Round(sb.X, 1), Math.Round(sb.Y, 1)], label));
+        }
+        if (_cross is var (point, forUid) && string.Equals(forUid, target.FrameOfReferenceUid, StringComparison.Ordinal))
+        {
+            (PointD p, double distance) = target.ToImage(point);
+            double tolerance = Math.Max(1.0, 0.6 * Math.Max(target.RowSpacing, target.ColumnSpacing));
+            if (Math.Abs(distance) <= Math.Max(tolerance, SliceGap(vp)) && p.X >= 0 && p.Y >= 0 && p.X <= target.Columns && p.Y <= target.Rows)
+            {
+                PointD sp = t.ToScreen(p);
+                lines.Add(new ReferenceLineView("cross", [Math.Round(sp.X, 1), Math.Round(sp.Y, 1)], ""));
+            }
+        }
+        return lines;
+    }
+
+    // Half the distance to the neighbouring slice (cross-reference tolerance), from cached planes.
+    private static double SliceGap(Viewport vp)
+    {
+        if (vp.Series is not { Images.Count: > 1 } s)
+        {
+            return 0;
+        }
+        int i = Math.Clamp(vp.ImageIndex, 0, s.Images.Count - 1), j = i + 1 < s.Images.Count ? i + 1 : i - 1;
+        ImagePlane? a = s.Images[i].Plane, b = s.Images[j].Plane;
+        return a is null || b is null ? 0 : Math.Abs(a.ToImage(b.FirstPixelCentre).Distance) / 2;
+    }
+
+    private ViewportMenu MenuLocked(Viewport vp, bool monochrome)
+    {
+        IReadOnlyList<Settings.WindowPresetSetting> presets = vp.Series is null ? [] : WindowPresets.For(Prefs, vp.Series.Modality);
+        return new ViewportMenu([.. presets.Select(p => p.Name)], ColormapName(vp.State.Colormap), monochrome ? s_colormaps : [],
+            vp.State.ShowOverlays, Sync.Members.Contains(vp.Index), LinkScroll, ShowReferenceLines);
+    }
+
+    /// <summary>Wire name of a colour map.</summary>
+    /// <param name="c">Colour map.</param>
+    /// <returns>The name.</returns>
+    public static string ColormapName(TkColormap c) => s_colormaps[Math.Clamp((int)c, 0, s_colormaps.Length - 1)];
+
+    /// <summary>Colour map from its wire name.</summary>
+    /// <param name="name">Name.</param>
+    /// <param name="colormap">Result.</param>
+    /// <returns>True when known.</returns>
+    public static bool TryParseColormap(string? name, out TkColormap colormap)
+    {
+        int i = Array.FindIndex(s_colormaps, n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        colormap = i < 0 ? TkColormap.Gray : (TkColormap)i;
+        return i >= 0;
+    }
+
+    // Reads (and caches) the planes the state message needs, outside the lock.
+    private void WarmPlanes(Viewport vp)
+    {
+        SeriesImage? own, active, neighbour = null;
+        lock (_gate)
+        {
+            own = vp.CurrentImage;
+            active = _viewports[ActiveViewport].CurrentImage;
+            if (vp.Series is { Images.Count: > 1 } s)
+            {
+                int i = Math.Clamp(vp.ImageIndex, 0, s.Images.Count - 1);
+                neighbour = s.Images[i + 1 < s.Images.Count ? i + 1 : i - 1];
+            }
+        }
+        _ = own?.Plane;
+        _ = active?.Plane;
+        _ = neighbour?.Plane;
     }
 
     private static OrientationView? Orientation(SeriesImage img, RenderSpec spec, ScreenImageTransform t)
@@ -699,11 +840,15 @@ public sealed class ViewerSession : IDisposable
             return;
         }
         Viewport vp = _viewports[e.Viewport];
-        bool render = false, annotations = false, ui = false, roi = false;
+        bool render = false, annotations = false, ui = false, roi = false, indexChanged, magnify;
         Annotation? committed = null;
+        List<Viewport>? synced;
+        PointD? cross = null;
         lock (_gate)
         {
             Touch();
+            DisplayState before = vp.State;
+            int beforeIndex = vp.ImageIndex;
             switch (e.Kind)
             {
                 case InputKind.Resize:
@@ -737,8 +882,322 @@ public sealed class ViewerSession : IDisposable
                     OnKeyLocked(vp, e, ref render, ref annotations, ref ui, ref committed);
                     break;
             }
+            if (vp.Drag is { Tool: ViewerTool.CrossReference } && e.Kind is InputKind.Down or InputKind.Move && ImagePoint(vp, e.X, e.Y) is PointD cp)
+            {
+                cross = cp;
+            }
+            synced = PropagateSyncLocked(vp, before);
+            indexChanged = vp.ImageIndex != beforeIndex;
+            magnify = vp.Magnifier is not null && e.Kind is InputKind.Down or InputKind.Move;
         }
         Finish(vp, render, annotations, ui, roi, committed);
+        synced?.ForEach(Invalidate);
+        if (indexChanged)
+        {
+            AfterSliceChange(vp);
+        }
+        if (magnify)
+        {
+            InvalidateMagnifier(vp);
+        }
+        if (cross is PointD point)
+        {
+            _ = CrossReferenceAsync(vp, point);
+        }
+    }
+
+    // ================================================================== sync group, linked scrolling, cross-reference
+
+    // Under the lock: copies the properties the sync group shares from src to the other members.
+    private List<Viewport>? PropagateSyncLocked(Viewport src, DisplayState before)
+    {
+        DisplayState now = src.State;
+        if (ReferenceEquals(before, now) || !Sync.Has(src.Index))
+        {
+            return null;
+        }
+        bool wl = Sync.WindowLevel && (before.Voi != now.Voi || before.VoiIndex != now.VoiIndex || before.WindowCenter != now.WindowCenter
+                                       || before.WindowWidth != now.WindowWidth);
+        bool zoom = Sync.Zoom && before.Zoom != now.Zoom;
+        bool pan = Sync.Pan && (before.PanX != now.PanX || before.PanY != now.PanY);
+        if (!wl && !zoom && !pan)
+        {
+            return null;
+        }
+        var changed = new List<Viewport>();
+        foreach (int i in Sync.Members)
+        {
+            if (i == src.Index || i >= Layout.Count || _viewports[i].Series is null)
+            {
+                continue;
+            }
+            Viewport v = _viewports[i];
+            DisplayState st = v.State;
+            if (wl)
+            {
+                st = st with { Voi = now.Voi, VoiIndex = now.VoiIndex, WindowCenter = now.WindowCenter, WindowWidth = now.WindowWidth };
+                v.WindowName = src.WindowName;
+            }
+            if (zoom)
+            {
+                st = st with { Zoom = now.Zoom };
+            }
+            if (pan)
+            {
+                st = st with { PanX = now.PanX, PanY = now.PanY };
+            }
+            if (st != v.State)
+            {
+                v.State = st;
+                changed.Add(v);
+            }
+        }
+        return changed;
+    }
+
+    // The slice of vp changed: other viewports show its new reference line; linked viewports follow.
+    private void AfterSliceChange(Viewport vp)
+    {
+        bool active, link;
+        Viewport[] others;
+        lock (_gate)
+        {
+            active = vp.Index == ActiveViewport;
+            link = LinkScroll;
+            others = [.. _viewports.Take(Layout.Count).Where(v => v.Index != vp.Index && v.Series is not null)];
+        }
+        if (link)
+        {
+            _ = LinkedScrollAsync(vp);
+        }
+        else if (active)
+        {
+            foreach (Viewport o in others)
+            {
+                SendAnnotationState(o);
+            }
+        }
+    }
+
+    private async Task LinkedScrollAsync(Viewport src)
+    {
+        SeriesImage? img;
+        (Viewport V, SeriesSource S)[] targets;
+        lock (_gate)
+        {
+            img = src.CurrentImage;
+            targets = [.. _viewports.Take(Layout.Count).Where(v => v.Index != src.Index && v.Series is not null).Select(v => (v, v.Series!))];
+        }
+        if (img is null)
+        {
+            return;
+        }
+        var moves = await _svc.Scheduler.RunAsync(WorkPool.Interactive, _ =>
+        {
+            var list = new List<(Viewport V, SeriesSource S, int Index)>();
+            if (img.Plane is not { } plane || plane.FrameOfReferenceUid.Length == 0)
+            {
+                return list;
+            }
+            foreach ((Viewport v, SeriesSource s) in targets)
+            {
+                ImagePlane?[] planes = [.. s.Images.Select(i => i.Plane)];
+                ImagePlane? any = planes.FirstOrDefault(p => p is not null);
+                // Only roughly parallel stacks scroll together; reference lines cover the others.
+                if (any is null || !plane.SameFrameOfReference(any) || plane.Parallelism(any) < 0.9)
+                {
+                    continue;
+                }
+                int idx = PlaneMath.NearestPlane(planes, plane.FrameOfReferenceUid, plane.Centre);
+                if (idx >= 0)
+                {
+                    list.Add((v, s, idx));
+                }
+            }
+            return list;
+        }, _closedToken).ConfigureAwait(false);
+        var redraw = new List<Viewport>();
+        lock (_gate)
+        {
+            foreach ((Viewport v, SeriesSource s, int idx) in moves)
+            {
+                if (ReferenceEquals(v.Series, s) && v.ImageIndex != idx)
+                {
+                    v.ImageIndex = idx;
+                    v.Drawing = null;
+                    redraw.Add(v);
+                }
+            }
+            redraw.AddRange(targets.Select(t => t.V).Where(v => !redraw.Contains(v)));
+        }
+        foreach (Viewport v in redraw)
+        {
+            Invalidate(v);
+        }
+    }
+
+    private async Task CrossReferenceAsync(Viewport src, PointD imagePoint)
+    {
+        SeriesImage? img;
+        lock (_gate)
+        {
+            img = src.CurrentImage;
+        }
+        if (img is null)
+        {
+            return;
+        }
+        ImagePlane? plane = await _svc.Scheduler.RunAsync(WorkPool.Interactive, _ => img.Plane, _closedToken).ConfigureAwait(false);
+        if (plane is null || plane.FrameOfReferenceUid.Length == 0)
+        {
+            return;
+        }
+        Vec3 point = plane.ToPatient(imagePoint);
+        (Viewport V, SeriesSource S)[] targets;
+        lock (_gate)
+        {
+            _cross = (point, plane.FrameOfReferenceUid);
+            targets = [.. _viewports.Take(Layout.Count).Where(v => v.Index != src.Index && v.Series is not null).Select(v => (v, v.Series!))];
+        }
+        var moves = await _svc.Scheduler.RunAsync(WorkPool.Interactive, _ =>
+        {
+            var list = new List<(Viewport V, SeriesSource S, int Index)>();
+            foreach ((Viewport v, SeriesSource s) in targets)
+            {
+                // Any orientation: the slice through the point (within 10 mm), if the stack reaches it.
+                int idx = PlaneMath.NearestPlane([.. s.Images.Select(i => i.Plane)], plane.FrameOfReferenceUid, point, 10.0);
+                if (idx >= 0)
+                {
+                    list.Add((v, s, idx));
+                }
+            }
+            return list;
+        }, _closedToken).ConfigureAwait(false);
+        lock (_gate)
+        {
+            foreach ((Viewport v, SeriesSource s, int idx) in moves)
+            {
+                if (ReferenceEquals(v.Series, s))
+                {
+                    v.ImageIndex = idx;
+                    v.Drawing = null;
+                }
+            }
+        }
+        InvalidateAll();
+    }
+
+    // ================================================================== magnifier
+
+    private void InvalidateMagnifier(Viewport vp)
+    {
+        if (vp.MagnifierFlow.Request())
+        {
+            _ = MagnifierAsync(vp);
+        }
+    }
+
+    private async Task MagnifierAsync(Viewport vp)
+    {
+        while (true)
+        {
+            bool sent = false;
+            try
+            {
+                sent = await MagnifierOnceAsync(vp).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+#pragma warning disable CA1031 // The magnifier is a convenience: a failed render must not break the viewport.
+            catch (Exception e)
+#pragma warning restore CA1031
+            {
+                AppLog.Error("render", "magnifier render failed", e);
+            }
+            if (sent || !vp.MagnifierFlow.Abandon())
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task<bool> MagnifierOnceAsync(Viewport vp)
+    {
+        SeriesImage? img;
+        DisplayState st;
+        (int X, int Y)? at;
+        ScreenImageTransform? t;
+        IViewSink? sink;
+        double dpr;
+        lock (_gate)
+        {
+            (img, st, at, t, sink, dpr) = (vp.CurrentImage, vp.State, vp.Magnifier, vp.Transform, _sink, DevicePixelRatio);
+        }
+        if (img is null || at is not var (mx, my) || t is null || sink is null)
+        {
+            return false;
+        }
+        TkFrame frame = await _svc.Cache.GetFrameAsync(img, WorkPriority.Normal, _closedToken).ConfigureAwait(false);
+        RenderSpec spec = MagnifierSpec(frame.Info, st, t, mx, my, dpr, frame.Voi.Count);
+        int pixelBytes = spec.Width * spec.Height * (spec.Gray ? 1 : 4);
+        int header = sink.FrameHeaderBytes;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(header + pixelBytes);
+        bool handedOver = false;
+        try
+        {
+            TkError err = await _svc.Scheduler.RunAsync(WorkPool.Interactive,
+                _ => frame.TryRender(buffer.AsSpan(header, pixelBytes), spec, out int _), _closedToken).ConfigureAwait(false);
+            if (err != TkError.None)
+            {
+                throw new TkException(err);
+            }
+            uint seq = vp.MagnifierFlow.BeginSend();
+            sink.SendFrame(MagnifierViewportBase + vp.Index, seq, spec.Gray ? FramePixelFormat.Gray8 : FramePixelFormat.Rgba, spec.Width, spec.Height,
+                buffer, header + pixelBytes);
+            handedOver = true;
+        }
+        finally
+        {
+            if (!handedOver)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The magnifier's render: a small square viewport at <see cref="MagnifierFactor"/> times the
+    /// viewport's zoom, panned so the image point under (x, y) is at its centre; window, colour map,
+    /// rotation and flips as in the viewport.
+    /// </summary>
+    /// <param name="info">Frame.</param>
+    /// <param name="st">Viewport state.</param>
+    /// <param name="t">Viewport transform of the frame on screen.</param>
+    /// <param name="x">Pointer x (viewport pixels).</param>
+    /// <param name="y">Pointer y.</param>
+    /// <param name="dpr">Device pixel ratio.</param>
+    /// <param name="fileVoiCount">Windows stored in the file.</param>
+    /// <returns>The spec.</returns>
+    public static RenderSpec MagnifierSpec(TkFrameInfo info, DisplayState st, ScreenImageTransform t, int x, int y, double dpr, int fileVoiCount)
+    {
+        ArgumentNullException.ThrowIfNull(info);
+        ArgumentNullException.ThrowIfNull(st);
+        ArgumentNullException.ThrowIfNull(t);
+        int size = Math.Clamp((int)Math.Round(MagnifierCssSize * dpr), 64, 1024);
+        double zoom = Math.Clamp(t.Zoom * MagnifierFactor, 0.05, 256);
+        PointD ip = t.ToImage(new PointD(x, y));
+        var centred = new ScreenImageTransform(info.Columns, info.Rows, size, size, zoom, 0, 0, st.Rotation, st.FlipHorizontal, st.FlipVertical);
+        PointD sp = centred.ToScreen(ip);
+        RenderSpec spec = st.ToSpec(size, size, info.Monochrome && st.Colormap == TkColormap.Gray) with
+        {
+            Zoom = zoom,
+            PanX = (size / 2.0) - sp.X,
+            PanY = (size / 2.0) - sp.Y,
+        };
+        return st.Voi == TkVoiSource.File && fileVoiCount == 0 ? spec with { Voi = TkVoiSource.FullRange } : spec;
     }
 
     private void InvalidateLater(IEnumerable<Viewport> vps)
@@ -788,6 +1247,8 @@ public sealed class ViewerSession : IDisposable
         ViewerTool.Freehand => AnnotationKind.Freehand,
         ViewerTool.Probe => AnnotationKind.Probe,
         ViewerTool.Calibrate => AnnotationKind.Calibration,
+        ViewerTool.Arrow => AnnotationKind.Arrow,
+        ViewerTool.Text => AnnotationKind.Text,
         _ => null,
     };
 
@@ -824,8 +1285,21 @@ public sealed class ViewerSession : IDisposable
             StartZoom = vp.Transform?.Zoom ?? 1,
             StartIndex = vp.ImageIndex,
         };
+        if (tool == ViewerTool.Magnify)
+        {
+            vp.Magnifier = (e.X, e.Y);
+            return;
+        }
         if (KindOf(tool) is not AnnotationKind kind || ImagePoint(vp, e.X, e.Y) is not PointD p)
         {
+            return;
+        }
+        if (kind == AnnotationKind.Text)
+        {
+            // One click places the label; the browser then asks for the text (TextPrompt).
+            var label = new Annotation { Kind = AnnotationKind.Text };
+            label.Add(p);
+            committed = label;
             return;
         }
         if (vp.Drawing is { } d && d.Kind == kind)
@@ -891,6 +1365,11 @@ public sealed class ViewerSession : IDisposable
         {
             return;
         }
+        if (drag.Tool == ViewerTool.Magnify && vp.Magnifier is not null)
+        {
+            vp.Magnifier = (e.X, e.Y);
+            return;
+        }
         int dx = e.X - drag.StartX, dy = e.Y - drag.StartY;
         int sx = e.X - drag.LastX, sy = e.Y - drag.LastY;
         drag.LastX = e.X;
@@ -938,6 +1417,7 @@ public sealed class ViewerSession : IDisposable
     private static void OnUpLocked(Viewport vp, InputEvent e, ref bool render, ref bool annotations, ref Annotation? committed)
     {
         vp.Drag = null;
+        vp.Magnifier = null;
         if (vp.Drawing is not { } d || ImagePoint(vp, e.X, e.Y) is not PointD p)
         {
             return;
@@ -1025,6 +1505,9 @@ public sealed class ViewerSession : IDisposable
             case 76: SetToolLocked(ViewerTool.Length, ref ui); break;        // L
             case 65: SetToolLocked(ViewerTool.Angle, ref ui); break;         // A
             case 69: SetToolLocked(ViewerTool.Ellipse, ref ui); break;       // E
+            case 77: SetToolLocked(ViewerTool.Magnify, ref ui); break;       // M
+            case 84: SetToolLocked(ViewerTool.Text, ref ui); break;          // T
+            case 88: SetToolLocked(ViewerTool.CrossReference, ref ui); break; // X
             case 82: Apply(vp, s => s with { Rotation = (s.Rotation + 90) % 360 }, ref render); break; // R
             case 72: Apply(vp, s => s with { FlipHorizontal = !s.FlipHorizontal }, ref render); break; // H
             case 86: Apply(vp, s => s with { FlipVertical = !s.FlipVertical }, ref render); break;     // V
@@ -1179,12 +1662,15 @@ public sealed class ViewerSession : IDisposable
     /// cineToggle, cinePlay, cinePause, cineFirst, cineLast, cineLoop, cineBounce, nextViewport, clearAnnotations.</param>
     public void RunAction(string action)
     {
-        bool render = false, ui = false, all = false;
+        bool render = false, ui = false, all = false, indexChanged;
         Viewport vp;
+        List<Viewport>? synced;
         lock (_gate)
         {
             Touch();
             vp = _viewports[ActiveViewport];
+            DisplayState before = vp.State;
+            int beforeIndex = vp.ImageIndex;
             switch (action)
             {
                 case "invert": Apply(vp, s => s with { Invert = !s.Invert }, ref render); break;
@@ -1206,7 +1692,23 @@ public sealed class ViewerSession : IDisposable
                 case "cineLoop": vp.Cine.Mode = CineMode.Loop; RestartCineLocked(vp); ui = true; break;
                 case "cineBounce": vp.Cine.Mode = CineMode.Bounce; RestartCineLocked(vp); ui = true; break;
                 case "nextViewport": ActiveViewport = (ActiveViewport + 1) % Layout.Count; ui = true; all = true; break;
+                case "syncToggle": ToggleSyncMemberLocked(vp.Index); ui = true; all = true; break;
+                case "syncAll": Sync = Sync with { Members = Enumerable.Range(0, Layout.Count).ToHashSet() }; ui = true; all = true; break;
+                case "syncNone": Sync = Sync with { Members = new HashSet<int>() }; ui = true; all = true; break;
+                case "syncWl": Sync = Sync with { WindowLevel = !Sync.WindowLevel }; ui = true; break;
+                case "syncZoom": Sync = Sync with { Zoom = !Sync.Zoom }; ui = true; break;
+                case "syncPan": Sync = Sync with { Pan = !Sync.Pan }; ui = true; break;
+                case "linkScroll": LinkScroll = !LinkScroll; ui = true; all = true; break;
+                case "refLines": ShowReferenceLines = !ShowReferenceLines; ui = true; all = true; break;
+                case "clearCross": _cross = null; all = true; break;
             }
+            synced = PropagateSyncLocked(vp, before);
+            indexChanged = vp.ImageIndex != beforeIndex;
+        }
+        synced?.ForEach(Invalidate);
+        if (indexChanged)
+        {
+            AfterSliceChange(vp);
         }
         switch (action)
         {
@@ -1258,15 +1760,137 @@ public sealed class ViewerSession : IDisposable
     {
         bool render = false;
         Viewport vp;
+        List<Viewport>? synced;
         lock (_gate)
         {
             vp = _viewports[ActiveViewport];
+            DisplayState before = vp.State;
             ApplyPresetLocked(vp, n, ref render);
+            synced = PropagateSyncLocked(vp, before);
         }
         if (render)
         {
             Invalidate(vp);
         }
+        synced?.ForEach(Invalidate);
+    }
+
+    /// <summary>Sets the colour map of the active viewport (grayscale images; "gray" = none).</summary>
+    /// <param name="name">Colour map name (gray, inverseGray, hotIron, pet, hotMetalBlue, pet20Step).</param>
+    public void SetColormap(string name)
+    {
+        if (!TryParseColormap(name, out TkColormap c))
+        {
+            return;
+        }
+        Viewport vp;
+        lock (_gate)
+        {
+            vp = _viewports[ActiveViewport];
+            vp.State = vp.State with { Colormap = c };
+        }
+        Invalidate(vp);
+        RaiseUi();
+    }
+
+    private void ToggleSyncMemberLocked(int index)
+    {
+        var members = new HashSet<int>(Sync.Members);
+        if (!members.Remove(index))
+        {
+            members.Add(index);
+        }
+        Sync = Sync with { Members = members };
+    }
+
+    /// <summary>Puts a viewport in or out of the sync group.</summary>
+    /// <param name="viewport">Viewport.</param>
+    /// <param name="member">Member or not.</param>
+    public void SetSyncMember(int viewport, bool member)
+    {
+        lock (_gate)
+        {
+            var members = new HashSet<int>(Sync.Members);
+            if (member)
+            {
+                members.Add(Math.Clamp(viewport, 0, MaxViewports - 1));
+            }
+            else
+            {
+                members.Remove(viewport);
+            }
+            Sync = Sync with { Members = members };
+        }
+        RaiseUi();
+        InvalidateAll();
+    }
+
+    /// <summary>The user typed the text of a Text annotation; empty text (or cancel) removes it.</summary>
+    /// <param name="annotationId">Annotation.</param>
+    /// <param name="text">Text as typed (stored unchanged).</param>
+    /// <returns>Completion.</returns>
+    public async Task SetAnnotationTextAsync(string annotationId, string? text)
+    {
+        Viewport vp;
+        SeriesImage? img;
+        lock (_gate)
+        {
+            vp = _viewports.FirstOrDefault(v => v.TextPrompt == annotationId) ?? _viewports[ActiveViewport];
+            vp.TextPrompt = null;
+            img = vp.CurrentImage;
+        }
+        if (img is null)
+        {
+            return;
+        }
+        AnnotationDocument doc = await GetDocumentAsync(img.Key).ConfigureAwait(false);
+        lock (_gate)
+        {
+            Annotation? a = doc.Annotations.FirstOrDefault(x => x.Id == annotationId && x.Kind == AnnotationKind.Text);
+            if (a is null)
+            {
+                return;
+            }
+            if (string.IsNullOrEmpty(text))
+            {
+                doc.Annotations.Remove(a);
+            }
+            else
+            {
+                a.Text = text;
+                a.Label = text;
+            }
+        }
+        await SaveAsync(doc).ConfigureAwait(false);
+        SendAnnotationState(vp);
+        RaiseUi();
+    }
+
+    /// <summary>The browser exported or copied the active viewport's image (with the intended-use label): audited.</summary>
+    /// <param name="mode">"file" or "clipboard".</param>
+    /// <param name="succeeded">The export worked.</param>
+    /// <param name="reason">Plain-word failure reason from the browser, or null.</param>
+    public void ReportExport(string mode, bool succeeded, string? reason)
+    {
+        SeriesImage? img;
+        lock (_gate)
+        {
+            img = _viewports[ActiveViewport].CurrentImage;
+        }
+        var fields = new Dictionary<string, string>
+        {
+            ["mode"] = mode is "file" or "clipboard" ? mode : "other",
+            ["patientKey"] = Study?.PatientKey ?? "",
+            ["study"] = StudyInstanceUid,
+            ["sop"] = img?.Instance.SopInstanceUid ?? "",
+            ["outcome"] = succeeded ? AuditOutcome.Success : AuditOutcome.Failure,
+        };
+        if (!succeeded && !string.IsNullOrEmpty(reason))
+        {
+            // Browser error names only ("NotAllowedError"); never image or patient data.
+            fields["reason"] = new string([.. reason.Where(char.IsAsciiLetterOrDigit).Take(64)]);
+        }
+        _svc.Audit?.Append("image.export", fields);
     }
 
     /// <summary>Sets the cine rate of the active viewport.</summary>
@@ -1521,6 +2145,10 @@ public sealed class ViewerSession : IDisposable
             if (a.Kind == AnnotationKind.Calibration)
             {
                 vp.CalibrationPrompt = a.Id;
+            }
+            else if (a.Kind == AnnotationKind.Text)
+            {
+                vp.TextPrompt = a.Id;
             }
         }
         await SaveAsync(doc).ConfigureAwait(false);

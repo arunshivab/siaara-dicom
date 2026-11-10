@@ -144,6 +144,28 @@ python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_URL STUDY_UID /
   store. Blazor's data-protection keys are kept in memory only. The app refuses to start when crash
   dumps are enabled through `DOTNET_DbgEnableMiniDump`.
 
+## M1.1 (review P0)
+
+- Intended-use label "Not for primary diagnosis" (`Core/Text/Disclaimer.cs`): patient bar, About box
+  (study browser and viewer), and a band on every exported or copied image (with "images and
+  calculated values" when measurements are on it). Exports and copies are audited (`image.export`).
+- Magnifier (M or the Magnify tool, left button held): a 200 x 200 CSS px glass rendered by the
+  toolkit (`siaara_frame_render`, small viewport, 3x the viewport's zoom, same window / colour map /
+  rotation / flips), sent as frames for viewport index + 0x4000 with its own flow control.
+- Colour maps for grayscale images (`siaara_view2d_options.colormap`: Gray, Inverse gray, Hot Iron,
+  PET, Hot Metal Blue, PET 20 Step) from the toolbar or the viewport menu; output switches to RGBA.
+- Right-click (without a drag; a drag stays W/L) opens the viewport menu: window presets, colour map,
+  overlays and shutters, sync group, linked scrolling, reference lines, copy image, export image (PNG),
+  tag browser (placeholder for M2).
+- Reference lines, cross-reference (X) and linked scrolling by Frame of Reference: planes from
+  `siaara_frame_geometry`, the maths in `Core/Geometry/ImagePlane.cs` (plane intersection clipped to
+  both images; nearest slice along each plane's normal). Linked scrolling moves roughly parallel stacks
+  (|cos| of the normals >= 0.9); cross-reference moves every stack that passes within 10 mm.
+- Sync group: chosen viewports (toolbar "Sync VP", menu, "Sync all") share W/L, zoom and pan; each of
+  the three can be switched off.
+- Arrow and Text annotation tools (Text: T; the label text is stored exactly as typed; an empty
+  answer removes it).
+
 ## Still missing / not verified
 
 - Checked here with headless Chrome for Testing on Linux (study browser, opening a study by

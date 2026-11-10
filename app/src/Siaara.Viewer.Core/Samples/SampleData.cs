@@ -130,13 +130,14 @@ public static class SampleData
     /// <param name="seriesNumber">Series Number.</param>
     /// <param name="positionOf">Optional slice position override (uneven spacing tests).</param>
     /// <param name="lossyFlag">Set Lossy Image Compression "01".</param>
+    /// <param name="frameOfReferenceUid">Frame of Reference UID to use (shared with reformatted series), or null for a new one.</param>
     /// <returns>Paths.</returns>
     public static IReadOnlyList<string> WriteCtSeries(string dir, SamplePatient p, int slices, int size = 64, double spacingMm = 0.7,
-        double sliceGapMm = 2.0, int seriesNumber = 1, Func<int, double>? positionOf = null, bool lossyFlag = false)
+        double sliceGapMm = 2.0, int seriesNumber = 1, Func<int, double>? positionOf = null, bool lossyFlag = false, string? frameOfReferenceUid = null)
     {
         ArgumentNullException.ThrowIfNull(p);
         Directory.CreateDirectory(dir);
-        string series = NewUid(), frameOfRef = NewUid();
+        string series = NewUid(), frameOfRef = frameOfReferenceUid ?? NewUid();
         var paths = new string[slices];
         var px = new short[size * size];
         for (int k = 0; k < slices; k++)
@@ -169,6 +170,67 @@ public static class SampleData
             }
             Gray16(f, size, size, px, signed: true);
             paths[k] = Path.Combine(dir, "CT" + seriesNumber.ToString(CultureInfo.InvariantCulture) + "_" + k.ToString("D4", CultureInfo.InvariantCulture) + ".dcm");
+            f.Save(paths[k]);
+        }
+        return paths;
+    }
+
+    /// <summary>
+    /// Writes a sagittal or coronal series of the same phantom in the same frame of reference as an
+    /// axial series from <see cref="WriteCtSeries"/> (same size, spacing and slice gap): for reference
+    /// lines, cross-reference and linked scrolling. Images have size columns x slices rows, the top
+    /// row at the highest z.
+    /// </summary>
+    /// <param name="dir">Folder.</param>
+    /// <param name="p">Patient.</param>
+    /// <param name="sagittal">Sagittal (planes x = const) or coronal (y = const).</param>
+    /// <param name="planes">Number of reformatted planes (spread evenly across the axial width).</param>
+    /// <param name="axialSlices">Slices of the axial series.</param>
+    /// <param name="size">Axial rows = columns.</param>
+    /// <param name="spacingMm">Axial pixel spacing.</param>
+    /// <param name="sliceGapMm">Axial slice gap.</param>
+    /// <param name="seriesNumber">Series Number.</param>
+    /// <param name="frameOfReferenceUid">The axial series' Frame of Reference UID.</param>
+    /// <returns>Paths.</returns>
+    public static IReadOnlyList<string> WriteReformatSeries(string dir, SamplePatient p, bool sagittal, int planes, int axialSlices, int size,
+        double spacingMm, double sliceGapMm, int seriesNumber, string frameOfReferenceUid)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        Directory.CreateDirectory(dir);
+        string series = NewUid();
+        var paths = new string[planes];
+        var px = new short[axialSlices * size];
+        double zTop = (axialSlices - 1) * sliceGapMm;
+        string ps = sliceGapMm.ToString(CultureInfo.InvariantCulture) + "\\" + spacingMm.ToString(CultureInfo.InvariantCulture);
+        for (int k = 0; k < planes; k++)
+        {
+            int fixedIndex = (int)Math.Round((k + 0.5) * size / planes);
+            for (int r = 0; r < axialSlices; r++)
+            {
+                int z = axialSlices - 1 - r;
+                for (int c = 0; c < size; c++)
+                {
+                    px[(r * size) + c] = (short)((sagittal ? PhantomHu(fixedIndex, c, z, size) : PhantomHu(c, fixedIndex, z, size)) + 1024);
+                }
+            }
+            string kind = sagittal ? "SAGITTAL" : "CORONAL";
+            using TkFile f = Base(p, CtImageStorage, "CT", series, seriesNumber, k + 1, kind + " REFORMAT");
+            double fixedMm = fixedIndex * spacingMm;
+            string pos = sagittal
+                ? fixedMm.ToString("0.###", CultureInfo.InvariantCulture) + "\\0\\" + zTop.ToString("0.###", CultureInfo.InvariantCulture)
+                : "0\\" + fixedMm.ToString("0.###", CultureInfo.InvariantCulture) + "\\" + zTop.ToString("0.###", CultureInfo.InvariantCulture);
+            f.SetRawString(Tags.FrameOfReferenceUid, "UI", frameOfReferenceUid);
+            f.SetString(Tags.ImagePositionPatient, pos);
+            f.SetString(Tags.ImageOrientationPatient, sagittal ? "0\\1\\0\\0\\0\\-1" : "1\\0\\0\\0\\0\\-1");
+            f.SetString(Tags.PixelSpacing, ps);
+            f.SetString(Tags.SliceThickness, spacingMm.ToString(CultureInfo.InvariantCulture));
+            f.SetString(Tags.WindowCenter, "40");
+            f.SetString(Tags.WindowWidth, "400");
+            f.SetString(Tags.RescaleIntercept, "-1024");
+            f.SetString(Tags.RescaleSlope, "1");
+            f.SetString(Tags.RescaleType, "HU");
+            Gray16(f, axialSlices, size, px, signed: true);
+            paths[k] = Path.Combine(dir, kind[..3] + seriesNumber.ToString(CultureInfo.InvariantCulture) + "_" + k.ToString("D4", CultureInfo.InvariantCulture) + ".dcm");
             f.Save(paths[k]);
         }
         return paths;
@@ -295,7 +357,13 @@ public static class SampleData
     {
         var files = new List<string>();
         SamplePatient ct = Patient("CT^PHANTOM", "SIM0001");
-        files.AddRange(WriteCtSeries(Path.Combine(dir, "folder", "ct"), ct, full ? 500 : 60, full ? 512 : 128, full ? 0.7 : 1.5, 1.0));
+        int slices = full ? 500 : 60, size = full ? 512 : 128;
+        double spacing = full ? 0.7 : 1.5;
+        string frameOfRef = NewUid();
+        files.AddRange(WriteCtSeries(Path.Combine(dir, "folder", "ct"), ct, slices, size, spacing, 1.0, frameOfReferenceUid: frameOfRef));
+        // Sagittal and coronal reformats in the same frame of reference (reference lines, cross-reference).
+        files.AddRange(WriteReformatSeries(Path.Combine(dir, "folder", "ct-sag"), ct, sagittal: true, full ? 64 : 16, slices, size, spacing, 1.0, 2, frameOfRef));
+        files.AddRange(WriteReformatSeries(Path.Combine(dir, "folder", "ct-cor"), ct, sagittal: false, full ? 64 : 16, slices, size, spacing, 1.0, 3, frameOfRef));
         files.Add(WriteUsClip(Path.Combine(dir, "folder", "us", "clip.dcm"), Patient("US^PHANTOM", "SIM0002")));
         SamplePatient pt = Patient("PET^PHANTOM", "SIM0003");
         files.Add(WritePet(Path.Combine(dir, "folder", "pet", "pet.dcm"), pt, 70));

@@ -2,6 +2,7 @@
 <div class="vp @(Active ? "active" : "")" data-vp="@Index" @ondragover:preventDefault="true" @ondragover="() => { }" @ondrop="OnDrop">
     <canvas class="img"></canvas>
     <canvas class="ann"></canvas>
+    <canvas class="magnifier" aria-hidden="true"></canvas>
 </div>
 
 @code {

@@ -31,6 +31,7 @@
             <button class="btn primary" disabled="@(_selected is null)" @onclick="OpenSelected">Open</button>
             <button class="btn" @onclick="() => _importOpen = true">Import</button>
             <button class="btn" @onclick="() => _settingsOpen = true">Settings</button>
+            <button class="btn" @onclick="() => _aboutOpen = true">About</button>
         </div>
     </header>
 
@@ -56,6 +57,10 @@
     @if (_settingsOpen)
     {
         <SettingsSheet OnClose="() => _settingsOpen = false" />
+    }
+    @if (_aboutOpen)
+    {
+        <AboutDialog OnClose="() => _aboutOpen = false" />
     }
     @if (_confirm != Confirm.None && _selected is not null)
     {
@@ -84,7 +89,7 @@
     private int? _exactTotal;
     private StudyRow? _selected;
     private readonly HashSet<string> _new = new(StringComparer.Ordinal);
-    private bool _importOpen, _settingsOpen;
+    private bool _importOpen, _settingsOpen, _aboutOpen;
     private Confirm _confirm;
     private string? _error;
     private string _statusText = "";

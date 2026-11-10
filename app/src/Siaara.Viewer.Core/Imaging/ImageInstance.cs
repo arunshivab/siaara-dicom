@@ -1,5 +1,7 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 
+using System.Collections.Concurrent;
+using Siaara.Viewer.Core.Geometry;
 using Siaara.Viewer.Core.Text;
 using Siaara.Viewer.Core.Toolkit;
 
@@ -35,7 +37,32 @@ public sealed class ImageInstance : IDisposable
         string ts = SafeTransferSyntax(header);
         IsLossy = string.Equals((header.GetString(Tags.LossyImageCompression) ?? "").Trim(), "01", StringComparison.Ordinal)
                   || s_lossySyntaxes.Contains(ts);
+        FrameOfReferenceUid = header.GetString(Tags.FrameOfReferenceUid) ?? "";
     }
+
+    private readonly ConcurrentDictionary<int, ImagePlane?> _planes = new();
+
+    /// <summary>Frame of Reference UID ("" when absent).</summary>
+    public string FrameOfReferenceUid { get; }
+
+    /// <summary>Patient-space plane of a frame (cached), or null without complete geometry.</summary>
+    /// <param name="frame">Frame.</param>
+    /// <returns>The plane.</returns>
+    public ImagePlane? GetPlane(int frame) => _planes.GetOrAdd(frame, f =>
+    {
+        try
+        {
+            return Header.IsDisposed ? null : Header.GetGeometry(f).ToImagePlane(FrameOfReferenceUid);
+        }
+        catch (TkException)
+        {
+            return null;
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
+    });
 
     /// <summary>Reads the header of a file.</summary>
     /// <param name="path">File.</param>
@@ -84,6 +111,9 @@ public sealed class ImageInstance : IDisposable
 /// <param name="Frame">0-based frame.</param>
 public sealed record SeriesImage(ImageInstance Instance, int Frame)
 {
+    /// <summary>Patient-space plane of this frame, or null.</summary>
+    public ImagePlane? Plane => Instance.GetPlane(Frame);
+
     /// <summary>Key of the frame.</summary>
     public FrameKey Key => new(Instance.SopInstanceUid, Frame);
 }

@@ -7,6 +7,16 @@ using System.Text.Json;
 
 namespace Siaara.Viewer.Core.Audit;
 
+/// <summary>Values of the audit "outcome" field.</summary>
+public static class AuditOutcome
+{
+    /// <summary>The action completed.</summary>
+    public const string Success = "success";
+
+    /// <summary>The action failed (the entry's "reason" field says why, in plain words).</summary>
+    public const string Failure = "failure";
+}
+
 /// <summary>Result of checking the audit chain.</summary>
 /// <param name="IsIntact">Every line links to the hash of the line before it.</param>
 /// <param name="Lines">Lines read.</param>

@@ -23,7 +23,22 @@
                 <option value="@n">@(n + 1) @p.Name (@p.Width/@p.Center)</option>
             }
         </select>
+        <select aria-label="Colour map" @onchange="OnColormap" title="Colour map (grayscale images)">
+            @foreach (var (name, label) in Colormaps)
+            {
+                <option value="@name" selected="@(name == CurrentColormap)">@label</option>
+            }
+        </select>
         <LayoutPicker Session="Session" />
+    </div>
+    <div class="group" role="group" aria-label="Sync and reference">
+        <button class="tool @(Session.Sync.Members.Contains(Session.ActiveViewport) ? "on" : "")" title="Put the active viewport in the sync group"
+                @onclick='() => Session.RunAction("syncToggle")'>Sync VP</button>
+        <button class="tool @(Session.Sync.WindowLevel ? "on" : "")" title="Sync group shares W/L" @onclick='() => Session.RunAction("syncWl")'>W/L</button>
+        <button class="tool @(Session.Sync.Zoom ? "on" : "")" title="Sync group shares zoom" @onclick='() => Session.RunAction("syncZoom")'>Zm</button>
+        <button class="tool @(Session.Sync.Pan ? "on" : "")" title="Sync group shares pan" @onclick='() => Session.RunAction("syncPan")'>Pn</button>
+        <button class="tool @(Session.LinkScroll ? "on" : "")" title="Linked scrolling by frame of reference" @onclick='() => Session.RunAction("linkScroll")'>Link</button>
+        <button class="tool @(Session.ShowReferenceLines ? "on" : "")" title="Reference lines of the active slice" @onclick='() => Session.RunAction("refLines")'>Ref lines</button>
     </div>
 </nav>
 
@@ -36,7 +51,19 @@
         (ViewerTool.Length, "Length", "(L)"), (ViewerTool.Polyline, "Polyline", ""), (ViewerTool.Angle, "Angle", "(A)"), (ViewerTool.Cobb, "Cobb", ""),
         (ViewerTool.Ellipse, "Ellipse", "(E)"), (ViewerTool.Circle, "Circle", ""), (ViewerTool.Rectangle, "Rect", ""), (ViewerTool.Polygon, "Polygon", ""),
         (ViewerTool.Freehand, "Freehand", ""), (ViewerTool.Probe, "Probe", ""), (ViewerTool.Calibrate, "Calibrate", ""),
+        (ViewerTool.Arrow, "Arrow", ""), (ViewerTool.Text, "Text", "(T)"), (ViewerTool.Magnify, "Magnify", "(M)"),
+        (ViewerTool.CrossReference, "X-ref", "(X)"),
     ];
+
+    private static readonly (string, string)[] Colormaps =
+    [
+        ("gray", "Gray"), ("inverseGray", "Inverse gray"), ("hotIron", "Hot Iron"), ("pet", "PET"), ("hotMetalBlue", "Hot Metal Blue"),
+        ("pet20Step", "PET 20 Step"),
+    ];
+
+    private string CurrentColormap => ViewerSession.ColormapName(Session.GetViewport(Session.ActiveViewport).State.Colormap);
+
+    private void OnColormap(ChangeEventArgs e) => Session.SetColormap(e.Value?.ToString() ?? "gray");
 
     private static readonly (string, string, string)[] Actions =
     [

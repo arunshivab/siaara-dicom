@@ -96,6 +96,8 @@ public static class MeasureService
             AnnotationKind.Angle => a.Count >= 3 ? DisplayFormat.Number(Angle(a.At(0), a.At(1), a.At(2), ctx), 1) + "°" : "",
             AnnotationKind.Cobb => a.Count >= 4 ? "Cobb " + DisplayFormat.Number(Cobb(a.At(0), a.At(1), a.At(2), a.At(3), ctx), 1) + "°" : "",
             AnnotationKind.Probe => a.Count >= 1 ? ProbeText(a.At(0), ctx, a) : "",
+            AnnotationKind.Arrow => "",
+            AnnotationKind.Text => a.Text ?? "",
             _ => RoiText(a, ctx),
         };
     }

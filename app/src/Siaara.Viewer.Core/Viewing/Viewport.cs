@@ -39,6 +39,14 @@ public enum ViewerTool
     Probe = 13,
     /// <summary>Manual calibration line.</summary>
     Calibrate = 14,
+    /// <summary>Magnifier glass while the left button is held.</summary>
+    Magnify = 15,
+    /// <summary>Arrow annotation.</summary>
+    Arrow = 16,
+    /// <summary>Text annotation.</summary>
+    Text = 17,
+    /// <summary>Cross-reference: a point here moves the other viewports of the same frame of reference to it.</summary>
+    CrossReference = 18,
 }
 
 /// <summary>A drag in progress.</summary>
@@ -105,6 +113,13 @@ public sealed class Viewport
     internal DragState? Drag { get; set; }
     internal Annotation? Drawing { get; set; }
     internal string? CalibrationPrompt { get; set; }
+    internal string? TextPrompt { get; set; }
+
+    /// <summary>Flow control of the magnifier's frames (sent as viewport index + magnifier base).</summary>
+    public FrameFlow MagnifierFlow { get; } = new();
+
+    // Magnifier: centre in viewport pixels while the magnifier tool is held, else null.
+    internal (int X, int Y)? Magnifier { get; set; }
     internal DateTime LastRoiUpdate { get; set; }
     internal CancellationTokenSource? CineStop { get; set; }
 

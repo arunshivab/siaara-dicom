@@ -7,6 +7,7 @@
 
 using System.Globalization;
 using Siaara.Clinical;
+using Siaara.Viewer.Core.Geometry;
 using Siaara.Network;
 using Siaara.Volumes;
 
@@ -207,6 +208,11 @@ public static class Tk
             throw Wrap(e);
         }
     }
+
+    /// <summary>A standard colour map as 256 RGBA8 entries (the toolkit's table).</summary>
+    /// <param name="colormap">Colour map.</param>
+    /// <returns>1024 bytes.</returns>
+    public static byte[] ColormapRgba8(TkColormap colormap) => Call(() => DicomFrame.GetColormapRgba8((Colormap)(int)colormap));
 
     /// <summary>Scans a folder for DICOM files (recursive, raw data sets allowed).</summary>
     /// <param name="root">Folder.</param>
@@ -622,7 +628,29 @@ public enum TkSpacingSource
 /// <param name="PositionZ">Position along the patient axis (z component).</param>
 /// <param name="SliceThickness">Slice thickness (0 when absent).</param>
 public sealed record TkPlane(double RowSpacing, double ColumnSpacing, TkSpacingSource Source, bool HasPosition, double PositionZ,
-                             double SliceThickness);
+                             double SliceThickness)
+{
+    /// <summary>Rows.</summary>
+    public int Rows { get; init; }
+    /// <summary>Columns.</summary>
+    public int Columns { get; init; }
+    /// <summary>Image Orientation known.</summary>
+    public bool HasOrientation { get; init; }
+    /// <summary>Image Position (Patient): centre of the first pixel, mm.</summary>
+    public Vec3 Position { get; init; }
+    /// <summary>Direction of image x (row direction cosines).</summary>
+    public Vec3 RowCosine { get; init; }
+    /// <summary>Direction of image y (column direction cosines).</summary>
+    public Vec3 ColumnCosine { get; init; }
+
+    /// <summary>The patient-space plane, or null without position, orientation or spacing.</summary>
+    /// <param name="frameOfReferenceUid">Frame of Reference UID of the image.</param>
+    /// <returns>The plane.</returns>
+    public ImagePlane? ToImagePlane(string frameOfReferenceUid) =>
+        HasPosition && HasOrientation && RowSpacing > 0 && ColumnSpacing > 0 && Rows > 0 && Columns > 0
+            ? new ImagePlane(frameOfReferenceUid, Position, RowCosine, ColumnCosine, ColumnSpacing, RowSpacing, Columns, Rows)
+            : null;
+}
 
 /// <summary>Orientation labels at the four edges.</summary>
 /// <param name="Left">Left edge.</param>
@@ -878,7 +906,15 @@ public sealed class TkFile : IDisposable
     {
         PlaneGeometry g = Tk.Call(() => ImageGeometry.GetFrameGeometry(File, frame));
         return new TkPlane(g.RowSpacing, g.ColumnSpacing, (TkSpacingSource)(int)g.SpacingSource, g.HasPosition,
-            g.HasPosition ? g.Position.Z : 0, g.SliceThickness);
+            g.HasPosition ? g.Position.Z : 0, g.SliceThickness)
+        {
+            Rows = g.Rows,
+            Columns = g.Columns,
+            HasOrientation = g.HasOrientation,
+            Position = new Vec3(g.Position.X, g.Position.Y, g.Position.Z),
+            RowCosine = new Vec3(g.RowCosine.X, g.RowCosine.Y, g.RowCosine.Z),
+            ColumnCosine = new Vec3(g.ColumnCosine.X, g.ColumnCosine.Y, g.ColumnCosine.Z),
+        };
     }
 
     /// <summary>Orientation labels, or null without orientation.</summary>
@@ -1001,6 +1037,23 @@ public enum TkVoiSource
     Identity = 3,
 }
 
+/// <summary>Standard colour maps for grayscale images (PS3.6 Annex B palettes; Gray = none).</summary>
+public enum TkColormap
+{
+    /// <summary>No colour map.</summary>
+    Gray = 0,
+    /// <summary>Inverse gray.</summary>
+    InverseGray = 1,
+    /// <summary>Hot Iron.</summary>
+    HotIron = 2,
+    /// <summary>PET.</summary>
+    Pet = 3,
+    /// <summary>Hot Metal Blue.</summary>
+    HotMetalBlue = 4,
+    /// <summary>PET 20 Step.</summary>
+    Pet20Step = 5,
+}
+
 /// <summary>Everything a 2D render needs (maps to the toolkit's viewport options).</summary>
 public sealed record RenderSpec
 {
@@ -1038,6 +1091,8 @@ public sealed record RenderSpec
     public bool NoOverlays { get; init; }
     /// <summary>Ignore shutters.</summary>
     public bool NoShutters { get; init; }
+    /// <summary>Colour map for grayscale images (output must then be RGBA).</summary>
+    public TkColormap Colormap { get; init; }
 
     internal ViewportOptions ToBinding() => new()
     {
@@ -1058,6 +1113,7 @@ public sealed record RenderSpec
         Invert = Invert,
         NoOverlays = NoOverlays,
         NoShutters = NoShutters,
+        Colormap = (Colormap)(int)Colormap,
         Background = new Rgba8Color(0, 0, 0, 255),
     };
 }

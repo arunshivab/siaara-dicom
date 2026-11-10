@@ -1,0 +1,23 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. About box: version, toolkit, intended-use label. *@
+<div class="modal-back" @onclick="() => OnClose.InvokeAsync()">
+    <div class="modal about" role="dialog" aria-modal="true" aria-labelledby="about-title" @onclick:stopPropagation="true">
+        <h2 id="about-title">SIAARA Viewer</h2>
+        <p class="disclaimer-banner" role="note">@Disclaimer.Text</p>
+        <p class="small">@Disclaimer.Details</p>
+        <dl class="about-facts">
+            <dt>Version</dt><dd>@AppVersion</dd>
+            <dt>Toolkit</dt><dd>@ViewerRuntime.ToolkitVersion</dd>
+            <dt>Rendering</dt><dd>@ViewerRuntime.Backend</dd>
+        </dl>
+        <p class="muted small">Copyright (c) Sthraas Intelligence Pvt Ltd. All rights reserved.</p>
+        <div class="modal-actions">
+            <button class="btn primary" @onclick="() => OnClose.InvokeAsync()">Close</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static string AppVersion => typeof(AboutDialog).Assembly.GetName().Version?.ToString(3) ?? "";
+}

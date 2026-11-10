@@ -35,7 +35,7 @@ public sealed class ViewerRuntime : IDisposable
         Annotations = new AnnotationStore(paths.AnnotationFolder, Environment.UserName);
         Import = new ImportService(store, scheduler, audit);
         Thumbnails = new ThumbnailService(store, scheduler);
-        Sessions = new SessionRegistry(new ViewerServices(store, Cache, scheduler, settings, Annotations));
+        Sessions = new SessionRegistry(new ViewerServices(store, Cache, scheduler, settings, Annotations, audit));
     }
 
     /// <summary>Paths.</summary>
