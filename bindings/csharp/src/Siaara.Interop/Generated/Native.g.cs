@@ -42,6 +42,10 @@ internal static class C
     public const uint SIAARA_READ_BYTES_SKIPPED = 1u << 0;
     public const uint SIAARA_READ_INPUT_TRUNCATED = 1u << 1;
     public const uint SIAARA_READ_HEADER_ONLY = 1u << 2;
+    public const int SIAARA_PRIVATE_STATED = 0;
+    public const int SIAARA_PRIVATE_ASSUMED = 1;
+    public const int SIAARA_PRIVATE_EXACT = 0;
+    public const int SIAARA_PRIVATE_FUZZY = 1;
     public const int SIAARA_SAMPLES_INTEGER = 0;
     public const int SIAARA_SAMPLES_FLOAT32 = 1;
     public const int SIAARA_SAMPLES_FLOAT64 = 2;
@@ -53,6 +57,7 @@ internal static class C
     public const int SIAARA_JSON_DEFAULT = 0;
     public const int SIAARA_JSON_NUMBERS_AS_STRINGS = 1;
     public const int SIAARA_JSON_STRICT_CHARSET = 2;
+    public const int SIAARA_JSON_PRIVATE_NAMES = 4;
     public const int SIAARA_QIDO_STUDIES = 0;
     public const int SIAARA_QIDO_SERIES = 1;
     public const int SIAARA_QIDO_INSTANCES = 2;
@@ -478,6 +483,40 @@ internal struct siaara_dict_entry
     public nint keyword;
     public nint name;
     public nint vm;
+}
+
+/// <summary>siaara_private_dict_entry (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_private_dict_entry
+{
+    public uint struct_size;
+    public ushort group;
+    public byte element;
+    public FixedArray3OfByte vr;
+    public int retired;
+    public int conflict;
+    public int vm_conflict;
+    public int confidence;
+    public int match;
+    public uint source_page;
+    public uint source_count;
+    public uint candidate_count;
+    public nint creator;
+    public nint keyword;
+    public nint name;
+    public nint vm;
+    public nint vendor;
+    public nint source_document;
+}
+
+/// <summary>siaara_private_dict_candidate (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_private_dict_candidate
+{
+    public uint struct_size;
+    public FixedArray3OfByte vr;
+    public uint page;
+    public nint document;
 }
 
 /// <summary>siaara_pixel_info (blittable, C layout).</summary>
@@ -1399,6 +1438,18 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dict_lookup_keyword(byte* keyword, nuint len, siaara_dict_entry* @out);
 
+    [LibraryImport(Library, EntryPoint = "siaara_dict_lookup_private")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dict_lookup_private(byte* creator, nuint len, ushort group, byte element_low_byte, siaara_private_dict_entry* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dict_lookup_private_element")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dict_lookup_private_element(nint ds, uint tag, siaara_private_dict_entry* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_dict_private_candidate")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dict_private_candidate(byte* creator, nuint len, ushort group, byte element_low_byte, uint index, siaara_private_dict_candidate* @out);
+
     [LibraryImport(Library, EntryPoint = "siaara_file_pixel_info")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_file_pixel_info(nint file, siaara_pixel_info* @out);
@@ -2286,6 +2337,26 @@ internal static unsafe class Native
         fixed (byte* p_keyword = keyword)
         fixed (siaara_dict_entry* p_out = &@out)
             return Raw.siaara_dict_lookup_keyword((byte*)p_keyword, (nuint)keyword.Length, p_out);
+    }
+
+    internal static int siaara_dict_lookup_private(ReadOnlySpan<byte> creator, ushort group, byte element_low_byte, ref siaara_private_dict_entry @out)
+    {
+        fixed (byte* p_creator = creator)
+        fixed (siaara_private_dict_entry* p_out = &@out)
+            return Raw.siaara_dict_lookup_private((byte*)p_creator, (nuint)creator.Length, group, element_low_byte, p_out);
+    }
+
+    internal static int siaara_dict_lookup_private_element(nint ds, uint tag, ref siaara_private_dict_entry @out)
+    {
+        fixed (siaara_private_dict_entry* p_out = &@out)
+            return Raw.siaara_dict_lookup_private_element(ds, tag, p_out);
+    }
+
+    internal static int siaara_dict_private_candidate(ReadOnlySpan<byte> creator, ushort group, byte element_low_byte, uint index, ref siaara_private_dict_candidate @out)
+    {
+        fixed (byte* p_creator = creator)
+        fixed (siaara_private_dict_candidate* p_out = &@out)
+            return Raw.siaara_dict_private_candidate((byte*)p_creator, (nuint)creator.Length, group, element_low_byte, index, p_out);
     }
 
     internal static int siaara_file_pixel_info(nint file, ref siaara_pixel_info @out)

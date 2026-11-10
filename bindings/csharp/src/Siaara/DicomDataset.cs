@@ -16,6 +16,8 @@ public enum DicomJsonOptions
     NumbersAsStrings = C.SIAARA_JSON_NUMBERS_AS_STRINGS,
     /// <summary>Fail instead of writing U+FFFD for unconvertible text.</summary>
     StrictCharset = C.SIAARA_JSON_STRICT_CHARSET,
+    /// <summary>Add "keyword" and "name" to private attributes the private dictionary knows (not PS3.18 members).</summary>
+    PrivateNames = C.SIAARA_JSON_PRIVATE_NAMES,
 }
 
 /// <summary>
@@ -138,6 +140,24 @@ public sealed class DicomDataset
         Span<byte> vr = stackalloc byte[3];
         Status.Check(Native.siaara_dataset_vr(Resolve(l.Pointer), tag.Value, vr));
         return DicomDictionary.Chars(vr);
+    }
+
+    /// <summary>The private dictionary entry of a private data element (gggg,xxEE), found through its Private Creator (gggg,00xx) in this data set.</summary>
+    /// <param name="tag">The tag.</param>
+    /// <param name="entry">The entry, when the method returns true.</param>
+    /// <returns>True when the private dictionary knows the element.</returns>
+    public bool TryGetPrivateDictionaryEntry(DicomTag tag,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out DicomPrivateDictionaryEntry? entry)
+    {
+        using var l = new HandleLease(_file.Handle);
+        var e = new siaara_private_dict_entry { struct_size = StructSize.Of<siaara_private_dict_entry>() };
+        if (Native.siaara_dict_lookup_private_element(Resolve(l.Pointer), tag.Value, ref e) != Status.Ok)
+        {
+            entry = null;
+            return false;
+        }
+        entry = DicomPrivateDictionary.Convert(e);
+        return true;
     }
 
     /// <summary>The value multiplicity of a present element.</summary>
