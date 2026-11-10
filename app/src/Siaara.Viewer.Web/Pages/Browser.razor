@@ -10,6 +10,13 @@
 <div class="app browser">
     <header class="topbar">
         <div class="brand">SIAARA <span>Viewer</span></div>
+        <select class="source" aria-label="Where to search" title="Where to search" value="@_source" @onchange="OnSource">
+            <option value="">Local store</option>
+            @foreach (var n in _nodes)
+            {
+                <option value="@n.Id">@n.Name</option>
+            }
+        </select>
         <input class="search" type="search" placeholder="Search name, patient ID or accession" value="@_text" @oninput="OnSearch" aria-label="Search" />
         <div class="chips" role="group" aria-label="Date">
             @foreach (var d in DateChips)
@@ -29,8 +36,11 @@
             }
         </div>
         <div class="actions">
-            <button class="btn primary" disabled="@(_selected is null)" @onclick="OpenSelected">Open</button>
+            <button class="btn primary" disabled="@(!CanOpen)" @onclick="OpenSelected">Open</button>
             <button class="btn" @onclick="() => _importOpen = true">Import</button>
+            <button class="btn send" disabled="@(_source.Length > 0 || _selected is null)" @onclick="() => _sendOpen = true">Send</button>
+            <button class="btn network" @onclick="() => _networkOpen = true">Network</button>
+            <button class="btn activity-toggle" @onclick="() => _activityOpen = !_activityOpen">Activity@(_active > 0 ? " (" + _active.ToString(CultureInfo.InvariantCulture) + ")" : "")</button>
             <button class="btn" @onclick="() => _settingsOpen = true">Settings</button>
             <button class="btn" @onclick="() => _aboutOpen = true">About</button>
             <button class="btn signout" @onclick="() => Rt.SignOut(Sec)" title="Lock: this window and every other one lose access at once. Start SIAARA Viewer again to get back in.">Sign out</button>
@@ -46,6 +56,21 @@
     }
 
     <main class="browser-main">
+        @if (_source.Length > 0)
+        {
+            @if (_remote is { Truncated: true })
+            {
+                <div class="banner warning narrow" role="status">More than @_remote.Cap studies match on this node; the newest @_remote.Rows.Count of those found are shown. Narrow the search with a name, an ID or a date.</div>
+            }
+            <RemoteGrid NodeId="@_source" Rows="_remote?.Rows" Selected="_remoteSelected" Hint="@_remoteHint" LocalVersion="_localVersion"
+                        OnSelect="r => _remoteSelected = r" OnOpen="OpenRemote" OnRetrieve="Retrieve" />
+            <div class="pager">
+                <button class="btn search-all" @onclick="() => RemoteQuery(true)">Search without a filter</button>
+                <span class="muted">Searches run on the node; at most @Rt.Network.Nodes.Current.SearchCap studies are listed.</span>
+            </div>
+        }
+        else
+        {
         <StudyGrid Rows="_page?.Rows" Selected="_selected" NewRows="_new" OnSelect="Select" OnOpen="Open" />
         <div class="pager">
             <button class="btn" disabled="@(_offset == 0)" @onclick="Prev">Previous</button>
@@ -56,7 +81,20 @@
             <button class="btn danger" disabled="@(_selected is null || _selected.PatientKey.Length == 0)" @onclick="() => _confirm = Confirm.Patient">Delete patient</button>
         </div>
         <StudyPreview Study="_selected" />
+        }
     </main>
+    @if (_activityOpen)
+    {
+        <ActivityPanel OnClose="() => _activityOpen = false" />
+    }
+    @if (_networkOpen)
+    {
+        <NetworkSheet OnClose="() => _networkOpen = false" />
+    }
+    @if (_sendOpen && _selected is not null)
+    {
+        <SendDialog Study="_selected" OnClose="() => _sendOpen = false" OnSent="Sent" />
+    }
 
     <StatusBar Left="@_statusText" />
 
@@ -100,6 +138,16 @@
     private StudyRow? _selected;
     private readonly HashSet<string> _new = new(StringComparer.Ordinal);
     private bool _importOpen, _settingsOpen, _aboutOpen, _warningClosed;
+    // Networking: "" is the local store, else a node id.
+    private string _source = "";
+    private IReadOnlyList<NodeRef> _nodes = [];
+    private RemoteSearchResult? _remote;
+    private RemoteStudyRow? _remoteSelected;
+    private string? _remoteHint;
+    private int _localVersion, _active;
+    private bool _networkOpen, _activityOpen, _sendOpen;
+    private const string RemoteStartHint = "Type a name, a patient ID or an accession number, or choose a date: the node is then searched. \"Search without a filter\" lists the newest studies.";
+    private bool CanOpen => _source.Length == 0 ? _selected is not null : _remoteSelected is { Local: not LocalPresence.None };
     private Confirm _confirm;
     private string? _error;
     private string _statusText = "";
@@ -118,7 +166,126 @@
     protected override async Task OnInitializedAsync()
     {
         Rt.Store.StudiesChanged += OnStudiesChanged;
+        Rt.Network.Nodes.Changed += OnNodesChanged;
+        Rt.Network.Jobs.Changed += OnJobsChanged;
+        _nodes = Rt.Network.Nodes.List();
+        _active = Rt.Network.Jobs.ActiveCount;
         await Requery().ConfigureAwait(true);
+    }
+
+    private async Task OnSource(ChangeEventArgs e)
+    {
+        _source = e.Value?.ToString() ?? "";
+        _offset = 0;
+        _remote = null;
+        _remoteSelected = null;
+        await Requery().ConfigureAwait(true);
+    }
+
+    // A remote search. A new one cancels the one before (its connection is aborted). Without a name, ID, accession
+    // number or date nothing is asked until the user says so: an unfiltered question is heavy for an archive.
+    private async Task RemoteQuery(bool evenWithoutFilter)
+    {
+        _query?.Cancel();
+        _query?.Dispose();
+        _query = new CancellationTokenSource();
+        CancellationToken ct = _query.Token;
+        StudyQuery q = CurrentQuery();
+        string node = _source;
+        _remoteSelected = null;
+        if (!evenWithoutFilter && q.Text.Trim().Length == 0 && q.From is null && q.To is null)
+        {
+            _remote = null;
+            _remoteHint = RemoteStartHint;
+            _statusText = "";
+            StateHasChanged();
+            return;
+        }
+        _remote = null;
+        _remoteHint = null;
+        _statusText = "Searching " + NodeName(node) + "...";
+        StateHasChanged();
+        try
+        {
+            RemoteSearchResult r = await Rt.Network.Search.SearchStudiesAsync(node, q, ct).ConfigureAwait(true);
+            if (ct.IsCancellationRequested || node != _source)
+            {
+                return;
+            }
+            _remote = r;
+            _statusText = r.Rows.Count.ToString(CultureInfo.InvariantCulture) + " studies on " + NodeName(node) + (r.Truncated ? " (more match: narrow the search)" : "");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception e) when (e is NetworkException or Siaara.Viewer.Core.Toolkit.TkException)
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                _error = e is NetworkException ? e.Message : "The local store could not be read: " + e.Message + ".";
+                _remoteHint = "The search did not work. Check the node under Network (Test), then search again.";
+                _statusText = "";
+            }
+        }
+        StateHasChanged();
+    }
+
+    private string NodeName(string id) => _nodes.FirstOrDefault(n => n.Id == id)?.Name ?? "the node";
+
+    private void Retrieve((RemoteStudyRow Study, RemoteSeriesRow? Series) what)
+    {
+        try
+        {
+            StudyRow s = what.Study.Study;
+            // Text for the activity row on screen; it is never logged.
+            string title = s.DisplayName + ", " + s.DisplayDate + (what.Series is null ? "" : ", series " + (what.Series.SeriesNumber?.ToString(CultureInfo.InvariantCulture) ?? "-"));
+            Rt.Network.Transfers.Retrieve(_source, s.StudyInstanceUid, what.Series?.SeriesInstanceUid, title, what.Series?.RemoteImages ?? what.Study.RemoteImages);
+            _activityOpen = true;
+        }
+        catch (NetworkException e)
+        {
+            _error = e.Message;
+        }
+    }
+
+    private void OpenRemote(RemoteStudyRow r)
+    {
+        if (r.Local != LocalPresence.None)
+        {
+            Nav.NavigateTo("/viewer/" + Rt.Ids.For(r.Study.StudyInstanceUid));
+        }
+    }
+
+    private void Sent()
+    {
+        _sendOpen = false;
+        _activityOpen = true;
+    }
+
+    private void OnNodesChanged(object? sender, EventArgs e) =>
+        Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(async () =>
+        {
+            _nodes = Rt.Network.Nodes.List();
+            if (_source.Length > 0 && _nodes.All(n => n.Id != _source))
+            {
+                _source = "";
+                await Requery().ConfigureAwait(true);
+            }
+            StateHasChanged();
+        }), "browser", "refreshing the node list");
+
+    // The activity list changes up to ten times a second; this page only shows how many jobs are open.
+    private void OnJobsChanged(object? sender, EventArgs e)
+    {
+        int active = Rt.Network.Jobs.ActiveCount;
+        if (active != _active)
+        {
+            Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(() =>
+            {
+                _active = active;
+                StateHasChanged();
+            }), "browser", "refreshing the activity count");
+        }
     }
 
     private StudyQuery CurrentQuery()
@@ -142,6 +309,11 @@
 
     private async Task Requery()
     {
+        if (_source.Length > 0)
+        {
+            await RemoteQuery(false).ConfigureAwait(true);
+            return;
+        }
         _query?.Cancel();
         _query?.Dispose();
         _query = new CancellationTokenSource();
@@ -195,7 +367,20 @@
     private async Task Prev() { _offset = Math.Max(0, _offset - PageSize); await Requery().ConfigureAwait(true); }
     private async Task Next() { _offset += PageSize; await Requery().ConfigureAwait(true); }
     private void Select(StudyRow r) => _selected = r;
-    private void OpenSelected() { if (_selected is not null) Open(_selected); }
+    private void OpenSelected()
+    {
+        if (_source.Length > 0)
+        {
+            if (_remoteSelected is not null)
+            {
+                OpenRemote(_remoteSelected);
+            }
+        }
+        else if (_selected is not null)
+        {
+            Open(_selected);
+        }
+    }
 
     private void Open(StudyRow r)
     {
@@ -236,6 +421,17 @@
     {
         Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(async () =>
         {
+            if (_source.Length > 0)
+            {
+                // Images arrived (a retrieve, the receiver, an import): the Local column is counted again.
+                if (_remote is not null)
+                {
+                    await Rt.Network.Search.RefreshLocalAsync(_remote.Rows, CancellationToken.None).ConfigureAwait(true);
+                    _localVersion++;
+                    StateHasChanged();
+                }
+                return;
+            }
             bool onPage = _page is null || e.Rebuilt || _page.Rows.Count < PageSize || _page.Rows.Any(r => e.Studies.Contains(r.StudyInstanceUid)) || _offset == 0;
             if (!onPage)
             {
@@ -252,6 +448,8 @@
     public void Dispose()
     {
         Rt.Store.StudiesChanged -= OnStudiesChanged;
+        Rt.Network.Nodes.Changed -= OnNodesChanged;
+        Rt.Network.Jobs.Changed -= OnJobsChanged;
         _debounce?.Cancel();
         _debounce?.Dispose();
         _query?.Cancel();

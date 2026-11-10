@@ -1,0 +1,91 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Send a local study to a node. *@
+@inject ViewerRuntime Rt
+<div class="modal-back">
+    <div class="modal small" role="dialog" aria-modal="true" aria-label="Send">
+        <h2>Send study</h2>
+        <p>@Study.DisplayName, @Study.DisplayDate, @Study.Description (@Study.Images images)</p>
+        @if (_nodes.Count == 0)
+        {
+            <p class="muted">No node is set up yet. Add one under Network.</p>
+        }
+        else
+        {
+            <label class="field">Send to
+                <select class="send-node" @bind="_node">
+                    @foreach (var n in _nodes)
+                    {
+                        <option value="@n.Id">@n.Name (@(n.IsWeb ? "DICOMweb" : "DICOM"))</option>
+                    }
+                </select>
+            </label>
+            @if (Rt.Network.Nodes.FindDimse(_node) is not null)
+            {
+                <label><input type="checkbox" @bind="_commit" /> Ask the node to confirm storage afterwards</label>
+            }
+            <label><input type="checkbox" class="allow-incomplete" @bind="_incomplete" /> Also send files that are truncated or damaged</label>
+            @if (_incomplete)
+            {
+                <div class="banner danger">The receiving system would get images that look whole but hold less than the original. This choice is recorded in the audit log.</div>
+            }
+        }
+        @if (_error is not null)
+        {
+            <div class="err">@_error</div>
+        }
+        <div class="row end">
+            <button class="btn" @onclick="OnClose">Cancel</button>
+            <button class="btn primary send-go" disabled="@(_nodes.Count == 0)" @onclick="Send">Send</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public StudyRow Study { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnSent { get; set; }
+    private IReadOnlyList<NodeRef> _nodes = [];
+    private string _nodeId = "";
+    private bool _commit, _incomplete;
+    private string? _error;
+
+    private string _node
+    {
+        get => _nodeId;
+        set
+        {
+            _nodeId = value;
+            _commit = Rt.Network.Nodes.FindDimse(value)?.RequestCommitment ?? false;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        _nodes = Rt.Network.Nodes.List();
+        if (_nodes.Count > 0)
+        {
+            _node = _nodes[0].Id;
+        }
+    }
+
+    private async Task Send()
+    {
+        try
+        {
+            // The row's text is for the screen only; it is never logged.
+            Rt.Network.Transfers.Send(_nodeId, new SendRequest(Study.StudyInstanceUid, null, Study.DisplayName + ", " + Study.DisplayDate)
+            {
+                AllowIncomplete = _incomplete,
+                RequestCommitment = Rt.Network.Nodes.FindDimse(_nodeId) is null ? null : _commit,
+            });
+            await OnSent.InvokeAsync().ConfigureAwait(true);
+        }
+        catch (Siaara.Viewer.Core.Audit.AuditUnavailableException)
+        {
+            _error = "Nothing was sent: the audit log could not be written, and incomplete files are never sent without their audit entry.";
+        }
+        catch (NetworkException e)
+        {
+            _error = e.Message;
+        }
+    }
+}

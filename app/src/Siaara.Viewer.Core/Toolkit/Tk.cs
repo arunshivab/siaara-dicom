@@ -1,9 +1,9 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 //
-// Thin facade over the SIAARA C# bindings. This file is the ONLY place in the app that names a
-// binding type (Siaara.*); everything else uses the app-owned types declared here. Keeping the
-// mapping in one file means a binding rename touches one file, and the rest of the app can be
-// read without knowing the bindings.
+// Thin facade over the SIAARA C# bindings. This file and Tk.Network.cs are the ONLY places in the
+// app that name a binding type (Siaara.*); everything else uses the app-owned types declared here.
+// Keeping the mapping in the Tk*.cs files means a binding rename touches only them, and the rest
+// of the app can be read without knowing the bindings.
 
 using System.Globalization;
 using Siaara.Clinical;
@@ -500,6 +500,8 @@ public sealed record TkStoreStats(long Patients, long Studies, long Series, long
 public sealed class TkStore : IDisposable
 {
     private readonly DicomStore _store;
+
+    internal DicomStore Binding => _store;
 
     private TkStore(DicomStore store)
     {

@@ -39,6 +39,9 @@ internal sealed record HostOptions
     public IAuditKeySource? AuditKeys { get; init; }
     /// <summary>Peer-user check (tests replace it to act as another user); null = the one of this OS.</summary>
     public Core.Platform.IPeerUserCheck? Peers { get; init; }
+
+    /// <summary>Secret store for node passwords (tests use encrypted files so they never touch the keychain); null = the OS store.</summary>
+    public Core.Platform.ISecretStore? Secrets { get; init; }
 }
 
 /// <summary>A started viewer: Kestrel on 127.0.0.1 at a random port.</summary>
@@ -92,6 +95,8 @@ internal sealed class RunningViewer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Transfers are cancelled and the receiver stops first (audited as scp.stop), well before the store closes.
+        Runtime.Network.Dispose();
         Runtime.Audit.Append("app.stop", AuditOutcome.Success);
         await App.StopAsync().ConfigureAwait(false);
         await _idle.ConfigureAwait(false);
@@ -175,7 +180,7 @@ internal static class ViewerHost
             scheduler = new ToolkitScheduler();
             store = StoreService.Open(storeRoot, scheduler);
             audit = new AuditLog(paths.AuditFile, o.AuditKeys ?? AuditKeys.OsStore);
-            runtime = new ViewerRuntime(paths, settings, scheduler, store, audit);
+            runtime = new ViewerRuntime(paths, settings, scheduler, store, audit, o.Secrets);
             app = await BuildAndStartAsync(runtime, o, args).ConfigureAwait(false);
             LaunchSecurity security = app.Services.GetRequiredService<LaunchSecurity>();
             audit.Append("app.start", AuditOutcome.Success, new Dictionary<string, string>
@@ -194,6 +199,9 @@ internal static class ViewerHost
                 AppLog.Warn("security", "the data folder can be reached by other users of this computer");
                 audit.Alert("data-folder-not-private");
             }
+            // The receiver (Storage SCP) starts only when the user switched it on. It is the one listener other
+            // computers can reach; the web pages stay on the loopback interface whatever it does.
+            runtime.Network.StartConfigured();
             if (security.IpHost)
             {
                 AppLog.Warn("security", "serving as 127.0.0.1: the session cookie is visible to other programs listening on 127.0.0.1");

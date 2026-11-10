@@ -202,17 +202,23 @@ internal static unsafe partial class WindowsDataProtection
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial void* LocalFree(void* mem);
 
-    public static byte[] Protect(byte[] clear) => Run(clear, protect: true);
+    public static byte[] Protect(byte[] clear) => Run(clear, protect: true, s_entropy);
 
-    public static byte[] Unprotect(byte[] wrapped) => Run(wrapped, protect: false);
+    public static byte[] Unprotect(byte[] wrapped) => Run(wrapped, protect: false, s_entropy);
 
-    private static byte[] Run(byte[] input, bool protect)
+    /// <summary>Wraps data for the current user with a purpose-specific entropy (the secret store uses its own).</summary>
+    public static byte[] Protect(byte[] clear, byte[] entropy) => Run(clear, protect: true, entropy);
+
+    /// <summary>Unwraps data wrapped with the same entropy.</summary>
+    public static byte[] Unprotect(byte[] wrapped, byte[] entropy) => Run(wrapped, protect: false, entropy);
+
+    private static byte[] Run(byte[] input, bool protect, byte[] entropy)
     {
         fixed (byte* pin = input)
-        fixed (byte* pe = s_entropy)
+        fixed (byte* pe = entropy)
         {
             var din = new DataBlob { Size = (uint)input.Length, Data = pin };
-            var ent = new DataBlob { Size = (uint)s_entropy.Length, Data = pe };
+            var ent = new DataBlob { Size = (uint)entropy.Length, Data = pe };
             var dout = default(DataBlob);
             bool ok = protect
                 ? CryptProtectData(&din, null, &ent, null, null, UiForbidden, &dout)
@@ -288,7 +294,7 @@ internal static unsafe partial class MacKeychain
     private static nint Constant(nint library, string name) => Marshal.ReadIntPtr(NativeLibrary.GetExport(library, name));
 
     // A query for our service and the account; the caller releases it.
-    private static nint Query(string account, out nint cf, out nint sec, List<nint> owned)
+    private static nint Query(string account, out nint cf, out nint sec, List<nint> owned, string serviceName)
     {
         cf = NativeLibrary.Load(Cf);
         sec = NativeLibrary.Load(Sec);
@@ -298,7 +304,7 @@ internal static unsafe partial class MacKeychain
         {
             throw new CryptographicException("The keychain query could not be built.");
         }
-        nint service = CFStringCreateWithCString(0, Service, Utf8);
+        nint service = CFStringCreateWithCString(0, serviceName, Utf8);
         nint acct = CFStringCreateWithCString(0, account, Utf8);
         owned.Add(service);
         owned.Add(acct);
@@ -320,10 +326,10 @@ internal static unsafe partial class MacKeychain
         CFRelease(dict);
     }
 
-    public static byte[]? Find(string account)
+    public static byte[]? Find(string account, string service = Service)
     {
         var owned = new List<nint>();
-        nint q = Query(account, out nint cf, out nint sec, owned);
+        nint q = Query(account, out nint cf, out nint sec, owned, service);
         try
         {
             CFDictionarySetValue(q, Constant(sec, "kSecReturnData"), Constant(cf, "kCFBooleanTrue"));
@@ -336,7 +342,7 @@ internal static unsafe partial class MacKeychain
             }
             if (status != 0 || data == 0)
             {
-                throw new CryptographicException("The keychain refused the audit key (status " + status.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").");
+                throw new CryptographicException("The keychain refused the item (status " + status.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").");
             }
             try
             {
@@ -353,10 +359,10 @@ internal static unsafe partial class MacKeychain
         }
     }
 
-    public static void Add(string account, byte[] key)
+    public static void Add(string account, byte[] key, string service = Service)
     {
         var owned = new List<nint>();
-        nint q = Query(account, out _, out nint sec, owned);
+        nint q = Query(account, out _, out nint sec, owned, service);
         try
         {
             nint data;
@@ -369,7 +375,7 @@ internal static unsafe partial class MacKeychain
             int status = SecItemAdd(q, null);
             if (status != 0)
             {
-                throw new CryptographicException("The keychain did not store the audit key (status " + status.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").");
+                throw new CryptographicException("The keychain did not store the item (status " + status.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").");
             }
         }
         finally
@@ -378,10 +384,10 @@ internal static unsafe partial class MacKeychain
         }
     }
 
-    public static void Delete(string account)
+    public static void Delete(string account, string service = Service)
     {
         var owned = new List<nint>();
-        nint q = Query(account, out _, out _, owned);
+        nint q = Query(account, out _, out _, owned, service);
         try
         {
             _ = SecItemDelete(q);

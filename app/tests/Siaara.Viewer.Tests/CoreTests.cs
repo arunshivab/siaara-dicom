@@ -194,6 +194,28 @@ internal static class CoreTests
             string js = File.ReadAllText(Path.Combine(appDir, "src", "Siaara.Viewer.Web", "App.razor"));
             T.Check(!js.Contains("http://", StringComparison.Ordinal) && !js.Contains("https://", StringComparison.Ordinal)); // no CDN
         });
+
+        T.Case("build: binding types are named only in Toolkit/Tk*.cs; no control that skips certificate checks", () =>
+        {
+            string src = Path.Combine(FindAppDir(), "src");
+            string sep = Path.DirectorySeparatorChar.ToString();
+            string[] bindingNamespaces = ["using Siaara;", "using Siaara.Network;", "using Siaara.Web;", "using Siaara.Clinical;", "using Siaara.Volumes;", "using Siaara.Interop;"];
+            var files = Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories).Concat(Directory.EnumerateFiles(src, "*.razor", SearchOption.AllDirectories))
+                .Where(f => !f.Contains(sep + "obj" + sep, StringComparison.Ordinal) && !f.Contains(sep + "bin" + sep, StringComparison.Ordinal)).ToArray();
+            T.Check(files.Length > 50);
+            foreach (string f in files)
+            {
+                string text = File.ReadAllText(f);
+                bool facade = f.Contains(sep + "Toolkit" + sep + "Tk", StringComparison.Ordinal);
+                if (!facade)
+                {
+                    T.Check(!bindingNamespaces.Any(n => text.Contains(n, StringComparison.Ordinal)), "binding namespace used in " + Path.GetFileName(f));
+                }
+                // Neither the facade nor the UI may ask the toolkit to skip certificate validation.
+                T.Check(!text.Contains("InsecureSkipValidation", StringComparison.Ordinal), "certificate checks switched off in " + Path.GetFileName(f));
+                T.Check(!text.Contains("AllowInsecureRemote", StringComparison.Ordinal), "insecure remote DICOMweb in " + Path.GetFileName(f));
+            }
+        });
     }
 
     public static string FindAppDir()

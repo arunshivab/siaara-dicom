@@ -1,0 +1,345 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Network settings: nodes, their test, and the receiver.
+   Passwords and tokens go to the secret store of this computer, never to settings.json, and are never shown again.
+   There is deliberately no control that switches certificate checks off. *@
+@implements IDisposable
+@inject ViewerRuntime Rt
+<div class="modal-back">
+    <div class="modal wide network-sheet" role="dialog" aria-modal="true" aria-label="Network">
+        @if (_dimse is not null)
+        {
+            <h2>@(_isNew ? "Add DICOM node" : "DICOM node")</h2>
+            <div class="form-grid">
+                <label class="field">Name<input class="node-name" type="text" @bind="_dimse.Name" maxlength="64" /></label>
+                <label class="field">Host name or IP address<input class="node-host" type="text" @bind="_dimse.Host" /></label>
+                <label class="field">Port<input class="node-port" type="number" min="1" max="65535" @bind="_dimse.Port" /></label>
+                <label class="field">The node's AE title<input class="node-called" type="text" maxlength="16" @bind="_dimse.CalledAe" /></label>
+                <label class="field">Our AE title towards this node<input class="node-calling" type="text" maxlength="16" @bind="_dimse.CallingAe" /></label>
+                <label class="field">Retrieve with
+                    <select @bind="_dimse.Retrieve">
+                        <option value="@RetrieveMethod.Get">C-GET (images come back on our connection)</option>
+                        <option value="@RetrieveMethod.Move">C-MOVE (the node sends to our receiver, which must be on)</option>
+                    </select>
+                </label>
+                @if (_dimse.Retrieve == RetrieveMethod.Move)
+                {
+                    <label class="field">Move destination AE title (empty: our receiver's)<input type="text" maxlength="16" @bind="_dimse.MoveDestinationAe" /></label>
+                }
+                <label class="field">Connect timeout (s)<input type="number" min="1" max="600" @bind="_dimse.ConnectTimeoutSeconds" /></label>
+                <label class="field">Handshake timeout (s)<input type="number" min="1" max="600" @bind="_dimse.AssociationTimeoutSeconds" /></label>
+                <label class="field">Answer timeout (s)<input type="number" min="1" max="3600" @bind="_dimse.DimseTimeoutSeconds" /></label>
+                <label class="field">Maximum PDU size (0: default)<input type="number" min="0" max="1048576" @bind="_dimse.MaxPdu" /></label>
+                <label class="field">Wait for storage confirmation (s)<input type="number" min="1" max="600" @bind="_dimse.CommitmentWaitSeconds" /></label>
+            </div>
+            <label><input type="checkbox" @bind="_dimse.RequestCommitment" /> After sending, ask the node to confirm storage (Storage Commitment)</label>
+            <label><input type="checkbox" @bind="_dimse.AllowLossyTranscode" /> When the node accepts only lossy compression, compress on sending (the image then gets a new identifier at the node)</label>
+            <label><input type="checkbox" @bind="_dimse.Tls.Enabled" /> Use TLS (the node's certificate is always checked)</label>
+            @if (_dimse.Tls.Enabled)
+            {
+                @TlsFields(_dimse.Tls, NodeRegistry.TlsSecret(_dimse.Id), false)
+            }
+        }
+        else if (_web is not null)
+        {
+            <h2>@(_isNew ? "Add DICOMweb node" : "DICOMweb node")</h2>
+            <div class="form-grid">
+                <label class="field">Name<input class="node-name" type="text" @bind="_web.Name" maxlength="64" /></label>
+                <label class="field">Address of the DICOMweb service<input class="node-address" type="text" @bind="_web.Address" placeholder="https://server/dicom-web" /></label>
+                <label class="field">Sign-in
+                    <select class="node-auth" @bind="_web.Auth">
+                        <option value="@WebAuthKind.None">None</option>
+                        <option value="@WebAuthKind.Basic">User name and password (Basic)</option>
+                        <option value="@WebAuthKind.Bearer">Token (Bearer)</option>
+                    </select>
+                </label>
+                @if (_web.Auth == WebAuthKind.Basic)
+                {
+                    <label class="field">User name<input type="text" @bind="_web.UserName" autocomplete="off" /></label>
+                }
+                @if (_web.Auth != WebAuthKind.None)
+                {
+                    <label class="field">@(_web.Auth == WebAuthKind.Basic ? "Password" : "Token")
+                        <input class="node-secret" type="password" @bind="_secret" autocomplete="new-password"
+                               placeholder="@(Stored(NodeRegistry.PasswordSecret(_web.Id)) ? "stored on this computer; type to replace" : "")" />
+                    </label>
+                }
+                <label class="field">Timeout (s)<input type="number" min="1" max="3600" @bind="_web.TimeoutSeconds" /></label>
+            </div>
+            @if (_web.Address.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                @TlsFields(_web.Tls, NodeRegistry.TlsSecret(_web.Id), false)
+            }
+            <p class="muted small">A search sends the name, ID or accession number you type as part of the address, as DICOMweb defines it; servers and proxies on the way may log it.</p>
+        }
+        else if (_scp is not null)
+        {
+            <h2>Receiver (Storage SCP)</h2>
+            <p class="muted small">When on, other systems can send images to this viewer. It is the only part of the viewer that other computers can reach: the firewall of this computer must allow the port; the viewer's own pages always stay on this computer.</p>
+            <label><input class="scp-enabled" type="checkbox" @bind="_scp.Enabled" /> Receive images from other systems</label>
+            <div class="form-grid">
+                <label class="field">Our AE title<input class="scp-ae" type="text" maxlength="16" @bind="_scp.AeTitle" /></label>
+                <label class="field">Port<input class="scp-port" type="number" min="1" max="65535" @bind="_scp.Port" /></label>
+                <label class="field">Listen on address (empty: every network interface)<input class="scp-bind" type="text" @bind="_scp.BindAddress" /></label>
+                <label class="field">Allowed senders (AE titles, separated by commas)<input class="scp-allowed" type="text" @bind="_allowed" /></label>
+            </div>
+            <label><input class="scp-any" type="checkbox" @bind="_scp.AcceptAnyCallingAe" /> Accept every AE title (the list above is then not checked)</label>
+            @if (_scp.AcceptAnyCallingAe)
+            {
+                <div class="banner danger">Any system that can reach this computer on the port could then put images into your local store. Use this only on a network you control. The choice is recorded in the audit log.</div>
+            }
+            <label><input type="checkbox" @bind="_scp.ServeQueryRetrieve" /> Also let the allowed senders search and fetch studies from the local store (Query/Retrieve)</label>
+            <label><input type="checkbox" @bind="_scp.Tls.Enabled" /> Use TLS</label>
+            @if (_scp.Tls.Enabled)
+            {
+                @TlsFields(_scp.Tls, NodeRegistry.ScpTlsSecret, true)
+            }
+        }
+        else
+        {
+            <h2>Network</h2>
+            <h3>Nodes</h3>
+            <table class="grid nodes">
+                <thead><tr><th>Name</th><th>Kind</th><th>Address</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var n in Rt.Network.Nodes.List())
+                    {
+                        <tr @key="n.Id">
+                            <td>@n.Name</td>
+                            <td>@(n.IsWeb ? "DICOMweb" : "DICOM")</td>
+                            <td>@AddressOf(n)</td>
+                            <td class="row-actions">
+                                <button class="btn node-test" disabled="@(_testing == n.Id)" @onclick="() => Test(n)">@(_testing == n.Id ? "Testing..." : "Test")</button>
+                                <button class="btn" @onclick="() => Edit(n)">Edit</button>
+                                @if (_deleting == n.Id)
+                                {
+                                    <button class="btn danger" @onclick="() => Delete(n)">Delete it</button>
+                                    <button class="btn" @onclick="() => _deleting = null">Keep</button>
+                                }
+                                else
+                                {
+                                    <button class="btn danger" @onclick="() => _deleting = n.Id">Delete</button>
+                                }
+                            </td>
+                        </tr>
+                        @if (_tests.TryGetValue(n.Id, out var t))
+                        {
+                            <tr class="sub"><td colspan="4" class="node-test-result @(t.Ok ? "ok" : "err")">@t.Message</td></tr>
+                        }
+                    }
+                    @if (Rt.Network.Nodes.List().Count == 0)
+                    {
+                        <tr><td colspan="4" class="muted">No nodes yet.</td></tr>
+                    }
+                </tbody>
+            </table>
+            <div class="row">
+                <button class="btn add-dimse" @onclick="AddDimse">Add DICOM node</button>
+                <button class="btn add-web" @onclick="AddWeb">Add DICOMweb node</button>
+            </div>
+            <h3>Receiver</h3>
+            <div class="scp-status">
+                @if (Rt.Network.Scp.IsRunning)
+                {
+                    var st = Rt.Network.Scp.Stats;
+                    <span class="tag ok">On</span>
+                    <span>listening on port @Rt.Network.Scp.Port as "@Rt.Network.Scp.AeTitle"</span>
+                    @if (Rt.Network.Scp.AcceptsAny)
+                    {
+                        <span class="tag danger">accepts every AE title</span>
+                    }
+                    <span class="muted">connections @st.Associations (now @st.ActiveAssociations), refused @(st.Rejected + st.Refused), images stored @st.Stored, failed @st.StoreFailures, @((st.Bytes / 1048576.0).ToString("F1", CultureInfo.InvariantCulture)) MB</span>
+                }
+                else
+                {
+                    <span class="tag">Off</span>
+                    <span class="muted">No other system can send images to this viewer.</span>
+                }
+            </div>
+            @if (Rt.Network.Scp.LastError is string le)
+            {
+                <div class="err">@le</div>
+            }
+            <div class="row">
+                <button class="btn scp-edit" @onclick="EditScp">Receiver settings</button>
+            </div>
+            <p class="muted small">Passwords and tokens are kept by this computer (@Rt.Network.Nodes.SecretProtection), never in the settings file.</p>
+        }
+        @if (_problems.Count > 0)
+        {
+            <ul class="err problems">
+                @foreach (var p in _problems)
+                {
+                    <li>@p</li>
+                }
+            </ul>
+        }
+        <div class="row end">
+            @if (_dimse is not null || _web is not null || _scp is not null)
+            {
+                <button class="btn" @onclick="CancelEdit">Cancel</button>
+                <button class="btn primary save" @onclick="Save">Save</button>
+            }
+            else
+            {
+                <button class="btn close" @onclick="OnClose">Close</button>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    private DimseNodeSetting? _dimse;
+    private WebNodeSetting? _web;
+    private ScpSetting? _scp;
+    private bool _isNew;
+    private string _secret = "", _tlsPassword = "", _allowed = "";
+    private string? _testing, _deleting;
+    private IReadOnlyList<string> _problems = [];
+    private readonly Dictionary<string, NodeTestResult> _tests = new(StringComparer.Ordinal);
+
+    protected override void OnInitialized() => Rt.Network.Scp.Changed += OnScpChanged;
+
+    private void OnScpChanged(object? sender, EventArgs e) =>
+        Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(StateHasChanged), "network", "refreshing the receiver status");
+
+    private bool Stored(string secretId) => !_isNew && Rt.Network.Nodes.HasSecret(secretId);
+
+    private string AddressOf(NodeRef n)
+    {
+        if (n.IsWeb)
+        {
+            return Rt.Network.Nodes.FindWeb(n.Id)?.Address ?? "";
+        }
+        DimseNodeSetting? d = Rt.Network.Nodes.FindDimse(n.Id);
+        return d is null ? "" : d.CalledAe + " at " + d.Host + ":" + d.Port.ToString(CultureInfo.InvariantCulture) + (d.Tls.Enabled ? " (TLS)" : "");
+    }
+
+    private RenderFragment TlsFields(TlsSetting tls, string secretId, bool server) => @<div class="form-grid tls">
+        @if (!server)
+        {
+            <label class="field">Trusted certificate authorities (PEM file; empty: this computer's trust store)<input type="text" @bind="tls.CaFile" /></label>
+            <label class="field">Name the certificate must carry (empty: the host name)<input type="text" @bind="tls.ExpectedName" /></label>
+        }
+        <label class="field">@(server ? "Our certificate and key (PKCS#12 file)" : "Our own certificate, if the other side asks for one (PKCS#12 file)")<input type="text" @bind="tls.Pkcs12File" /></label>
+        <label class="field">Password of that file
+            <input type="password" @bind="_tlsPassword" autocomplete="new-password" placeholder="@(Stored(secretId) ? "stored on this computer; type to replace" : "")" />
+        </label>
+        <label><input type="checkbox" @bind="tls.Tls13Only" /> TLS 1.3 only</label>
+    </div>;
+
+    private void Begin(bool isNew)
+    {
+        _isNew = isNew;
+        _secret = _tlsPassword = "";
+        _problems = [];
+        _deleting = null;
+    }
+
+    private void AddDimse()
+    {
+        Begin(true);
+        _dimse = new DimseNodeSetting { CallingAe = Rt.Network.Nodes.Current.Scp.AeTitle };
+    }
+
+    private void AddWeb()
+    {
+        Begin(true);
+        _web = new WebNodeSetting();
+    }
+
+    private void Edit(NodeRef n)
+    {
+        Begin(false);
+        // Fresh copies from the settings: nothing changes until Save.
+        _dimse = n.IsWeb ? null : Rt.Network.Nodes.FindDimse(n.Id);
+        _web = n.IsWeb ? Rt.Network.Nodes.FindWeb(n.Id) : null;
+    }
+
+    private void EditScp()
+    {
+        Begin(false);
+        _scp = Rt.Network.Nodes.Current.Scp;
+        _allowed = string.Join(", ", _scp.AllowedCallingAes);
+    }
+
+    private void CancelEdit()
+    {
+        _dimse = null;
+        _web = null;
+        _scp = null;
+        _problems = [];
+    }
+
+    private void Save()
+    {
+        try
+        {
+            // An empty password box keeps what is stored.
+            string? tls = _tlsPassword.Length > 0 ? _tlsPassword : null;
+            if (_dimse is not null)
+            {
+                Rt.Network.Nodes.Save(_dimse, tls);
+            }
+            else if (_web is not null)
+            {
+                Rt.Network.Nodes.Save(_web, _secret.Length > 0 ? _secret : null, tls);
+            }
+            else if (_scp is not null)
+            {
+                _scp.AllowedCallingAes.Clear();
+                foreach (string ae in _allowed.Split([',', ';', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    _scp.AllowedCallingAes.Add(ae);
+                }
+                Rt.Network.Scp.Apply(_scp, tls);
+            }
+            CancelEdit();
+        }
+        catch (NodeValidationException e)
+        {
+            _problems = e.Problems;
+        }
+        catch (NetworkException e)
+        {
+            // Saved, but the receiver could not start (or the file could not be written): say so on the overview.
+            bool wasScp = _scp is not null;
+            CancelEdit();
+            _problems = wasScp && Rt.Network.Scp.LastError is not null ? [] : [e.Message];
+        }
+        catch (Siaara.Viewer.Core.Audit.AuditUnavailableException)
+        {
+            _problems = ["Nothing was changed: the audit log could not be written."];
+        }
+        finally
+        {
+            _secret = _tlsPassword = "";
+        }
+    }
+
+    private async Task Test(NodeRef n)
+    {
+        _testing = n.Id;
+        _tests.Remove(n.Id);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        CancellationToken ct = cts.Token;
+        NodeTestResult r = await Task.Run(() => Rt.Network.Nodes.Test(n.Id, ct), CancellationToken.None).ConfigureAwait(true);
+        _tests[n.Id] = r;
+        _testing = null;
+    }
+
+    private void Delete(NodeRef n)
+    {
+        try
+        {
+            Rt.Network.Nodes.Delete(n.Id);
+        }
+        catch (NetworkException e)
+        {
+            _problems = [e.Message];
+        }
+        _deleting = null;
+        _tests.Remove(n.Id);
+    }
+
+    public void Dispose() => Rt.Network.Scp.Changed -= OnScpChanged;
+}
