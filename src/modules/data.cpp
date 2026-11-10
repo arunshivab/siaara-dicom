@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <new>
+#include <stdexcept>
 
 #include "charset/charset.hpp"
 #include "image/samples.hpp"
@@ -424,6 +425,8 @@ Result<std::vector<std::int64_t>> waveform_raw(const Dataset& ds, std::uint32_t 
         return out;
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
     }
 }
 
@@ -438,6 +441,8 @@ Result<std::vector<double>> waveform_scaled(const Dataset& ds, std::uint32_t gro
         return out;
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
     }
 }
 
@@ -529,6 +534,8 @@ Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t 
         return out;
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
     }
 }
 

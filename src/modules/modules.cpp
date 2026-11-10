@@ -8,6 +8,7 @@
 #include <iterator>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 
 #include "charset/charset.hpp"
 #include "dict/dictionary.hpp"
@@ -348,6 +349,8 @@ Result<PathValue> get_by_path(const Dataset& root, std::string_view path) {
         return get_by_path_impl(root, path);
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
     }
 }
 
@@ -508,6 +511,8 @@ Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_vie
         return out;
     } catch (const std::bad_alloc&) {
         return Status(Errc::OutOfMemory, "out of memory");
+    } catch (const std::length_error&) {  // more elements than a vector can hold (32-bit builds)
+        return Status(Errc::LimitExceeded, "result exceeds the memory budget");
     }
 }
 
