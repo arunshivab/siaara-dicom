@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "charset/charset.hpp"
 #include "dict/dictionary.hpp"
 #include "web/base64.hpp"
 #include "web/xml.hpp"
@@ -168,6 +169,8 @@ private:
             }
             return Status::ok();
         }
+        // As in DICOM JSON: the Specific Character Set applies to SH, LO, ST, LT, UC, UT and PN only.
+        if (!charset::vr_uses_character_set(vr)) cs = Charset::Ascii;
         const auto values = detail::split_values(e.value.as_chars(), vr);
         for (std::size_t i = 0; i < values.size(); ++i) {
             const auto v = values[i];

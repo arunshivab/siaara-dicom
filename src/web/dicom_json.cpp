@@ -1,6 +1,8 @@
 // SIAARA DICOM Toolkit - DICOM JSON Model (PS3.18 Annex F), written from the standard.
 #include "web/dicom_json.hpp"
 
+#include "charset/charset.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <string>
@@ -150,7 +152,11 @@ private:
             out_.push_back('}');
             return Status::ok();
         }
-        // Character string VRs.
+        // Character string VRs. The Specific Character Set applies to SH, LO, ST, LT, UC, UT and PN
+        // only (PS3.5 6.1.2.2); every other string VR is in the default repertoire, so a byte
+        // above 0x7F in it is not a character of any set: U+FFFD, as siaara_dataset_get_utf8 gives
+        // (P3-6: JSON used to decode it with the data set's character set).
+        if (!charset::vr_uses_character_set(vr)) cs = Charset::Ascii;
         const auto values = detail::split_values(e.value.as_chars(), vr);
         if (!values.empty()) {
             out_.append(",\"Value\":[");
