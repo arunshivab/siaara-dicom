@@ -45,7 +45,8 @@ endif()
 
 # The C# example (examples/csharp/QuickStart) is built from source and run by ctest when the .NET
 # SDK pinned by global.json is installed; it needs the shared library of this build.
-if(TARGET siaara AND NOT SIAARA_SANITIZE)  # dotnet cannot load a sanitizer build of the library
+# dotnet cannot load a sanitizer build of the library, and a 64-bit dotnet cannot load a 32-bit one.
+if(TARGET siaara AND NOT SIAARA_SANITIZE AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   find_program(SIAARA_DOTNET dotnet)
   if(SIAARA_DOTNET)
     execute_process(COMMAND ${SIAARA_DOTNET} --version WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
