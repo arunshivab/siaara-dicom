@@ -1,0 +1,137 @@
+@* SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd. Activity: retrieves, sends and arriving images. Redrawn at most ten times a second. *@
+@implements IDisposable
+@inject ViewerRuntime Rt
+<aside class="activity" aria-label="Activity">
+    <div class="row">
+        <strong>Activity</strong>
+        <span class="muted small">@(_jobs.Count(j => !j.IsFinished)) running or waiting, at most @NetworkJobs.MaxTransfers transfers at once</span>
+        <span class="spacer"></span>
+        <button class="btn" @onclick="OnClose">Close</button>
+    </div>
+    @if (_jobs.Count == 0)
+    {
+        <div class="muted">Nothing yet. Retrieves, sends and images arriving at the receiver are listed here.</div>
+    }
+    <ul class="jobs">
+        @foreach (var j in _jobs)
+        {
+            NetworkJobState st = j.State;
+            <li class="job @StateClass(st)" @key="j.Id">
+                <div class="row">
+                    <span class="tag">@KindText(j.Kind)</span>
+                    <span class="job-title">@j.Title</span>
+                    <span class="muted small">@j.NodeName</span>
+                    <span class="spacer"></span>
+                    <span class="job-state">@StateText(st)</span>
+                    @if (!j.IsFinished && j.Kind != NetworkJobKind.Receive)
+                    {
+                        <button class="btn" @onclick="() => j.Cancel()">Cancel</button>
+                    }
+                    @if (j.CanRetry)
+                    {
+                        <button class="btn" @onclick="() => Retry(j)">Retry</button>
+                    }
+                </div>
+                <div class="row small">
+                    @if (j.Fraction is double f && !j.IsFinished)
+                    {
+                        <progress max="1" value="@f.ToString("F3", CultureInfo.InvariantCulture)"></progress>
+                    }
+                    else if (!j.IsFinished && st == NetworkJobState.Running)
+                    {
+                        <progress></progress>
+                    }
+                    <span>@Counts(j)</span>
+                    <span class="muted">@j.SpeedText</span>
+                </div>
+                @if (j.Error is string err)
+                {
+                    <div class="err small">@Sentence(err)</div>
+                }
+                @{ var notes = j.Notes; }
+                @if (notes.Count > 0)
+                {
+                    <details class="small">
+                        <summary>@notes[^1]</summary>
+                        @foreach (var n in notes)
+                        {
+                            <div>@n</div>
+                        }
+                    </details>
+                }
+            </li>
+        }
+    </ul>
+</aside>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    private IReadOnlyList<NetworkJob> _jobs = [];
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _jobs = Rt.Network.Jobs.Snapshot();
+        Rt.Network.Jobs.Changed += OnChanged;
+    }
+
+    private void OnChanged(object? sender, EventArgs e) =>
+        Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(() =>
+        {
+            _jobs = Rt.Network.Jobs.Snapshot();
+            StateHasChanged();
+        }), "activity", "refreshing the activity list");
+
+    private void Retry(NetworkJob j)
+    {
+        try
+        {
+            j.Retry();
+        }
+        catch (Exception e) when (e is NetworkException or Siaara.Viewer.Core.Audit.AuditUnavailableException)
+        {
+            _error = NetworkText.Describe(e);
+        }
+        _jobs = Rt.Network.Jobs.Snapshot();
+    }
+
+    private static string Sentence(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..] + (s.EndsWith('.') ? "" : ".");
+
+    private static string KindText(NetworkJobKind k) => k switch { NetworkJobKind.Retrieve => "Retrieve", NetworkJobKind.Send => "Send", _ => "Receive" };
+
+    private static string StateText(NetworkJobState s) => s switch
+    {
+        NetworkJobState.Queued => "Waiting",
+        NetworkJobState.Running => "Running",
+        NetworkJobState.Completed => "Done",
+        NetworkJobState.CompletedWithErrors => "Done, with problems",
+        NetworkJobState.Failed => "Failed",
+        _ => "Cancelled",
+    };
+
+    private static string StateClass(NetworkJobState s) => s switch
+    {
+        NetworkJobState.Failed => "failed",
+        NetworkJobState.CompletedWithErrors => "warned",
+        NetworkJobState.Completed => "done",
+        NetworkJobState.Cancelled => "cancelled",
+        _ => "",
+    };
+
+    private static string Counts(NetworkJob j)
+    {
+        string done = j.Completed.ToString(CultureInfo.InvariantCulture);
+        string text = j.Total > 0 ? done + " of " + j.Total.ToString(CultureInfo.InvariantCulture) + " images" : done + " images";
+        if (j.Failed > 0)
+        {
+            text += ", " + j.Failed.ToString(CultureInfo.InvariantCulture) + " failed";
+        }
+        if (j.Bytes > 0)
+        {
+            text += ", " + (j.Bytes / 1048576.0).ToString("F1", CultureInfo.InvariantCulture) + " MB";
+        }
+        return text;
+    }
+
+    public void Dispose() => Rt.Network.Jobs.Changed -= OnChanged;
+}

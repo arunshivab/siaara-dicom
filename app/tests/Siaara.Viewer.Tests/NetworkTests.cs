@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.DependencyInjection;
 using Siaara.Viewer.Core.Audit;
 using Siaara.Viewer.Core.Logging;
 using Siaara.Viewer.Core.Network;
@@ -823,5 +824,110 @@ internal static class NetworkTests
             CapturedFrame fr = await sink3.NextFrameAsync().ConfigureAwait(false);
             T.Check(fr.Width > 0);
         });
+        T.Case("network: in the real host the pages stay on 127.0.0.1 with the receiver on; receiver restarts with the app; logs hold no patient data; audit trail", async () =>
+        {
+            (TestEnv archive, SamplePatient ct, SamplePatient _) = await ArchiveAsync("host-archive").ConfigureAwait(false);
+            using TestEnv __ = archive;
+            string data = T.NewTempDir("host-net");
+            int scpPort = FreePort();
+            int kestrelPort;
+            Host.RunningViewer v = await TestHost.StartAsync(data).ConfigureAwait(false);
+            await using (v.ConfigureAwait(false))
+            {
+                NetworkServices net = v.Runtime.Network;
+                T.Check(!net.Scp.IsRunning);
+                // The receiver on every interface: it is the only thing other computers can reach.
+                var s = new ScpSetting { Enabled = true, AeTitle = ViewerAe, Port = scpPort };
+                s.AllowedCallingAes.Add(ArchiveAe);
+                net.Scp.Apply(s);
+                T.Require(net.Scp.IsRunning);
+                kestrelPort = v.Port;
+                ICollection<string> addresses = v.App.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>()
+                    .Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()!.Addresses;
+                T.Check(addresses.Count == 1 && addresses.All(a => new Uri(a).Host == "127.0.0.1"));
+                IPAddress? lan = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                    .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up && n.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                    .SelectMany(n => n.GetIPProperties().UnicastAddresses).Select(a => a.Address)
+                    .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (lan is null)
+                {
+                    T.Note("no LAN interface: the address check is the listening addresses only");
+                }
+                else
+                {
+                    async Task<bool> Connects(int port)
+                    {
+                        using var c = new TcpClient();
+                        try
+                        {
+                            await c.ConnectAsync(lan, port).WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                            return true;
+                        }
+                        catch (Exception e) when (e is SocketException or TimeoutException)
+                        {
+                            return false;
+                        }
+                    }
+                    T.Check(!await Connects(kestrelPort).ConfigureAwait(false), "the pages answer on the LAN address");
+                    T.Check(await Connects(scpPort).ConfigureAwait(false), "the receiver does not answer on the LAN address");
+                }
+
+                // The archive sends a study to the host's receiver; the host searches the archive and fetches a series.
+                StartReceiver(archive, ArchiveAe, [ViewerAe], queryRetrieve: true);
+                string toViewer = AddNode(archive, "viewer", ViewerAe, scpPort, ArchiveAe);
+                await archive.Network.Transfers.Send(toViewer, new SendRequest(ct.StudyUid, null, "x")).Completion.ConfigureAwait(false);
+                T.Check(await UntilAsync(() => v.Runtime.Store.GetStudyAsync(ct.StudyUid).GetAwaiter().GetResult()?.Images == 16).ConfigureAwait(false));
+                string node = net.Nodes.Save(new DimseNodeSetting { Name = "Archive", Host = "127.0.0.1", Port = archive.Network.Scp.Port, CalledAe = ArchiveAe, CallingAe = ViewerAe });
+                RemoteSearchResult r = await net.Search.SearchStudiesAsync(node, new StudyQuery { Text = "REMOTE^CR" }, CancellationToken.None).ConfigureAwait(false);
+                T.Eq(r.Rows.Count, 1);
+                T.Eq(r.Rows[0].Local, LocalPresence.None);
+                NetworkJob j = net.Transfers.Retrieve(node, r.Rows[0].Study.StudyInstanceUid, null, r.Rows[0].Study.DisplayName, r.Rows[0].RemoteImages);
+                await j.Completion.ConfigureAwait(false);
+                T.Eq(j.State, NetworkJobState.Completed);
+                T.Check(await UntilAsync(() => net.Jobs.Snapshot().Any(x => x.Kind == NetworkJobKind.Receive && x.IsFinished), 12000).ConfigureAwait(false));
+            }
+            // After the stop: the receiver's port is free again, and scp.stop is in the trail before app.stop.
+            using (var probe = new TcpListener(IPAddress.Loopback, scpPort))
+            {
+                probe.Start();
+            }
+            List<string> events = [.. AuditLog.ReadEvents(TestHost.AuditFile(data))];
+            foreach (string e in (string[])["scp.settings", "scp.start", "scp.receive", "node.change", "search", "retrieve", "scp.stop", "app.stop"])
+            {
+                T.Check(events.Contains(e), "audit: " + e);
+            }
+            T.Check(events.LastIndexOf("scp.stop") < events.LastIndexOf("app.stop"));
+            T.Check(AuditLog.Verify(TestHost.AuditFile(data), AuditKeys.KeyFile).IsIntact);
+
+            // No patient value and no search text in the app log (memory and files) or the audit trail.
+            string logs = string.Join("\n", AppLog.RecentLines) + string.Concat(Directory.EnumerateFiles(Path.Combine(data, "logs")).Select(ReadShared))
+                + File.ReadAllText(TestHost.AuditFile(data));
+            foreach (string phi in (string[])["REMOTE", "RMT100", "RMT200", "ARMT", "SAMPLE^"])
+            {
+                T.Check(!logs.Contains(phi, StringComparison.Ordinal), "found in a log: " + phi);
+            }
+            T.Check(logs.Contains("receiver started", StringComparison.Ordinal) && logs.Contains("remote search: 1 studies", StringComparison.Ordinal));
+
+            // The next start brings the receiver back by itself, on the same port; the pages are again on 127.0.0.1 only.
+            Host.RunningViewer v2 = await TestHost.StartAsync(data).ConfigureAwait(false);
+            await using (v2.ConfigureAwait(false))
+            {
+                T.Check(v2.Runtime.Network.Scp.IsRunning);
+                T.Eq(v2.Runtime.Network.Scp.Port, scpPort);
+                T.Check(archive.Network.Nodes.Test(archive.Network.Nodes.List().Single(n => n.Name == "viewer").Id, CancellationToken.None).Ok);
+                // Switching it off in the settings stops it and keeps it off.
+                ScpSetting off = v2.Runtime.Network.Nodes.Current.Scp;
+                off.Enabled = false;
+                v2.Runtime.Network.Scp.Apply(off);
+                T.Check(!v2.Runtime.Network.Scp.IsRunning);
+            }
+        });
+    }
+
+    private static string ReadShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var r = new StreamReader(fs);
+        return r.ReadToEnd();
     }
 }

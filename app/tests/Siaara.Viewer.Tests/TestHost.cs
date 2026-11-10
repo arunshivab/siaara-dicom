@@ -38,7 +38,15 @@ internal sealed class FixedPeerCheck(PeerOwner owner) : IPeerUserCheck
 internal static class TestHost
 {
     public static Task<RunningViewer> StartAsync(string dataDir, IPeerUserCheck? peers = null, bool ipHost = false) =>
-        ViewerHost.StartAsync(new HostOptions { DataDir = dataDir, MapStaticAssets = false, AuditKeys = AuditKeys.KeyFile, Peers = peers, IpHost = ipHost });
+        ViewerHost.StartAsync(new HostOptions
+        {
+            DataDir = dataDir,
+            MapStaticAssets = false,
+            AuditKeys = AuditKeys.KeyFile,
+            Peers = peers,
+            IpHost = ipHost,
+            Secrets = SecretStores.EncryptedFiles(Path.Combine(dataDir, "secrets")),
+        });
 
     public static string AuditFile(string dataDir) => Path.Combine(dataDir, "audit", "audit.jsonl");
 

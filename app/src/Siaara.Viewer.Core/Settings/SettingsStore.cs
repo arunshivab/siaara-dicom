@@ -118,6 +118,21 @@ public sealed class SettingsStore
         return [.. names];
     }
 
+    /// <summary>A copy of the network settings that the caller may change freely (nothing is saved by changing it).</summary>
+    /// <returns>The copy.</returns>
+    public Network.NetworkSetting NetworkCopy()
+    {
+        Network.NetworkSetting live = Current.Network;
+        return JsonSerializer.Deserialize(JsonSerializer.SerializeToUtf8Bytes(live, SettingsJsonContext.Default.NetworkSetting),
+            SettingsJsonContext.Default.NetworkSetting) ?? new Network.NetworkSetting();
+    }
+
+    internal static Network.DimseNodeSetting Copy(Network.DimseNodeSetting n) =>
+        JsonSerializer.Deserialize(JsonSerializer.SerializeToUtf8Bytes(n, SettingsJsonContext.Default.DimseNodeSetting), SettingsJsonContext.Default.DimseNodeSetting)!;
+
+    internal static Network.WebNodeSetting Copy(Network.WebNodeSetting n) =>
+        JsonSerializer.Deserialize(JsonSerializer.SerializeToUtf8Bytes(n, SettingsJsonContext.Default.WebNodeSetting), SettingsJsonContext.Default.WebNodeSetting)!;
+
     private static UserPrefs Clone(UserPrefs p) =>
         JsonSerializer.Deserialize(Serialize(p), SettingsJsonContext.Default.UserPrefs) ?? new UserPrefs();
 }

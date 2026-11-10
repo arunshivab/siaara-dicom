@@ -21,7 +21,9 @@ public sealed class ViewerRuntime : IDisposable
     /// <param name="scheduler">Scheduler.</param>
     /// <param name="store">Store (opened by the host).</param>
     /// <param name="audit">Audit log.</param>
-    public ViewerRuntime(AppPaths paths, SettingsStore settings, ToolkitScheduler scheduler, StoreService store, AuditLog audit)
+    /// <param name="secrets">Secret store for node passwords and tokens; null = the operating system's (see SecretStores).</param>
+    public ViewerRuntime(AppPaths paths, SettingsStore settings, ToolkitScheduler scheduler, StoreService store, AuditLog audit,
+        Core.Platform.ISecretStore? secrets = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(settings);
@@ -37,7 +39,11 @@ public sealed class ViewerRuntime : IDisposable
         Thumbnails = new ThumbnailService(store, scheduler);
         Sessions = new SessionRegistry(new ViewerServices(store, Cache, scheduler, settings, Annotations, audit));
         DataFolderWarning = paths.AccessWarning();
+        Network = new Core.Network.NetworkServices(settings, secrets ?? Core.Platform.SecretStores.ForCurrentOs(paths.SecretsFolder), store, audit);
     }
+
+    /// <summary>Networking: nodes, remote search, retrieve and send, the receiver, the activity list.</summary>
+    public Core.Network.NetworkServices Network { get; }
 
     /// <summary>Per-run ids that stand for Study and Series Instance UIDs in URLs.</summary>
     public OpaqueIds Ids { get; } = new();
@@ -227,6 +233,8 @@ public sealed class ViewerRuntime : IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
+        // Transfers are cancelled and the receiver stops before the host closes the store.
+        Network.Dispose();
         Sessions.Dispose();
         Cache.Dispose();
     }

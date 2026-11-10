@@ -70,8 +70,8 @@ public sealed class NodeRegistry
     /// <summary>Raised after nodes or receiver settings changed.</summary>
     public event EventHandler? Changed;
 
-    /// <summary>A snapshot of the network settings.</summary>
-    public NetworkSetting Current => _settings.Current.Network;
+    /// <summary>A copy of the network settings: changing it changes nothing until it is saved through this class.</summary>
+    public NetworkSetting Current => _settings.NetworkCopy();
 
     /// <summary>How secrets are protected on this computer.</summary>
     public string SecretProtection => _secrets.Protection;
@@ -371,7 +371,7 @@ public sealed class NodeRegistry
                 {
                     p.Network.DimseNodes.Remove(old);
                 }
-                p.Network.DimseNodes.Add(node);
+                p.Network.DimseNodes.Add(SettingsStore.Copy(node));
             });
         });
         return node.Id;
@@ -430,7 +430,7 @@ public sealed class NodeRegistry
                 {
                     p.Network.WebNodes.Remove(old);
                 }
-                p.Network.WebNodes.Add(node);
+                p.Network.WebNodes.Add(SettingsStore.Copy(node));
             });
         });
         return node.Id;
