@@ -111,7 +111,7 @@ public sealed record VolumeProperties
 /// A dense voxel grid built from one series (siaara_volume), immutable and usable from many threads.
 /// Voxel (i, j, k), i fastest, is at Origin + i*Spacing.X*AxisI + j*Spacing.Y*AxisJ + k*Spacing.Z*AxisK.
 /// </summary>
-public sealed class Volume : IDisposable
+public sealed partial class Volume : IDisposable
 {
     private readonly VolumeHandle _handle;
     private VolumeProperties? _properties;

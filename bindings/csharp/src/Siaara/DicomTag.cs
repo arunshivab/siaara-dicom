@@ -152,7 +152,7 @@ public sealed record DicomDictionaryEntry(
 
 /// <summary>Look-ups in the data dictionary compiled into the native library.</summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711", Justification = "\"Data Dictionary\" is the DICOM term (PS3.6).")]
-public static class DicomDictionary
+public static partial class DicomDictionary
 {
     private static readonly ConcurrentDictionary<uint, DicomDictionaryEntry?> s_byTag = new();
 

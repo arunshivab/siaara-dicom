@@ -28,7 +28,7 @@ public enum DicomJsonOptions
 /// Text getters decode with the Specific Character Set (0008,0005) of the data set, or of the
 /// nearest enclosing data set that has one (PS3.5 6.1).
 /// </summary>
-public sealed class DicomDataset
+public sealed partial class DicomDataset
 {
     internal enum RootKind
     {

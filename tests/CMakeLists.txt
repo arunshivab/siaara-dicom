@@ -143,3 +143,11 @@ if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART03}" AND EXISTS "${SIAARA_NEMA_PA
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/repair_iod_table_check.py
                    ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART03} ${SIAARA_NEMA_PART04})
 endif()
+# The named data layer (src/modules/module_tables.inc, bindings/csharp/.../Modules.g.cs) must match
+# tools/gen_modules.py run on PS3.3 / PS3.6 when the XML is available.
+set(SIAARA_NEMA_PART06 "" CACHE FILEPATH "PS3.6 DocBook XML (part06.xml) for the named data layer check")
+if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART03}" AND EXISTS "${SIAARA_NEMA_PART06}")
+  add_test(NAME named_modules_match_generator
+           COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/gen_modules.py
+                   ${SIAARA_NEMA_PART03} ${SIAARA_NEMA_PART06} --check)
+endif()

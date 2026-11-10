@@ -769,6 +769,167 @@ internal static class StructLayouts
             r.Add("F siaara_repair_options uid_seed " + Offset(ref s, ref s.uid_seed).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_repair_options uid_seed_len " + Offset(ref s, ref s.uid_seed_len).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        {
+            var s = default(siaara_module_info);
+            r.Add("S siaara_module_info " + Unsafe.SizeOf<siaara_module_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info index " + Offset(ref s, ref s.index).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info kind " + Offset(ref s, ref s.kind).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info attribute_count " + Offset(ref s, ref s.attribute_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info name " + Offset(ref s, ref s.name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info table_id " + Offset(ref s, ref s.table_id).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_info class_name " + Offset(ref s, ref s.class_name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_module_attribute);
+            r.Add("S siaara_module_attribute " + Unsafe.SizeOf<siaara_module_attribute>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute tag " + Offset(ref s, ref s.tag).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute mask " + Offset(ref s, ref s.mask).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute type " + Offset(ref s, ref s.type).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute item_module " + Offset(ref s, ref s.item_module).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute retired " + Offset(ref s, ref s.retired).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute keyword " + Offset(ref s, ref s.keyword).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute vr " + Offset(ref s, ref s.vr).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_module_attribute vm " + Offset(ref s, ref s.vm).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_path_value);
+            r.Add("S siaara_path_value " + Unsafe.SizeOf<siaara_path_value>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value tag " + Offset(ref s, ref s.tag).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value vr " + Offset(ref s, ref s.vr).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value vm " + Offset(ref s, ref s.vm).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value kind " + Offset(ref s, ref s.kind).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value value_index " + Offset(ref s, ref s.value_index).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value item_count " + Offset(ref s, ref s.item_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value has_integer " + Offset(ref s, ref s.has_integer).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value has_real " + Offset(ref s, ref s.has_real).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value integer " + Offset(ref s, ref s.integer).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value real " + Offset(ref s, ref s.real).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_path_value byte_length " + Offset(ref s, ref s.byte_length).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_pixel_value);
+            r.Add("S siaara_pixel_value " + Unsafe.SizeOf<siaara_pixel_value>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value frame " + Offset(ref s, ref s.frame).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value column " + Offset(ref s, ref s.column).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value row " + Offset(ref s, ref s.row).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value sample " + Offset(ref s, ref s.sample).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value sample_kind " + Offset(ref s, ref s.sample_kind).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value stored " + Offset(ref s, ref s.stored).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value stored_real " + Offset(ref s, ref s.stored_real).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value has_modality " + Offset(ref s, ref s.has_modality).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value modality_lut " + Offset(ref s, ref s.modality_lut).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value dose_grid_scaling " + Offset(ref s, ref s.dose_grid_scaling).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value units_source " + Offset(ref s, ref s.units_source).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value modality_value " + Offset(ref s, ref s.modality_value).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value rescale_slope " + Offset(ref s, ref s.rescale_slope).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value rescale_intercept " + Offset(ref s, ref s.rescale_intercept).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_pixel_value units " + Offset(ref s, ref s.units).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_volume_sample);
+            r.Add("S siaara_volume_sample " + Unsafe.SizeOf<siaara_volume_sample>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample inside " + Offset(ref s, ref s.inside).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample interpolation " + Offset(ref s, ref s.interpolation).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample patient " + Offset(ref s, ref s.patient).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample index " + Offset(ref s, ref s.index).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample voxel " + Offset(ref s, ref s.voxel).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_volume_sample value " + Offset(ref s, ref s.value).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_waveform_group);
+            r.Add("S siaara_waveform_group " + Unsafe.SizeOf<siaara_waveform_group>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group channels " + Offset(ref s, ref s.channels).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group samples " + Offset(ref s, ref s.samples).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group bits_allocated " + Offset(ref s, ref s.bits_allocated).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group sampling_frequency " + Offset(ref s, ref s.sampling_frequency).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group sample_interpretation " + Offset(ref s, ref s.sample_interpretation).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group has_padding " + Offset(ref s, ref s.has_padding).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group padding_value " + Offset(ref s, ref s.padding_value).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group has_time_offset " + Offset(ref s, ref s.has_time_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group has_trigger_time_offset " + Offset(ref s, ref s.has_trigger_time_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group time_offset " + Offset(ref s, ref s.time_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group trigger_time_offset " + Offset(ref s, ref s.trigger_time_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group data_samples " + Offset(ref s, ref s.data_samples).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_group reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_waveform_channel);
+            r.Add("S siaara_waveform_channel " + Unsafe.SizeOf<siaara_waveform_channel>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel bits_stored " + Offset(ref s, ref s.bits_stored).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_channel_number " + Offset(ref s, ref s.has_channel_number).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel channel_number " + Offset(ref s, ref s.channel_number).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_sensitivity " + Offset(ref s, ref s.has_sensitivity).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_correction " + Offset(ref s, ref s.has_correction).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_baseline " + Offset(ref s, ref s.has_baseline).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_time_skew " + Offset(ref s, ref s.has_time_skew).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel sensitivity " + Offset(ref s, ref s.sensitivity).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel correction " + Offset(ref s, ref s.correction).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel baseline " + Offset(ref s, ref s.baseline).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel time_skew " + Offset(ref s, ref s.time_skew).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_sample_skew " + Offset(ref s, ref s.has_sample_skew).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_offset " + Offset(ref s, ref s.has_offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel sample_skew " + Offset(ref s, ref s.sample_skew).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel offset " + Offset(ref s, ref s.offset).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_filter_low " + Offset(ref s, ref s.has_filter_low).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_filter_high " + Offset(ref s, ref s.has_filter_high).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel has_notch " + Offset(ref s, ref s.has_notch).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel filter_low " + Offset(ref s, ref s.filter_low).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel filter_high " + Offset(ref s, ref s.filter_high).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_waveform_channel notch " + Offset(ref s, ref s.notch).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_nm_frame_index);
+            r.Add("S siaara_nm_frame_index " + Unsafe.SizeOf<siaara_nm_frame_index>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index frame " + Offset(ref s, ref s.frame).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index present " + Offset(ref s, ref s.present).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index in_pointer " + Offset(ref s, ref s.in_pointer).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index energy_window " + Offset(ref s, ref s.energy_window).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index detector " + Offset(ref s, ref s.detector).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index phase " + Offset(ref s, ref s.phase).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index rotation " + Offset(ref s, ref s.rotation).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index rr_interval " + Offset(ref s, ref s.rr_interval).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index time_slot " + Offset(ref s, ref s.time_slot).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index slice " + Offset(ref s, ref s.slice).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index angular_view " + Offset(ref s, ref s.angular_view).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index time_slice " + Offset(ref s, ref s.time_slice).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_nm_frame_index reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_sop_class_info);
+            r.Add("S siaara_sop_class_info " + Unsafe.SizeOf<siaara_sop_class_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info object_kind " + Offset(ref s, ref s.object_kind).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info retired " + Offset(ref s, ref s.retired).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info has_iod " + Offset(ref s, ref s.has_iod).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info name " + Offset(ref s, ref s.name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info keyword " + Offset(ref s, ref s.keyword).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info iod_name " + Offset(ref s, ref s.iod_name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_sop_class_info iod_table_id " + Offset(ref s, ref s.iod_table_id).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        {
+            var s = default(siaara_transfer_syntax_info);
+            r.Add("S siaara_transfer_syntax_info " + Unsafe.SizeOf<siaara_transfer_syntax_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info explicit_vr " + Offset(ref s, ref s.explicit_vr).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info big_endian " + Offset(ref s, ref s.big_endian).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info encapsulated " + Offset(ref s, ref s.encapsulated).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info lossy " + Offset(ref s, ref s.lossy).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info deflated " + Offset(ref s, ref s.deflated).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info retired " + Offset(ref s, ref s.retired).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_transfer_syntax_info name " + Offset(ref s, ref s.name).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         return r;
     }
 
@@ -826,6 +987,16 @@ internal static class StructLayouts
         r.Add("siaara_scp_event " + Marshal.SizeOf<siaara_scp_event>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_scp_stats " + Marshal.SizeOf<siaara_scp_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_repair_options " + Marshal.SizeOf<siaara_repair_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_module_info " + Marshal.SizeOf<siaara_module_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_module_attribute " + Marshal.SizeOf<siaara_module_attribute>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_path_value " + Marshal.SizeOf<siaara_path_value>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_pixel_value " + Marshal.SizeOf<siaara_pixel_value>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_volume_sample " + Marshal.SizeOf<siaara_volume_sample>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_waveform_group " + Marshal.SizeOf<siaara_waveform_group>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_waveform_channel " + Marshal.SizeOf<siaara_waveform_channel>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_nm_frame_index " + Marshal.SizeOf<siaara_nm_frame_index>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_sop_class_info " + Marshal.SizeOf<siaara_sop_class_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        r.Add("siaara_transfer_syntax_info " + Marshal.SizeOf<siaara_transfer_syntax_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         return r;
     }
 }

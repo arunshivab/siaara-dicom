@@ -253,7 +253,7 @@ public sealed record ColorPalette(int Entries, int FirstMapped, int Bits, bool H
 /// pan and rotation without decoding again. Independent of the file it came from. Immutable: may
 /// be rendered from many threads at once.
 /// </summary>
-public sealed class DicomFrame : IDisposable
+public sealed partial class DicomFrame : IDisposable
 {
     private readonly FrameHandle _handle;
     private FrameProperties? _properties;

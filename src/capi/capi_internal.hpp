@@ -21,7 +21,15 @@
 #include "volume/volume.hpp"
 #include "web/client.hpp"
 
+namespace siaara::modules {
+struct PixelValue;
+}
+
 namespace siaara::capi {
+
+// siaara_pixel_value from a modules::PixelValue (capi_named.cpp; used by capi_view2d.cpp too).
+void fill_pixel_value(const modules::PixelValue& v, uint32_t frame, uint32_t column, uint32_t row, uint32_t sample,
+                      siaara_pixel_value* out);
 
 // Number of live C API handles (siaara_debug_live_handles). Each handle struct holds one
 // LiveHandle member, so every allocation and free is counted without touching the functions.

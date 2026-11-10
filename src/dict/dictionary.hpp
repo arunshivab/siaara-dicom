@@ -47,6 +47,8 @@ bool is_lut_descriptor(Tag tag) noexcept;
 
 // Number of entries compiled in (for diagnostics/tests).
 std::size_t entry_count() noexcept;
+// Entry `index` (< entry_count()): plain entries in tag order, then the repeating-group entries.
+const Entry* entry_at(std::size_t index) noexcept;
 
 struct UidEntry {
     std::string_view uid;
