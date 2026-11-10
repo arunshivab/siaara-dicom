@@ -10,6 +10,7 @@
 <div class="app viewer">
     <div class="patientbar">
         <a class="btn" href="/">Studies</a>
+        <span class="disclaimer" role="note" title="@Disclaimer.Details">@Disclaimer.Text</span>
         @if (_session?.Privacy == true)
         {
             <span class="privacy">Privacy mode (F8): patient details hidden</span>
@@ -27,6 +28,8 @@
         {
             <span class="muted">Loading study...</span>
         }
+        <span class="spacer"></span>
+        <button class="btn" @onclick="() => _aboutOpen = true">About</button>
     </div>
     @if (_session is not null)
     {
@@ -39,16 +42,21 @@
         <CineBar Session="_session" />
     }
     <StatusBar Left="@StatusLeft" />
+    @if (_aboutOpen)
+    {
+        <AboutDialog OnClose="() => _aboutOpen = false" />
+    }
 </div>
 
 @code {
     [Parameter] public string StudyUid { get; set; } = "";
     private ViewerSession? _session;
     private int _dragSeries = -1;
-    private bool _connected;
+    private bool _connected, _aboutOpen;
     private readonly System.Diagnostics.Stopwatch _openClock = System.Diagnostics.Stopwatch.StartNew();
 
-    private string StatusLeft => _session is null ? "" : _session.LoadError ?? (_session.Loaded ? $"{_session.Series.Count} series" : "Reading headers...");
+    private string StatusLeft => _session is null ? "" : _session.LoadError ?? _session.BackgroundError
+        ?? (_session.Loaded ? $"{_session.Series.Count} series" : "Reading headers...");
 
     protected override async Task OnInitializedAsync()
     {
@@ -61,7 +69,7 @@
         _session.UiChanged += OnUi;
     }
 
-    private void OnUi(object? sender, EventArgs e) => _ = InvokeAsync(StateHasChanged);
+    private void OnUi(object? sender, EventArgs e) => Siaara.Viewer.Core.Logging.AppLog.Observe(InvokeAsync(StateHasChanged), "viewer", "refreshing the viewer");
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

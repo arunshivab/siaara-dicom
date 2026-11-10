@@ -85,6 +85,23 @@ public sealed record AnnotationView(string Id, string Kind, IReadOnlyList<double
 /// <param name="Mode">"loop" or "bounce".</param>
 public sealed record CineView(bool Playing, double Fps, string Mode);
 
+/// <summary>A reference line, cross-reference marker or magnifier hint drawn by the browser (screen coordinates).</summary>
+/// <param name="Kind">"scout" (where the active viewport's slice cuts this image) or "cross" (cross-reference point, one x y pair).</param>
+/// <param name="Points">x y pairs in viewport pixels.</param>
+/// <param name="Label">Short label (series number), or "".</param>
+public sealed record ReferenceLineView(string Kind, IReadOnlyList<double> Points, string Label);
+
+/// <summary>What the viewport's context menu shows.</summary>
+/// <param name="Presets">Window presets of the modality, in key order.</param>
+/// <param name="Colormap">Current colour map name.</param>
+/// <param name="Colormaps">Colour maps offered (grayscale images only; empty for colour images).</param>
+/// <param name="ShowOverlays">Overlays and shutters shown.</param>
+/// <param name="Synced">The viewport is in the sync group.</param>
+/// <param name="LinkScroll">Linked scrolling is on.</param>
+/// <param name="ReferenceLines">Reference lines are shown.</param>
+public sealed record ViewportMenu(IReadOnlyList<string> Presets, string Colormap, IReadOnlyList<string> Colormaps, bool ShowOverlays, bool Synced,
+                                  bool LinkScroll, bool ReferenceLines);
+
 /// <summary>Orientation labels at the viewport edges (after rotation and flips).</summary>
 /// <param name="Left">Left.</param>
 /// <param name="Right">Right.</param>
@@ -117,6 +134,18 @@ public sealed record ViewportStateMessage
     public string? Message { get; init; }
     /// <summary>Id of a calibration line waiting for its true length.</summary>
     public string? CalibrationPrompt { get; init; }
+
+    /// <summary>Text annotation waiting for its text (the browser asks for it), or null.</summary>
+    public string? TextPrompt { get; init; }
+
+    /// <summary>Reference lines and cross-reference markers.</summary>
+    public IReadOnlyList<ReferenceLineView> ReferenceLines { get; init; } = [];
+
+    /// <summary>Context menu contents.</summary>
+    public ViewportMenu? Menu { get; init; }
+
+    /// <summary>The intended-use label the browser stamps on exported and copied images.</summary>
+    public string Disclaimer { get; init; } = Text.Disclaimer.Text;
 }
 
 /// <summary>Where a session sends its messages (the /ws/view socket).</summary>

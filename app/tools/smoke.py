@@ -3,6 +3,8 @@
 #
 # Scripted smoke test against a running host (no browser needed). Usage:
 #   smoke.py LAUNCH_URL STUDY_UID
+# Launch URLs are single-use: pass "@DATA_DIR/instance.url" to read the running instance's current
+# (fresh) URL from its owner-only instance file instead of a URL that may have been used already.
 # Exchanges the launch secret for the cookie, fetches the browser page and the scripts, checks the
 # refusals (no cookie, foreign Origin), opens the study through POST /api/sessions, connects to
 # /ws/view with a hand-written WebSocket client (standard library only), sends a resize and reads
@@ -15,6 +17,13 @@ def request(host, port, method, path, headers=None):
     r = c.getresponse()
     body = r.read()
     return r.status, dict(r.getheaders()), body
+
+def resolve_launch(arg):
+    """A launch URL, or "@file" to read the instance file's current single-use URL."""
+    if arg.startswith("@"):
+        with open(arg[1:], encoding="utf-8") as f:
+            return f.read().strip()
+    return arg
 
 def ws_connect(host, port, path, headers):
     s = socket.create_connection((host, port), timeout=10)
@@ -57,7 +66,7 @@ def ws_recv(s):
     return b0 & 0x0F, recv_exact(s, n)
 
 def main():
-    launch, study = sys.argv[1], sys.argv[2]
+    launch, study = resolve_launch(sys.argv[1]), sys.argv[2]
     u = urllib.parse.urlsplit(launch)
     host, port, origin = u.hostname, u.port, f"http://{u.hostname}:{u.port}"
     st, _, _ = request(host, port, "GET", "/")
@@ -65,6 +74,8 @@ def main():
     st, h, _ = request(host, port, "GET", u.path + "?" + u.query)
     cookie = h["Set-Cookie"].split(";")[0]
     print(f"GET /launch -> {st}, cookie attributes: {'; '.join(h['Set-Cookie'].split('; ')[1:])}")
+    st2, _, _ = request(host, port, "GET", u.path + "?" + u.query)
+    print(f"GET /launch again with the same secret -> {st2} (single use)")
     st, _, body = request(host, port, "GET", "/", {"Cookie": cookie})
     page = body.decode()
     print(f"GET / with cookie -> {st}, {len(body)} bytes, grid header present: {'Patient name' in page}")

@@ -86,7 +86,7 @@ internal sealed class RunningViewer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Runtime.Audit.Append("app.stop");
+        Runtime.Audit.Append("app.stop", AuditOutcome.Success);
         await App.StopAsync().ConfigureAwait(false);
         await _idle.ConfigureAwait(false);
         await App.DisposeAsync().ConfigureAwait(false);
@@ -127,6 +127,8 @@ internal sealed class CircuitCounter : CircuitHandler
 /// <summary>Composition of the host (also used by the end-to-end tests).</summary>
 internal static class ViewerHost
 {
+    private static int s_unobservedHooked;
+
     /// <summary>Opens the store and starts Kestrel. Throws <see cref="StoreLockedException"/> when another process has the store.</summary>
     /// <param name="o">Options.</param>
     /// <param name="args">Command-line arguments for the web host.</param>
@@ -134,6 +136,15 @@ internal static class ViewerHost
     public static async Task<RunningViewer> StartAsync(HostOptions o, string[]? args = null)
     {
         ArgumentNullException.ThrowIfNull(o);
+        if (Interlocked.Exchange(ref s_unobservedHooked, 1) == 0)
+        {
+            // Safety net: a task failure nobody observed is logged (type only) instead of vanishing.
+            TaskScheduler.UnobservedTaskException += (_, e) =>
+            {
+                AppLog.Error("host", "unobserved background task failure", e.Exception.GetBaseException());
+                e.SetObserved();
+            };
+        }
         AppPaths paths = o.DataDir is null ? AppPaths.ForCurrentUser() : new AppPaths(o.DataDir);
         paths.EnsureCreated();
         AppLog.Open(paths.LogFolder);
@@ -154,7 +165,7 @@ internal static class ViewerHost
             runtime = new ViewerRuntime(paths, settings, scheduler, store, audit);
             app = await BuildAndStartAsync(runtime, o, args).ConfigureAwait(false);
             LaunchSecurity security = app.Services.GetRequiredService<LaunchSecurity>();
-            audit.Append("app.start", new Dictionary<string, string>
+            audit.Append("app.start", AuditOutcome.Success, new Dictionary<string, string>
             {
                 ["version"] = typeof(ViewerHost).Assembly.GetName().Version?.ToString() ?? "",
                 ["toolkit"] = Tk.Version,

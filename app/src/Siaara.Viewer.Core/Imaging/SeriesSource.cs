@@ -128,20 +128,30 @@ public sealed class SeriesSource
         ArgumentNullException.ThrowIfNull(instancePaths);
         var instances = new List<ImageInstance>(instancePaths.Count);
         var unreadable = 0;
-        foreach (string p in instancePaths)
+        TkSortResult sorted;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            foreach (string p in instancePaths)
             {
-                instances.Add(ImageInstance.OpenHeader(p));
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    instances.Add(ImageInstance.OpenHeader(p));
+                }
+                catch (TkException)
+                {
+                    unreadable++;
+                }
             }
-            catch (TkException)
-            {
-                unreadable++;
-            }
+            var files = instances.Select(i => (TkFile?)i.Header).ToArray();
+            sorted = instances.Count == 0 ? new TkSortResult([], TkSortWarnings.None) : TkFile.SortSeries(files, expandFrames: true);
         }
-        var files = instances.Select(i => (TkFile?)i.Header).ToArray();
-        TkSortResult sorted = instances.Count == 0 ? new TkSortResult([], TkSortWarnings.None) : TkFile.SortSeries(files, expandFrames: true);
+        catch
+        {
+            // Cancelled or failed: release the header handles opened so far.
+            instances.ForEach(i => i.Dispose());
+            throw;
+        }
         var warnings = DescribeWarnings(sorted.Warnings).ToList();
         if (unreadable > 0)
         {

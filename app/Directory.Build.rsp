@@ -1,0 +1,12 @@
+# Zero downloads (owner decision b). MSBuild reads this file for every build or restore started on a
+# project or solution under app/. The bindings projects mark themselves IsAotCompatible/IsTrimmable,
+# which makes the SDK fetch the trimming analyzer pack Microsoft.NET.ILLink.Tasks from their own
+# (user-level) NuGet sources. The app does not trim or publish AOT, so it builds the bindings without
+# those analyzers; the bindings' own solution and CI job keep them. The -restoreProperty copies are
+# needed because "dotnet build" restores with -restoreProperty, which replaces the -property values.
+-p:IsAotCompatible=false
+-p:IsTrimmable=false
+-p:NuGetAudit=false
+-restoreProperty:IsAotCompatible=false
+-restoreProperty:IsTrimmable=false
+-restoreProperty:NuGetAudit=false

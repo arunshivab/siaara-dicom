@@ -7,6 +7,19 @@ using System.Text.Json;
 
 namespace Siaara.Viewer.Core.Audit;
 
+/// <summary>Values of the audit "outcome" field.</summary>
+public static class AuditOutcome
+{
+    /// <summary>The action completed.</summary>
+    public const string Success = "success";
+
+    /// <summary>The action failed (the entry's "reason" field says why, in plain words).</summary>
+    public const string Failure = "failure";
+
+    /// <summary>The user stopped the action before it completed.</summary>
+    public const string Cancelled = "cancelled";
+}
+
 /// <summary>Result of checking the audit chain.</summary>
 /// <param name="IsIntact">Every line links to the hash of the line before it.</param>
 /// <param name="Lines">Lines read.</param>
@@ -43,11 +56,14 @@ public sealed class AuditLog : IDisposable
     /// <summary>User name recorded with each entry.</summary>
     public string User { get; init; } = Environment.UserName;
 
-    /// <summary>Appends an entry.</summary>
+    /// <summary>Appends an entry. Every entry records its outcome; failures also a plain-word reason.</summary>
     /// <param name="eventName">Event, e.g. "study.open".</param>
+    /// <param name="outcome">An <see cref="AuditOutcome"/> value.</param>
     /// <param name="fields">Event data (no dataset values other than the patient key and UIDs).</param>
-    public void Append(string eventName, IReadOnlyDictionary<string, string>? fields = null)
+    /// <param name="reason">Why it failed (plain words, never dataset values), or null.</param>
+    public void Append(string eventName, string outcome, IReadOnlyDictionary<string, string>? fields = null, string? reason = null)
     {
+        ArgumentException.ThrowIfNullOrEmpty(outcome);
         lock (_gate)
         {
             var buffer = new MemoryStream();
@@ -58,6 +74,11 @@ public sealed class AuditLog : IDisposable
                 w.WriteString("ts", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
                 w.WriteString("event", eventName);
                 w.WriteString("user", User);
+                w.WriteString("outcome", outcome);
+                if (!string.IsNullOrEmpty(reason))
+                {
+                    w.WriteString("reason", reason);
+                }
                 w.WriteStartObject("data");
                 if (fields is not null)
                 {

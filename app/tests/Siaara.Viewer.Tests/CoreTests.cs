@@ -92,13 +92,20 @@ internal static class CoreTests
             string path = Path.Combine(dir, "audit.jsonl");
             using (var a = new AuditLog(path))
             {
-                a.Append("app.start");
-                a.Append("study.open", new Dictionary<string, string> { ["patientKey"] = "K1", ["study"] = "1.2.3" });
+                a.Append("app.start", AuditOutcome.Success);
+                a.Append("study.open", AuditOutcome.Success, new Dictionary<string, string> { ["patientKey"] = "K1", ["study"] = "1.2.3" });
             }
             using (var a = new AuditLog(path))
             {
-                a.Append("study.delete", new Dictionary<string, string> { ["patientKey"] = "K1" });
+                a.Append("study.delete", AuditOutcome.Failure, new Dictionary<string, string> { ["patientKey"] = "K1" }, "file system error");
             }
+            // Every entry carries an outcome; failures a reason.
+            foreach (string line in File.ReadAllLines(path))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(line);
+                T.Check(doc.RootElement.TryGetProperty("outcome", out System.Text.Json.JsonElement o) && o.GetString() is "success" or "failure");
+            }
+            T.Check(File.ReadAllLines(path)[2].Contains("\"reason\":\"file system error\"", StringComparison.Ordinal));
             AuditVerification v = AuditLog.Verify(path);
             T.Check(v.IsIntact);
             T.Eq(v.Lines, 3);

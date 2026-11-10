@@ -180,6 +180,26 @@ public static class AppLog
     public static void Error(string category, string message, Exception? exception = null) =>
         Write(LogLevel.Error, category, exception is null ? message : message + " (" + exception.GetType().Name + ": " + exception.Message + ")");
 
+    /// <summary>Logs a failure of a task nobody awaits (UI refreshes, timers); cancellation is not a failure.</summary>
+    /// <param name="task">The task.</param>
+    /// <param name="category">Log category.</param>
+    /// <param name="what">What it does.</param>
+    public static void Observe(Task task, string category, string what)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        if (task.IsCompletedSuccessfully)
+        {
+            return;
+        }
+        _ = task.ContinueWith(t =>
+        {
+            if (t.IsFaulted && t.Exception?.GetBaseException() is Exception e && e is not OperationCanceledException)
+            {
+                Error(category, what + " failed", e);
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
     /// <summary>Stops writing.</summary>
     public static void Close()
     {

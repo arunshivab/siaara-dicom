@@ -58,7 +58,9 @@ public static class ViewerWebApp
                 return Results.BadRequest();
             }
             byte[]? png = await rt.Thumbnails.GetSeriesThumbnailAsync(series, ctx.RequestAborted).ConfigureAwait(false);
-            ctx.Response.Headers.CacheControl = "private, max-age=300";
+            // Thumbnails show patient images: never into the browser's disk cache.
+            ctx.Response.Headers.CacheControl = "no-store";
+            ctx.Response.Headers.Pragma = "no-cache";
             return png is null ? Results.NotFound() : Results.Bytes(png, "image/png");
         });
         app.MapGet("/api/health", () => Results.Text("ok"));

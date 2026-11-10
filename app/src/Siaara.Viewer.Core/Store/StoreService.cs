@@ -246,6 +246,25 @@ public sealed class StoreService : IDisposable
             .Select(r => new InstanceRow(r.SopInstanceUid, r.FilePath, r.InstanceNumber, Math.Max(1, r.NumberOfFrames), r.HasPixelData))
             .ToArray(), cancellationToken);
 
+    /// <summary>SOP Instance UIDs of a study (to release cached handles before a delete).</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="cancellationToken">Token.</param>
+    /// <returns>The UIDs.</returns>
+    public Task<IReadOnlyList<string>> GetStudySopInstanceUidsAsync(string studyInstanceUid, CancellationToken cancellationToken = default) =>
+        _scheduler.RunAsync<IReadOnlyList<string>>(WorkPool.StoreRead, _ => Store.GetSeries(studyInstanceUid)
+            .SelectMany(s => Store.GetInstances(s.SeriesInstanceUid)).Select(i => i.SopInstanceUid).ToArray(), cancellationToken);
+
+    /// <summary>Study Instance UIDs of a patient (store patient key).</summary>
+    /// <param name="patientId">Patient ID of the patient (narrows the query).</param>
+    /// <param name="patientKey">Store patient key.</param>
+    /// <param name="cancellationToken">Token.</param>
+    /// <returns>The UIDs.</returns>
+    public Task<IReadOnlyList<string>> GetPatientStudyUidsAsync(string patientId, string patientKey, CancellationToken cancellationToken = default) =>
+        _scheduler.RunAsync<IReadOnlyList<string>>(WorkPool.StoreRead, _ => Store.Query(new TkStoreFilter { Level = TkLevel.Study, PatientId = patientId.Length > 0 ? patientId : null })
+            .Rows.Where(r => string.Equals(r.PatientKey, patientKey, StringComparison.Ordinal)).Select(r => r.StudyInstanceUid).ToArray(), cancellationToken);
+
+    private int _disposed;
+
     /// <summary>Deletes a study (copied files are removed, referenced files are left).</summary>
     /// <param name="studyInstanceUid">Study.</param>
     /// <param name="cancellationToken">Token.</param>
@@ -269,6 +288,10 @@ public sealed class StoreService : IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
         Store.Changed -= OnStoreChanged;
         _events.Writer.TryComplete();
         _stop.Cancel();

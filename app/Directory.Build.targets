@@ -5,4 +5,18 @@
     <Error Condition="'@(PackageReference)' != ''"
            Text="The SIAARA Viewer takes no NuGet dependencies, found: @(PackageReference)" />
   </Target>
+
+  <!-- Zero downloads (owner decision b). The Web SDK resolves Blazor's script pack
+       Microsoft.AspNetCore.App.Internal.Assets at the version bundled with the SDK. Pin it to the copy
+       kept in vendor/packs so any 10.0 SDK restores it offline from that folder (NuGet.config clears
+       every other source). -->
+  <ItemGroup>
+    <KnownAspNetCorePack Update="Microsoft.AspNetCore.App.Internal.Assets"
+                         AspNetCorePackVersion="$(SiaaraAspNetAssetsPackVersion)" />
+  </ItemGroup>
+  <Target Name="SiaaraViewerVendoredPackPresent" BeforeTargets="Restore;CollectPackageDownloads;Build"
+          Condition="'$(RequiresAspNetWebAssets)' == 'true'">
+    <Error Condition="!Exists('$(SiaaraAppRoot)vendor/packs/microsoft.aspnetcore.app.internal.assets.$(SiaaraAspNetAssetsPackVersion).nupkg')"
+           Text="The vendored pack vendor/packs/microsoft.aspnetcore.app.internal.assets.$(SiaaraAspNetAssetsPackVersion).nupkg is missing (zero downloads: the app restores only from app/vendor/packs)." />
+  </Target>
 </Project>

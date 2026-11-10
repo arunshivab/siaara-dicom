@@ -29,7 +29,10 @@
         _prefetch = Rt.Cache.PrefetchQueued;
         _frames = Rt.Cache.DecodedFrames;
         _mb = Rt.Cache.DecodedBytes / (1024 * 1024);
-        _ = Rt.Store.GetStatisticsAsync().ContinueWith(t => { if (t.IsCompletedSuccessfully) _instances = t.Result.Instances; }, TaskScheduler.Default);
+        Task<Siaara.Viewer.Core.Toolkit.TkStoreStats> stats = Rt.Store.GetStatisticsAsync();
+        Siaara.Viewer.Core.Logging.AppLog.Observe(stats.ContinueWith(t => _instances = t.Result.Instances, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default), "status", "reading the store totals");
+        Siaara.Viewer.Core.Logging.AppLog.Observe(stats, "status", "reading the store totals");
     }
 
     public void Dispose() => _timer?.Dispose();

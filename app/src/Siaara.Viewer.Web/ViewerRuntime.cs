@@ -35,7 +35,7 @@ public sealed class ViewerRuntime : IDisposable
         Annotations = new AnnotationStore(paths.AnnotationFolder, Environment.UserName);
         Import = new ImportService(store, scheduler, audit);
         Thumbnails = new ThumbnailService(store, scheduler);
-        Sessions = new SessionRegistry(new ViewerServices(store, Cache, scheduler, settings, Annotations));
+        Sessions = new SessionRegistry(new ViewerServices(store, Cache, scheduler, settings, Annotations, audit));
     }
 
     /// <summary>Paths.</summary>
@@ -59,50 +59,102 @@ public sealed class ViewerRuntime : IDisposable
     /// <summary>Sessions.</summary>
     public SessionRegistry Sessions { get; }
 
-    /// <summary>Opens a study in a new viewer session and audits study.open with the store's patient key.</summary>
+    /// <summary>Opens a study in a new viewer session and audits study.open (with its outcome) with the store's patient key.</summary>
     /// <param name="studyInstanceUid">Study.</param>
     /// <returns>The session (loading in the background).</returns>
     public async Task<ViewerSession> OpenStudyAsync(string studyInstanceUid)
     {
-        StudyRow? study = await Store.GetStudyAsync(studyInstanceUid).ConfigureAwait(false);
-        Audit.Append("study.open", new Dictionary<string, string>
+        StudyRow? study;
+        try
+        {
+            study = await Store.GetStudyAsync(studyInstanceUid).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is TkException or IOException)
+        {
+            Audit.Append("study.open", AuditOutcome.Failure, new Dictionary<string, string> { ["patientKey"] = "", ["study"] = studyInstanceUid },
+                Reason(e));
+            throw;
+        }
+        Audit.Append("study.open", study is null ? AuditOutcome.Failure : AuditOutcome.Success, new Dictionary<string, string>
         {
             ["patientKey"] = study?.PatientKey ?? "",
             ["study"] = studyInstanceUid,
-        });
+        }, study is null ? "study not in the store" : null);
         return Sessions.Create(studyInstanceUid);
     }
 
-    /// <summary>Deletes a study and audits study.delete with the patient key.</summary>
+    /// <summary>Deletes a study and audits study.delete with the patient key and the outcome (failed deletes too).
+    /// Viewer sessions of the study are closed and cached handles released first, so no file stays open.</summary>
     /// <param name="study">Study row.</param>
     /// <returns>Instances removed.</returns>
     public async Task<int> DeleteStudyAsync(StudyRow study)
     {
         ArgumentNullException.ThrowIfNull(study);
-        int removed = await Store.DeleteStudyAsync(study.StudyInstanceUid).ConfigureAwait(false);
-        Audit.Append("study.delete", new Dictionary<string, string>
+        var fields = new Dictionary<string, string> { ["patientKey"] = study.PatientKey, ["study"] = study.StudyInstanceUid };
+        try
         {
-            ["patientKey"] = study.PatientKey,
-            ["study"] = study.StudyInstanceUid,
-            ["instances"] = removed.ToString(CultureInfo.InvariantCulture),
-        });
-        return removed;
+            await ReleaseAsync([study.StudyInstanceUid]).ConfigureAwait(false);
+            int removed = await Store.DeleteStudyAsync(study.StudyInstanceUid).ConfigureAwait(false);
+            fields["instances"] = removed.ToString(CultureInfo.InvariantCulture);
+            Audit.Append("study.delete", AuditOutcome.Success, fields);
+            return removed;
+        }
+        catch (Exception e)
+        {
+            // Every failed delete is audited, whatever the cause; the caller shows the error.
+            Audit.Append("study.delete", AuditOutcome.Failure, fields, Reason(e));
+            throw;
+        }
     }
 
-    /// <summary>Deletes every study of the row's patient (by patient key) and audits patient.delete.</summary>
+    /// <summary>Deletes every study of the row's patient (by patient key) and audits patient.delete with the outcome.</summary>
     /// <param name="study">A study row of the patient.</param>
     /// <returns>Instances removed.</returns>
     public async Task<int> DeletePatientAsync(StudyRow study)
     {
         ArgumentNullException.ThrowIfNull(study);
-        int removed = await Store.DeletePatientAsync(study.PatientKey).ConfigureAwait(false);
-        Audit.Append("patient.delete", new Dictionary<string, string>
+        var fields = new Dictionary<string, string> { ["patientKey"] = study.PatientKey };
+        try
         {
-            ["patientKey"] = study.PatientKey,
-            ["instances"] = removed.ToString(CultureInfo.InvariantCulture),
-        });
-        return removed;
+            IReadOnlyList<string> studies = await Store.GetPatientStudyUidsAsync(study.PatientId, study.PatientKey).ConfigureAwait(false);
+            await ReleaseAsync([.. studies, study.StudyInstanceUid]).ConfigureAwait(false);
+            int removed = await Store.DeletePatientAsync(study.PatientKey).ConfigureAwait(false);
+            fields["instances"] = removed.ToString(CultureInfo.InvariantCulture);
+            Audit.Append("patient.delete", AuditOutcome.Success, fields);
+            return removed;
+        }
+        catch (Exception e)
+        {
+            Audit.Append("patient.delete", AuditOutcome.Failure, fields, Reason(e));
+            throw;
+        }
     }
+
+    // Closes the sessions of the studies (their header handles), then drops cached full handles,
+    // decoded frames and thumbnails of their instances.
+    private async Task ReleaseAsync(IReadOnlyCollection<string> studyUids)
+    {
+        Sessions.CloseStudies(studyUids);
+        var sops = new List<string>();
+        foreach (string uid in studyUids.Distinct(StringComparer.Ordinal))
+        {
+            sops.AddRange(await Store.GetStudySopInstanceUidsAsync(uid).ConfigureAwait(false));
+        }
+        Cache.Forget(sops);
+        Thumbnails.Forget(sops);
+    }
+
+    // Plain words for an audit reason: the toolkit's status text or the exception type, never a message
+    // that could hold a path or a dataset value.
+    private static string Reason(Exception e) => e switch
+    {
+        TkException tk => tk.Message,
+        OperationCanceledException => "cancelled",
+        UnauthorizedAccessException => "access denied",
+        IOException => "file system error",
+        ObjectDisposedException => "the store is closed",
+        _ => e.GetType().Name,
+    };
 
     /// <summary>Rendering backend tag for the status bar (2D renders on the CPU in M1).</summary>
     public static string Backend => "CPU";

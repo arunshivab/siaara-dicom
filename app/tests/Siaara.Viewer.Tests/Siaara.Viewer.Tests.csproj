@@ -9,6 +9,9 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Golden/suv-roi-golden.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/Siaara.Viewer.Host/Siaara.Viewer.Host.csproj" />
   </ItemGroup>
 </Project>

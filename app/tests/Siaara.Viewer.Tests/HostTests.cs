@@ -40,7 +40,7 @@ internal static class HostTests
             handler = null;
             if (cookie)
             {
-                c.DefaultRequestHeaders.Add("Cookie", LaunchSecurity.CookieName + "=" + v.Security.CookieValue);
+                c.DefaultRequestHeaders.Add("Cookie", v.Security.CookieName + "=" + v.Security.CookieValue);
             }
             return c;
         }
@@ -56,7 +56,7 @@ internal static class HostTests
         ws.Options.CollectHttpResponseDetails = true;
         if (cookie)
         {
-            ws.Options.SetRequestHeader("Cookie", LaunchSecurity.CookieName + "=" + v.Security.CookieValue);
+            ws.Options.SetRequestHeader("Cookie", v.Security.CookieName + "=" + v.Security.CookieValue);
         }
         if (origin is not null)
         {
@@ -150,12 +150,31 @@ internal static class HostTests
                 using HttpClient anon = Client(v, cookie: false);
                 T.Eq((await anon.GetAsync(new Uri("/", UriKind.Relative)).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
                 T.Eq((await anon.GetAsync(new Uri("/launch?k=00", UriKind.Relative)).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
-                using HttpResponseMessage launch = await anon.GetAsync(v.Security.LaunchUrl).ConfigureAwait(false);
+                Uri launchUrl = v.Security.IssueLaunchUrl();
+                string secret = launchUrl.Query[3..];
+                using HttpResponseMessage launch = await anon.GetAsync(launchUrl).ConfigureAwait(false);
                 T.Eq(launch.StatusCode, HttpStatusCode.Redirect);
                 string setCookie = string.Join(";", launch.Headers.GetValues("Set-Cookie")).ToLowerInvariant();
                 T.Check(setCookie.Contains("httponly", StringComparison.Ordinal) && setCookie.Contains("samesite=strict", StringComparison.Ordinal));
                 T.Check(setCookie.Contains(v.Security.CookieValue, StringComparison.Ordinal));
-                T.Check(!setCookie.Contains(v.Security.LaunchSecret, StringComparison.Ordinal));
+                T.Check(!setCookie.Contains(secret, StringComparison.Ordinal));
+                // Host-only (no Domain), named after the port, path /.
+                T.Check(!setCookie.Contains("domain=", StringComparison.Ordinal));
+                T.Check(setCookie.StartsWith(v.Security.CookieName + "=", StringComparison.Ordinal));
+                // Single use: the same URL is refused the second time.
+                using (HttpResponseMessage again = await anon.GetAsync(launchUrl).ConfigureAwait(false))
+                {
+                    T.Eq(again.StatusCode, HttpStatusCode.Forbidden);
+                    T.Check(!again.Headers.Contains("Set-Cookie"));
+                }
+                // An unused URL expires; a revoked one is refused.
+                Uri shortLived = v.Security.IssueLaunchUrl(TimeSpan.FromMilliseconds(50));
+                await Task.Delay(150).ConfigureAwait(false);
+                T.Eq((await anon.GetAsync(shortLived).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
+                Uri revoked = v.Security.IssueLaunchUrl();
+                v.Security.Revoke(revoked);
+                T.Eq((await anon.GetAsync(revoked).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
+                T.Eq(v.Security.OutstandingSecrets, 0);
 
                 using HttpClient authed = Client(v, cookie: true);
                 T.Eq((await authed.GetAsync(new Uri("/api/health", UriKind.Relative)).ConfigureAwait(false)).StatusCode, HttpStatusCode.OK);
@@ -163,6 +182,14 @@ internal static class HostTests
                 {
                     rebinding.Headers.Host = "evil.example:" + v.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     T.Eq((await authed.SendAsync(rebinding).ConfigureAwait(false)).StatusCode, HttpStatusCode.BadRequest);
+                }
+                // Only the exact origin: another port in the Host header, or "localhost", is refused.
+                foreach (string host in new[] { "127.0.0.1:" + (v.Port == 65535 ? 1 : v.Port + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                                "localhost:" + v.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), "127.0.0.1" })
+                {
+                    using var other = new HttpRequestMessage(HttpMethod.Get, "/api/health");
+                    other.Headers.Host = host;
+                    T.Eq((await authed.SendAsync(other).ConfigureAwait(false)).StatusCode, HttpStatusCode.BadRequest);
                 }
                 using (var post = new HttpRequestMessage(HttpMethod.Post, "/api/health"))
                 {

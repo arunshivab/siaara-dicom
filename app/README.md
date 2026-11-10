@@ -41,13 +41,32 @@ The native library is copied into every output folder as `runtimes/<rid>/native/
 (`siaara.dll`, `libsiaara.dylib`) by the `Siaara.Interop` project, as for the bindings
 (`-p:SiaaraNativeBuildDir=...` or `-p:SiaaraNativeLibrary=...` to point elsewhere).
 
-Dependencies: none beyond the .NET SDK and the ASP.NET Core shared framework. One note: in .NET 10,
-Blazor's own script (`_framework/blazor.web.js`) ships as the SDK pack
-`Microsoft.AspNetCore.App.Internal.Assets`, which the Web SDK fetches like the NativeAOT compiler
-pack. The SDK only does so when the app project itself has `.razor` files; ours are in the class
-library, so the host sets `RequiresAspNetWebAssets=true`. It is a framework pack, not a
-PackageReference (the build check stays green), but it is downloaded from the NuGet feed at the
-first restore.
+Dependencies: none beyond the .NET SDK and the ASP.NET Core shared framework (the build fails on any
+`PackageReference`).
+
+Zero downloads (owner decision b): the build never touches the network.
+
+- In .NET 10, Blazor's script (`_framework/blazor.web.js`) ships as the SDK pack
+  `Microsoft.AspNetCore.App.Internal.Assets`, which the Web SDK would fetch from nuget.org (it does so
+  only when the app project itself has `.razor` files; ours are in the class library, so the host
+  sets `RequiresAspNetWebAssets=true`). A copy of exactly that pack (10.0.14, the version SDK 10.0.403
+  resolves; SHA-256 in `vendor/packs/SHA256SUMS`) is kept in `vendor/packs/`. `NuGet.config` clears
+  every other source and `Directory.Build.props` points `RestoreSources` / `RestoreConfigFile` at
+  that folder only; `Directory.Build.targets` pins the pack version to the vendored file, so a newer
+  10.0 SDK still restores offline. To move to another pack version, copy the new `.nupkg` from
+  `~/.nuget/packages/microsoft.aspnetcore.app.internal.assets/<v>/`, update `SHA256SUMS` and
+  `SiaaraAspNetAssetsPackVersion`.
+- The bindings projects set `IsAotCompatible` / `IsTrimmable`, which would make the SDK fetch the
+  trimming analyzer pack `Microsoft.NET.ILLink.Tasks`. `Directory.Build.rsp` (read by MSBuild for any
+  build started under `app/`) turns those two off for the app build only; the bindings' own solution
+  keeps its analyzers. NuGet audit is off for the same reason (it would query the feed).
+- Proof: a fresh `NUGET_PACKAGES` folder, a dead proxy and no network interface (`unshare -rn`):
+  `dotnet build app/Siaara.Viewer.slnx -c Release` succeeds and the folder then holds only
+  `microsoft.aspnetcore.app.internal.assets` (copied from `vendor/packs`); no HTTP cache is created.
+- Not covered: a self-contained or RID-specific publish (`-r <rid>`) needs the runtime packs
+  `Microsoft.NETCore.App.Runtime.<rid>` and `Microsoft.AspNetCore.App.Runtime.<rid>`, which are not
+  vendored (owner decision pending). Builds from an IDE that ignores `Directory.Build.rsp` would ask
+  for the ILLink pack.
 
 ## Run
 
@@ -67,9 +86,20 @@ siaara-viewer --generate-samples DIR [--full]
 
 Start-up: ABI check ("toolkit version mismatch" and exit), single-instance lock (a second start
 opens the running instance's window and exits), store open (create, durable, rebuild if corrupt),
-Kestrel on 127.0.0.1 at a random port, a random 256-bit launch secret in the opening URL that the
-browser swaps for an HttpOnly SameSite=Strict cookie, then the window: Edge / Chrome / Chromium with
-`--app=URL` when found, else the default browser (`BrowserLauncher`, the only class that knows).
+Kestrel on 127.0.0.1 at a random port, then the window: Edge / Chrome / Chromium with `--app=URL`
+when found, else the default browser (`BrowserLauncher`, the only class that knows).
+
+Launch URLs are single-use (m1-review): each holds a random 256-bit secret that `/launch` trades
+once for an HttpOnly, SameSite=Strict, host-only session cookie named after the port, after which
+the secret is gone, so a URL seen in the process list or shell history is worthless. The URL for
+this start is valid for 5 minutes. The per-user `instance.url` file is created owner-only (0600 /
+protected ACL) before anything is written to it and renamed into place; it always holds a fresh,
+unused URL for a second start, renewed each time it is used. Requests must carry exactly
+`Host: 127.0.0.1:<port>`; WebSocket upgrades and non-GET requests need the exact Origin. Every
+response is `Cache-Control: no-store` (pages, thumbnails and API answers can hold patient data),
+except the static framework files. Note: browsers send cookies for 127.0.0.1 to every port, so a
+different local server the user browses to could receive the cookie; only TLS with `__Host-`
+cookies would close that.
 
 ## Test
 
@@ -79,13 +109,15 @@ dotnet run --project app/tests/Siaara.Viewer.Tests -c Release -- --quick       #
 dotnet run --project app/tests/Siaara.Viewer.Tests -c Release -- store import  # cases whose name starts so
 ```
 
-37 cases: interop (ABI, UTF-8 names), display formatting, settings, audit chain, PHI redactor,
+51 cases: interop (ABI, UTF-8 names), display formatting, settings, audit chain, PHI redactor,
 layouts, cine timing, scheduler, no-PackageReference check, store (paging, NO_TOTAL, date ranges,
 wildcards, live updates, delete by patient key), import (mixed folder, DICOMDIR with a missing file,
 cancel < 200 ms, duplicates, index in place), series (uneven spacing, stacks, multi-frame, lossy),
 rendering (file / explicit / full-range windows and invert byte-equal to the toolkit, overlays),
-measurements (mm, px, calibration, angle, undo / redo, ROI vs direct call, SUV with and without
-weight), transform vs `siaara_frame_map_point`, protocol (codec, flow control, back-pressure with a
+measurements (mm, px, calibration, angle, undo / redo, ROI labels, SUV with and without weight),
+the SUV / ROI golden file (64 PET data sets and 235 ROI cases computed by the toolkit's former
+`siaara_suv_factor` / `siaara_roi_stats_compute`; the app's code matches them exactly), M1.1 viewer
+features and the m1-review robustness fixes, transform vs `siaara_frame_map_point`, protocol (codec, flow control, back-pressure with a
 slow client, cine at its own rate with skipping), security against the real Kestrel host (loopback,
 launch / cookie, Host header, Origin on POST and WebSocket, unknown session), and an end-to-end
 `ClientWebSocket` session on `/ws/view` (frame size and format, state, no frame without an ack,
@@ -96,8 +128,8 @@ Against a running host:
 
 ```
 dotnet .../siaara-viewer.dll --data-dir /tmp/sv --import SAMPLES/folder --no-browser --print-url --no-idle-exit &
-python3 app/tools/smoke.py LAUNCH_URL STUDY_UID
-python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_URL STUDY_UID /tmp/shots
+python3 app/tools/smoke.py LAUNCH_URL STUDY_UID                      # uses the printed URL (single use)
+python3 app/tools/browser_check.py /usr/bin/google-chrome @/tmp/sv/instance.url STUDY_UID /tmp/shots
 ```
 
 ## How it works (short)
@@ -113,8 +145,16 @@ python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_URL STUDY_UID /
 - Rendering: `DicomFrame` decoded once (`RenderCache`, LRU by bytes), rendered per viewport state.
   Gray images go as gray8 (one byte per pixel); the browser unpacks gray8 to RGBA for
   `putImageData` (a format unpack, not image processing).
-- Measurements: geometry in image pixels, numbers on the server (spacing, `roi_stats_compute` with
-  partial weighting, `suv_factor`), drawn by the browser from the vectors in the state message.
+- Measurements: geometry in image pixels, numbers on the server, drawn by the browser from the
+  vectors in the state message. ROI statistics and SUV are the app's own code (M1.2):
+  `Measure/Roi` (shapes, centre test and exact covered area of edge pixels, weighted statistics over
+  the frame's float32 modality values from `siaara_frame_decode`) and `Measure/Suv` (inputs read with
+  the generic getters and their source attributes recorded; QIBA scan reference time rules for
+  START / ADMIN / NONE decay correction, Corrected Image DECY / ATTN checks, series vs acquisition
+  time, injection date-time; LBM James and Janmahasatian, BSA Du Bois, IBW Devine; units BQML, CNTS
+  with the Philips private Activity Concentration Scale Factor (7053,xx09) "Philips PET Private Group"
+  (flagged), GML; the same 23 warnings as the toolkit had). `tests/.../Golden/suv-roi-golden.json`
+  holds the toolkit's results on the synthetic cases of `SuvRoiCases.cs`; the C# results equal them.
   Stored as JSON per user / SOP / frame, written atomically.
 - Data integrity: stored values are never changed. Display formatting ('^' in names, dates, ages)
   makes new strings for the screen only.
@@ -124,6 +164,43 @@ python3 app/tools/browser_check.py /usr/bin/google-chrome LAUNCH_URL STUDY_UID /
   log: append-only JSON lines, each with the SHA-256 of the previous line, patient key from the
   store. Blazor's data-protection keys are kept in memory only. The app refuses to start when crash
   dumps are enabled through `DOTNET_DbgEnableMiniDump`.
+
+## Robustness (m1-review)
+
+- Render cache: frames and full file handles are handed out as ref-counted leases
+  (`FrameLease`, `FileLease`); eviction drops the cache's reference, and the object is disposed when
+  the last lease ends. A finished decode takes one reference per waiting caller in the same locked
+  step as its insert, so nothing can release a frame between its decode and its use.
+- Background work is observed (`ViewerSession.Observe`): failures are logged (type and toolkit
+  status only) and shown (status bar, or the viewport when its picture depends on it). Loading always
+  ends in images or a message; one unreadable series does not stop the others. A process-wide handler
+  logs any task failure nobody observed.
+- Header handles are released when a session closes; deleting a study or patient first closes its
+  viewer sessions and releases cached handles and thumbnails, so no file stays open.
+- Audit entries carry `outcome` (success / failure / cancelled) and, for failures, a plain-word
+  `reason`; failed deletes are audited.
+
+## M1.1 (review P0)
+
+- Intended-use label "Not for primary diagnosis" (`Core/Text/Disclaimer.cs`): patient bar, About box
+  (study browser and viewer), and a band on every exported or copied image (with "images and
+  calculated values" when measurements are on it). Exports and copies are audited (`image.export`).
+- Magnifier (M or the Magnify tool, left button held): a 200 x 200 CSS px glass rendered by the
+  toolkit (`siaara_frame_render`, small viewport, 3x the viewport's zoom, same window / colour map /
+  rotation / flips), sent as frames for viewport index + 0x4000 with its own flow control.
+- Colour maps for grayscale images (`siaara_view2d_options.colormap`: Gray, Inverse gray, Hot Iron,
+  PET, Hot Metal Blue, PET 20 Step) from the toolbar or the viewport menu; output switches to RGBA.
+- Right-click (without a drag; a drag stays W/L) opens the viewport menu: window presets, colour map,
+  overlays and shutters, sync group, linked scrolling, reference lines, copy image, export image (PNG),
+  tag browser (placeholder for M2).
+- Reference lines, cross-reference (X) and linked scrolling by Frame of Reference: planes from
+  `siaara_frame_geometry`, the maths in `Core/Geometry/ImagePlane.cs` (plane intersection clipped to
+  both images; nearest slice along each plane's normal). Linked scrolling moves roughly parallel stacks
+  (|cos| of the normals >= 0.9); cross-reference moves every stack that passes within 10 mm.
+- Sync group: chosen viewports (toolbar "Sync VP", menu, "Sync all") share W/L, zoom and pan; each of
+  the three can be switched off.
+- Arrow and Text annotation tools (Text: T; the label text is stored exactly as typed; an empty
+  answer removes it).
 
 ## Still missing / not verified
 

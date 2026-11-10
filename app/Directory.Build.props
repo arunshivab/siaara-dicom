@@ -21,5 +21,14 @@
     <IsPackable>false</IsPackable>
     <SiaaraAppRoot>$(MSBuildThisFileDirectory)</SiaaraAppRoot>
     <SiaaraBindingsSrc>$(MSBuildThisFileDirectory)../bindings/csharp/src/</SiaaraBindingsSrc>
+    <!-- Zero downloads (owner decision b): restore only from the vendored folder (see NuGet.config),
+         whichever directory the build is started from, and never audit against an online feed. -->
+    <RestoreConfigFile>$(MSBuildThisFileDirectory)NuGet.config</RestoreConfigFile>
+    <RestoreSources>$(MSBuildThisFileDirectory)vendor/packs</RestoreSources>
+    <RestoreAdditionalProjectSources></RestoreAdditionalProjectSources>
+    <RestoreFallbackFolders>clear</RestoreFallbackFolders>
+    <NuGetAudit>false</NuGetAudit>
+    <!-- The one SDK pack the app needs, kept in vendor/packs. Bump together with the .nupkg file. -->
+    <SiaaraAspNetAssetsPackVersion>10.0.14</SiaaraAspNetAssetsPackVersion>
   </PropertyGroup>
 </Project>

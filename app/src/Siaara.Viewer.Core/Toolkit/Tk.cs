@@ -7,6 +7,7 @@
 
 using System.Globalization;
 using Siaara.Clinical;
+using Siaara.Viewer.Core.Geometry;
 using Siaara.Network;
 using Siaara.Volumes;
 
@@ -207,6 +208,11 @@ public static class Tk
             throw Wrap(e);
         }
     }
+
+    /// <summary>A standard colour map as 256 RGBA8 entries (the toolkit's table).</summary>
+    /// <param name="colormap">Colour map.</param>
+    /// <returns>1024 bytes.</returns>
+    public static byte[] ColormapRgba8(TkColormap colormap) => Call(() => DicomFrame.GetColormapRgba8((Colormap)(int)colormap));
 
     /// <summary>Scans a folder for DICOM files (recursive, raw data sets allowed).</summary>
     /// <param name="root">Folder.</param>
@@ -622,7 +628,29 @@ public enum TkSpacingSource
 /// <param name="PositionZ">Position along the patient axis (z component).</param>
 /// <param name="SliceThickness">Slice thickness (0 when absent).</param>
 public sealed record TkPlane(double RowSpacing, double ColumnSpacing, TkSpacingSource Source, bool HasPosition, double PositionZ,
-                             double SliceThickness);
+                             double SliceThickness)
+{
+    /// <summary>Rows.</summary>
+    public int Rows { get; init; }
+    /// <summary>Columns.</summary>
+    public int Columns { get; init; }
+    /// <summary>Image Orientation known.</summary>
+    public bool HasOrientation { get; init; }
+    /// <summary>Image Position (Patient): centre of the first pixel, mm.</summary>
+    public Vec3 Position { get; init; }
+    /// <summary>Direction of image x (row direction cosines).</summary>
+    public Vec3 RowCosine { get; init; }
+    /// <summary>Direction of image y (column direction cosines).</summary>
+    public Vec3 ColumnCosine { get; init; }
+
+    /// <summary>The patient-space plane, or null without position, orientation or spacing.</summary>
+    /// <param name="frameOfReferenceUid">Frame of Reference UID of the image.</param>
+    /// <returns>The plane.</returns>
+    public ImagePlane? ToImagePlane(string frameOfReferenceUid) =>
+        HasPosition && HasOrientation && RowSpacing > 0 && ColumnSpacing > 0 && Rows > 0 && Columns > 0
+            ? new ImagePlane(frameOfReferenceUid, Position, RowCosine, ColumnCosine, ColumnSpacing, RowSpacing, Columns, Rows)
+            : null;
+}
 
 /// <summary>Orientation labels at the four edges.</summary>
 /// <param name="Left">Left edge.</param>
@@ -630,38 +658,6 @@ public sealed record TkPlane(double RowSpacing, double ColumnSpacing, TkSpacingS
 /// <param name="Top">Top edge.</param>
 /// <param name="Bottom">Bottom edge.</param>
 public sealed record TkOrientation(string Left, string Right, string Top, string Bottom);
-
-/// <summary>ROI shape (image pixel coordinates; (0,0) = top-left corner of the first pixel).</summary>
-public enum TkRoiShape
-{
-    /// <summary>x0 y0 x1 y1.</summary>
-    Rectangle = 0,
-    /// <summary>cx cy rx ry angle.</summary>
-    Ellipse = 1,
-    /// <summary>cx cy r.</summary>
-    Circle = 2,
-    /// <summary>x y pairs.</summary>
-    Polygon = 3,
-    /// <summary>x y pairs.</summary>
-    Freehand = 4,
-}
-
-/// <summary>ROI statistics in modality units.</summary>
-/// <param name="Pixels">Pixels with weight.</param>
-/// <param name="Mean">Mean.</param>
-/// <param name="StandardDeviation">Population SD.</param>
-/// <param name="Min">Minimum.</param>
-/// <param name="Max">Maximum.</param>
-/// <param name="AreaPixels">Area in pixels.</param>
-/// <param name="AreaMm2">Area in mm2 or null.</param>
-/// <param name="Source">Spacing used for the area.</param>
-public sealed record TkRoiStats(long Pixels, double Mean, double StandardDeviation, double Min, double Max, double AreaPixels, double? AreaMm2,
-                                TkSpacingSource Source);
-
-/// <summary>SUV factor of a PET frame (SUVbw = value x BodyWeightFactor).</summary>
-/// <param name="BodyWeightFactor">Factor, or null when it cannot be computed.</param>
-/// <param name="Warnings">Plain-word warnings.</param>
-public sealed record TkSuv(double? BodyWeightFactor, IReadOnlyList<string> Warnings);
 
 /// <summary>Series sort warnings.</summary>
 [Flags]
@@ -700,6 +696,127 @@ public readonly record struct TkSlice(int FileIndex, int Frame, int Group);
 /// <param name="Warnings">Warnings.</param>
 public sealed record TkSortResult(IReadOnlyList<TkSlice> Slices, TkSortWarnings Warnings);
 
+/// <summary>
+/// A data set read (and, for generated test data, written) with generic getters: the file's main
+/// data set or a sequence item. Getters return null instead of throwing for absent, empty or
+/// unreadable values; text comes back as the toolkit decodes it (padding removed per VR).
+/// </summary>
+public sealed class TkDataset
+{
+    private readonly DicomDataset _ds;
+
+    internal TkDataset(DicomDataset ds) => _ds = ds;
+
+    /// <summary>The element is present.</summary>
+    /// <param name="tag">Tag.</param>
+    /// <returns>True when present.</returns>
+    public bool Contains(TkTag tag)
+    {
+        try
+        {
+            return _ds.Contains(tag.ToBinding());
+        }
+        catch (SiaaraException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Value <paramref name="index"/> as text, or null when absent, out of range or empty.</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="index">Value index.</param>
+    /// <returns>The text.</returns>
+    public string? GetString(TkTag tag, int index = 0)
+    {
+        try
+        {
+            return _ds.TryGetString(tag.ToBinding(), index, out string? v) && v.Length > 0 ? v : null;
+        }
+        catch (SiaaraException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Number of values (0 when absent).</summary>
+    /// <param name="tag">Tag.</param>
+    /// <returns>The count.</returns>
+    public int ValueCount(TkTag tag)
+    {
+        try
+        {
+            return _ds.Contains(tag.ToBinding()) ? _ds.GetValueMultiplicity(tag.ToBinding()) : 0;
+        }
+        catch (SiaaraException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Value <paramref name="index"/> as a number (DS / IS text or a binary VR), or null.</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="index">Value index.</param>
+    /// <returns>The number.</returns>
+    public double? GetDouble(TkTag tag, int index = 0)
+    {
+        try
+        {
+            return _ds.TryGetDouble(tag.ToBinding(), out double v, index) ? v : null;
+        }
+        catch (SiaaraException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Items of a sequence (0 when absent or not a sequence).</summary>
+    /// <param name="sequence">Sequence tag.</param>
+    /// <returns>The count.</returns>
+    public int ItemCount(TkTag sequence)
+    {
+        try
+        {
+            return _ds.Contains(sequence.ToBinding()) ? _ds.GetItemCount(sequence.ToBinding()) : 0;
+        }
+        catch (SiaaraException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Item <paramref name="index"/> of a sequence, or null.</summary>
+    /// <param name="sequence">Sequence tag.</param>
+    /// <param name="index">Item index.</param>
+    /// <returns>The item.</returns>
+    public TkDataset? Item(TkTag sequence, int index)
+    {
+        try
+        {
+            return index >= 0 && index < ItemCount(sequence) ? new TkDataset(_ds.GetItem(sequence.ToBinding(), index)) : null;
+        }
+        catch (SiaaraException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Sets a text value with the dictionary VR (generated data).</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="value">Value.</param>
+    public void SetString(TkTag tag, string value) => Tk.Call(() => _ds.SetString(tag.ToBinding(), value));
+
+    /// <summary>Sets a raw text value with an explicit VR (generated data, private elements).</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="vr">VR.</param>
+    /// <param name="value">Value.</param>
+    public void SetRawString(TkTag tag, string vr, string value) => Tk.Call(() => _ds.SetRawString(tag.ToBinding(), vr, value));
+
+    /// <summary>Appends an empty item to a sequence (generated data).</summary>
+    /// <param name="sequence">Sequence.</param>
+    /// <returns>The item.</returns>
+    public TkDataset AppendItem(TkTag sequence) => new(Tk.Call(() => _ds.AppendItem(sequence.ToBinding())));
+}
+
 /// <summary>A DICOM file (headers only or with pixel data). Readable from many threads.</summary>
 public sealed class TkFile : IDisposable
 {
@@ -726,6 +843,23 @@ public sealed class TkFile : IDisposable
 
     /// <summary>True after Dispose.</summary>
     public bool IsDisposed => File.IsDisposed;
+
+    /// <summary>The main data set, for the generic getters.</summary>
+    public TkDataset Dataset => new(File.Dataset);
+
+    /// <summary>
+    /// Modality values of a grayscale frame as float32 (after the Modality LUT / rescale), row by
+    /// row: the input of the app's ROI statistics. Needs pixel data.
+    /// </summary>
+    /// <param name="frame">Frame.</param>
+    /// <returns>rows x columns values.</returns>
+    public float[] DecodeModalityFloat32(int frame)
+    {
+        byte[] bytes = Tk.Call(() => File.DecodeFrame(frame, FrameFormat.Float32Modality));
+        float[] values = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, values, 0, values.Length * sizeof(float));
+        return values;
+    }
 
     /// <summary>Opened with stop-before-pixel-data.</summary>
     public bool HeadersOnly { get; }
@@ -878,7 +1012,15 @@ public sealed class TkFile : IDisposable
     {
         PlaneGeometry g = Tk.Call(() => ImageGeometry.GetFrameGeometry(File, frame));
         return new TkPlane(g.RowSpacing, g.ColumnSpacing, (TkSpacingSource)(int)g.SpacingSource, g.HasPosition,
-            g.HasPosition ? g.Position.Z : 0, g.SliceThickness);
+            g.HasPosition ? g.Position.Z : 0, g.SliceThickness)
+        {
+            Rows = g.Rows,
+            Columns = g.Columns,
+            HasOrientation = g.HasOrientation,
+            Position = new Vec3(g.Position.X, g.Position.Y, g.Position.Z),
+            RowCosine = new Vec3(g.RowCosine.X, g.RowCosine.Y, g.RowCosine.Z),
+            ColumnCosine = new Vec3(g.ColumnCosine.X, g.ColumnCosine.Y, g.ColumnCosine.Z),
+        };
     }
 
     /// <summary>Orientation labels, or null without orientation.</summary>
@@ -896,71 +1038,6 @@ public sealed class TkFile : IDisposable
             return null;
         }
     }
-
-    /// <summary>ROI statistics of modality values (needs pixel data).</summary>
-    /// <param name="frame">Frame.</param>
-    /// <param name="shape">Shape.</param>
-    /// <param name="parameters">Shape parameters.</param>
-    /// <param name="partialWeighting">Weight edge pixels by covered area.</param>
-    /// <returns>Statistics.</returns>
-    public TkRoiStats ComputeRoi(int frame, TkRoiShape shape, ReadOnlySpan<double> parameters, bool partialWeighting)
-    {
-        try
-        {
-            RoiStatistics s = RoiStatistics.Compute(File, frame, (RoiShape)(int)shape, parameters, partialWeighting);
-            return new TkRoiStats(s.Pixels, s.Mean, s.StandardDeviation, s.Min, s.Max, s.AreaPixels, s.AreaSquareMillimetres,
-                (TkSpacingSource)(int)s.SpacingSource);
-        }
-        catch (SiaaraException e)
-        {
-            throw Tk.Wrap(e);
-        }
-    }
-
-    /// <summary>SUV body-weight factor of a PET frame.</summary>
-    /// <param name="frame">Frame.</param>
-    /// <returns>Factor and warnings.</returns>
-    public TkSuv ComputeSuv(int frame)
-    {
-        SuvFactors f = Tk.Call(() => SuvFactors.Compute(File, frame));
-        var w = new List<string>();
-        foreach (SuvWarnings flag in Enum.GetValues<SuvWarnings>())
-        {
-            if (flag != SuvWarnings.None && f.Warnings.HasFlag(flag))
-            {
-                w.Add(SuvWarningText(flag));
-            }
-        }
-        return new TkSuv(f.BodyWeight, w);
-    }
-
-    private static string SuvWarningText(SuvWarnings w) => w switch
-    {
-        SuvWarnings.MissingWeight => "patient weight missing",
-        SuvWarnings.MissingDose => "injected dose missing",
-        SuvWarnings.MissingHalfLife => "half-life missing",
-        SuvWarnings.MissingInjectionTime => "injection time missing",
-        SuvWarnings.MissingScanTime => "scan time missing",
-        SuvWarnings.InconsistentTimes => "times inconsistent",
-        SuvWarnings.CountsWithoutScale => "counts without a scale factor",
-        SuvWarnings.NotDecayCorrected => "not decay corrected",
-        SuvWarnings.NotAttenuationCorrected => "not attenuation corrected",
-        SuvWarnings.UnsupportedUnits => "units not supported",
-        SuvWarnings.SeriesAfterAcquisition => "series time after acquisition",
-        SuvWarnings.MissingHeight => "patient height missing",
-        SuvWarnings.MissingSex => "patient sex missing",
-        SuvWarnings.MidnightRollover => "midnight rollover assumed",
-        SuvWarnings.InjectionDateAssumed => "injection date assumed",
-        SuvWarnings.MissingUnits => "units missing",
-        SuvWarnings.ImplausibleValue => "implausible value",
-        SuvWarnings.AlreadySuv => "values are already SUV",
-        SuvWarnings.UnknownDecayCorrection => "unknown decay correction",
-        SuvWarnings.MultipleRadiopharmaceuticals => "several radiopharmaceuticals",
-        SuvWarnings.TimezoneMismatch => "time zone mismatch",
-        SuvWarnings.VendorFactorUsed => "vendor SUV factor used",
-        SuvWarnings.PerImageScanTime => "per-image scan time used",
-        _ => "SUV warning",
-    };
 
     /// <summary>Sorts files (null entries skipped) into display order.</summary>
     /// <param name="files">Header files.</param>
@@ -1001,6 +1078,23 @@ public enum TkVoiSource
     Identity = 3,
 }
 
+/// <summary>Standard colour maps for grayscale images (PS3.6 Annex B palettes; Gray = none).</summary>
+public enum TkColormap
+{
+    /// <summary>No colour map.</summary>
+    Gray = 0,
+    /// <summary>Inverse gray.</summary>
+    InverseGray = 1,
+    /// <summary>Hot Iron.</summary>
+    HotIron = 2,
+    /// <summary>PET.</summary>
+    Pet = 3,
+    /// <summary>Hot Metal Blue.</summary>
+    HotMetalBlue = 4,
+    /// <summary>PET 20 Step.</summary>
+    Pet20Step = 5,
+}
+
 /// <summary>Everything a 2D render needs (maps to the toolkit's viewport options).</summary>
 public sealed record RenderSpec
 {
@@ -1038,6 +1132,8 @@ public sealed record RenderSpec
     public bool NoOverlays { get; init; }
     /// <summary>Ignore shutters.</summary>
     public bool NoShutters { get; init; }
+    /// <summary>Colour map for grayscale images (output must then be RGBA).</summary>
+    public TkColormap Colormap { get; init; }
 
     internal ViewportOptions ToBinding() => new()
     {
@@ -1058,6 +1154,7 @@ public sealed record RenderSpec
         Invert = Invert,
         NoOverlays = NoOverlays,
         NoShutters = NoShutters,
+        Colormap = (Colormap)(int)Colormap,
         Background = new Rgba8Color(0, 0, 0, 255),
     };
 }

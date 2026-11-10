@@ -34,7 +34,7 @@ public sealed class SessionRegistry : IDisposable
         string id = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
         var s = new ViewerSession(id, studyInstanceUid, _services);
         _sessions[id] = s;
-        _ = s.LoadAsync();
+        s.Observe(s.LoadAsync(), "loading the study");
         return s;
     }
 
@@ -43,8 +43,26 @@ public sealed class SessionRegistry : IDisposable
     /// <returns>The session or null.</returns>
     public ViewerSession? Get(string? id) => id is not null && _sessions.TryGetValue(id, out ViewerSession? s) ? s : null;
 
+    /// <summary>Closes every session showing one of these studies (before they are deleted): their header handles are released.</summary>
+    /// <param name="studyInstanceUids">Studies.</param>
+    /// <returns>Sessions closed.</returns>
+    public int CloseStudies(IReadOnlyCollection<string> studyInstanceUids)
+    {
+        ArgumentNullException.ThrowIfNull(studyInstanceUids);
+        int n = 0;
+        foreach (KeyValuePair<string, ViewerSession> kv in _sessions)
+        {
+            if (studyInstanceUids.Contains(kv.Value.StudyInstanceUid))
+            {
+                Close(kv.Key);
+                n++;
+            }
+        }
+        return n;
+    }
+
     /// <summary>Closes a session.</summary>
-    /// <param name="id">Id.</param>
+    /// <param name="id">Session id.</param>
     public void Close(string id)
     {
         if (_sessions.TryRemove(id, out ViewerSession? s))

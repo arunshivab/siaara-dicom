@@ -29,6 +29,10 @@ public enum AnnotationKind
     Probe = 9,
     /// <summary>Manual calibration line (true length typed by the user).</summary>
     Calibration = 10,
+    /// <summary>Arrow: tip (first point) and tail.</summary>
+    Arrow = 11,
+    /// <summary>Text label at one point.</summary>
+    Text = 12,
 }
 
 /// <summary>An annotation in image pixel coordinates (stored per SOP + frame + user).</summary>
@@ -45,6 +49,9 @@ public sealed class Annotation
 
     /// <summary>For calibration lines: the true length in mm.</summary>
     public double? TrueLengthMm { get; set; }
+
+    /// <summary>User text of a Text annotation (stored as typed).</summary>
+    public string? Text { get; set; }
 
     /// <summary>Computed text (not stored: recomputed on load).</summary>
     [JsonIgnore]
@@ -85,7 +92,7 @@ public sealed class Annotation
 
     /// <summary>A deep copy.</summary>
     /// <returns>The copy.</returns>
-    public Annotation Clone() => new() { Id = Id, Kind = Kind, Points = [.. Points], TrueLengthMm = TrueLengthMm, Label = Label, Spacing = Spacing, Warnings = [.. Warnings] };
+    public Annotation Clone() => new() { Id = Id, Kind = Kind, Points = [.. Points], TrueLengthMm = TrueLengthMm, Text = Text, Label = Label, Spacing = Spacing, Warnings = [.. Warnings] };
 }
 
 /// <summary>The stored annotations of one frame of one instance for one user.</summary>

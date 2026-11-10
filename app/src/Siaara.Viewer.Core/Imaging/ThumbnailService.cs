@@ -87,6 +87,23 @@ public sealed class ThumbnailService
         return png;
     }
 
+    /// <summary>Drops cached thumbnails of these instances (after a delete).</summary>
+    /// <param name="sopInstanceUids">Instances.</param>
+    public void Forget(IEnumerable<string> sopInstanceUids)
+    {
+        ArgumentNullException.ThrowIfNull(sopInstanceUids);
+        lock (_gate)
+        {
+            foreach (string sop in sopInstanceUids)
+            {
+                if (_cache.Remove(sop, out var e))
+                {
+                    _lru.Remove(e.Node);
+                }
+            }
+        }
+    }
+
     private static byte[]? Render(InstanceRow row)
     {
         try

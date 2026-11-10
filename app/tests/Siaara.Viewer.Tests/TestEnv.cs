@@ -28,7 +28,7 @@ internal sealed class TestEnv : IDisposable
         Cache = new RenderCache(Scheduler, 512L * 1024 * 1024, 32);
         Annotations = new AnnotationStore(Paths.AnnotationFolder, "tester");
         Import = new ImportService(Store, Scheduler, Audit);
-        Services = new ViewerServices(Store, Cache, Scheduler, Settings, Annotations);
+        Services = new ViewerServices(Store, Cache, Scheduler, Settings, Annotations, Audit);
     }
 
     public string Root { get; }
@@ -82,7 +82,7 @@ internal sealed record CapturedFrame(int Viewport, uint Seq, FramePixelFormat Fo
 /// <summary>Captures what a session sends; acks automatically unless told not to.</summary>
 internal sealed class FakeSink(ViewerSession session) : IViewSink
 {
-    private readonly int[] _unacked = new int[16];
+    private readonly int[] _unacked = new int[32];
     private int _maxInFlight;
 
     public int FrameHeaderBytes => 12;
@@ -103,7 +103,7 @@ internal sealed class FakeSink(ViewerSession session) : IViewSink
 
     public void SendFrame(int viewport, uint seq, FramePixelFormat format, int width, int height, byte[] rented, int length)
     {
-        int n = Interlocked.Increment(ref _unacked[viewport]);
+        int n = Interlocked.Increment(ref _unacked[Slot(viewport)]);
         int m;
         while (n > (m = Volatile.Read(ref _maxInFlight)) && Interlocked.CompareExchange(ref _maxInFlight, n, m) != m)
         {
@@ -125,9 +125,12 @@ internal sealed class FakeSink(ViewerSession session) : IViewSink
         }
     }
 
+    // Viewports 0..15, magnifiers (index + ViewerSession.MagnifierViewportBase) 16..31.
+    private static int Slot(int viewport) => viewport >= ViewerSession.MagnifierViewportBase ? 16 + ((viewport - ViewerSession.MagnifierViewportBase) & 15) : viewport & 15;
+
     public void Ack(int viewport, uint seq)
     {
-        Interlocked.Decrement(ref _unacked[viewport]);
+        Interlocked.Decrement(ref _unacked[Slot(viewport)]);
         session.Ack(viewport, seq);
     }
 
