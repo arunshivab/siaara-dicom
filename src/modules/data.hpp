@@ -13,6 +13,7 @@
 #include "core/status.hpp"
 #include "image/lut.hpp"
 #include "image/pixel_info.hpp"
+#include "volume/volume.hpp"
 
 namespace siaara::modules {
 
@@ -41,6 +42,16 @@ UnitsSource modality_units(const Dataset& ds, const image::ModalityTransform& m,
 Result<PixelValue> pixel_value(const Dataset& ds, const image::PixelInfo& pi, std::span<const std::uint8_t> frame,
                                const image::ModalityTransform* m, std::uint32_t column, std::uint32_t row,
                                std::uint32_t sample);
+
+// ---------------------------------------------------------------- volumes
+struct VolumeSample {
+    bool inside = false;
+    double index[3] = {0, 0, 0};       // continuous voxel index
+    std::int64_t voxel[3] = {0, 0, 0}; // nearest voxel index (may be outside the grid)
+    double value = 0;                  // inside only
+};
+// Value at a patient coordinate (mm): nearest voxel, or trilinear when `linear`.
+Result<VolumeSample> volume_value_at(const volume::Volume& v, const double patient[3], bool linear);
 
 // ---------------------------------------------------------------- waveforms (PS3.3 C.10.9)
 struct WaveformGroup {

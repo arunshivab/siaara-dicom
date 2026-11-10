@@ -7,6 +7,8 @@
 
 #include "charset/charset.hpp"
 #include "image/samples.hpp"
+#include "volume/geometry.hpp"
+#include "volume/sampler.hpp"
 
 namespace siaara::modules {
 
@@ -133,12 +135,12 @@ Result<PixelValue> pixel_value(const Dataset& ds, const image::PixelInfo& pi, st
     v.kind = pi.kind;
     if (pi.kind == image::SampleKind::Float32) {
         if ((index + 1) * 4 > frame.size()) return Status(Errc::Malformed, "frame shorter than its attributes");
-        v.stored_real = static_cast<double>(image::detail::load_f32(frame.data() + index * 4));
+        v.stored_real = static_cast<double>(image::detail::load_f32(frame.data() + static_cast<std::size_t>(index) * 4u));
         return v;
     }
     if (pi.kind == image::SampleKind::Float64) {
         if ((index + 1) * 8 > frame.size()) return Status(Errc::Malformed, "frame shorter than its attributes");
-        v.stored_real = image::detail::load_f64(frame.data() + index * 8);
+        v.stored_real = image::detail::load_f64(frame.data() + static_cast<std::size_t>(index) * 8u);
         return v;
     }
     const image::detail::SampleReader rd(pi);
@@ -156,6 +158,34 @@ Result<PixelValue> pixel_value(const Dataset& ds, const image::PixelInfo& pi, st
         v.units_source = modality_units(ds, *m, v.units);
     }
     return v;
+}
+
+// ---------------------------------------------------------------- volumes
+
+Result<VolumeSample> volume_value_at(const volume::Volume& v, const double patient[3], bool linear) {
+    if (!std::isfinite(patient[0]) || !std::isfinite(patient[1]) || !std::isfinite(patient[2]))
+        return Status(Errc::InvalidArgument, "patient coordinate is not finite");
+    auto t = volume::GridTransform::make(v.grid());
+    if (!t) return Status(Errc::Malformed, "volume grid is not invertible");
+    VolumeSample r;
+    const volume::Vec3 idx = t->index(volume::Vec3{patient[0], patient[1], patient[2]});
+    r.index[0] = idx.x;
+    r.index[1] = idx.y;
+    r.index[2] = idx.z;
+    for (int a = 0; a < 3; ++a) {
+        const double c = std::floor(r.index[a] + 0.5);
+        r.voxel[a] = std::fabs(c) < 9.0e18 ? static_cast<std::int64_t>(c)
+                                            : (c < 0 ? std::numeric_limits<std::int64_t>::min() : std::numeric_limits<std::int64_t>::max());
+    }
+    auto sample = [&](const auto& acc) {
+        r.inside = acc.inside(idx.x, idx.y, idx.z);
+        if (r.inside)
+            r.value = linear ? volume::detail::sample_linear(acc, idx.x, idx.y, idx.z)
+                             : volume::detail::sample_nearest(acc, idx.x, idx.y, idx.z);
+    };
+    if (v.type() == volume::VoxelType::Int16) sample(volume::detail::VoxelAccess<std::int16_t>(v.i16(), v.grid()));
+    else sample(volume::detail::VoxelAccess<float>(v.f32(), v.grid()));
+    return r;
 }
 
 // ---------------------------------------------------------------- waveforms
@@ -293,7 +323,7 @@ Result<std::vector<std::int64_t>> waveform_raw(const Dataset& ds, std::uint32_t 
     out.reserve(g.data_samples);
     const std::uint8_t* p = d->value.data();
     for (std::uint64_t s = 0; s < g.data_samples; ++s) {
-        const std::uint64_t idx = s * g.channels + channel;
+        const auto idx = static_cast<std::size_t>(s * g.channels + channel);  // < value size (data_samples bound)
         out.push_back(load_sample(p + idx * bytes, bytes, sign));
     }
     return out;

@@ -17,8 +17,6 @@
 #include "modules/data.hpp"
 #include "modules/modules.hpp"
 #include "repair/iod.hpp"
-#include "volume/geometry.hpp"
-#include "volume/sampler.hpp"
 #include "volume/volume.hpp"
 
 namespace {
@@ -304,39 +302,17 @@ SIAARA_API siaara_status SIAARA_CALL siaara_volume_value_at(const siaara_volume*
         if (!volume || !patient || !sized(out)) return fail(Errc::InvalidArgument, "volume, patient and out must be set");
         if (interpolation != SIAARA_INTERP_NEAREST && interpolation != SIAARA_INTERP_LINEAR)
             return fail(Errc::InvalidArgument, "interpolation must be SIAARA_INTERP_NEAREST or SIAARA_INTERP_LINEAR");
-        if (!std::isfinite(patient[0]) || !std::isfinite(patient[1]) || !std::isfinite(patient[2]))
-            return fail(Errc::InvalidArgument, "patient coordinate is not finite");
-        const vol::Volume& v = *volume->vol;
-        auto t = vol::GridTransform::make(v.grid());
-        if (!t) return fail(Errc::Malformed, "volume grid is not invertible");
+        auto r = mod::volume_value_at(*volume->vol, patient, interpolation == SIAARA_INTERP_LINEAR);
+        if (!r) return fail(r.error());
         reset(out);
         out->interpolation = interpolation;
-        for (int a = 0; a < 3; ++a) out->patient[a] = patient[a];
-        const vol::Vec3 idx = t->index(vol::Vec3{patient[0], patient[1], patient[2]});
-        out->index[0] = idx.x;
-        out->index[1] = idx.y;
-        out->index[2] = idx.z;
         for (int a = 0; a < 3; ++a) {
-            const double c = out->index[a];
-            out->voxel[a] = std::fabs(c) < 9.0e18 ? static_cast<int64_t>(std::floor(c + 0.5)) : (c < 0 ? INT64_MIN : INT64_MAX);
+            out->patient[a] = patient[a];
+            out->index[a] = r.value().index[a];
+            out->voxel[a] = r.value().voxel[a];
         }
-        double value = 0;
-        bool inside = false;
-        if (v.type() == vol::VoxelType::Int16) {
-            const vol::detail::VoxelAccess<std::int16_t> a(v.i16(), v.grid());
-            inside = a.inside(idx.x, idx.y, idx.z);
-            if (inside)
-                value = interpolation == SIAARA_INTERP_LINEAR ? vol::detail::sample_linear(a, idx.x, idx.y, idx.z)
-                                                              : vol::detail::sample_nearest(a, idx.x, idx.y, idx.z);
-        } else {
-            const vol::detail::VoxelAccess<float> a(v.f32(), v.grid());
-            inside = a.inside(idx.x, idx.y, idx.z);
-            if (inside)
-                value = interpolation == SIAARA_INTERP_LINEAR ? vol::detail::sample_linear(a, idx.x, idx.y, idx.z)
-                                                              : vol::detail::sample_nearest(a, idx.x, idx.y, idx.z);
-        }
-        out->inside = inside ? 1 : 0;
-        out->value = value;
+        out->inside = r.value().inside ? 1 : 0;
+        out->value = r.value().inside ? r.value().value : 0;
         return ok();
     });
 }
