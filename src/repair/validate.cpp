@@ -739,6 +739,49 @@ void check_functional_groups(const IodReq& iod, const Dataset& ds, Sink& sink, c
                 first_missing = i;
             }
         }
+        // P3-5. Segmentation (PS3.3 Table A.51-2): its functional group macros are all Usage C.
+        // The conditions that can be decided from the data set are decided here, so a frame
+        // without Segment Identification or without its plane position is reported, as the
+        // Usage M macros of the other enhanced IODs are.
+        bool required_c = false;
+        std::string why_c;
+        if (m.usage == ModuleUsage::C && iod.table_id == "A.51-1" && !in_shared && (missing > 0 || frames == 0)) {
+            const auto text = [&](Tag t) {
+                std::string v = ds.get_string(t).value_or("");
+                while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.pop_back();
+                return v;
+            };
+            const bool tiled_full = text(Tag{0x00209311u}) == "TILED_FULL";
+            const std::string_view macro = m.name;
+            if (macro == "Segmentation") {
+                // "Required if Dimension Organization Type is not TILED_FULL and Segmentation Type is not LABELMAP."
+                required_c = !tiled_full && text(Tag{0x00620001u}) != "LABELMAP";
+                why_c = "Dimension Organization Type (0020,9311) is not TILED_FULL and Segmentation Type (0062,0001) is not LABELMAP";
+            } else if (macro == "Pixel Measures" || macro == "Plane Position (Patient)" || macro == "Plane Orientation (Patient)") {
+                // "Required if Derivation Image Functional Group is not present and the Frame of
+                // Reference is defined in the patient-relative Reference Coordinate System."
+                constexpr Tag kDerivationImage = 0x00089124u, kPlanePositionSlide = 0x0048021Au, kTotalPixelMatrixColumns = 0x00480006u;
+                const auto anywhere = [&](Tag seq) {
+                    if (shared && shared->contains(seq)) return true;
+                    for (std::size_t i = 0; i < frames; ++i)
+                        if (pf->items[i].contains(seq)) return true;
+                    return false;
+                };
+                const bool slide = ds.contains(kTotalPixelMatrixColumns) || anywhere(kPlanePositionSlide);
+                required_c = ds.contains(Tag{0x00200052u}) && !slide && !anywhere(kDerivationImage);
+                why_c = "there is a Frame of Reference UID (0020,0052), no slide coordinates and no Derivation Image Functional Group";
+            }
+        }
+        if (required_c) {
+            Path p = frames ? path_of(kPerFrame, first_missing) : path_of(kShared, 0);
+            p.push_back({(*m.attributes)[0].tag, -1});
+            sink.add(Severity::Error, "missing-functional-group", 0, p,
+                     "Functional Group Macro required here (" + why_c +
+                         ") is neither in the Shared Functional Groups Sequence item nor in " +
+                         (frames ? std::to_string(missing) + " of " + std::to_string(frames) + " Per-Frame Functional Groups Sequence items"
+                                 : std::string("a Per-Frame Functional Groups Sequence item")),
+                     name);
+        }
         if (m.usage == ModuleUsage::M && !in_shared && (missing > 0 || frames == 0)) {
             Path p = frames ? path_of(kPerFrame, first_missing) : path_of(kShared, 0);
             p.push_back({(*m.attributes)[0].tag, -1});
