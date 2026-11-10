@@ -1,9 +1,15 @@
 name: release
 
 # On a version tag (v*): build Release for every platform of the CI matrix, run the full test
-# suite on each, install, check the installed package with find_package(siaara), check the runtime
-# dependencies, package it reproducibly (archive + SPDX 2.3 SBOM + SHA-256), attest the build
-# provenance, and create a DRAFT GitHub release with everything attached. See docs/RELEASING.md.
+# suite on each, install, check the installed package with find_package(siaara) and pkg-config,
+# check the runtime dependencies and hardening, package it reproducibly (archive + SPDX 2.3 SBOM +
+# SHA-256), attest the build provenance; then collect the native libraries of every platform into
+# ONE NuGet package (Siaara.<version>.nupkg, runtimes/<rid>/native) and test it offline; and create
+# a DRAFT GitHub release with everything attached. See docs/RELEASING.md and
+# docs/RELEASE_CHECKLIST.md.
+#
+# The binaries and the NuGet package are NOT code signed (first release: internal consumers).
+# docs/RELEASE_CHECKLIST.md says what changes when signing certificates exist.
 
 on:
   push:
@@ -11,6 +17,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
 
 jobs:
   build:
@@ -24,14 +34,20 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        # rid: the .NET runtime identifier(s) this platform's shared library is packed under in the
+        # NuGet package (none for linux-x86: .NET has no 32-bit x86 Linux runtime).
+        # hardening: arguments of tools/ci/check_binaries.py hardening, the same as the
+        # dependency-allowlist job of ci.yml. linux-arm64 skips the BTI/PAC property note
+        # (--no-cfi): the static C/C++ runtime of the runner drops it from the linked binary
+        # (open item R-134; listed as a known limitation in CHANGELOG.md).
         include:
-          - { platform: linux-x64,       os: ubuntu-24.04,     cmake: "-DCMAKE_BUILD_TYPE=Release" }
-          - { platform: linux-x86,       os: ubuntu-24.04,     cmake: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32", multilib: true }
-          - { platform: linux-arm64,     os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", cmake: "-DCMAKE_BUILD_TYPE=Release" }
-          - { platform: windows-x64,     os: windows-2022,     cmake: "-A x64" }
-          - { platform: windows-x86,     os: windows-2022,     cmake: "-A Win32" }
-          - { platform: windows-arm64,   os: "${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}",   cmake: "-A ARM64" }
-          - { platform: macos-universal, os: macos-15,         cmake: "-DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0" }
+          - { platform: linux-x64,       os: ubuntu-24.04,     rid: "linux-x64",          hardening: "--fortify",          cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { platform: linux-x86,       os: ubuntu-24.04,     rid: "",                   hardening: "--fortify",          cmake: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32", multilib: true }
+          - { platform: linux-arm64,     os: "${{ vars.LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", rid: "linux-arm64", hardening: "--fortify --no-cfi", cmake: "-DCMAKE_BUILD_TYPE=Release" }
+          - { platform: windows-x64,     os: windows-2022,     rid: "win-x64",            hardening: "",                   cmake: "-A x64" }
+          - { platform: windows-x86,     os: windows-2022,     rid: "win-x86",            hardening: "",                   cmake: "-A Win32" }
+          - { platform: windows-arm64,   os: "${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}", rid: "win-arm64", hardening: "", cmake: "-A ARM64" }
+          - { platform: macos-universal, os: macos-15,         rid: "osx-x64 osx-arm64",  hardening: "",                   cmake: "-DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0" }
     defaults:
       run:
         shell: bash
@@ -40,13 +56,12 @@ jobs:
         with:
           fetch-depth: 1
       - name: Version, commit and SOURCE_DATE_EPOCH
+        # The version has one source: the project(siaara VERSION x.y.z) line of CMakeLists.txt.
+        # The tag must name it; the built library is checked against it after the install.
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          cmake_version=$(sed -n 's/^project(siaara VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
-          capi_version=$(sed -n 's/.*siaara_version_string(void) { return "\([^"]*\)".*/\1/p' src/capi/capi.cpp)
-          if [ "$version" != "$cmake_version" ] || [ "$version" != "$capi_version" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match CMakeLists.txt ($cmake_version) / siaara_version_string ($capi_version)"; exit 1
-          fi
+          py=python3; command -v python3 >/dev/null || py=python
+          version=$($py tools/release/version.py)
+          $py tools/release/version.py --check-tag "$GITHUB_REF_NAME"
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -65,9 +80,11 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 4
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        timeout-minutes: 60
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 1800
       - name: Test the x86_64 slice under Rosetta (universal macOS build)
         if: runner.os == 'macOS'
+        timeout-minutes: 60
         run: |
           if arch -x86_64 /usr/bin/true 2>/dev/null; then
             arch -x86_64 build/tests/siaara_tests --data tests/data
@@ -78,10 +95,10 @@ jobs:
           lipo -archs build/libsiaara.dylib | grep -q arm64
       - name: Install
         run: cmake --install build --config Release --prefix "stage/siaara-$VERSION-${{ matrix.platform }}"
-      - name: The installed package works with find_package(siaara)
+      - name: The installed package works with find_package(siaara) and has the tagged version
         run: |
           prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
-          cmake -S tests/package -B build-consumer ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake -S tests/package -B build-consumer ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DSIAARA_EXPECT_VERSION="$VERSION"
           cmake --build build-consumer --config Release
           if [ "$RUNNER_OS" = "Windows" ]; then
             PATH="$prefix/bin:$PATH" build-consumer/Release/consumer_shared.exe
@@ -93,23 +110,45 @@ jobs:
             LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_shared
             build-consumer/consumer_static
           fi
+      - name: The installed pkg-config file works (Linux x64 and ARM64)
+        if: runner.os == 'Linux' && !matrix.multilib
+        run: |
+          prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+          test "$(pkg-config --modversion siaara)" = "$VERSION"
+          cc -std=c11 tests/package/main.c $(pkg-config --cflags --libs siaara) -o build-consumer/consumer_pkgconfig
+          LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_pkgconfig
       - name: Runtime dependencies of the shipped binaries
         run: |
           prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
-          python3 tools/ci/check_binaries.py deps --profile release $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib')
+          python3 tools/ci/check_binaries.py deps --profile release $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib' ! -name '*.pc')
       - name: Hardening of the shipped binaries
         run: |
           prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
-          python3 tools/ci/check_binaries.py hardening $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib')
+          python3 tools/ci/check_binaries.py hardening ${{ matrix.hardening }} $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib' ! -name '*.pc')
       - name: Exported symbols match the ABI baseline
         run: |
           prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
           lib=$(find "$prefix" -type f \( -name 'libsiaara.so' -o -name 'libsiaara.dylib' -o -name 'siaara.dll' \) | head -1)
           python3 tools/ci/check_binaries.py symbols --header include/siaara/siaara.h "$lib"
+      - name: Native library for the NuGet package (runtimes/<rid>/native)
+        # The tested, installed shared library, unchanged. macOS: the universal library goes under
+        # both osx-x64 and osx-arm64 (the file that was tested; no lipo -thin).
+        if: matrix.rid != ''
+        run: |
+          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          lib=$(find "$prefix" -type f \( -name 'libsiaara.so' -o -name 'libsiaara.dylib' -o -name 'siaara.dll' \) | head -1)
+          for rid in ${{ matrix.rid }}; do
+            mkdir -p "native/$rid"
+            cp "$lib" "native/$rid/"
+          done
+          find native -type f
       - name: Package (archive, SBOM, checksums)
         run: >
           python3 tools/release/package.py --stage "stage/siaara-$VERSION-${{ matrix.platform }}"
           --version "$VERSION" --platform ${{ matrix.platform }} --commit "$COMMIT" --out dist
+      - name: The archive holds what a release must hold, and nothing else
+        run: python3 tools/release/check_archive.py dist/siaara-$VERSION-${{ matrix.platform }}.* --platform ${{ matrix.platform }}
       - name: Attest build provenance
         # Attestations need a public repository or GitHub Enterprise Cloud: on a private repository
         # without it this step reports the failure but does not stop the release.
@@ -125,13 +164,96 @@ jobs:
           name: dist-${{ matrix.platform }}
           path: dist/
           if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: matrix.rid != ''
+        with:
+          name: native-${{ matrix.platform }}
+          path: native/
+          if-no-files-found: error
 
-  draft-release:
+  nuget:
+    # ONE NuGet package for .NET consumers: the managed assemblies (built here, once) and the
+    # native library of every platform job under runtimes/<rid>/native. The package has no
+    # dependencies, and a consumer restores it without any feed (tested below, offline).
+    name: nuget
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
+        with:
+          global-json-file: global.json   # the exact SDK, pinned in the repository
+      - name: Version and SOURCE_DATE_EPOCH
+        run: |
+          version=$(python3 tools/release/version.py)
+          python3 tools/release/version.py --check-tag "$GITHUB_REF_NAME"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: native-*
+          path: native
+          merge-multiple: true
+      - name: Pack
+        # The managed projects are IsTrimmable / IsAotCompatible, so the SDK fetches its analyzer
+        # pack Microsoft.NET.ILLink.Tasks from nuget.org for this build - an SDK component fetched
+        # on the release machine only (never vendored, never a dependency of the package; the
+        # consumer test below proves a consumer needs nothing but the package). Anything else in
+        # the package folder fails the job.
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
+        run: |
+          dotnet pack bindings/csharp/src/Siaara -c Release -o dist \
+            -p:ContinuousIntegrationBuild=true -p:SiaaraNativeArtifactsDir="$PWD/native"
+          ls -l dist
+          echo "fetched for the build:"; ls "$NUGET_PACKAGES"
+          extra=$(ls "$NUGET_PACKAGES" | grep -v '^microsoft.net.illink.tasks$' || true)
+          if [ -n "$extra" ]; then echo "packages fetched that are not the SDK's ILLink analyzer pack: $extra"; exit 1; fi
+      - name: The package holds every runtime, the licence, the readme and the XML documentation
+        run: python3 tools/release/check_nupkg.py "dist/Siaara.$VERSION.nupkg" --version "$VERSION" --require-all-rids
+      - name: A consumer restores it from a local folder feed, builds and runs (offline, linux-x64)
+        env:
+          # Env keys are case-insensitive to GitHub (a duplicate rejects the whole workflow), so the
+          # lower-case proxy variables are exported in the script instead.
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          NO_PROXY: ""
+        run: |
+          export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY" no_proxy=""
+          python3 tools/release/check_nupkg.py "dist/Siaara.$VERSION.nupkg" --version "$VERSION" --consumer-test "$RUNNER_TEMP/nupkg-consumer"
+      - name: Checksum
+        run: |
+          cd dist
+          sha256sum "Siaara.$VERSION.nupkg" > "Siaara.$VERSION.nupkg.sha256"
+          cat "Siaara.$VERSION.nupkg.sha256"
+      - name: Attest build provenance
+        continue-on-error: ${{ github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: dist/*.nupkg
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: dist-nuget
+          path: dist/
+          if-no-files-found: error
+
+  draft-release:
+    needs: [build, nuget]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write      # create the draft release
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           pattern: dist-*
@@ -142,11 +264,17 @@ jobs:
           cd dist
           cat *.sha256 | sort -k2 > SHA256SUMS
           sha256sum -c SHA256SUMS
+          rm -f *.sha256
+          ls -l
+      - name: Release notes from CHANGELOG.md
+        run: |
+          python3 tools/release/version.py --release-notes "${GITHUB_REF_NAME#v}" --commit "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" > release-notes.md
+          cat release-notes.md
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
             --title "SIAARA DICOM Toolkit ${GITHUB_REF_NAME#v}" \
-            --notes "Draft release built from ${GITHUB_SHA}. Each archive has an SPDX 2.3 SBOM and a SHA-256 checksum (SHA256SUMS lists all). Verify provenance with: gh attestation verify <file> --repo ${GITHUB_REPOSITORY}. License: to be decided (see NOTICE in each archive)." \
+            --notes-file release-notes.md \
             dist/*

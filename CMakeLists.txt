@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
+# THE version of the toolkit: this line is the single source. Everything else derives from it
+# (siaara_version_string(), the Implementation Version Name, the CMake package version, the C#
+# assembly and package versions, archive and SBOM names). See docs/RELEASING.md.
 project(siaara VERSION 0.1.0 LANGUAGES C CXX)
+
+# Implementation Version Name (0002,0013), written into every file and sent in every association:
+# "SIAARA_" + the version digits (0.1.0 -> SIAARA_010). VR SH: at most 16 characters.
+set(SIAARA_IMPLEMENTATION_VERSION_NAME
+    "SIAARA_${PROJECT_VERSION_MAJOR}${PROJECT_VERSION_MINOR}${PROJECT_VERSION_PATCH}")
+string(LENGTH "${SIAARA_IMPLEMENTATION_VERSION_NAME}" _siaara_ivn_length)
+if(_siaara_ivn_length GREATER 16)
+  message(FATAL_ERROR "Implementation Version Name '${SIAARA_IMPLEMENTATION_VERSION_NAME}' is longer than 16 characters")
+endif()
+configure_file(cmake/siaara_version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/siaara_version.hpp @ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -125,7 +138,7 @@ file(GLOB_RECURSE SIAARA_SOURCES CONFIGURE_DEPENDS
 add_library(siaara_obj OBJECT ${SIAARA_SOURCES})
 target_include_directories(siaara_obj
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_compile_options(siaara_obj PRIVATE ${SIAARA_WARN})
 target_compile_definitions(siaara_obj PRIVATE SIAARA_BUILDING=1)
 siaara_harden(siaara_obj)
@@ -149,6 +162,7 @@ add_library(siaara_static STATIC $<TARGET_OBJECTS:siaara_obj>)
 target_include_directories(siaara_static
   PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+          $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(siaara_static PUBLIC SIAARA_STATIC=1)
 if(NOT WIN32)
@@ -184,11 +198,27 @@ install(FILES include/siaara/siaara.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/si
 install(EXPORT siaaraTargets NAMESPACE siaara:: DESTINATION ${SIAARA_CMAKE_DIR})
 configure_package_config_file(cmake/siaaraConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/siaaraConfig.cmake
                               INSTALL_DESTINATION ${SIAARA_CMAKE_DIR})
-# 0.x releases: only the same minor version is compatible.
+# 0.x releases: only the same minor version is compatible; from 1.0.0 on, the same major version.
+if(PROJECT_VERSION_MAJOR EQUAL 0)
+  set(SIAARA_PACKAGE_COMPATIBILITY SameMinorVersion)
+else()
+  set(SIAARA_PACKAGE_COMPATIBILITY SameMajorVersion)
+endif()
 write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/siaaraConfigVersion.cmake
-                                 VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
+                                 VERSION ${PROJECT_VERSION} COMPATIBILITY ${SIAARA_PACKAGE_COMPATIBILITY})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/siaaraConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/siaaraConfigVersion.cmake
         DESTINATION ${SIAARA_CMAKE_DIR})
+# pkg-config (Unix): lib/pkgconfig/siaara.pc, relocatable.
+if(UNIX)
+  if(APPLE)
+    set(SIAARA_PC_LIBS_PRIVATE "-lc++ -framework Network -framework Security -framework CoreFoundation -framework Metal -framework Foundation -lobjc")
+  else()
+    set(SIAARA_PC_LIBS_PRIVATE "-lstdc++ -lm -lpthread ${CMAKE_DL_LIBS}")
+    string(REPLACE " dl" " -ldl" SIAARA_PC_LIBS_PRIVATE "${SIAARA_PC_LIBS_PRIVATE}")
+  endif()
+  configure_file(cmake/siaara.pc.in ${CMAKE_CURRENT_BINARY_DIR}/siaara.pc @ONLY)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/siaara.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+endif()
 
 if(SIAARA_BUILD_TESTS)
   enable_testing()
@@ -199,4 +229,8 @@ if(SIAARA_BUILD_TESTS OR SIAARA_FUZZ)
 endif()
 if(SIAARA_BUILD_TOOLS)
   add_subdirectory(tools)
+endif()
+# The examples of docs/GETTING_STARTED.md are built and run with the tests, so they keep working.
+if(SIAARA_BUILD_TESTS AND NOT SIAARA_FUZZ)
+  add_subdirectory(examples)
 endif()

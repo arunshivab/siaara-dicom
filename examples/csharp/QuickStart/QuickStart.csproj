@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SIAARA example (C#). A consumer references the Siaara package from a local folder feed:
+         dotnet run -p:SiaaraPackageVersion=x.y.z       (nuget.config names the folder with the .nupkg)
+       Inside the toolkit repository it is built from source instead (ctest, example_csharp_quickstart):
+         dotnet run -p:SiaaraFromSource=true -p:SiaaraNativeLibrary=<build>/libsiaara.so -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>siaara-quickstart</AssemblyName>
+    <RootNamespace>Siaara.Examples</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(SiaaraFromSource)' != 'true'">
+    <PackageReference Include="Siaara" Version="$(SiaaraPackageVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(SiaaraFromSource)' == 'true'">
+    <ProjectReference Include="../../../bindings/csharp/src/Siaara/Siaara.csproj" />
+    <ProjectReference Include="../../../bindings/csharp/src/Siaara.Interop/Siaara.Interop.csproj" />
+  </ItemGroup>
+</Project>

@@ -9,6 +9,7 @@
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
     <IsPackable>false</IsPackable>
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <!-- The native library for the build host's RID goes next to the assembly in

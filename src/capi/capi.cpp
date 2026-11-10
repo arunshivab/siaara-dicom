@@ -248,7 +248,7 @@ using siaara::capi::fill_dict_entry;
 extern "C" {
 
 SIAARA_API uint32_t SIAARA_CALL siaara_abi_version(void) SIAARA_NOEXCEPT { return SIAARA_ABI_VERSION; }
-SIAARA_API const char* SIAARA_CALL siaara_version_string(void) SIAARA_NOEXCEPT { return "0.1.0"; }
+SIAARA_API const char* SIAARA_CALL siaara_version_string(void) SIAARA_NOEXCEPT { return SIAARA_VERSION_STRING; }
 SIAARA_API const char* SIAARA_CALL siaara_last_error_message(void) SIAARA_NOEXCEPT { return g_last_error; }
 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* path, size_t path_len,
