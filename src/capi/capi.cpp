@@ -116,6 +116,11 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
     r.allow_raw_dataset = o->allow_raw_dataset != 0;
     r.lenient = o->strict == 0;
     if (o->max_depth) r.max_depth = o->max_depth;
+    // Appended field: read only when the caller's struct has it. Unknown values keep the default.
+    if (o->struct_size >= offsetof(siaara_read_options, recover_overlong_lengths) + sizeof(int32_t)) {
+        if (o->recover_overlong_lengths == SIAARA_RECOVER_ON) r.recover_overlong_lengths = true;
+        else if (o->recover_overlong_lengths == SIAARA_RECOVER_OFF) r.recover_overlong_lengths = false;
+    }
     return r;
 }
 
@@ -190,8 +195,36 @@ void fill_private(const siaara::dict::PrivateEntry& e, siaara_private_dict_entry
     out->source_document = e.source.document.data();
 }
 
-void fill_entry(const siaara::dict::Entry& e, siaara_dict_entry* out) {
-    out->tag = e.tag;
+}  // namespace
+
+namespace siaara::capi {
+bool dict_entry_sized(const siaara_dict_entry* out) noexcept {
+    return out && out->struct_size >= offsetof(siaara_dict_entry, vr_alt2);
+}
+
+// The lowest tag of a repeating entry's family that dict::lookup resolves to the entry itself.
+std::uint32_t dict_entry_tag(const siaara::dict::Entry& e) noexcept {
+    if (e.mask == 0xFFFFFFFFu) return e.tag;
+    const std::uint32_t wild = ~e.mask;
+    std::uint32_t v = 0;
+    do {
+        const std::uint32_t t = e.tag | v;
+        if (siaara::dict::lookup(t) == &e) return t;
+        v = (v - wild) & wild;  // the next larger combination of the free bits
+    } while (v != 0);
+    return e.tag;
+}
+
+void fill_dict_entry(const siaara::dict::Entry& e, siaara_dict_entry* out) {
+    if (out->struct_size >= sizeof(siaara_dict_entry)) {
+        const auto c = siaara::vr_name(e.vr_alt2);
+        out->vr_alt2[0] = e.vr_alt2 == siaara::VR::None ? 0 : c[0];
+        out->vr_alt2[1] = e.vr_alt2 == siaara::VR::None ? 0 : c[1];
+        out->vr_alt2[2] = 0;
+        out->reserved0 = 0;
+        out->mask = e.mask;
+    }
+    out->tag = dict_entry_tag(e);
     const auto a = siaara::vr_name(e.vr);
     const auto b = siaara::vr_name(e.vr_alt);
     out->vr[0] = e.vr == siaara::VR::None ? 0 : a[0];
@@ -205,6 +238,10 @@ void fill_entry(const siaara::dict::Entry& e, siaara_dict_entry* out) {
     out->name = e.name.data();
     out->vm = e.vm.data();
 }
+}  // namespace siaara::capi
+
+namespace {
+using siaara::capi::fill_dict_entry;
 
 }  // namespace
 
@@ -526,11 +563,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_remove(siaara_dataset* ds, u
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup(uint32_t tag, siaara_dict_entry* out) {
     return guarded([&]() -> siaara_status {
-        if (!out || out->struct_size < sizeof(siaara_dict_entry))
+        if (!siaara::capi::dict_entry_sized(out))
             return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         const auto* e = siaara::dict::lookup(tag);
         if (!e) return fail(Errc::NotFound, "tag not in dictionary");
-        fill_entry(*e, out);
+        fill_dict_entry(*e, out);
         out->tag = tag;
         return ok();
     });
@@ -539,11 +576,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup(uint32_t tag, siaara_dic
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyword, size_t len,
                                                                 siaara_dict_entry* out) {
     return guarded([&]() -> siaara_status {
-        if (!keyword || !out || out->struct_size < sizeof(siaara_dict_entry))
+        if (!keyword || !siaara::capi::dict_entry_sized(out))
             return fail(Errc::InvalidArgument, "bad argument");
         const auto* e = siaara::dict::lookup_keyword(std::string_view(keyword, len));
         if (!e) return fail(Errc::NotFound, "keyword not in dictionary");
-        fill_entry(*e, out);
+        fill_dict_entry(*e, out);
         return ok();
     });
 }

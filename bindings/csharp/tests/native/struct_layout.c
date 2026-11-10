@@ -12,6 +12,7 @@ int main(void) {
     printf("F siaara_read_options allow_raw_dataset %u\n", (unsigned)offsetof(siaara_read_options, allow_raw_dataset));
     printf("F siaara_read_options strict %u\n", (unsigned)offsetof(siaara_read_options, strict));
     printf("F siaara_read_options max_depth %u\n", (unsigned)offsetof(siaara_read_options, max_depth));
+    printf("F siaara_read_options recover_overlong_lengths %u\n", (unsigned)offsetof(siaara_read_options, recover_overlong_lengths));
     printf("S siaara_read_report %u\n", (unsigned)sizeof(siaara_read_report));
     printf("F siaara_read_report struct_size %u\n", (unsigned)offsetof(siaara_read_report, struct_size));
     printf("F siaara_read_report loss %u\n", (unsigned)offsetof(siaara_read_report, loss));
@@ -29,6 +30,9 @@ int main(void) {
     printf("F siaara_dict_entry keyword %u\n", (unsigned)offsetof(siaara_dict_entry, keyword));
     printf("F siaara_dict_entry name %u\n", (unsigned)offsetof(siaara_dict_entry, name));
     printf("F siaara_dict_entry vm %u\n", (unsigned)offsetof(siaara_dict_entry, vm));
+    printf("F siaara_dict_entry vr_alt2 %u\n", (unsigned)offsetof(siaara_dict_entry, vr_alt2));
+    printf("F siaara_dict_entry reserved0 %u\n", (unsigned)offsetof(siaara_dict_entry, reserved0));
+    printf("F siaara_dict_entry mask %u\n", (unsigned)offsetof(siaara_dict_entry, mask));
     printf("S siaara_private_dict_entry %u\n", (unsigned)sizeof(siaara_private_dict_entry));
     printf("F siaara_private_dict_entry struct_size %u\n", (unsigned)offsetof(siaara_private_dict_entry, struct_size));
     printf("F siaara_private_dict_entry group %u\n", (unsigned)offsetof(siaara_private_dict_entry, group));
@@ -642,7 +646,7 @@ int main(void) {
     printf("F siaara_path_value item_count %u\n", (unsigned)offsetof(siaara_path_value, item_count));
     printf("F siaara_path_value has_integer %u\n", (unsigned)offsetof(siaara_path_value, has_integer));
     printf("F siaara_path_value has_real %u\n", (unsigned)offsetof(siaara_path_value, has_real));
-    printf("F siaara_path_value reserved0 %u\n", (unsigned)offsetof(siaara_path_value, reserved0));
+    printf("F siaara_path_value undecodable %u\n", (unsigned)offsetof(siaara_path_value, undecodable));
     printf("F siaara_path_value integer %u\n", (unsigned)offsetof(siaara_path_value, integer));
     printf("F siaara_path_value real %u\n", (unsigned)offsetof(siaara_path_value, real));
     printf("F siaara_path_value byte_length %u\n", (unsigned)offsetof(siaara_path_value, byte_length));
@@ -663,6 +667,8 @@ int main(void) {
     printf("F siaara_pixel_value rescale_slope %u\n", (unsigned)offsetof(siaara_pixel_value, rescale_slope));
     printf("F siaara_pixel_value rescale_intercept %u\n", (unsigned)offsetof(siaara_pixel_value, rescale_intercept));
     printf("F siaara_pixel_value units %u\n", (unsigned)offsetof(siaara_pixel_value, units));
+    printf("F siaara_pixel_value modality_in_data %u\n", (unsigned)offsetof(siaara_pixel_value, modality_in_data));
+    printf("F siaara_pixel_value reserved0 %u\n", (unsigned)offsetof(siaara_pixel_value, reserved0));
     printf("S siaara_volume_sample %u\n", (unsigned)sizeof(siaara_volume_sample));
     printf("F siaara_volume_sample struct_size %u\n", (unsigned)offsetof(siaara_volume_sample, struct_size));
     printf("F siaara_volume_sample inside %u\n", (unsigned)offsetof(siaara_volume_sample, inside));

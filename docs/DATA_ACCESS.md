@@ -208,6 +208,12 @@ siaara_waveform_raw_samples(ds, 0, 0, raw, cap, &n);                            
 siaara_waveform_samples(ds, 0, 0, 1, scaled, cap, &n);                                 /* in Channel Sensitivity Units */
 ```
 
+The array calls (`siaara_get_doubles_by_path`, the waveform sample calls, `siaara_rt_device_positions`)
+answer a size query (`buf` NULL, `cap` 0) from the value count alone and decode straight into the
+caller's buffer; nothing of the result's size is allocated. Samples are read only for the Waveform
+Bits Allocated / Waveform Sample Interpretation pairs of PS3.3 Table C.10-10 (8: SB UB MB AB; 16: SS
+US; 32: SL UL; 64: SV UV); any other pair is `SIAARA_ERR_MALFORMED`.
+
 Scaled = sample x Channel Sensitivity x Channel Sensitivity Correction Factor (1 when absent) +
 Channel Baseline (0 when absent); MB / AB codes are first expanded per ITU-T G.711 (14-bit mu-law,
 13-bit A-law decoder outputs); samples equal to the Waveform Padding Value are NaN. A channel

@@ -277,7 +277,20 @@ TEST_CASE("codec limits/R-011 progressive JPEG repeated first-pass scans are ref
     std::printf("  decode: %s (%.2f s)\n", st.is_ok() ? "ok" : st.message.c_str(), took);
     CHECK(!st.is_ok());
     CHECK_EQ(st.code, Errc::Malformed);
-    CHECK(took < 1.5);
+    // The refusal is by a work limit, not by the clock; the time bound only guards against a
+    // regression to unbounded work. Sanitizer builds on shared CI runners are several times slower.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    const double limit_s = 15.0;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    const double limit_s = 15.0;
+#else
+    const double limit_s = 1.5;
+#endif
+#else
+    const double limit_s = 1.5;
+#endif
+    CHECK(took < limit_s);
 }
 
 TEST_CASE("codec limits/R-011 progressive JPEG overlap and successive-approximation rules") {

@@ -14,7 +14,8 @@ if(SIAARA_TSAN)
   # The TSan runtime defines operator new/delete itself, so the allocation guard (which replaces
   # them) and the codec amplification tests that rely on it are left out of TSan builds.
   list(REMOVE_ITEM SIAARA_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test_alloc_guard.cpp
-                                       ${CMAKE_CURRENT_SOURCE_DIR}/test_codec_limits.cpp)
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/test_codec_limits.cpp
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/test_security4a_alloc.cpp)
 endif()
 add_executable(siaara_tests ${SIAARA_TEST_SOURCES})
 target_link_libraries(siaara_tests PRIVATE siaara_static)
@@ -142,10 +143,13 @@ target_include_directories(repair_samples PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cr
 # Regenerates src/repair/iod_tables.inc from PS3.3 / PS3.4 when the XML is available and compares.
 set(SIAARA_NEMA_PART03 "" CACHE FILEPATH "PS3.3 DocBook XML (part03.xml) for the IOD table check")
 set(SIAARA_NEMA_PART04 "" CACHE FILEPATH "PS3.4 DocBook XML (part04.xml) for the IOD table check")
-if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART03}" AND EXISTS "${SIAARA_NEMA_PART04}")
+# tools/gen_iod.py also reads PS3.16 (paired body parts for the Laterality rule): SIAARA_NEMA_PART16.
+# CI sets all of these in the standard-tables job and runs the tests with --no-tests=error, so a
+# missing registration fails there instead of passing with nothing run (R-122).
+if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART03}" AND EXISTS "${SIAARA_NEMA_PART04}" AND EXISTS "${SIAARA_NEMA_PART16}")
   add_test(NAME repair_iod_table_matches_generator
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/crosscheck/repair_iod_table_check.py
-                   ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART03} ${SIAARA_NEMA_PART04})
+                   ${PROJECT_SOURCE_DIR} ${SIAARA_NEMA_PART03} ${SIAARA_NEMA_PART04} ${SIAARA_NEMA_PART16})
 endif()
 # The named data layer (src/modules/module_tables.inc, bindings/csharp/.../Modules.g.cs) must match
 # tools/gen_modules.py run on PS3.3 / PS3.6 when the XML is available.

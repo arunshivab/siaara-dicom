@@ -62,6 +62,16 @@ std::optional<std::string_view> split_value(std::string_view s, std::size_t inde
     return s.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
 }
 
+std::vector<std::string_view> split_all_values(std::string_view s, std::size_t max) {
+    std::vector<std::string_view> out;
+    if (max == 0) return out;
+    for_each_value(s, [&](std::size_t, std::string_view piece) {
+        out.push_back(piece);
+        return out.size() < max;
+    });
+    return out;
+}
+
 const Element* Dataset::find(Tag tag) const noexcept {
     auto it = std::lower_bound(elements_.begin(), elements_.end(), tag, tag_less);
     return (it != elements_.end() && it->tag == tag) ? &*it : nullptr;
@@ -307,6 +317,44 @@ std::optional<double> Dataset::get_double(Tag tag, std::size_t vm) const {
             return static_cast<double>(*i);
         }
     }
+}
+
+bool Dataset::get_doubles(Tag tag, std::size_t first, std::span<double> out) const {
+    const Element* e = find(tag);
+    if (!e || e->is_sequence() || e->is_encapsulated()) return false;
+    if (out.empty()) return true;
+    const VR vr = value_vr(*e);
+    if (vr == VR::DS || vr == VR::IS) {
+        std::size_t done = 0;
+        bool good = true;
+        for_each_value(e->value.as_chars(), [&](std::size_t i, std::string_view piece) {
+            if (i < first) return true;
+            const auto d = parse_double(piece);
+            if (!d) {
+                good = false;
+                return false;
+            }
+            out[done++] = *d;
+            return done < out.size();
+        });
+        return good && done == out.size();
+    }
+    // Binary VRs: fixed-size values, each read in constant time.
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if (first + i < first) return false;
+        const auto d = get_double(tag, first + i);
+        if (!d) return false;
+        out[i] = *d;
+    }
+    return true;
+}
+
+std::optional<std::vector<double>> Dataset::get_doubles(Tag tag) const {
+    const Element* e = find(tag);
+    if (!e || e->is_sequence() || e->is_encapsulated()) return std::nullopt;
+    std::vector<double> out(e->value.empty() ? 0 : value_multiplicity(tag));
+    if (!get_doubles(tag, 0, out)) return std::nullopt;
+    return out;
 }
 
 Status Dataset::set_string(Tag tag, VR vr, std::string_view value) {

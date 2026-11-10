@@ -101,8 +101,19 @@ CharacterSet character_set_of(const Dataset& ds, const CharacterSet* inherited =
 // Value `vm` (0-based) of a text element as UTF-8, padding removed like Dataset::get_string.
 // VRs that (0008,0005) does not apply to are decoded with the default repertoire; binary VRs
 // fall back to Dataset::get_string. nullopt when absent, a sequence, or vm is out of range.
+// Bytes that are not characters of the character set in force (for example 8-bit bytes in a CS
+// value, or in any text under the default repertoire) come out as U+FFFD, never as a guess such
+// as Latin-1: the stored bytes are unchanged and always available (Dataset::get_raw_string), and
+// `replacements` (optional) receives how many byte sequences of the whole element were replaced,
+// so a caller can warn that the text is not what the bytes hold.
 std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm = 0,
-                                    const CharacterSet* inherited = nullptr);
+                                    const CharacterSet* inherited = nullptr, std::size_t* replacements = nullptr);
+// Every value of a text element as UTF-8, backslash separated, each with its padding removed as
+// get_utf8 does. The element is decoded once and split once: use this, not get_utf8(ds, tag, i)
+// in a loop, which decodes the whole element for every value (R-111). nullopt when absent, a
+// sequence, encapsulated, or not a string VR.
+std::optional<std::string> get_utf8_all(const Dataset& ds, Tag tag, const CharacterSet* inherited = nullptr,
+                                        std::size_t* replacements = nullptr);
 
 // Encodes `utf8` (all values, backslash separated) into the data set's character set and
 // stores it. Fails with Errc::Unsupported, leaving the data set unchanged, if any character

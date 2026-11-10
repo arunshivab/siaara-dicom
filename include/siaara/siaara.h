@@ -87,7 +87,18 @@ typedef struct siaara_read_options {
     int32_t allow_raw_dataset;       /* 0/1, default 1 */
     int32_t strict;                  /* 0 = lenient (default), 1 = strict */
     uint32_t max_depth;              /* 0 = default (64) */
+    /* Read only when struct_size covers it. SIAARA_RECOVER_*: lenient reads only, a text value in
+     * implicit VR little endian whose stated length runs 1..7 bytes into the next element's header
+     * (GE Genesis files) is read that much shorter (warning ELEMENT_LENGTH_RECOVERED, loss bit
+     * SIAARA_READ_RECOVERED, so a save is refused unless incomplete saves are allowed).
+     * SIAARA_RECOVER_DEFAULT (0) takes the library default, currently on. */
+    int32_t recover_overlong_lengths;
 } siaara_read_options;
+enum {
+    SIAARA_RECOVER_DEFAULT = 0, /* the library default */
+    SIAARA_RECOVER_ON = 1,
+    SIAARA_RECOVER_OFF = 2
+};
 
 /* Opens and parses a file. options may be NULL. Caller owns *out: free with siaara_file_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* utf8_path, size_t path_len,
@@ -205,7 +216,16 @@ typedef struct siaara_dict_entry {
     const char* keyword;    /* static, NUL-terminated */
     const char* name;       /* static, NUL-terminated */
     const char* vm;         /* static, NUL-terminated */
+    /* Appended; written only when struct_size covers them (older callers are still accepted). */
+    char vr_alt2[3];        /* third VR ("US or SS or OW"), "" otherwise */
+    char reserved0;
+    uint32_t mask;          /* 0xFFFFFFFF, or for a repeating group / element the tag bits that are
+                               fixed (0xFF00FFFF for 60xx / 50xx, 0xFFFFFF0F for (0028,04x0)) */
 } siaara_dict_entry;
+/* siaara_dict_lookup: tag is the tag asked for. siaara_dict_lookup_keyword and siaara_dict_entry_at:
+ * for a repeating entry, tag is the lowest tag of the family that siaara_dict_lookup resolves to
+ * this entry ((6000,0010) for Overlay Rows; (0028,0410) for Rows For Nth Order Coefficients,
+ * because (0028,0400) is another attribute). */
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup(uint32_t tag, siaara_dict_entry* out);
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_lookup_keyword(const char* keyword, size_t len,
@@ -2262,7 +2282,9 @@ typedef struct siaara_path_value {
     uint32_t item_count;
     int32_t has_integer;             /* integer holds the selected (or first) value */
     int32_t has_real;                /* real holds the selected (or first) value */
-    uint32_t reserved0;
+    uint32_t undecodable;            /* text: byte sequences of the element that are not characters of the
+                                        character set in force; they are U+FFFD in the text (0: the text is
+                                        what the bytes hold). The stored bytes are unchanged. */
     int64_t integer;
     double real;
     uint64_t byte_length;            /* value bytes as held */
@@ -2275,7 +2297,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_get_by_path(const siaara_dataset* ds
                                                         size_t* needed);
 /* Every value of a numeric element (binary numbers, DS, IS, OW / OF / OD / OL / OV) as doubles; an
  * index on the last segment selects one. *count receives the number of values; with cap < count
- * nothing is copied and SIAARA_ERR_BUFFER_TOO_SMALL is returned (buf may be NULL with cap 0). */
+ * nothing is copied and SIAARA_ERR_BUFFER_TOO_SMALL is returned (buf may be NULL with cap 0).
+ * A size query (buf NULL, cap 0) only counts the values: nothing is decoded or allocated, so a
+ * value that is not a number is reported (SIAARA_ERR_TYPE_MISMATCH) by the call that copies. The
+ * values are decoded straight into buf. */
 SIAARA_API siaara_status SIAARA_CALL siaara_get_doubles_by_path(const siaara_dataset* ds, const char* path,
                                                                 size_t len, double* buf, size_t cap,
                                                                 size_t* count);
@@ -2307,6 +2332,12 @@ typedef struct siaara_pixel_value {
     double rescale_slope;            /* as applied (1 with a LUT) */
     double rescale_intercept;        /* as applied (0 with a LUT) */
     char units[32];                  /* NUL-terminated, as stored (truncated if longer) */
+    /* Written only when struct_size covers it (appended; older callers are still accepted).
+     * 1: the data holds the transform (Modality LUT Sequence, Rescale Slope or Rescale Intercept,
+     * Dose Grid Scaling). 0 with has_modality 1: none of them is present, so slope 1 /
+     * intercept 0 is the identity assumed, not a stored rescale. */
+    int32_t modality_in_data;
+    int32_t reserved0;
 } siaara_pixel_value;
 /* The stored value at (column, row) of a frame (0-based) and its modality value, from the stored
  * data with the standard's Modality LUT / Rescale (functional groups first) or, for RT Dose,
@@ -2401,7 +2432,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_channel_string(const siaara
  * scaled = 1: (sample x Channel Sensitivity x Correction Factor) + Channel Baseline, in Channel
  * Sensitivity Units (MB / AB codes are first expanded per ITU-T G.711), and NaN for samples equal
  * to the Waveform Padding Value. scaled = 1 fails with SIAARA_ERR_NOT_FOUND when the channel has
- * no Channel Sensitivity (its samples are in arbitrary units). Buffer rules as
+ * no Channel Sensitivity (its samples are in arbitrary units). Samples are read only for the
+ * Waveform Bits Allocated / Waveform Sample Interpretation pairs of PS3.3 Table C.10-10 (8: SB UB
+ * MB AB; 16: SS US; 32: SL UL; 64: SV UV): any other pair is SIAARA_ERR_MALFORMED and
+ * siaara_waveform_group_info reports data_samples 0. Buffer rules as
  * siaara_get_doubles_by_path. Thread safety: as reading. */
 SIAARA_API siaara_status SIAARA_CALL siaara_waveform_samples(const siaara_dataset* ds, uint32_t group, uint32_t channel,
                                                              int32_t scaled, double* buf, size_t cap, size_t* count);
@@ -2453,6 +2487,8 @@ typedef struct siaara_nm_frame_index {
     uint32_t energy_window, detector, phase, rotation, rr_interval, time_slot, slice, angular_view, time_slice;
     uint32_t reserved0;
 } siaara_nm_frame_index;
+/* frame at or past Number of Frames (0028,0008), when the data set has it: SIAARA_ERR_INVALID_ARGUMENT
+ * (without it the range is unknown: a frame past the vectors gives zeros). */
 SIAARA_API siaara_status SIAARA_CALL siaara_nm_frame_index_get(const siaara_dataset* ds, uint32_t frame,
                                                                siaara_nm_frame_index* out);
 
@@ -2491,13 +2527,15 @@ typedef struct siaara_transfer_syntax_info {
     uint32_t struct_size;            /* set to sizeof(siaara_transfer_syntax_info) */
     int32_t explicit_vr;
     int32_t big_endian;
-    int32_t encapsulated;            /* pixel data compressed (or referenced) */
+    int32_t encapsulated;            /* pixel data compressed, or referenced / streamed (JPIP Referenced, SMPTE ST 2110) */
     int32_t lossy;
     int32_t deflated;
     int32_t retired;
     int32_t reserved0;
     const char* name;                /* static */
 } siaara_transfer_syntax_info;
+/* Every transfer syntax of PS3.6 Table A-1, the retired ones the toolkit does not read included
+ * (hierarchical JPEG, MIME / XML encodings, Papyrus 3: retired = 1). SIAARA_ERR_NOT_FOUND otherwise. */
 SIAARA_API siaara_status SIAARA_CALL siaara_transfer_syntax_info_get(const char* uid, size_t len,
                                                                      siaara_transfer_syntax_info* out);
 /* Dictionary enumeration (PS3.6 / PS3.7 public elements; repeating groups once, xx = 00). */

@@ -736,7 +736,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_pstate_applies(const siaara_pstate* 
 SIAARA_API siaara_status SIAARA_CALL siaara_frame_pixel_value(const siaara_frame* frame, uint32_t column, uint32_t row,
                                                               uint32_t sample, siaara_pixel_value* out) {
     return guarded([&]() -> siaara_status {
-        if (!frame || !out || out->struct_size < sizeof(siaara_pixel_value))
+        if (!frame || !capi::pixel_value_sized(out))
             return fail(Errc::InvalidArgument, "frame and out (with struct_size) must be set");
         const img::PixelInfo& pi = frame->img->info();
         const bool modality = pi.samples_per_pixel == 1 && pi.kind == img::SampleKind::Integer;

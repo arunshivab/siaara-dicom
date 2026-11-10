@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Downloads DICOM standard parts pinned by SHA-256 in tools/ci/dicom_standard.json.
 
-    python3 tools/ci/fetch_standard.py --out /tmp/dicom part06 part07 part15 part16
+    python3 tools/ci/fetch_standard.py --out /tmp/dicom part03 part04 part06 part07 part15 part16
 
 For each part, tries https://dicom.nema.org/medical/dicom/<edition>/source/docbook/<p>/<p>.xml,
 then .../current/...; a download whose SHA-256 differs from the pin is rejected. Exits non-zero

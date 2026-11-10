@@ -18,7 +18,9 @@
 
   hardening  Checks the security properties of the given binaries (review R-014): Linux (readelf):
            full RELRO (GNU_RELRO + BIND_NOW), non-executable stack, PIE/DSO, stack protector
-           references; with --fortify, _FORTIFY_SOURCE wrappers (__*_chk) referenced. Windows
+           references; with --fortify, _FORTIFY_SOURCE wrappers (__*_chk) referenced; unless
+           --no-cfi, the .note.gnu.property feature bits the linker recorded for the whole binary:
+           IBT and SHSTK on x86-64 (CET), BTI and PAC on ARM64 (review R-134). Windows
            (dumpbin /headers /loadconfig): DYNAMICBASE, NX, Control Flow Guard, and on x64 high
            entropy VA and CET compatibility. macOS (otool): PIE executables, no executable stack.
 
@@ -36,6 +38,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -197,7 +200,59 @@ def cmd_symbols(args):
     return rc
 
 
-def hardening_problems(path, osname, fortify):
+def elf_feature_bits(path):
+    """Reads the GNU property note (.note.gnu.property) of an ELF file without external tools.
+
+    Returns (machine, bits): e_machine and the *_FEATURE_1_AND bits of that machine (x86: 1 IBT,
+    2 SHSTK; AArch64: 1 BTI, 2 PAC), 0 when there is no such note. The linker keeps a bit only when
+    every object linked in has it, so a set bit means the whole binary was built with the feature.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:4] != b"\x7fELF":
+        raise RuntimeError("%s is not an ELF file" % path)
+    is64 = data[4] == 2
+    end = "<" if data[5] == 1 else ">"
+    machine = struct.unpack_from(end + "H", data, 18)[0]
+    if is64:
+        phoff, = struct.unpack_from(end + "Q", data, 32)
+        phentsize, phnum = struct.unpack_from(end + "HH", data, 54)
+    else:
+        phoff, = struct.unpack_from(end + "I", data, 28)
+        phentsize, phnum = struct.unpack_from(end + "HH", data, 42)
+    want = {3: 0xC0000002, 62: 0xC0000002, 183: 0xC0000000}.get(machine)  # EM_386, EM_X86_64, EM_AARCH64
+    bits = 0
+    for i in range(phnum):
+        ph = phoff + i * phentsize
+        if is64:
+            p_type, _flags, off, _va, _pa, filesz, _memsz, align = struct.unpack_from(end + "IIQQQQQQ", data, ph)
+        else:
+            p_type, off, _va, _pa, filesz, _memsz, _flags, align = struct.unpack_from(end + "IIIIIIII", data, ph)
+        if p_type not in (4, 0x6474E553):  # PT_NOTE, PT_GNU_PROPERTY
+            continue
+        align = 8 if align == 8 else 4
+        pos, stop = off, min(off + filesz, len(data))
+        while pos + 12 <= stop:
+            namesz, descsz, ntype = struct.unpack_from(end + "III", data, pos)
+            name_at = pos + 12
+            # Name and descriptor are padded so that each ends on the note alignment, counted
+            # from the start of the note (the 12-byte header included).
+            desc_at = pos + ((12 + namesz + align - 1) & ~(align - 1))
+            nxt = desc_at + ((descsz + align - 1) & ~(align - 1))
+            if desc_at + descsz > stop:
+                break
+            if ntype == 5 and data[name_at:name_at + namesz] == b"GNU\0":  # NT_GNU_PROPERTY_TYPE_0
+                q, qend = desc_at, desc_at + descsz
+                while q + 8 <= qend:
+                    pr_type, pr_size = struct.unpack_from(end + "II", data, q)
+                    if pr_type == want and pr_size >= 4 and q + 8 + 4 <= qend:
+                        bits |= struct.unpack_from(end + "I", data, q + 8)[0]
+                    q += 8 + ((pr_size + align - 1) & ~(align - 1))
+            pos = nxt
+    return machine, bits
+
+
+def hardening_problems(path, osname, fortify, cfi=True):
     problems = []
     if osname == "linux":
         hdr = run(["readelf", "-hlW", path])
@@ -218,6 +273,24 @@ def hardening_problems(path, osname, fortify):
             problems.append("no stack protector references (__stack_chk_fail)")
         if fortify and not re.search(r"__\w+_chk\b", syms.replace("__stack_chk_fail", "")):
             problems.append("no _FORTIFY_SOURCE wrappers (__*_chk) referenced")
+        if cfi:
+            # Control-flow protection (cmake/SiaaraHardening.cmake: -fcf-protection=full on x86,
+            # -mbranch-protection=standard on Linux ARM64), as the linker recorded it for the
+            # whole binary. Other machines have no such flag; Apple platforms leave it off on
+            # purpose and are not checked here (osname is "macos" there).
+            # 32-bit x86 is not checked either: Linux has no user-space CET there and the i386
+            # system start files carry no marking, so the linker drops it whatever we compile.
+            machine, bits = elf_feature_bits(path)
+            if machine == 62:
+                if not bits & 1:
+                    problems.append("no CET indirect branch tracking (x86 feature IBT; -fcf-protection=full)")
+                if not bits & 2:
+                    problems.append("no CET shadow stack marking (x86 feature SHSTK; -fcf-protection=full)")
+            elif machine == 183:
+                if not bits & 1:
+                    problems.append("no branch target identification (AArch64 feature BTI; -mbranch-protection=standard)")
+                if not bits & 2:
+                    problems.append("no pointer authentication marking (AArch64 feature PAC; -mbranch-protection=standard)")
     elif osname == "windows":
         out = run([dumpbin(), "/nologo", "/headers", "/loadconfig", path])
         machine_x64 = "8664 machine (x64)" in out
@@ -244,7 +317,7 @@ def cmd_hardening(args):
     osname = args.os or host_os()
     bad = 0
     for path in args.binaries:
-        p = hardening_problems(path, osname, args.fortify)
+        p = hardening_problems(path, osname, args.fortify, not args.no_cfi)
         print("%s: %s" % (path, "ok" if not p else "; ".join(p)))
         bad += len(p)
     return 1 if bad else 0
@@ -266,6 +339,8 @@ def main():
     d.add_argument("binaries", nargs="+")
     h = sub.add_parser("hardening")
     h.add_argument("--fortify", action="store_true", help="require _FORTIFY_SOURCE wrappers (Linux)")
+    h.add_argument("--no-cfi", action="store_true",
+                   help="skip the CET (x86) / BTI+PAC (ARM64) property note check (Linux; for builds without SIAARA_HARDENING)")
     h.add_argument("binaries", nargs="+")
     s = sub.add_parser("symbols")
     s.add_argument("--update", action="store_true")

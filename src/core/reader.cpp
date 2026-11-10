@@ -90,6 +90,21 @@ public:
                 if (undefined && depth > 0) return lenient_or(Errc::Truncated, "missing item delimiter");
                 return Status::ok();
             }
+            // R-154: zero bytes after the last top-level element (files padded to a block size)
+            // are in no element. They used to read as elements (0000,0000) that sorted to the
+            // front of the data set with nothing reported; now they are skipped bytes in the read
+            // report (so a save is refused unless incomplete saves are allowed), and strict mode
+            // fails in every transfer syntax, not only the explicit VR ones.
+            if (depth == 0 && only_group == 0 && limit_ == size_ && p_[pos_] == 0 && !ds.empty() &&
+                pos_ >= zero_tail_start()) {
+                if (!opt_.lenient)
+                    return Status(Errc::Malformed, "zero bytes after the last element", pos_);
+                warn("TRAILING_PADDING: " + std::to_string(limit_ - pos_) +
+                     " zero byte(s) after the last element are in no element; skipped");
+                note_skipped(pos_, limit_);
+                pos_ = limit_;
+                return Status::ok();
+            }
             // File meta: a short tail that does not start with the meta group is the body (an empty
             // deflated data set is only 2 bytes), not a truncated meta element.
             if (only_group != 0 && limit_ - pos_ < 8 && (limit_ - pos_ < 2 || load_le16(p_ + pos_) != only_group))
@@ -190,11 +205,15 @@ public:
                 }
                 // Item 7a: a value whose stated length runs into the next element by a few bytes
                 // (GE Genesis files, gdcmData GE_GENESIS-16-MONO2-WrongLengthItem: (0008,103E)
-                // states 13 bytes for 10).
-                if (opt_.lenient && e.vr != VR::SQ && !(len & 0x80000000u)) {
+                // states 13 bytes for 10). Narrowed after security review 2026-11-11 (R-108,
+                // R-114), see overlong_by(): never in the file meta group (only_group), so the
+                // probe never reads the body with the meta's syntax; implicit VR little endian
+                // only; text values only (no binary VR, no UN, nothing in group 7FE0).
+                if (opt_.recover_overlong_lengths && opt_.lenient && only_group == 0 && !syn.explicit_vr &&
+                    !syn.big_endian && vr_is_string(e.vr) && tag_group(tag) != 0x7FE0 && !(len & 0x80000000u)) {
                     if (const std::uint32_t k = overlong_by(syn, tag, static_cast<std::size_t>(vend), len)) {
                         warn("ELEMENT_LENGTH_RECOVERED: " + hex_tag(tag) + " states " + std::to_string(len) +
-                             " byte(s), but a valid element header starts " + std::to_string(k) +
+                             " byte(s), but a run of three known element headers starts " + std::to_string(k) +
                              " byte(s) before that end while the bytes at the stated end are no element header; read as " +
                              std::to_string(len - k) + " byte(s), the next element from there");
                         note_loss(DicomFile::kReadRecovered, start);
@@ -382,8 +401,9 @@ private:
     Status parse_items(Element& e, Syntax syn, std::uint64_t end, bool undefined, std::uint32_t depth) {
         const std::size_t saved_limit = limit_;
         if (!undefined) {
+            // Never widen the enclosing limit, in Release builds too (R-154), as parse() does.
             assert(end <= limit_);
-            limit_ = static_cast<std::size_t>(end);
+            limit_ = static_cast<std::size_t>(std::min<std::uint64_t>(end, limit_));
         }
         Status s = parse_items_in(e, syn, end, undefined, depth);
         limit_ = saved_limit;
@@ -542,17 +562,12 @@ private:
     // How many element headers follow one another from q (up to `depth`): each must fit, carry a
     // tag after the previous one, and start where the previous value ends. Reaching the end of
     // the container, an item tag or an undefined length counts as `depth` (nothing to doubt).
-    // With `shift`, a header that does not fit may instead start `shift` bytes earlier (the same
-    // length error repeated, as GE Genesis files do for several values).
-    int chain(Syntax syn, std::size_t q, Tag prev, int depth, std::uint32_t shift = 0) const {
+    // This is the generous count used to decide that the stated end needs no doubting.
+    int chain(Syntax syn, std::size_t q, Tag prev, int depth) const {
         int n = 0;
         while (n < depth) {
             if (q == limit_) return depth;
-            auto h = header_at(syn, q);
-            if ((!h || !header_fits(*h, q)) && shift && q >= shift + 8) {
-                q -= shift;
-                h = header_at(syn, q);
-            }
+            const auto h = header_at(syn, q);
             if (!h || !header_fits(*h, q)) return n;
             if (tag_group(h->tag) == 0xFFFE) return depth;
             if (!(prev < h->tag)) return n;
@@ -563,24 +578,65 @@ private:
         }
         return n;
     }
-    // When the headers that follow a value's stated end (vend) do not read as elements but a
-    // run of at least two does from 1..7 bytes earlier (later values may repeat the same error) -
-    // its first tag after `cur` and known to the data dictionary (or a group length) - the
-    // stated length is that many bytes too large: returns k, else 0. A run of three from vend is
-    // never doubted.
+    // A tag the recovery may take for the start of the next element: a standard attribute the
+    // data dictionary lists by itself (the generic "group length of any group" entry does not
+    // count, R-114), in a group up to 7FE0.
+    static bool recovery_tag_known(Tag t) noexcept {
+        if (tag_group(t) > 0x7FE0 || tag_is_private(t)) return false;
+        const dict::Entry* d = dict::lookup(t);
+        return d && !(tag_element(t) == 0 && d->tag != t);
+    }
+    // Headers that follow one another from q, up to three, for the recovery: every one a real
+    // header (the end of the container, an item tag and an undefined length end the run and are
+    // not counted), fitting, with a tag after the previous one that is known to the dictionary or
+    // private, in a group up to 7FE0. With `shift`, a header that does not fit may instead start
+    // `shift` bytes earlier (GE Genesis files repeat the same length error for several values).
+    int recovery_run(Syntax syn, std::size_t q, Tag prev, std::uint32_t shift) const {
+        int n = 0;
+        while (n < 3) {
+            if (q >= limit_) return n;
+            auto h = header_at(syn, q);
+            if ((!h || !header_fits(*h, q)) && q >= std::size_t{shift} + 8) {
+                q -= shift;
+                h = header_at(syn, q);
+            }
+            if (!h || !header_fits(*h, q)) return n;
+            if (tag_group(h->tag) == 0xFFFE || h->len == kUndefinedLength || !(prev < h->tag)) return n;
+            if (tag_group(h->tag) > 0x7FE0 || (!tag_is_private(h->tag) && !recovery_tag_known(h->tag))) return n;
+            ++n;
+            prev = h->tag;
+            q += h->size + std::size_t{h->len};
+        }
+        return n;
+    }
+    // The GE Genesis length error: the bytes at a text value's stated end (vend) do not start a
+    // run of three element headers, but from k = 1..7 bytes earlier a run of three does, so the
+    // k removed bytes and the 8 - k bytes after vend together are exactly the next element's
+    // (implicit VR) header. That header's tag must come after `cur` and be a standard attribute of
+    // the data dictionary. Returns k, else 0. The caller applies it only to text values in
+    // implicit VR little endian outside the file meta group (R-108, R-114).
     std::uint32_t overlong_by(Syntax syn, Tag cur, std::size_t vend, std::uint32_t len) const {
         if (vend >= limit_) return 0;
-        const int a = chain(syn, vend, cur, 3);
-        if (a >= 3) return 0;
+        if (chain(syn, vend, cur, 3) >= 3) return 0;
         for (std::uint32_t k = 1; k <= 7 && k <= len; ++k) {
             const std::size_t q = vend - k;
             const auto h = header_at(syn, q);
-            if (!h || !header_fits(*h, q) || tag_group(h->tag) == 0xFFFE || !(cur < h->tag)) continue;
-            if (tag_element(h->tag) != 0 && !dict::lookup(h->tag)) continue;
-            const int b = chain(syn, q, cur, 3, k);
-            if (b >= 2 && b > a) return k;
+            if (!h || !header_fits(*h, q) || !(cur < h->tag) || !recovery_tag_known(h->tag)) continue;
+            if (recovery_run(syn, q, cur, k) >= 3) return k;
         }
         return 0;
+    }
+
+    // Offset where the run of zero bytes at the very end of the data starts (size_ when the last
+    // byte is not zero). Found once, from the end, so asking again costs nothing.
+    std::size_t zero_tail_start() noexcept {
+        if (!zero_tail_known_) {
+            std::size_t z = size_;
+            while (z > 0 && p_[z - 1] == 0) --z;
+            zero_tail_ = z;
+            zero_tail_known_ = true;
+        }
+        return zero_tail_;
     }
 
     // Reads [pos_, vend) as fragment items when it is exactly a run of defined-length items (FFFE,E000),
@@ -685,6 +741,8 @@ private:
     std::uint32_t loss_ = 0;
     std::uint64_t loss_offset_ = 0;
     std::uint64_t bytes_skipped_ = 0;
+    std::size_t zero_tail_ = 0;  // zero_tail_start()
+    bool zero_tail_known_ = false;
 };
 
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {

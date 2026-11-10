@@ -69,8 +69,10 @@ macros' own sequences).
 |---|---|---|
 | `missing-type1` / `missing-type2` "(condition met)" | Error | the condition holds and the attribute is missing |
 | `empty-type1` | Error | a present Type 1C attribute has no value |
-| `present-condition-unmet` | Error | a top-level 1C / 2C attribute is present, its condition is evaluated and does not hold, its description does not say "may be present otherwise", and no other module of the IOD allows it (PS3.5 7.4.4 / 7.4.6: it shall not be present then). Not raised for the two structured rules, where "does not hold" may mean "cannot be decided". |
+| `present-condition-unmet` | Warning, or Error | a top-level 1C / 2C attribute is present, its condition is evaluated and does not hold, its description has no permissive wording ("may be present otherwise", "may also be present if ...", "may be present for ..."; any "may be present" counts), and no other module of the IOD allows it. **Error** only when the description itself forbids presence ("shall not be present otherwise", "required only if"); otherwise a **Warning**: PS3.5 7.4.4 / 7.4.6 says it shall not be present, but the condition was read from prose by the generator. Not raised for the structured rules, where "does not hold" may mean "cannot be decided". |
+| `missing-functional-group` | Error | an IOD with Functional Group Macros (PS3.3 "<IOD> Functional Group Macros" table): a mandatory macro is neither in the Shared Functional Groups Sequence item nor in every Per-Frame Functional Groups Sequence item. The path names the first frame without it; the message counts them. |
 | `condition-not-evaluated` | Info | once per module: the number of absent 1C / 2C attributes whose condition was not evaluated. Never an error. |
+| `values-not-all-checked` | Warning | an attribute that a condition or an Enumerated Value list looks at has more than 4,096 values: only the first 4,096 are compared (a condition that would need the others counts as not evaluated). Once per attribute. |
 
 A term that cannot be decided (a value that is not a number for Greater, a condition attribute
 that is a sequence for Equals) makes the whole condition "not evaluated" unless the other terms
@@ -87,3 +89,18 @@ instance or another item ("the Instance referenced in ..."), about code sequence
 
 Measured on the 232 files of gdcmData: of the 75 files for which `dciodvfy` reports 1C / 2C
 errors other than Laterality, the validator reports 1C / 2C errors for 65 (before: 0).
+
+## Functional groups, several conditions, module selection
+
+- **Functional Group Macros.** For IODs that have them, every macro present in the Shared item or
+  in a Per-Frame item is checked there like a module (Type 1 / 2, and 1C / 2C with the condition's
+  attribute looked up in the frame's own item first); findings carry the item's path, e.g.
+  `(5200,9230)[3](0020,9111)[0](0020,9057)`. Most frame-level conditions of PS3.3 are prose ("of
+  this frame", "if the image is ...") and are not evaluated; those that name attributes are.
+- **Several "Required if" sentences** in one description are alternatives: the attribute is
+  required when any holds. They are evaluated only when every sentence is machine-checkable;
+  otherwise the condition as a whole is not evaluated (SR Concept Name Code Sequence).
+- **Optional modules** are checked when one of their attributes is present. Attributes that a
+  mandatory module also lists do not count, nor do attributes of another optional module that is
+  present by an attribute only it has: an object with Float Pixel Data is checked against the
+  Floating Point Image Pixel Module, not also against the Image Pixel Module.

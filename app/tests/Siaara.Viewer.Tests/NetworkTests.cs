@@ -125,16 +125,16 @@ internal static class NetworkTests
             T.Check(!again.Network.Scp.Enabled);
             T.Eq(again.Network.Scp.Port, 11112);
             // Secrets: in the secret store, nowhere in settings.json, the audit log or the app log.
-            string settingsText = File.ReadAllText(env.Paths.SettingsFile);
+            string settingsText = TestFiles.ReadSharedText(env.Paths.SettingsFile);
             T.Check(!settingsText.Contains(Token, StringComparison.Ordinal) && !settingsText.Contains(TlsPass, StringComparison.Ordinal));
             T.Check(settingsText.Contains("\"retrieve\": \"Move\"", StringComparison.Ordinal));
             T.Check(reg.HasSecret(NodeRegistry.PasswordSecret(wid)) && reg.HasSecret(NodeRegistry.TlsSecret(wid)));
-            string auditText = File.ReadAllText(env.Paths.AuditFile);
+            string auditText = TestFiles.ReadSharedText(env.Paths.AuditFile);
             T.Check(!auditText.Contains(Token, StringComparison.Ordinal) && !auditText.Contains(TlsPass, StringComparison.Ordinal));
             T.Check(AppLog.RecentLines.All(l => !l.Contains(Token, StringComparison.Ordinal) && !l.Contains(TlsPass, StringComparison.Ordinal)));
             foreach (string f in Directory.EnumerateFiles(env.Paths.SecretsFolder))
             {
-                T.Check(!File.ReadAllText(f).Contains(Token, StringComparison.Ordinal));
+                T.Check(!TestFiles.ReadSharedText(f).Contains(Token, StringComparison.Ordinal));
                 if (!OperatingSystem.IsWindows())
                 {
                     T.Check(OwnerOnly.IsOwnerOnly(File.GetUnixFileMode(f)));
@@ -476,7 +476,7 @@ internal static class NetworkTests
             T.Check(retrieves.Select(e => e.Data["method"]).SequenceEqual((string[])["c-get", "c-get", "c-move", "c-move"]));
             T.Eq(retrieves[2].Outcome, AuditOutcome.Failure);
             T.Eq(retrieves[3].Outcome, AuditOutcome.Success);
-            string auditText = File.ReadAllText(env.Paths.AuditFile) + File.ReadAllText(archive.Paths.AuditFile);
+            string auditText = TestFiles.ReadSharedText(env.Paths.AuditFile) + TestFiles.ReadSharedText(archive.Paths.AuditFile);
             string logText = string.Join("\n", AppLog.RecentLines);
             foreach (string phi in (string[])["MOTE^C", "RMT1", "ARMT2", "NOBODY", "REMOTE", "RMT100", "RMT200"])
             {
@@ -668,7 +668,7 @@ internal static class NetworkTests
             T.Eq((await archive.Store.GetStudyAsync(mine.StudyUid).ConfigureAwait(false))?.Images ?? 0, 4);
             T.Eq(Audit(env, "send").Single().Data["method"], "stow-rs");
             // The token is in the secret store only.
-            string everything = File.ReadAllText(env.Paths.SettingsFile) + File.ReadAllText(env.Paths.AuditFile) + string.Join("\n", AppLog.RecentLines);
+            string everything = TestFiles.ReadSharedText(env.Paths.SettingsFile) + TestFiles.ReadSharedText(env.Paths.AuditFile) + string.Join("\n", AppLog.RecentLines);
             T.Check(!everything.Contains(Token, StringComparison.Ordinal));
         });
 
@@ -901,7 +901,7 @@ internal static class NetworkTests
 
             // No patient value and no search text in the app log (memory and files) or the audit trail.
             string logs = string.Join("\n", AppLog.RecentLines) + string.Concat(Directory.EnumerateFiles(Path.Combine(data, "logs")).Select(ReadShared))
-                + File.ReadAllText(TestHost.AuditFile(data));
+                + TestFiles.ReadSharedText(TestHost.AuditFile(data));
             foreach (string phi in (string[])["REMOTE", "RMT100", "RMT200", "ARMT", "SAMPLE^"])
             {
                 T.Check(!logs.Contains(phi, StringComparison.Ordinal), "found in a log: " + phi);

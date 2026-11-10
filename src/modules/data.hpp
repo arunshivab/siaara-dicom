@@ -13,6 +13,7 @@
 #include "core/status.hpp"
 #include "image/lut.hpp"
 #include "image/pixel_info.hpp"
+#include "modules/modules.hpp"
 #include "volume/volume.hpp"
 
 namespace siaara::modules {
@@ -25,6 +26,7 @@ struct PixelValue {
     std::int64_t stored = 0;
     double stored_real = 0;
     bool has_modality = false;
+    bool modality_in_data = false;  // the data holds the transform (image::ModalityTransform::in_data)
     bool modality_lut = false;
     bool dose_grid_scaling = false;
     double modality_value = 0;
@@ -74,9 +76,19 @@ enum class WaveformText : std::int32_t {
     Label = 0, Status = 1, UnitsCode = 2, UnitsMeaning = 3, SourceCode = 4, SourceScheme = 5, SourceMeaning = 6, GroupLabel = 7
 };
 Result<std::string> waveform_text(const Dataset& ds, std::uint32_t group, std::uint32_t channel, WaveformText which);
+// Samples are read only for the Waveform Bits Allocated / Waveform Sample Interpretation pairs of
+// PS3.3 Table C.10-10 (8: SB UB MB AB; 16: SS US; 32: SL UL; 64: SV UV); any other pair is
+// Malformed (R-137). The vector forms never throw: LimitExceeded past kNamedDataMemoryBudget,
+// OutOfMemory when the allocation fails (R-123).
 Result<std::vector<std::int64_t>> waveform_raw(const Dataset& ds, std::uint32_t group, std::uint32_t channel);
 // sample x sensitivity x correction + baseline (G.711 codes expanded first; padding -> NaN).
 Result<std::vector<double>> waveform_scaled(const Dataset& ds, std::uint32_t group, std::uint32_t channel);
+// Samples per channel (WaveformGroup::data_samples) after the same checks as waveform_raw
+// (scaled: as waveform_scaled, so a channel without sensitivity is NotFound). Nothing is decoded.
+Result<std::uint32_t> waveform_sample_count(const Dataset& ds, std::uint32_t group, std::uint32_t channel, bool scaled);
+// The samples decoded straight into `out`, whose size must be waveform_sample_count(). No allocation.
+Status waveform_raw_into(const Dataset& ds, std::uint32_t group, std::uint32_t channel, std::span<std::int64_t> out);
+Status waveform_samples_into(const Dataset& ds, std::uint32_t group, std::uint32_t channel, bool scaled, std::span<double> out);
 // ITU-T G.711 decoder outputs: mu-law 14-bit (-8031..8031), A-law 13-bit (-4032..4032).
 std::int32_t g711_mulaw(std::uint8_t code) noexcept;
 std::int32_t g711_alaw(std::uint8_t code) noexcept;
@@ -89,12 +101,19 @@ Result<std::uint32_t> control_point_source(const Dataset& beam, std::uint32_t cp
 // Leaf / Jaw Positions of a device type at cp (effective: inherited from earlier control points).
 Result<std::vector<double>> device_positions(const Dataset& beam, std::uint32_t cp, std::string_view device_type,
                                              bool effective, std::uint32_t* from_cp);
+// The number of positions (from the value count alone; nothing decoded), and the values written
+// into `out`, whose size must be that count.
+Result<std::size_t> device_positions_count(const Dataset& beam, std::uint32_t cp, std::string_view device_type,
+                                           bool effective, std::uint32_t* from_cp);
+Status device_positions_into(const Dataset& beam, std::uint32_t cp, std::string_view device_type, bool effective,
+                             std::span<double> out);
 
 // ---------------------------------------------------------------- NM index vectors
 struct NmFrameIndex {
     std::uint32_t present = 0, in_pointer = 0;
     std::uint32_t values[9] = {};  // energy window, detector, phase, rotation, R-R, time slot, slice, angular view, time slice
 };
+// InvalidArgument when frame is not below Number of Frames (0028,0008), when that is present.
 Result<NmFrameIndex> nm_frame_index(const Dataset& ds, std::uint32_t frame);
 
 }  // namespace siaara::modules

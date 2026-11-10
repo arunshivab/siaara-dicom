@@ -461,11 +461,10 @@ Result<std::optional<std::vector<double>>> grid_frame_offsets(const Dataset& ds,
     const std::size_t vm = ds.value_multiplicity(kGridFrameOffsetVector);
     if (vm != nf) return bad("has " + std::to_string(vm) + " values for " + std::to_string(nf) + " frames");
     std::vector<double> v(nf);
-    for (std::uint32_t k = 0; k < nf; ++k) {
-        auto x = ds.get_double(kGridFrameOffsetVector, k);
-        if (!x || !std::isfinite(*x)) return bad("value " + std::to_string(k + 1) + " is not a number");
-        v[k] = *x;
-    }
+    // One pass over the DS text (security review R-111), not one scan per frame.
+    if (!ds.get_doubles(kGridFrameOffsetVector, 0, v)) return bad("has a value that is not a number");
+    for (std::uint32_t k = 0; k < nf; ++k)
+        if (!std::isfinite(v[k])) return bad("value " + std::to_string(k + 1) + " is not a number");
     for (std::uint32_t k = 1; k < nf; ++k) {
         const double g0 = v[1] - v[0], g = v[k] - v[k - 1];
         if (g == 0.0 || (g > 0.0) != (g0 > 0.0)) return bad("is not strictly increasing or decreasing");

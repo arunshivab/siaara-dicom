@@ -53,7 +53,7 @@ public:
         const std::uint16_t el = syn.big_endian ? load_be16(p_ + at + 2) : load_le16(p_ + at + 2);
         const Tag t = make_tag(g, el);
         if (const dict::Entry* e = dict::lookup(t)) {
-            if (e->vr != VR::None && vr != e->vr && vr != e->vr_alt && vr != VR::UN &&
+            if (e->vr != VR::None && !e->allows(vr) && vr != VR::UN &&
                 !(e->vr == VR::OB || e->vr == VR::OW))
                 return false;
         }

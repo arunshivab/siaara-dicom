@@ -148,7 +148,15 @@ public readonly struct DicomTag : IEquatable<DicomTag>, IComparable<DicomTag>
 /// <param name="ValueMultiplicity">The VM, e.g. "1" or "1-n".</param>
 /// <param name="IsRetired">True for retired attributes.</param>
 public sealed record DicomDictionaryEntry(
-    DicomTag Tag, string VR, string? AlternateVR, string Keyword, string Name, string ValueMultiplicity, bool IsRetired);
+    DicomTag Tag, string VR, string? AlternateVR, string Keyword, string Name, string ValueMultiplicity, bool IsRetired)
+{
+    /// <summary>The third VR of an attribute that has three ("US or SS or OW"), or null.</summary>
+    public string? ThirdVR { get; init; }
+
+    /// <summary>0xFFFFFFFF, or for a repeating group or element the tag bits that are fixed
+    /// (0xFF00FFFF for 60xx / 50xx groups). <see cref="Tag"/> is then the lowest tag of the family.</summary>
+    public uint Mask { get; init; } = 0xFFFFFFFFu;
+}
 
 /// <summary>Look-ups in the data dictionary compiled into the native library.</summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711", Justification = "\"Data Dictionary\" is the DICOM term (PS3.6).")]
@@ -217,9 +225,14 @@ public static partial class DicomDictionary
     {
         string vr = Chars(e.vr);
         string alt = Chars(e.vr_alt);
+        string third = Chars(e.vr_alt2);
         return new DicomDictionaryEntry(new DicomTag(e.tag), vr, alt.Length == 0 ? null : alt,
             Marshal.PtrToStringUTF8(e.keyword) ?? string.Empty, Marshal.PtrToStringUTF8(e.name) ?? string.Empty,
-            Marshal.PtrToStringUTF8(e.vm) ?? string.Empty, e.retired != 0);
+            Marshal.PtrToStringUTF8(e.vm) ?? string.Empty, e.retired != 0)
+        {
+            ThirdVR = third.Length == 0 ? null : third,
+            Mask = e.mask,
+        };
     }
 
     internal static string Chars(ReadOnlySpan<byte> s)

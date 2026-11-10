@@ -65,6 +65,10 @@ struct ReqNode {
     // Type 1C / 2C without "may be present otherwise": shall not be present when the condition
     // does not hold (PS3.5 7.4.4 / 7.4.6).
     bool absent_unless_required = false;
+    // The description itself forbids presence when the condition does not hold ("Shall not be
+    // present otherwise", "Required only if ..."). Without it, absent_unless_required is PS3.5
+    // 7.4 applied to a condition read from prose: reported as a warning, not an error.
+    bool forbidden_otherwise = false;
     std::vector<ReqNode> children;                 // attributes of each item, when a sequence
     bool matches(Tag t) const noexcept { return (t & mask) == tag; }
 };
@@ -81,6 +85,11 @@ struct IodReq {
     std::string_view name;       // e.g. "CT Image"
     std::string_view table_id;   // e.g. "A.3-1"
     std::vector<ModuleReq> modules;
+    // The IOD's Functional Group Macros (PS3.3 "<IOD> Functional Group Macros" table), empty when
+    // it has none: name, usage and the macro's attributes (usually one sequence with its item
+    // attributes). A macro is in the Shared Functional Groups Sequence item or in every Per-Frame
+    // Functional Groups Sequence item.
+    std::vector<ModuleReq> functional_groups;
 };
 
 // The IOD for a SOP Class UID (PS3.4 B.5-1), or nullptr. Thread-safe; results are cached.

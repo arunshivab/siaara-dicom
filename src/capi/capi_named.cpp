@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <new>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -69,14 +71,16 @@ siaara_status copy_text(std::string_view s, char* buf, size_t cap, size_t* neede
     return ok();
 }
 
-template <class T>
-siaara_status copy_array(const std::vector<T>& v, T* buf, size_t cap, size_t* count) {
-    if (count) *count = v.size();
-    if (v.empty() || (!buf && cap == 0)) return ok();  // nothing to copy, or a size query
-    if (cap < v.size()) return fail(Errc::BufferTooSmall, "buffer too small");
+// Array results (R-123): `n` values are known without building them; a size query (buf NULL,
+// cap 0) answers from `n` alone, and otherwise `fill` decodes straight into the caller's buffer.
+template <class T, class Fill>
+siaara_status fill_array(size_t n, T* buf, size_t cap, size_t* count, Fill&& fill) {
+    if (count) *count = n;
+    if (n == 0 || (!buf && cap == 0)) return ok();  // nothing to copy, or a size query
+    if (cap < n) return fail(Errc::BufferTooSmall, "buffer too small");
     if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");
-    std::memcpy(buf, v.data(), v.size() * sizeof(T));
-    return ok();
+    const Status s = fill(std::span<T>(buf, n));
+    return s ? ok() : fail(s);
 }
 
 std::string_view sv(const char* p, size_t n) { return p ? std::string_view(p, n) : std::string_view(); }
@@ -91,9 +95,18 @@ void fill_units(char (&dst)[32], const std::string& u) {
 
 namespace siaara::capi {
 // Shared with capi_view2d.cpp (siaara_frame_pixel_value).
+bool pixel_value_sized(const siaara_pixel_value* out) noexcept {
+    return out && out->struct_size >= offsetof(siaara_pixel_value, modality_in_data);
+}
+
 void fill_pixel_value(const mod::PixelValue& v, uint32_t frame, uint32_t column, uint32_t row, uint32_t sample,
                       siaara_pixel_value* out) {
-    reset(out);
+    // The struct grew (modality_in_data): only the bytes the caller's struct_size covers are written.
+    const uint32_t size = out->struct_size;
+    const bool full = size >= sizeof(siaara_pixel_value);
+    std::memset(out, 0, full ? sizeof(siaara_pixel_value) : offsetof(siaara_pixel_value, modality_in_data));
+    out->struct_size = size;
+    if (full) out->modality_in_data = v.modality_in_data ? 1 : 0;
     out->frame = frame;
     out->column = column;
     out->row = row;
@@ -222,6 +235,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_get_by_path(const siaara_dataset* ds
             out->item_count = v.item_count;
             out->has_integer = v.has_integer ? 1 : 0;
             out->has_real = v.has_real ? 1 : 0;
+            out->undecodable = v.undecodable;
             out->integer = v.integer;
             out->real = v.real;
             out->byte_length = v.byte_length;
@@ -236,9 +250,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_get_doubles_by_path(const siaara_dat
     return guarded([&]() -> siaara_status {
         if (count) *count = 0;
         if (!ds || !path || !count) return fail(Errc::InvalidArgument, "ds, path and count must not be NULL");
-        auto r = mod::doubles_by_path(*ds_cast(ds), std::string_view(path, len));
-        if (!r) return fail(r.error());
-        return copy_array(r.value(), buf, cap, count);
+        const std::string_view p(path, len);
+        auto n = mod::doubles_by_path_count(*ds_cast(ds), p);
+        if (!n) return fail(n.error());
+        return fill_array(n.value(), buf, cap, count,
+                          [&](std::span<double> out) { return mod::doubles_by_path_into(*ds_cast(ds), p, out); });
     });
 }
 
@@ -261,7 +277,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_by_path(siaara_dataset* ds, 
 SIAARA_API siaara_status SIAARA_CALL siaara_file_pixel_value(const siaara_file* file, uint32_t frame, uint32_t column,
                                                              uint32_t row, uint32_t sample, siaara_pixel_value* out) {
     return guarded([&]() -> siaara_status {
-        if (!file || !sized(out)) return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
+        if (!file || !capi::pixel_value_sized(out)) return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
         auto im = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
         if (!im) return fail(im.error());
         const siaara::image::Image& img = im.value();
@@ -408,18 +424,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_samples(const siaara_datase
         if (count) *count = 0;
         if (!ds || !count) return fail(Errc::InvalidArgument, "ds and count must not be NULL");
         if (scaled != 0 && scaled != 1) return fail(Errc::InvalidArgument, "scaled must be 0 or 1");
-        if (scaled) {
-            auto r = mod::waveform_scaled(*ds_cast(ds), group, channel);
-            if (!r) return fail(r.error());
-            return copy_array(r.value(), buf, cap, count);
-        }
-        auto r = mod::waveform_raw(*ds_cast(ds), group, channel);
-        if (!r) return fail(r.error());
-        // Explicit conversion: MSVC C4244 (an error under /WX) on the int64 -> double range constructor.
-        std::vector<double> d;
-        d.reserve(r.value().size());
-        for (const auto v : r.value()) d.push_back(static_cast<double>(v));
-        return copy_array(d, buf, cap, count);
+        auto n = mod::waveform_sample_count(*ds_cast(ds), group, channel, scaled == 1);
+        if (!n) return fail(n.error());
+        return fill_array(n.value(), buf, cap, count, [&](std::span<double> out) {
+            return mod::waveform_samples_into(*ds_cast(ds), group, channel, scaled == 1, out);
+        });
     });
 }
 
@@ -429,9 +438,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_raw_samples(const siaara_da
     return guarded([&]() -> siaara_status {
         if (count) *count = 0;
         if (!ds || !count) return fail(Errc::InvalidArgument, "ds and count must not be NULL");
-        auto r = mod::waveform_raw(*ds_cast(ds), group, channel);
-        if (!r) return fail(r.error());
-        return copy_array(r.value(), buf, cap, count);
+        auto n = mod::waveform_sample_count(*ds_cast(ds), group, channel, false);
+        if (!n) return fail(n.error());
+        return fill_array(n.value(), buf, cap, count, [&](std::span<int64_t> out) {
+            return mod::waveform_raw_into(*ds_cast(ds), group, channel, out);
+        });
     });
 }
 
@@ -457,10 +468,13 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rt_device_positions(const siaara_dat
         if (!beam || !device_type || !count) return fail(Errc::InvalidArgument, "beam, device_type and count must not be NULL");
         if (effective != 0 && effective != 1) return fail(Errc::InvalidArgument, "effective must be 0 or 1");
         uint32_t from = 0;
-        auto r = mod::device_positions(*ds_cast(beam), cp, std::string_view(device_type, len), effective == 1, &from);
-        if (!r) return fail(r.error());
+        const std::string_view type(device_type, len);
+        auto n = mod::device_positions_count(*ds_cast(beam), cp, type, effective == 1, &from);
+        if (!n) return fail(n.error());
         if (out_cp) *out_cp = from;
-        return copy_array(r.value(), buf, cap, count);
+        return fill_array(n.value(), buf, cap, count, [&](std::span<double> out) {
+            return mod::device_positions_into(*ds_cast(beam), cp, type, effective == 1, out);
+        });
     });
 }
 
@@ -551,14 +565,18 @@ SIAARA_API siaara_status SIAARA_CALL siaara_transfer_syntax_info_get(const char*
         if (!uid || !sized(out)) return fail(Errc::InvalidArgument, "uid and out (with struct_size) must be set");
         std::string_view u(uid, len);
         while (!u.empty() && (u.back() == '\0' || u.back() == ' ')) u.remove_suffix(1);
-        const auto* t = siaara::find_transfer_syntax(u);
+        const auto* t = siaara::find_registered_transfer_syntax(u);
         if (!t) return fail(Errc::NotFound, "unknown transfer syntax");
         reset(out);
         out->explicit_vr = t->explicit_vr ? 1 : 0;
         out->big_endian = t->big_endian ? 1 : 0;
-        out->encapsulated = t->encapsulated ? 1 : 0;
+        // "Compressed or referenced": the JPIP Referenced and SMPTE ST 2110 syntaxes carry no
+        // native Pixel Data either (it is referenced / streamed), so they report 1 here although
+        // the data set itself has no encapsulated Pixel Data element to parse.
+        const bool referenced = t->codec == siaara::Codec::Jpip || t->codec == siaara::Codec::Smpte2110;
+        out->encapsulated = t->encapsulated || referenced ? 1 : 0;
         out->lossy = t->lossy ? 1 : 0;
-        out->deflated = t->codec == siaara::Codec::Deflate ? 1 : 0;
+        out->deflated = t->codec == siaara::Codec::Deflate || t->name.find("Deflate") != std::string_view::npos ? 1 : 0;
         out->retired = t->retired ? 1 : 0;
         out->name = t->name.data();
         return ok();
@@ -575,23 +593,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dict_count(uint32_t* out) {
 
 SIAARA_API siaara_status SIAARA_CALL siaara_dict_entry_at(uint32_t index, siaara_dict_entry* out) {
     return guarded([&]() -> siaara_status {
-        if (!out || out->struct_size < sizeof(siaara_dict_entry)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
+        if (!capi::dict_entry_sized(out)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         const auto* e = siaara::dict::entry_at(index);
         if (!e) return fail(Errc::NotFound, "index out of range");
-        // The same fields siaara_dict_lookup fills.
-        const auto a = siaara::vr_name(e->vr);
-        const auto b = siaara::vr_name(e->vr_alt);
-        out->tag = e->tag;
-        out->vr[0] = e->vr == siaara::VR::None ? 0 : a[0];
-        out->vr[1] = e->vr == siaara::VR::None ? 0 : a[1];
-        out->vr[2] = 0;
-        out->vr_alt[0] = e->vr_alt == siaara::VR::None ? 0 : b[0];
-        out->vr_alt[1] = e->vr_alt == siaara::VR::None ? 0 : b[1];
-        out->vr_alt[2] = 0;
-        out->retired = e->retired ? 1 : 0;
-        out->keyword = e->keyword.data();
-        out->name = e->name.data();
-        out->vm = e->vm.data();
+        capi::fill_dict_entry(*e, out);  // the same fields siaara_dict_lookup fills
         return ok();
     });
 }
