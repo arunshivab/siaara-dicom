@@ -74,11 +74,11 @@ internal static class AuditTests
             T.Check(!v.IsIntact);
             T.Eq(v.FirstBadLine, 3);
             // Two lines swapped, a line removed from the middle, a line duplicated.
-            File.WriteAllLines(path, [lines[0], lines[2], lines[1], lines[3]]);
+            TestFiles.WriteLf(path, [lines[0], lines[2], lines[1], lines[3]]);
             T.Check(!Verify(path).IsIntact);
-            File.WriteAllLines(path, [lines[0], lines[2], lines[3]]);
+            TestFiles.WriteLf(path, [lines[0], lines[2], lines[3]]);
             T.Check(!Verify(path).IsIntact);
-            File.WriteAllLines(path, [lines[0], lines[1], lines[1], lines[2], lines[3]]);
+            TestFiles.WriteLf(path, [lines[0], lines[1], lines[1], lines[2], lines[3]]);
             T.Check(!Verify(path).IsIntact);
             File.WriteAllText(path, original);
             T.Check(Verify(path).IsIntact);
@@ -114,13 +114,54 @@ internal static class AuditTests
             T.Check(AuditKeys.OsStore.Load(osDir, create: false) is null);
         });
 
+        T.Case("audit: the file is the same bytes on every OS (\\n only, no BOM) and can be read and checked while the log is open", () =>
+        {
+            string dir = T.NewTempDir("auditbytes");
+            string path = Path.Combine(dir, "audit.jsonl");
+            using (var a = new AuditLog(path, AuditKeys.KeyFile))
+            {
+                a.Append("app.start", AuditOutcome.Success);
+                a.Append("study.open", AuditOutcome.Success, new Dictionary<string, string> { ["patientKey"] = "K\u00e9" });
+                // A second handle while the writer is open: the raw bytes, the entries, the full check, and what a start reads (the end).
+                byte[] bytes = TestFiles.ReadShared(path);
+                T.Check(bytes.Length > 0 && bytes[0] == (byte)'{' && bytes[^1] == (byte)'\n');
+                T.Check(!bytes.Contains((byte)'\r'));
+                T.Eq(bytes.Count(b => b == (byte)'\n'), 2);
+                T.Eq(AuditLog.ReadEntries(path).Count, 2);
+                AuditVerification open = Verify(path);
+                T.Check(open.IsIntact, open.Problem ?? "");
+                T.Eq(open.Lines, 2);
+                a.Append("app.stop", AuditOutcome.Success);
+                T.Eq(AuditLog.ReadEvents(path).Count, 3);
+                T.Check(Verify(path).IsIntact);
+                byte[] anchor = TestFiles.ReadShared(AuditLog.AnchorPath(path));
+                T.Check(!anchor.Contains((byte)'\r') && anchor[0] == (byte)'{');
+            }
+            // The same lines with "\r\n" (what a text tool on Windows would write) are not the audit format.
+            string[] lines = File.ReadAllLines(path);
+            File.WriteAllBytes(path, Encoding.UTF8.GetBytes(string.Concat(lines.Select(l => l + "\r\n"))));
+            AuditVerification crlf = Verify(path);
+            T.Check(!crlf.IsIntact);
+            T.Eq(crlf.FirstBadLine, 1);
+            TestFiles.WriteLf(path, lines);
+            T.Check(Verify(path).IsIntact);
+            // A start after a rewrite with "\n" continues the chain (the end is read byte for byte).
+            using (var a = new AuditLog(path, AuditKeys.KeyFile))
+            {
+                T.Eq(a.LastSequence, 3L);
+                a.Append("app.start", AuditOutcome.Success);
+            }
+            T.Check(Verify(path).IsIntact);
+            T.Check(!AuditLog.ReadEvents(path).Contains(AuditLog.SecurityAlert));
+        });
+
         T.Case("audit: cutting entries off the end is detected by the anchor, and recorded at the next start", () =>
         {
             string path = NewLog("audittail", 5, out string dir);
             T.Check(Verify(path).IsIntact);
             string[] lines = File.ReadAllLines(path);
             // The earlier log could not tell this file from a complete one.
-            File.WriteAllLines(path, lines[..3]);
+            TestFiles.WriteLf(path, lines[..3]);
             AuditVerification v = Verify(path);
             T.Check(!v.IsIntact);
             T.Check(v.Problem!.Contains("missing from the end", StringComparison.Ordinal));
@@ -387,7 +428,7 @@ internal static class AuditTests
                 T.Eq(changes.Length, 1);
                 T.Eq(changes[0].Data["changed"], "storeRoot,theme");
                 T.Eq(changes[0].Data["storeRoot"], env.Audit.PathReference(newStore));
-                T.Check(!File.ReadAllText(env.Paths.AuditFile).Contains("SMITH", StringComparison.Ordinal));
+                T.Check(!TestFiles.ReadSharedText(env.Paths.AuditFile).Contains("SMITH", StringComparison.Ordinal));
             }
         });
     }

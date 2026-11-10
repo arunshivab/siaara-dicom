@@ -162,8 +162,12 @@ public static class OwnerOnly
     }
 
     [SupportedOSPlatform("windows")]
+    // The handle asks for write access only (the ACL still gives the user full control). Asking for FullControl
+    // would put DELETE and read access on the handle, and Windows then refuses every other open that does not
+    // share delete: a reader with FileShare.ReadWrite could not read a log while it is being written.
     private static FileStream CreateWindows(string path, FileMode mode, FileShare share) =>
-        new FileInfo(path).Create(mode, FileSystemRights.FullControl, share, 4096, FileOptions.None, FileAclForMe());
+        new FileInfo(path).Create(mode, FileSystemRights.Write | FileSystemRights.ReadAttributes | FileSystemRights.ReadPermissions | FileSystemRights.Synchronize, share, 4096, FileOptions.None,
+            FileAclForMe());
 
     [SupportedOSPlatform("windows")]
     private static void CreateDirectoryWindows(string path)

@@ -112,7 +112,7 @@ internal static class CoreTests
             T.Check(AuditLog.ReadEvents(path).SequenceEqual(["app.start", "study.open", "study.delete"]));
             string[] lines = File.ReadAllLines(path);
             lines[1] = lines[1].Replace("K1", "K2", StringComparison.Ordinal);
-            File.WriteAllLines(path, lines);
+            TestFiles.WriteLf(path, lines);
             AuditVerification broken = AuditLog.Verify(path, AuditKeys.KeyFile);
             T.Check(!broken.IsIntact);
             // The edited line itself fails its signature (the unkeyed chain only noticed at the line after it).

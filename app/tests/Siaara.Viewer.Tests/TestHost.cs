@@ -126,3 +126,23 @@ internal static class TestHost
 
     public static string PortText(RunningViewer v) => v.Port.ToString(CultureInfo.InvariantCulture);
 }
+
+/// <summary>File access for tests that behaves the same on every OS.</summary>
+internal static class TestFiles
+{
+    /// <summary>Writes lines ended by "\n" only (File.WriteAllLines writes "\r\n" on Windows, which is not the audit format).</summary>
+    public static void WriteLf(string path, IEnumerable<string> lines) =>
+        File.WriteAllBytes(path, new System.Text.UTF8Encoding(false).GetBytes(string.Concat(lines.Select(l => l + "\n"))));
+
+    /// <summary>Reads a file that another handle may be writing (File.ReadAllText refuses that on Windows).</summary>
+    public static byte[] ReadShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var ms = new MemoryStream();
+        fs.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    /// <summary>The text of a file that another handle may be writing.</summary>
+    public static string ReadSharedText(string path) => System.Text.Encoding.UTF8.GetString(ReadShared(path));
+}

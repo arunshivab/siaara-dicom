@@ -371,7 +371,7 @@ public sealed class AuditLog : IDisposable
         {
             return false;
         }
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         foreach (byte[] line in Lines(fs))
         {
             if (line.Length == 0)
@@ -543,7 +543,7 @@ public sealed class AuditLog : IDisposable
     // The last signed line of a file, and what follows it (a torn fragment), reading only the end.
     private static Tail ReadTail(string path, byte[] key)
     {
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         long length = fs.Length;
         if (length == 0)
         {
@@ -711,7 +711,7 @@ public sealed class AuditLog : IDisposable
         int junkLine = 0;
         foreach (string file in files)
         {
-            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             foreach (byte[] line in Lines(fs))
             {
                 if (!TryReadSigned(line, keyBytes, out long s, out string p, out string mac, out string ev, out string tornSha))
@@ -822,7 +822,7 @@ public sealed class AuditLog : IDisposable
         var list = new List<AuditEntry>();
         foreach (string file in files)
         {
-            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             foreach (byte[] line in Lines(fs))
             {
                 if (line.Length == 0)
