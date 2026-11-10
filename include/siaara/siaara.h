@@ -1820,7 +1820,10 @@ typedef struct siaara_get_options {
                                         <SOP Instance UID>.dcm is left unchanged (logged as a warning) */
     siaara_store* store;             /* received instances are added here (may be NULL) */
     const char* folder;              /* and / or written here as <SOP Instance UID>.dcm (may be NULL),
-                                        owner-only (mode 0600 / owner-only DACL) */
+                                        owner-only (mode 0600 / owner-only DACL). On Windows a file that
+                                        replaces an existing one takes this owner-only DACL, not the DACL of
+                                        the replaced file or of the folder (grant access on the files or use
+                                        a store opened with file_mode where others must read them) */
     const char* const* sop_classes;  /* storage SOP classes to accept; NULL: the toolkit's list */
     uint32_t sop_class_count;
     int32_t native_only;             /* 0/1: propose only uncompressed transfer syntaxes */
@@ -2547,7 +2550,10 @@ typedef struct siaara_ae_entry {
     uint32_t port;                   /* 1..65535 */
     const char* ae_title;
     const char* host;                /* name or address */
-    int32_t tls;                     /* 0/1: associations to it use TLS (siaara_scp_services.outbound_tls) */
+    int32_t tls;                     /* 0/1: associations to it use TLS (siaara_scp_services.outbound_tls). With 1
+                                        and no outbound_tls the default client settings apply (system trust
+                                        store, host name check): a peer with a private certificate is then
+                                        refused, never contacted in plain text */
     uint32_t reserved0;              /* set to 0 */
 } siaara_ae_entry;
 
@@ -2565,7 +2571,9 @@ typedef struct siaara_scp_acl {
 } siaara_scp_acl;
 
 /* Modality Worklist SCP fed by the application. For each C-FIND the toolkit calls the callback
- * (on the association's thread; several associations may call it at once) with the identifier;
+ * (on a helper thread, while the association's thread waits for it up to
+ * siaara_scp_services.worklist_timeout_ms without progress; several associations may call it at
+ * once; worklist_user must stay valid until every call has returned) with the identifier;
  * the callback passes candidate scheduled procedure steps to emit() - every one, or a
  * pre-filtered set - and returns the final status (0 = Success). The toolkit applies the C-FIND
  * matching rules (PS3.4 C.2.2.2 and K.6, including Scheduled Procedure Step Sequence matching)
@@ -2592,11 +2600,15 @@ typedef struct siaara_scp_services {
     int32_t get;                     /* 0/1: C-GET from the store */
     int32_t worklist;                /* 0/1: Modality Worklist (worklist_cb, else siaara_scp_set_worklist) */
     int32_t mpps;                    /* 0/1: MPPS SCP (N-CREATE / N-SET; F.7.2.2 state rules; siaara_scp_mpps_get) */
-    int32_t commitment;              /* 0/1: Storage Commitment Push Model SCP, decided from the store */
+    int32_t commitment;              /* 0/1: Storage Commitment Push Model SCP, decided from the store. Every AE
+                                        allowed to use it learns which SOP Instance UIDs the store holds:
+                                        limit it with an allow-list (acls) */
     int32_t commitment_report_mode;  /* SIAARA_COMMIT_REPORT_* */
     int32_t commitment_reports;      /* 0/1: receive Storage Commitment reports sent on new associations (the
                                         SCU role; siaara_dimse_commit_ex with this SCP as receiver) */
-    int32_t ups;                     /* 0/1: UPS Push / Pull / Watch / Query SCP (in memory; events to subscribers) */
+    int32_t ups;                     /* 0/1: UPS Push / Pull / Watch / Query SCP (events to subscribers; in memory,
+                                        or kept in state_folder). DIMSE-N commands may name the UPS Push SOP
+                                        Class (PS3.4 CC.2) or the negotiated one */
     int32_t instance_availability;   /* 0/1: Instance Availability Notification SCP (events only) */
     int32_t allow_lossy;             /* 0/1: store_transfer_syntax and C-GET / C-MOVE transcodes may be lossy */
     /* ---- storage */
@@ -2620,7 +2632,8 @@ typedef struct siaara_scp_services {
     void* worklist_user;
     uint32_t max_worklist_items;     /* 0 = 10000 */
     /* ---- MPPS, commitment */
-    uint32_t max_mpps_instances;     /* 0 = 10000; more N-CREATEs get 0xA700 */
+    uint32_t max_mpps_instances;     /* IN PROGRESS instances; 0 = 10000; more N-CREATEs get 0xA700 (finished
+                                        ones: max_finished_instances) */
     uint32_t max_commitment_items;   /* per request; 0 = 10000; larger requests fail every item (Failure Reason
                                         0x0213 Resource Limitation) */
     /* ---- allow-lists */

@@ -369,7 +369,10 @@ ServiceOutcome do_commitment_action(ServiceSet& s, ServiceContext& c, const Mess
         const auto log = c.log;
         const auto on_done = s.on_commitment_done;
         const CommitmentRequest request = *req;
-        deliver_events(s, c, req->calling_ae, {std::move(e)}, [log, on_done, request, result](const Status& st) {
+        const std::uint64_t association = c.a.id();
+        deliver_events(s, c, req->calling_ae, {std::move(e)}, [log, on_done, request, result, association](const Status& st) {
+            // Runs on the sender thread: what it reports still belongs to the requestor's association.
+            const AssociationIdScope id_scope(association);
             if (!st && log) log("storage commitment report to " + request.calling_ae + " failed: " + st.message);
             if (on_done) on_done(request, result, static_cast<bool>(st));
         });
