@@ -313,7 +313,10 @@ std::string to_json(const Report& r) {
         }
         o += "]";
         if (f.rescue_attempted) {
-            o += ",\"frames\":{\"declared\":" + std::to_string(f.frames_declared) + ",\"recovered\":";
+            // "recovered" / "lost": 0-based frame indices; the counts are given too.
+            o += ",\"frames\":{\"declared\":" + std::to_string(f.frames_declared) +
+                 ",\"recovered_count\":" + std::to_string(f.frames_recovered.size()) +
+                 ",\"lost_count\":" + std::to_string(f.frames_lost.size()) + ",\"recovered\":";
             u32_array(o, f.frames_recovered);
             o += ",\"lost\":";
             u32_array(o, f.frames_lost);
@@ -363,11 +366,21 @@ std::string to_text(const Report& r, Severity min_severity) {
             }
         }
         if (f.rescue_attempted) {
+            // Counts first, then the frame numbers (1-based, as DICOM numbers frames) of the lost
+            // ones: "lost: 0" (a 0-based index) read as "nothing lost" (testing 10b P3).
             o += "  frames: " + std::to_string(f.frames_recovered.size()) + " of " +
-                 std::to_string(f.frames_declared) + " recovered";
+                 std::to_string(f.frames_declared) + " recovered, " + std::to_string(f.frames_lost.size()) + " lost";
             if (!f.frames_lost.empty()) {
-                o += "; lost:";
-                for (std::uint32_t k : f.frames_lost) o += " " + std::to_string(k);
+                o += f.frames_lost.size() == 1 ? " (frame" : " (frames";
+                std::size_t shown = 0;
+                for (std::uint32_t k : f.frames_lost) {
+                    if (++shown > 20) {
+                        o += " ...";
+                        break;
+                    }
+                    o += " " + std::to_string(std::uint64_t{k} + 1);
+                }
+                o += ")";
             }
             o += "\n";
         }

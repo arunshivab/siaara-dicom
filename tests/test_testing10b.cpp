@@ -24,6 +24,8 @@
 #include "net/scu.hpp"
 #include "net/services.hpp"
 #include "net/store_support.hpp"
+#include "repair/repair.hpp"
+#include "repair/report.hpp"
 #include "repair/validate.hpp"
 #include "siaara/siaara.h"
 #include "test.hpp"
@@ -646,4 +648,29 @@ TEST_CASE("10b item 5: encapsulated Pixel Data with a defined length is read len
     auto g = read_part10(Bytes::copy_of(bad.data(), bad.size()));
     REQUIRE(g.is_ok());
     CHECK(g->dataset.find(tags::PixelData)->fragments.empty());
+}
+
+// ---------------------------------------------------------------- P3 (b): repair frame counts
+
+TEST_CASE("10b P3: repair of a truncated single frame reports counts that agree") {
+    DicomFile f = mr8("2.25.10130");
+    std::vector<std::uint8_t> b = bytes_of(f);
+    b.resize(b.size() - 62);
+    repair::RepairOptions opt;
+    opt.fix = repair::kRescue;
+    opt.write = true;
+    std::vector<std::uint8_t> out;
+    const repair::Report rep = repair::repair_buffer(Bytes::copy_of(b.data(), b.size()), &out, opt);
+    REQUIRE(rep.files.size() == 1);
+    const repair::FileReport& fr = rep.files[0];
+    CHECK(fr.rescue_attempted);
+    CHECK(fr.frames_declared == 1);
+    CHECK(fr.frames_recovered.empty());
+    REQUIRE(fr.frames_lost.size() == 1);
+    CHECK(fr.frames_lost[0] == 0);  // 0-based index
+    const std::string text = repair::to_text(rep);
+    CHECK(text.find("frames: 0 of 1 recovered, 1 lost (frame 1)") != std::string::npos);
+    CHECK(text.find("lost: 0") == std::string::npos);
+    const std::string json = repair::to_json(rep);
+    CHECK(json.find("\"recovered_count\":0,\"lost_count\":1") != std::string::npos);
 }

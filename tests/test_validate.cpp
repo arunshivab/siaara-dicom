@@ -198,7 +198,9 @@ TEST_CASE("repair: reports never contain data set values unless detailed") {
     Change c;
     c.category = kStudy;
     c.action = "set";
-    c.path = {{tags::PatientName, -1}};
+    // push_back, not assignment from a one-element initializer list: GCC 13 -O2 with ASan reports a
+    // false -Warray-bounds in the inlined copy of the list (testing 10b P3).
+    c.path.push_back({tags::PatientName, -1});
     c.values_withheld = true;
     fr.changes.push_back(c);
     rep.files.push_back(fr);
