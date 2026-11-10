@@ -7,3 +7,5 @@
 # Fuzz seeds and regression inputs are raw bytes: never convert line endings.
 fuzz/corpus/** binary
 tests/regress/** binary
+# Private-tag source data (data/private-tags): tab-separated text, LF on every platform.
+*.tsv text eol=lf
