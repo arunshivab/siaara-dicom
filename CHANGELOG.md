@@ -121,6 +121,18 @@ Stated plainly, so that nobody finds them by surprise.
   process when the missing part is touched. The size is re-checked after mapping and before
   pixel data is decoded (`SIAARA_ERR_TRUNCATED`), which narrows the window but cannot close it.
   For files on shared or network folders that others rewrite in place, use `SIAARA_OPEN_READ`.
+- **The DICOMweb server does not compress on retrieve.** WADO-RS and WADO-URI serve the stored
+  transfer syntax or an uncompressed one; a request for another compressed transfer syntax is
+  answered 406. (Planned for the next release.)
+- **Lossy coding on request exists for JPEG-LS Near-Lossless and JPEG 2000 only.** HTJ2K is
+  written losslessly only; a request for lossy HTJ2K is refused.
+- **JPEG-LS near-lossless coding of signed pixel data is refused** (the error bound would apply
+  to the bit pattern, not to the value); lossless JPEG-LS of signed data works.
+- **JPEG Extended (Process 2 & 4) needs 8- or 12-bit data**; other bit depths are refused for
+  that transfer syntax.
+- The validator decides the conditions of the Segmentation functional groups it can decide from
+  the data set (Segment Identification, Pixel Measures, Plane Position and Orientation); a
+  missing Frame Content group ("required if not empty") is not reported.
 - Only 8- and 16-bit integer pixel data can be recoded by the transcoder; other pixel data is
   carried unchanged or the transcode is refused.
 - A blocking C call occupies its thread; the C# `...Async` methods run it on a pool thread.

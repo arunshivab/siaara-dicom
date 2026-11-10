@@ -319,7 +319,9 @@ forms). For each SOP class of the files to send, the SCU proposes:
 <!-- END GENERATED: ts-scu-lossless -->
 
    (JPEG-LS Near-Lossless, JPEG 2000 and HTJ2K are in this list because the toolkit codes
-   losslessly in them unless lossy coding is asked for.)
+   losslessly in them unless lossy coding is asked for. Lossy coding on request exists for
+   JPEG-LS Near-Lossless (.81) and JPEG 2000 (.91) only; in HTJ2K (.203) the toolkit writes
+   losslessly only and refuses a request for lossy coding.)
 4. only with `allow_lossy_transcode`: a presentation context with the lossy ones:
 
 <!-- BEGIN GENERATED: ts-scu-lossy -->
@@ -511,13 +513,19 @@ Client and server speak HTTP/1.1; TLS as in section 8. The server serves a local
   Results carry the Retrieve URL of their level. A query that matches more than the limit of the
   table in 4.2.1 is cut and answered with a `Warning` header.
 - **WADO-RS** (server): study, series and instance as `multipart/related;
-  type="application/dicom"`, in the stored transfer syntax or one the `Accept` header asks for
-  when the toolkit can convert to it; metadata as JSON or XML (binary values above 1024 bytes as
+  type="application/dicom"`, in the stored transfer syntax or in an **uncompressed** one the
+  `Accept` header asks for (Explicit VR Little Endian when it names none, unless the product
+  sets the default to "as stored"). The server decompresses on retrieve; it does **not**
+  compress on retrieve: a request for a compressed transfer syntax other than the one the
+  instance is stored in is answered 406. (Compress-on-retrieve is not in this release.) A
+  retrieve that has to decompress is sized first and answered 413 when it would pass the
+  response limit; metadata as JSON or XML (binary values above 1024 bytes as
   BulkDataURI); frames and bulk data as `application/octet-stream` or the compressed media type
   of the stored transfer syntax (`image/jpeg`, `image/jls`, `image/jp2`, `image/jphc`,
   `image/dicom-rle`). **Rendered resources are not supported**: every `/rendered` path answers 406.
 - **WADO-URI** (server): `requestType=WADO` with `studyUID`, `seriesUID`, `objectUID`;
-  `contentType=application/dicom` only; `transferSyntax` honoured when the toolkit can convert.
+  `contentType=application/dicom` only; `transferSyntax` honoured when it is the stored transfer
+  syntax or an uncompressed one (a request to compress is answered 406).
   No rendered content types, no `anonymize`, no presentation parameters.
 - **STOW-RS** (server): `POST /studies[/{study}]` with `multipart/related;
   type="application/dicom"`. Metadata + bulk data requests (`application/dicom+json`, `+xml`)
@@ -675,13 +683,17 @@ only other transfer syntaxes, C-GET / C-MOVE sub-operations, `store_transfer_syn
 | Case | Attributes changed |
 |---|---|
 | Any transcode | Pixel Data (7FE0,0010) and its encapsulation (Basic or Extended Offset Table); Transfer Syntax UID (0002,0010); Planar Configuration (0028,0006) = 0 for colour; Photometric Interpretation (0028,0004) when the codec requires another colour model (for example YBR_FULL_422 for lossy JPEG) |
-| **No** lossy compression applied (also same-syntax pass-through) | nothing else: SOP Instance UID, Lossy Image Compression attributes and derivation attributes stay as they are. Lossy Image Compression (0028,2110) stays "01" once it was "01" |
-| **Lossy** compression applied (only when the product allows it) | Lossy Image Compression (0028,2110) = "01"; Lossy Image Compression Ratio (0028,2112): the ratio of this step appended; Lossy Image Compression Method (0028,2114): see the alignment rule below; and, unless the product chooses to keep the UID: a **new SOP Instance UID** (0008,0018) (and Media Storage SOP Instance UID), Image Type (0008,0008) value 1 = DERIVED (other values kept), Source Image Sequence (0008,2112) with an item for the predecessor (Referenced SOP Class / Instance UID, Purpose of Reference Code Sequence: (121320, DCM, "Uncompressed predecessor") or (121330, DCM, "Lossy compressed predecessor")), Derivation Code Sequence (0008,9215) with (113040, DCM, "Lossy Compression") appended, Derivation Description (0008,2111) with method and ratio appended |
+| **No** lossy compression applied (also same-syntax pass-through) | nothing else: SOP Instance UID, Lossy Image Compression attributes and derivation attributes stay as they are. Lossy Image Compression (0028,2110) stays "01" once it was "01". One exception: when an instance whose pixel data is lossy coded but which lacks (0028,2110) is decompressed or recoded, (0028,2110) is added with "01" - the pixel data is lossy and must go on saying so |
+| **Lossy** compression applied (only when the product allows it) | Lossy Image Compression (0028,2110) = "01"; Lossy Image Compression Ratio (0028,2112): the ratio of this step appended; Lossy Image Compression Method (0028,2114): see the alignment rule below; and, unless the product chooses to keep the UID: a **new SOP Instance UID** (0008,0018) (and Media Storage SOP Instance UID), Image Type (0008,0008) value 1 = DERIVED (other values kept; `DERIVED\SECONDARY` when the source has fewer than two values or no Image Type), Source Image Sequence (0008,2112) with an item for the predecessor (Referenced SOP Class / Instance UID, Purpose of Reference Code Sequence: (121320, DCM, "Uncompressed predecessor") or (121330, DCM, "Lossy compressed predecessor")), Derivation Code Sequence (0008,9215) with (113040, DCM, "Lossy Compression") appended, Derivation Description (0008,2111) with method and ratio appended |
 
-Lossy compression is applied only by JPEG Baseline and Extended, and by JPEG-LS Near-Lossless,
-JPEG 2000 and HTJ2K when the product asks for lossy coding in them (by default those three are
-written losslessly). Method terms written: `ISO_10918_1`, `ISO_14495_1`, `ISO_15444_1`,
-`ISO_15444_15`.
+Lossy compression is applied only by JPEG Baseline and Extended, and by JPEG-LS Near-Lossless
+(.81) and JPEG 2000 (.91) when the product asks for lossy coding in them (by default those two
+are written losslessly). HTJ2K (.203) is written losslessly only: a request for lossy coding in
+it is refused, because the HTJ2K encoder is lossless only. Method terms written for a step of
+the toolkit's own: `ISO_10918_1`, `ISO_14495_1`, `ISO_15444_1`. `ISO_15444_15` is never the
+method of a step of the toolkit's own; it appears only as the filled-in term for an earlier
+step, when the source is irreversibly HTJ2K coded and its history lacks the Method value (see
+the alignment rule below).
 
 **Alignment rule for the lossy history lists.** Ratio (0028,2112) and Method (0028,2114) are
 parallel lists, one value per lossy step (PS3.3 C.7.6.1.1.5.1). The toolkit looks at how many
@@ -825,7 +837,7 @@ display, measurement and transcoding. "Pixel data encoded": the transcoder write
 | JPEG XL | `1.2.840.10008.1.2.4.112` | yes | no | no | pixel data carried as it is (no codec) |
 | High-Throughput JPEG 2000 Image Compression (Lossless Only) | `1.2.840.10008.1.2.4.201` | yes | yes | yes |  |
 | High-Throughput JPEG 2000 with RPCL Options Image Compression (Lossless Only) | `1.2.840.10008.1.2.4.202` | yes | yes | yes |  |
-| High-Throughput JPEG 2000 Image Compression | `1.2.840.10008.1.2.4.203` | yes | yes | yes | written losslessly unless lossy coding is requested |
+| High-Throughput JPEG 2000 Image Compression | `1.2.840.10008.1.2.4.203` | yes | yes | yes | written losslessly only; lossy coding on request is refused (the encoder is lossless only) |
 | JPIP HTJ2K Referenced | `1.2.840.10008.1.2.4.204` | yes | no | no |  |
 | JPIP HTJ2K Referenced Deflate | `1.2.840.10008.1.2.4.205` | yes | no | no |  |
 | RLE Lossless | `1.2.840.10008.1.2.5` | yes | yes | yes |  |

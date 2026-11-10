@@ -183,6 +183,10 @@ def blocks(d):
             note.append("pixel data carried as it is (no codec)")
         if t["encode_always_lossy"]:
             note.append("lossy")
+        elif t["encode"] and t["lossy"] and t["uid"] == "1.2.840.10008.1.2.4.203":
+            # The HTJ2K encoder is lossless only (src/codec/transcode.cpp): a request for lossy
+            # coding in this syntax is refused.
+            note.append("written losslessly only; lossy coding on request is refused (the encoder is lossless only)")
         elif t["encode"] and t["lossy"]:
             note.append("written losslessly unless lossy coding is requested")
         if private:
