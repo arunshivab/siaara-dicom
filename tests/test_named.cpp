@@ -537,7 +537,7 @@ TEST_CASE("named: ECG waveform raw and scaled samples") {
     siaara_waveform_channel ci{};
     ci.struct_size = sizeof ci;
     REQUIRE(siaara_waveform_channel_info(d, 0, 0, &ci) == SIAARA_OK);
-    CHECK(ci.has_sensitivity == 1 && ci.sensitivity == 2.5 && ci.correction == 1.1 && ci.baseline == -3);
+    CHECK(ci.has_sensitivity == 1 && ci.sensitivity == 2.5 && std::fabs(ci.correction - 1.1) < 1e-12 && ci.baseline == -3);
     char buf[64];
     size_t need = 0;
     REQUIRE(siaara_waveform_channel_string(d, 0, 0, SIAARA_WAVEFORM_LABEL, buf, sizeof buf, &need) == SIAARA_OK);
