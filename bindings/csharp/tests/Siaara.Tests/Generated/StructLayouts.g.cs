@@ -25,6 +25,7 @@ internal static class StructLayouts
             r.Add("F siaara_read_options allow_raw_dataset " + Offset(ref s, ref s.allow_raw_dataset).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_read_options strict " + Offset(ref s, ref s.strict).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_read_options max_depth " + Offset(ref s, ref s.max_depth).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_read_options recover_overlong_lengths " + Offset(ref s, ref s.recover_overlong_lengths).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_read_report);

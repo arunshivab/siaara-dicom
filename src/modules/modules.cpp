@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <iterator>
 #include <mutex>
+#include <new>
 
 #include "charset/charset.hpp"
 #include "dict/dictionary.hpp"
@@ -207,7 +208,14 @@ Result<std::vector<Segment>> parse_path(std::string_view p) {
                 s.tag = make_tag(g, el);
             } else {
                 const auto* d = dict::lookup_keyword(t);
-                if (!d || d->mask != 0xFFFFFFFFu) return Status(Errc::NotFound, "unknown keyword: " + std::string(t.substr(0, 80)));
+                if (!d || d->mask != 0xFFFFFFFFu) {
+                    std::string m = "unknown keyword: " + std::string(t.substr(0, 80));
+                    // R-157: creator:gggg,xx with a '.', '[' or ']' in an unquoted creator ends
+                    // up here, cut at that character.
+                    if (p.find(':', start) != std::string_view::npos)
+                        m += " (a private creator that contains '.', '[' or ']' must be quoted: \"creator\":gggg,xx)";
+                    return Status(Errc::NotFound, std::move(m));
+                }
                 s.tag = d->tag;
             }
         }
@@ -322,7 +330,20 @@ Result<PathTarget> resolve_path(const Dataset& root, std::string_view path) {
     return t;
 }
 
+namespace {
+Result<PathValue> get_by_path_impl(const Dataset& root, std::string_view path);
+}  // namespace
+
 Result<PathValue> get_by_path(const Dataset& root, std::string_view path) {
+    try {
+        return get_by_path_impl(root, path);
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "out of memory");
+    }
+}
+
+namespace {
+Result<PathValue> get_by_path_impl(const Dataset& root, std::string_view path) {
     auto wr = walk(root, path);
     if (!wr) return wr.take_error();
     const Walk& w = wr.value();
@@ -377,11 +398,28 @@ Result<PathValue> get_by_path(const Dataset& root, std::string_view path) {
     }
     const bool numeric = vr_is_binary_numeric(e.vr) || e.vr == VR::DS || e.vr == VR::IS;
     const bool integer = e.vr != VR::FL && e.vr != VR::FD && e.vr != VR::DS;
-    for (std::size_t i = first; i < end; ++i) {
-        std::optional<std::string> s = numeric ? ds.get_string(e.tag, i) : charset::get_utf8(ds, e.tag, i, &w.cs);
-        if (i != first) v.text += '\\';
-        if (s) v.text += *s;
-        if (vr_is_string(e.vr) && !numeric && (e.vr == VR::LT || e.vr == VR::ST || e.vr == VR::UT || e.vr == VR::UR)) break;
+    // One pass over the element whatever its value count (R-111): text is decoded once and split
+    // once; fetching value i with get_string / get_utf8 for every i rescans it each time.
+    if (w.index >= 0) {
+        std::optional<std::string> s = numeric ? ds.get_string(e.tag, first) : charset::get_utf8(ds, e.tag, first, &w.cs);
+        if (s) v.text = std::move(*s);
+    } else if (vr_is_string(e.vr) && !numeric) {
+        if (auto s = charset::get_utf8_all(ds, e.tag, &w.cs)) v.text = std::move(*s);
+    } else if (vr_is_string(e.vr) || !vr_is_binary_numeric(e.vr)) {
+        // DS / IS, and a VR that is none of the above (read like text, as get_string does).
+        const std::string_view raw = e.value.as_chars();
+        v.text.reserve(raw.size());
+        for_each_value(raw, [&](std::size_t i, std::string_view piece) {
+            if (i) v.text += '\\';
+            v.text += trim_value(piece, e.vr);
+            return true;
+        });
+    } else {
+        // Fixed-size binary values: each is read in constant time.
+        for (std::size_t i = first; i < end; ++i) {
+            if (i != first) v.text += '\\';
+            if (auto s = ds.get_string(e.tag, i)) v.text += *s;
+        }
     }
     if (numeric) {
         v.kind = integer ? ValueKind::Integer : ValueKind::Real;
@@ -400,8 +438,17 @@ Result<PathValue> get_by_path(const Dataset& root, std::string_view path) {
     }
     return v;
 }
+}  // namespace
 
-Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_view path) {
+namespace {
+
+// The numeric element a path names, and the range of its values the path selects.
+struct NumericTarget {
+    const Dataset* parent = nullptr;
+    Tag tag = 0;
+    std::size_t first = 0, count = 0;
+};
+Result<NumericTarget> numeric_target(const Dataset& root, std::string_view path) {
     auto wr = walk(root, path);
     if (!wr) return wr.take_error();
     const Walk& w = wr.value();
@@ -411,18 +458,46 @@ Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_vie
     const bool numeric = vr_is_binary_numeric(e.vr) || e.vr == VR::DS || e.vr == VR::IS || e.vr == VR::OW ||
                          e.vr == VR::OF || e.vr == VR::OD || e.vr == VR::OL || e.vr == VR::OV;
     if (!numeric) return Status(Errc::TypeMismatch, "not a numeric element");
-    std::vector<double> out;
     const std::size_t vm = e.value.size() == 0 ? 0 : w.parent->value_multiplicity(e.tag);
     if (w.index >= 0 && static_cast<std::uint64_t>(w.index) >= vm) return Status(Errc::NotFound, "value index out of range");
-    const std::size_t first = w.index >= 0 ? static_cast<std::size_t>(w.index) : 0;
-    const std::size_t end = w.index >= 0 ? first + 1 : vm;
-    out.reserve(end - first);
-    for (std::size_t i = first; i < end; ++i) {
-        auto d = w.parent->get_double(e.tag, i);
-        if (!d) return Status(Errc::TypeMismatch, "value is not a number");
-        out.push_back(*d);
+    NumericTarget t;
+    t.parent = w.parent;
+    t.tag = e.tag;
+    t.first = w.index >= 0 ? static_cast<std::size_t>(w.index) : 0;
+    t.count = w.index >= 0 ? 1 : vm;
+    return t;
+}
+
+}  // namespace
+
+Result<std::size_t> doubles_by_path_count(const Dataset& root, std::string_view path) {
+    auto t = numeric_target(root, path);
+    if (!t) return t.take_error();
+    return t.value().count;
+}
+
+Status doubles_by_path_into(const Dataset& root, std::string_view path, std::span<double> out) {
+    auto t = numeric_target(root, path);
+    if (!t) return t.take_error();
+    if (out.size() != t.value().count) return Status(Errc::BufferTooSmall, "buffer does not hold the value count");
+    if (!t.value().parent->get_doubles(t.value().tag, t.value().first, out))
+        return Status(Errc::TypeMismatch, "value is not a number");
+    return Status::ok();
+}
+
+Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_view path) {
+    try {
+        auto t = numeric_target(root, path);
+        if (!t) return t.take_error();
+        if (!fits_named_data_budget(t.value().count, sizeof(double)))
+            return Status(Errc::LimitExceeded, "values exceed the memory budget");
+        std::vector<double> out(t.value().count);
+        if (!t.value().parent->get_doubles(t.value().tag, t.value().first, out))
+            return Status(Errc::TypeMismatch, "value is not a number");
+        return out;
+    } catch (const std::bad_alloc&) {
+        return Status(Errc::OutOfMemory, "out of memory");
     }
-    return out;
 }
 
 }  // namespace siaara::modules

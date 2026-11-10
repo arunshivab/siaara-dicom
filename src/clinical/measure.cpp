@@ -71,9 +71,14 @@ LineProfile line_profile(std::span<const float> values, std::uint32_t rows, std:
     LineProfile out;
     if (values.size() != static_cast<std::size_t>(rows) * columns || rows == 0 || columns == 0) return out;
     if (!finite(a.x) || !finite(a.y) || !finite(b.x) || !finite(b.y)) return out;
+    // R-140: end points far outside any image (the differences below would overflow to infinity
+    // near 1e308, then NaN) and sample counts no caller needs are refused: an empty profile.
+    for (const double c : {a.x, a.y, b.x, b.y})
+        if (std::fabs(c) > kMaxProfileCoordinate) return out;
+    if (samples > kMaxProfileSamples) return out;
     const double len = std::hypot(b.x - a.x, b.y - a.y);
     std::uint32_t n = samples;
-    if (n == 0) n = static_cast<std::uint32_t>(std::min(1e6, std::ceil(len))) + 1;
+    if (n == 0) n = static_cast<std::uint32_t>(std::min(static_cast<double>(kMaxProfileSamples - 1), std::ceil(len))) + 1;
     n = std::max<std::uint32_t>(n, 2);
     PlaneGeometry px;  // pixel-only fallback
     const PlaneGeometry& g = geometry ? *geometry : px;
@@ -86,7 +91,8 @@ LineProfile line_profile(std::span<const float> values, std::uint32_t rows, std:
         s.x = a.x + t * (b.x - a.x);
         s.y = a.y + t * (b.y - a.y);
         s.distance = measure_distance(a, {s.x, s.y}, g).value;
-        if (s.x < 0.0 || s.y < 0.0 || s.x > columns || s.y > rows) {
+        // Written so that a NaN coordinate is outside (it is never cast to an integer).
+        if (!(s.x >= 0.0 && s.y >= 0.0 && s.x <= columns && s.y <= rows)) {
             s.value = std::numeric_limits<double>::quiet_NaN();
         } else {
             const double fx = std::clamp(s.x - 0.5, 0.0, static_cast<double>(columns - 1));

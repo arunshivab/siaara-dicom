@@ -85,7 +85,18 @@ typedef struct siaara_read_options {
     int32_t allow_raw_dataset;       /* 0/1, default 1 */
     int32_t strict;                  /* 0 = lenient (default), 1 = strict */
     uint32_t max_depth;              /* 0 = default (64) */
+    /* Read only when struct_size covers it. SIAARA_RECOVER_*: lenient reads only, a text value in
+     * implicit VR little endian whose stated length runs 1..7 bytes into the next element's header
+     * (GE Genesis files) is read that much shorter (warning ELEMENT_LENGTH_RECOVERED, loss bit
+     * SIAARA_READ_RECOVERED, so a save is refused unless incomplete saves are allowed).
+     * SIAARA_RECOVER_DEFAULT (0) takes the library default, currently on. */
+    int32_t recover_overlong_lengths;
 } siaara_read_options;
+enum {
+    SIAARA_RECOVER_DEFAULT = 0, /* the library default */
+    SIAARA_RECOVER_ON = 1,
+    SIAARA_RECOVER_OFF = 2
+};
 
 /* Opens and parses a file. options may be NULL. Caller owns *out: free with siaara_file_free. */
 SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* utf8_path, size_t path_len,
@@ -2170,7 +2181,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_get_by_path(const siaara_dataset* ds
                                                         size_t* needed);
 /* Every value of a numeric element (binary numbers, DS, IS, OW / OF / OD / OL / OV) as doubles; an
  * index on the last segment selects one. *count receives the number of values; with cap < count
- * nothing is copied and SIAARA_ERR_BUFFER_TOO_SMALL is returned (buf may be NULL with cap 0). */
+ * nothing is copied and SIAARA_ERR_BUFFER_TOO_SMALL is returned (buf may be NULL with cap 0).
+ * A size query (buf NULL, cap 0) only counts the values: nothing is decoded or allocated, so a
+ * value that is not a number is reported (SIAARA_ERR_TYPE_MISMATCH) by the call that copies. The
+ * values are decoded straight into buf. */
 SIAARA_API siaara_status SIAARA_CALL siaara_get_doubles_by_path(const siaara_dataset* ds, const char* path,
                                                                 size_t len, double* buf, size_t cap,
                                                                 size_t* count);
@@ -2296,7 +2310,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_channel_string(const siaara
  * scaled = 1: (sample x Channel Sensitivity x Correction Factor) + Channel Baseline, in Channel
  * Sensitivity Units (MB / AB codes are first expanded per ITU-T G.711), and NaN for samples equal
  * to the Waveform Padding Value. scaled = 1 fails with SIAARA_ERR_NOT_FOUND when the channel has
- * no Channel Sensitivity (its samples are in arbitrary units). Buffer rules as
+ * no Channel Sensitivity (its samples are in arbitrary units). Samples are read only for the
+ * Waveform Bits Allocated / Waveform Sample Interpretation pairs of PS3.3 Table C.10-10 (8: SB UB
+ * MB AB; 16: SS US; 32: SL UL; 64: SV UV): any other pair is SIAARA_ERR_MALFORMED and
+ * siaara_waveform_group_info reports data_samples 0. Buffer rules as
  * siaara_get_doubles_by_path. Thread safety: as reading. */
 SIAARA_API siaara_status SIAARA_CALL siaara_waveform_samples(const siaara_dataset* ds, uint32_t group, uint32_t channel,
                                                              int32_t scaled, double* buf, size_t cap, size_t* count);

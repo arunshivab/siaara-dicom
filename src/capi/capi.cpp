@@ -116,6 +116,11 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
     r.allow_raw_dataset = o->allow_raw_dataset != 0;
     r.lenient = o->strict == 0;
     if (o->max_depth) r.max_depth = o->max_depth;
+    // Appended field: read only when the caller's struct has it. Unknown values keep the default.
+    if (o->struct_size >= offsetof(siaara_read_options, recover_overlong_lengths) + sizeof(int32_t)) {
+        if (o->recover_overlong_lengths == SIAARA_RECOVER_ON) r.recover_overlong_lengths = true;
+        else if (o->recover_overlong_lengths == SIAARA_RECOVER_OFF) r.recover_overlong_lengths = false;
+    }
     return r;
 }
 

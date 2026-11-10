@@ -23,6 +23,12 @@ public sealed record DicomReadOptions
     /// <summary>Maximum sequence nesting depth; 0 = library default (64).</summary>
     public int MaxDepth { get; init; }
 
+    /// <summary>Lenient reads only: a text value in implicit VR little endian whose stated length
+    /// runs 1 to 7 bytes into the next element's header (GE Genesis files) is read that much shorter;
+    /// each recovery is a warning and sets <see cref="DicomReadLoss.Recovered"/>. null (default) =
+    /// the library default (currently on); false for data that did not come from a trusted local file.</summary>
+    public bool? RecoverOverlongLengths { get; init; }
+
     internal siaara_read_options ToNative() => new()
     {
         struct_size = StructSize.Of<siaara_read_options>(),
@@ -30,6 +36,7 @@ public sealed record DicomReadOptions
         allow_raw_dataset = AllowRawDataset ? 1 : 0,
         strict = Strict ? 1 : 0,
         max_depth = (uint)Math.Max(0, MaxDepth),
+        recover_overlong_lengths = RecoverOverlongLengths switch { true => 1, false => 2, null => 0 },
     };
 }
 

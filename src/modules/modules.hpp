@@ -110,6 +110,22 @@ struct PathValue {
 Result<PathValue> get_by_path(const Dataset& root, std::string_view path);
 // Every value of the element as double (numeric VRs, including OF / OD / OL / OV / OW and the
 // numeric strings DS / IS). An index on the last segment selects one value.
+// One pass over the element (R-111). LimitExceeded when the result would exceed
+// kNamedDataMemoryBudget, OutOfMemory when the allocation fails (never an exception, R-123).
 Result<std::vector<double>> doubles_by_path(const Dataset& root, std::string_view path);
+// The number of values doubles_by_path would return, from the value count alone: nothing is
+// decoded or allocated, so a value that is not a number is reported only by the calls that read it.
+Result<std::size_t> doubles_by_path_count(const Dataset& root, std::string_view path);
+// The same values written straight into `out`, whose size must be doubles_by_path_count().
+Status doubles_by_path_into(const Dataset& root, std::string_view path, std::span<double> out);
+
+// Memory budget of the vectors the named data layer returns (doubles_by_path, waveform_raw,
+// waveform_scaled, device_positions): the toolkit's default allocation budget, 4 GiB (as
+// codec::FrameInfo::kDefaultMemoryBudget and image::FrameReader). The *_into forms write into the
+// caller's buffer and allocate nothing.
+inline constexpr std::uint64_t kNamedDataMemoryBudget = std::uint64_t{4} << 30;
+constexpr bool fits_named_data_budget(std::uint64_t count, std::uint64_t element_size) noexcept {
+    return element_size == 0 || count <= kNamedDataMemoryBudget / element_size;
+}
 
 }  // namespace siaara::modules

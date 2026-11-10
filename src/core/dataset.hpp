@@ -11,6 +11,7 @@
 #include <type_traits>
 #include <utility>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -144,7 +145,10 @@ struct Element {
     // inflated stream for the deflated syntax, see DicomFile::offsets_are_file_offsets). 0 if built in memory.
     std::uint64_t offset = 0;
     Bytes value;
-    ItemList items;  // stable item addresses (see ItemList)
+    // Stable item addresses (see ItemList). Items added here directly, in an element that is
+    // already in a data set, do not get the enclosing Specific Character Set: call
+    // propagate_inherited_charset() on that data set afterwards, or put() the element (R-136).
+    ItemList items;
     std::vector<Bytes> fragments;
 
     bool is_sequence() const noexcept { return vr == VR::SQ; }
@@ -163,6 +167,11 @@ public:
     std::size_t size() const noexcept { return elements_.size(); }
     bool empty() const noexcept { return elements_.empty(); }
     const std::vector<Element>& elements() const noexcept { return elements_; }
+    // Direct access for editing in place. The data set does not see such edits: after adding
+    // items to Element::items directly, or changing the bytes of Specific Character Set
+    // (0008,0005) in place, call propagate_inherited_charset() on this data set (or store the
+    // element again with put()), or the items keep the character set they inherited before and
+    // their text decodes with the wrong one (R-136). Keep the elements in ascending tag order.
     std::vector<Element>& elements() noexcept { return elements_; }
 
     // Inserts or replaces. Keeps ascending tag order.
@@ -184,6 +193,14 @@ public:
     std::optional<std::string> get_string(Tag tag, std::size_t vm = 0) const;
     std::optional<std::int64_t> get_int(Tag tag, std::size_t vm = 0) const;
     std::optional<double> get_double(Tag tag, std::size_t vm = 0) const;
+    // Values [first, first + out.size()) as doubles in one pass over the element (DS / IS text is
+    // scanned once, not once per value). False when the element is absent or not numeric, the
+    // range is past the last value, or a value in the range is not a number; `out` may then be
+    // partly written. Fetching many values with get_double(tag, i) in a loop is quadratic for
+    // DS / IS: use this (R-111).
+    bool get_doubles(Tag tag, std::size_t first, std::span<double> out) const;
+    // Every value as a double (as get_double would give each); nullopt as above.
+    std::optional<std::vector<double>> get_doubles(Tag tag) const;
     std::size_t value_multiplicity(Tag tag) const;
 
     // ---- setters (convenience; encode in little endian)
@@ -223,6 +240,8 @@ private:
 std::string_view charset_in_force(const Dataset& ds);
 // Sets Dataset::inherited_charset of every item below `ds` (all depths) from the value in force in
 // its enclosing data set, starting from charset_in_force(ds). Iterative: any depth is safe.
+// The readers, Dataset::put() and Dataset::remove() call it; code that edits Element::items or
+// the bytes of (0008,0005) through elements() / find() must call it itself (R-136).
 void propagate_inherited_charset(Dataset& ds);
 
 // ---- ItemList members that need the complete Dataset
@@ -306,7 +325,26 @@ inline constexpr std::string_view kWarnReadRecovered = "READ_RECOVERED";
 
 // Strips trailing spaces/NULs (and leading spaces for VRs where they are insignificant).
 std::string_view trim_value(std::string_view s, VR vr) noexcept;
-// Splits a backslash-delimited multi-value string and returns entry `index`.
+// Splits a backslash-delimited multi-value string and returns entry `index`. One scan from the
+// start per call: to visit every value use for_each_value() or split_all_values(), never a loop
+// over `index` (quadratic, R-111 / R-112).
 std::optional<std::string_view> split_value(std::string_view s, std::size_t index) noexcept;
+// One pass over a backslash-delimited multi-value string: fn(index, piece) for every value in
+// order (an empty string is one empty value). fn returns bool: false stops. Returns the number of
+// values visited.
+template <class Fn>
+std::size_t for_each_value(std::string_view s, Fn&& fn) {
+    std::size_t start = 0, index = 0;
+    while (true) {
+        const std::size_t end = s.find('\\', start);
+        const bool last = end == std::string_view::npos;
+        if (!fn(index, s.substr(start, last ? std::string_view::npos : end - start))) return index + 1;
+        ++index;
+        if (last) return index;
+        start = end + 1;
+    }
+}
+// Every value of a backslash-delimited string in one pass, as views into `s`; at most `max`.
+std::vector<std::string_view> split_all_values(std::string_view s, std::size_t max = static_cast<std::size_t>(-1));
 
 }  // namespace siaara

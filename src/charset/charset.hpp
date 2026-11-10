@@ -103,6 +103,11 @@ CharacterSet character_set_of(const Dataset& ds, const CharacterSet* inherited =
 // fall back to Dataset::get_string. nullopt when absent, a sequence, or vm is out of range.
 std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm = 0,
                                     const CharacterSet* inherited = nullptr);
+// Every value of a text element as UTF-8, backslash separated, each with its padding removed as
+// get_utf8 does. The element is decoded once and split once: use this, not get_utf8(ds, tag, i)
+// in a loop, which decodes the whole element for every value (R-111). nullopt when absent, a
+// sequence, encapsulated, or not a string VR.
+std::optional<std::string> get_utf8_all(const Dataset& ds, Tag tag, const CharacterSet* inherited = nullptr);
 
 // Encodes `utf8` (all values, backslash separated) into the data set's character set and
 // stores it. Fails with Errc::Unsupported, leaving the data set unchanged, if any character

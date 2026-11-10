@@ -71,6 +71,7 @@ macros' own sequences).
 | `empty-type1` | Error | a present Type 1C attribute has no value |
 | `present-condition-unmet` | Error | a top-level 1C / 2C attribute is present, its condition is evaluated and does not hold, its description does not say "may be present otherwise", and no other module of the IOD allows it (PS3.5 7.4.4 / 7.4.6: it shall not be present then). Not raised for the two structured rules, where "does not hold" may mean "cannot be decided". |
 | `condition-not-evaluated` | Info | once per module: the number of absent 1C / 2C attributes whose condition was not evaluated. Never an error. |
+| `values-not-all-checked` | Warning | an attribute that a condition or an Enumerated Value list looks at has more than 4,096 values: only the first 4,096 are compared (a condition that would need the others counts as not evaluated). Once per attribute. |
 
 A term that cannot be decided (a value that is not a number for Greater, a condition attribute
 that is a sequence for Equals) makes the whole condition "not evaluated" unless the other terms

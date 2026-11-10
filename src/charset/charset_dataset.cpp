@@ -57,6 +57,24 @@ std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm, 
     return std::string(trim_value(v, e->vr));
 }
 
+std::optional<std::string> get_utf8_all(const Dataset& ds, Tag tag, const CharacterSet* inherited) {
+    const Element* e = ds.find(tag);
+    if (!e || e->is_sequence() || e->is_encapsulated() || !vr_is_string(e->vr)) return std::nullopt;
+    const TextKind kind = text_kind(e->vr);
+    const CharacterSet cs = vr_uses_character_set(e->vr) ? character_set_of(ds, inherited) : default_set();
+    const std::string all = decode(e->value.as_chars(), cs, kind);
+    if (kind == TextKind::Text) return std::string(trim_value(all, e->vr));
+    std::string out;
+    out.reserve(all.size());
+    // Safe: decode() emits '\\' only for real value delimiters.
+    for_each_value(all, [&](std::size_t i, std::string_view piece) {
+        if (i) out += '\\';
+        out += trim_value(piece, e->vr);
+        return true;
+    });
+    return out;
+}
+
 Status set_utf8(Dataset& ds, Tag tag, VR vr, std::string_view utf8, const CharacterSet* inherited,
                 std::vector<Unrepresentable>* failures) {
     if (failures) failures->clear();

@@ -9,6 +9,13 @@
 
 namespace siaara {
 
+// Default of ReadOptions::recover_overlong_lengths, and so of the C API (siaara_read_options with
+// recover_overlong_lengths = SIAARA_RECOVER_DEFAULT) and of C# (DicomReadOptions with
+// RecoverOverlongLengths = null). THE ONE PLACE TO FLIP IT (security review 2026-11-11,
+// Decision 2: on in lenient mode, or opt-in). true: lenient reads apply the recovery; false: only
+// callers that ask for it do. Strict reads never apply it.
+inline constexpr bool kRecoverOverlongLengthsDefault = true;
+
 struct ReadOptions {
     bool stop_before_pixel_data = false;   // header-only parse
     bool allow_raw_dataset = true;         // accept files without preamble/"DICM"
@@ -24,6 +31,14 @@ struct ReadOptions {
     // keeps the element as read. Undecided VRs (documents disagree) stay UN. Explicit VRs in the
     // stream always win. docs/PRIVATE_DICTIONARY.md.
     bool private_dictionary = true;
+    // Lenient mode only: a text value in implicit VR little endian whose stated length runs 1..7
+    // bytes into the next element's header (GE Genesis files) is read that much shorter when a
+    // run of three known element headers starts there and none starts at the stated end. Each
+    // recovery is a warning (ELEMENT_LENGTH_RECOVERED) and sets DicomFile::kReadRecovered, so a
+    // save is refused unless incomplete saves are allowed. Never applied to the file meta group,
+    // to explicit VR or big endian data, to binary VRs or to group 7FE0. Readers of data that
+    // did not come from a local file (network receivers) should pass false.
+    bool recover_overlong_lengths = kRecoverOverlongLengthsDefault;
 };
 
 // Parses a complete Part 10 file held in `data` (the Bytes keeps the storage alive; values in

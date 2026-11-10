@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <new>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -69,14 +70,16 @@ siaara_status copy_text(std::string_view s, char* buf, size_t cap, size_t* neede
     return ok();
 }
 
-template <class T>
-siaara_status copy_array(const std::vector<T>& v, T* buf, size_t cap, size_t* count) {
-    if (count) *count = v.size();
-    if (v.empty() || (!buf && cap == 0)) return ok();  // nothing to copy, or a size query
-    if (cap < v.size()) return fail(Errc::BufferTooSmall, "buffer too small");
+// Array results (R-123): `n` values are known without building them; a size query (buf NULL,
+// cap 0) answers from `n` alone, and otherwise `fill` decodes straight into the caller's buffer.
+template <class T, class Fill>
+siaara_status fill_array(size_t n, T* buf, size_t cap, size_t* count, Fill&& fill) {
+    if (count) *count = n;
+    if (n == 0 || (!buf && cap == 0)) return ok();  // nothing to copy, or a size query
+    if (cap < n) return fail(Errc::BufferTooSmall, "buffer too small");
     if (!buf) return fail(Errc::InvalidArgument, "buf is NULL");
-    std::memcpy(buf, v.data(), v.size() * sizeof(T));
-    return ok();
+    const Status s = fill(std::span<T>(buf, n));
+    return s ? ok() : fail(s);
 }
 
 std::string_view sv(const char* p, size_t n) { return p ? std::string_view(p, n) : std::string_view(); }
@@ -236,9 +239,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_get_doubles_by_path(const siaara_dat
     return guarded([&]() -> siaara_status {
         if (count) *count = 0;
         if (!ds || !path || !count) return fail(Errc::InvalidArgument, "ds, path and count must not be NULL");
-        auto r = mod::doubles_by_path(*ds_cast(ds), std::string_view(path, len));
-        if (!r) return fail(r.error());
-        return copy_array(r.value(), buf, cap, count);
+        const std::string_view p(path, len);
+        auto n = mod::doubles_by_path_count(*ds_cast(ds), p);
+        if (!n) return fail(n.error());
+        return fill_array(n.value(), buf, cap, count,
+                          [&](std::span<double> out) { return mod::doubles_by_path_into(*ds_cast(ds), p, out); });
     });
 }
 
@@ -408,18 +413,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_samples(const siaara_datase
         if (count) *count = 0;
         if (!ds || !count) return fail(Errc::InvalidArgument, "ds and count must not be NULL");
         if (scaled != 0 && scaled != 1) return fail(Errc::InvalidArgument, "scaled must be 0 or 1");
-        if (scaled) {
-            auto r = mod::waveform_scaled(*ds_cast(ds), group, channel);
-            if (!r) return fail(r.error());
-            return copy_array(r.value(), buf, cap, count);
-        }
-        auto r = mod::waveform_raw(*ds_cast(ds), group, channel);
-        if (!r) return fail(r.error());
-        // Explicit conversion: MSVC C4244 (an error under /WX) on the int64 -> double range constructor.
-        std::vector<double> d;
-        d.reserve(r.value().size());
-        for (const auto v : r.value()) d.push_back(static_cast<double>(v));
-        return copy_array(d, buf, cap, count);
+        auto n = mod::waveform_sample_count(*ds_cast(ds), group, channel, scaled == 1);
+        if (!n) return fail(n.error());
+        return fill_array(n.value(), buf, cap, count, [&](std::span<double> out) {
+            return mod::waveform_samples_into(*ds_cast(ds), group, channel, scaled == 1, out);
+        });
     });
 }
 
@@ -429,9 +427,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_raw_samples(const siaara_da
     return guarded([&]() -> siaara_status {
         if (count) *count = 0;
         if (!ds || !count) return fail(Errc::InvalidArgument, "ds and count must not be NULL");
-        auto r = mod::waveform_raw(*ds_cast(ds), group, channel);
-        if (!r) return fail(r.error());
-        return copy_array(r.value(), buf, cap, count);
+        auto n = mod::waveform_sample_count(*ds_cast(ds), group, channel, false);
+        if (!n) return fail(n.error());
+        return fill_array(n.value(), buf, cap, count, [&](std::span<int64_t> out) {
+            return mod::waveform_raw_into(*ds_cast(ds), group, channel, out);
+        });
     });
 }
 
@@ -457,10 +457,13 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rt_device_positions(const siaara_dat
         if (!beam || !device_type || !count) return fail(Errc::InvalidArgument, "beam, device_type and count must not be NULL");
         if (effective != 0 && effective != 1) return fail(Errc::InvalidArgument, "effective must be 0 or 1");
         uint32_t from = 0;
-        auto r = mod::device_positions(*ds_cast(beam), cp, std::string_view(device_type, len), effective == 1, &from);
-        if (!r) return fail(r.error());
+        const std::string_view type(device_type, len);
+        auto n = mod::device_positions_count(*ds_cast(beam), cp, type, effective == 1, &from);
+        if (!n) return fail(n.error());
         if (out_cp) *out_cp = from;
-        return copy_array(r.value(), buf, cap, count);
+        return fill_array(n.value(), buf, cap, count, [&](std::span<double> out) {
+            return mod::device_positions_into(*ds_cast(beam), cp, type, effective == 1, out);
+        });
     });
 }
 

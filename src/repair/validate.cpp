@@ -4,7 +4,10 @@
 #include <optional>
 #include <map>
 #include <set>
+#include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "charset/charset.hpp"
 #include "core/transfer_syntax.hpp"
@@ -196,8 +199,8 @@ struct DictChecker {
         if (mv && !vm.empty() && !vm_allows(vm, n))
             sink.add(Severity::Error, "vm", 0, here,
                      "value multiplicity " + std::to_string(n) + " not allowed (dictionary VM " + std::string(vm) + ")");
-        for (std::size_t i = 0; i < n; ++i) {
-            std::string_view part = mv ? *split_value(all, i) : all;
+        // One pass over the values (R-112): split_value(all, i) for every i rescans the element.
+        auto check_part = [&](std::size_t i, std::string_view part) {
             if (vr == VR::UI) {
                 while (!part.empty() && part.back() == '\0') part.remove_suffix(1);
             }
@@ -215,7 +218,7 @@ struct DictChecker {
                 std::all_of(t.begin(), t.end(), [](char ch) { return ch == '0' || ch == '.'; }))
                 sink.add(Severity::Warning, "uid-zero", kUids, here,
                          "value " + std::to_string(i + 1) + ": UID has only zero components (no registered root)");
-            if (c == ValueCheck::Ok) continue;
+            if (c == ValueCheck::Ok) return true;
             const bool can_fix = normalise_value(vr, std::string(part)).has_value();
             std::uint32_t cat = can_fix ? std::uint32_t{kValues} : 0u;
             if (vr == VR::UI && !can_fix) cat = kUids;
@@ -225,7 +228,10 @@ struct DictChecker {
             else if (vr == VR::UI) msg += "; repair can replace it with a new UID (uids)";
             else msg += "; the intended value is not certain, so repair leaves it";
             sink.add(Severity::Error, c == ValueCheck::TooLong ? "value-too-long" : "value-invalid", cat, here, msg);
-        }
+            return true;
+        };
+        if (mv) for_each_value(all, check_part);
+        else check_part(0, all);
     }
 };
 
@@ -282,6 +288,20 @@ struct IodChecker {
     };
     Unmet* unmet = nullptr;
 
+    // The values of an element as condition and Enumerated Value checks compare them, split in
+    // one pass and kept for the whole validation run (R-112: the same element is asked for once
+    // per condition term of every module). At most kMaxValuesChecked values are held; `more`
+    // says the element has more, which is reported once as "values-not-all-checked".
+    static constexpr std::size_t kMaxValuesChecked = 4096;
+    struct Values {
+        std::vector<std::string_view> v;  // views into the element's bytes, or into `owned`
+        std::vector<std::string> owned;   // binary values as text (never reallocated once viewed)
+        bool more = false;
+        bool empty() const noexcept { return v.empty(); }
+    };
+    using ValueCache = std::map<const Element*, Values>;
+    ValueCache* cache = nullptr;  // shared by the checkers of one run (never null while checking)
+
     const Element* find(const Dataset& ds, const ReqNode& n) const {
         if (n.mask == 0xFFFFFFFFu) return ds.find(n.tag);
         for (const Element& e : ds.elements())
@@ -332,19 +352,29 @@ struct IodChecker {
         return nullptr;
     }
 
-    static std::vector<std::string> values_of(const Element& e) {
-        std::vector<std::string> out;
+    static Values split_values_of(const Element& e) {
+        Values out;
         if (e.is_sequence() || e.is_encapsulated()) return out;
         if (vr_is_string(e.vr)) {
-            std::string_view s = trim_value(e.value.as_chars(), e.vr);
+            const std::string_view s = trim_value(e.value.as_chars(), e.vr);
             if (s.empty()) return out;
-            for (std::size_t i = 0, n = split_count(s); i < n; ++i)
-                if (const auto piece = split_value(s, i)) out.emplace_back(trim_value(*piece, e.vr));
+            for_each_value(s, [&](std::size_t, std::string_view piece) {
+                if (out.v.size() == kMaxValuesChecked) {
+                    out.more = true;
+                    return false;
+                }
+                out.v.push_back(trim_value(piece, e.vr));
+                return true;
+            });
             return out;
         }
         const std::size_t w = vr_value_size(e.vr);
         if (!w) return out;
-        for (std::size_t i = 0; i + w <= e.value.size(); i += w) {
+        const std::size_t n = e.value.size() / w;
+        out.more = n > kMaxValuesChecked;
+        out.owned.reserve(std::min(n, kMaxValuesChecked));
+        for (std::size_t k = 0; k < n && k < kMaxValuesChecked; ++k) {
+            const std::size_t i = k * w;
             std::int64_t v = 0;
             switch (e.vr) {
                 case VR::US: v = load_le16(e.value.data() + i); break;
@@ -357,17 +387,34 @@ struct IodChecker {
                                             load_le16(e.value.data() + i + 2);
                     static constexpr char kHex[] = "0123456789ABCDEF";
                     std::string h(8, '0');
-                    for (int k = 0; k < 8; ++k) h[static_cast<std::size_t>(k)] = kHex[(t >> (28 - 4 * k)) & 0xFu];
-                    out.push_back(std::move(h));
+                    for (int j = 0; j < 8; ++j) h[static_cast<std::size_t>(j)] = kHex[(t >> (28 - 4 * j)) & 0xFu];
+                    out.owned.push_back(std::move(h));
                     continue;
                 }
-                default: return out;
+                default:
+                    out.more = false;
+                    k = n;  // a VR these checks do not compare: no values
+                    continue;
             }
-            out.push_back(std::to_string(v));
+            out.owned.push_back(std::to_string(v));
         }
+        out.v.assign(out.owned.begin(), out.owned.end());
         return out;
     }
 
+    // `here`: the element's path when the caller knows it (a condition's attribute is found by
+    // lookup, so only its tag is known).
+    const Values& values_of(const Element& e, const Path* here = nullptr) const {
+        auto it = cache->find(&e);
+        if (it == cache->end()) it = cache->emplace(&e, split_values_of(e)).first;
+        const Values* r = &it->second;
+        if (r->more)
+            sink.add(Severity::Warning, "values-not-all-checked", 0, here ? *here : child({}, e.tag),
+                     "too many values to check: only the first " + std::to_string(kMaxValuesChecked) +
+                         " were compared with Enumerated Values and conditions",
+                     module_name);
+        return *r;
+    }
     // A condition value for a binary attribute: decimal ("1") or hexadecimal ("0001H").
     static std::optional<std::int64_t> term_number(std::string_view t) {
         if (t.size() > 1 && t.size() <= 9 && t.back() == 'H') {
@@ -402,17 +449,21 @@ struct IodChecker {
     // One term: true / false, or nullopt when not evaluable.
     std::optional<bool> evaluate_term(const Dataset& ds, const CondTerm& c) const {
         const Element* e = cond_element(ds, c);
-        auto pick = [&](const std::vector<std::string>& vals) -> std::vector<std::string> {
-            if (c.value_index == 0) return vals;
-            if (vals.size() < c.value_index) return {};
-            return {vals[c.value_index - 1u]};
+        // The values the term looks at: all of them, or the one it names (1-based value_index).
+        auto pick = [&](const Values& vals) -> std::span<const std::string_view> {
+            const std::span<const std::string_view> all(vals.v);
+            if (c.value_index == 0) return all;
+            if (all.size() < c.value_index) return {};
+            return all.subspan(c.value_index - 1u, 1);
         };
+        // Values past kMaxValuesChecked were not seen: a term that would need them is not evaluable.
+        auto unseen = [&](const Values& vals) { return vals.more && (c.value_index == 0 || c.value_index > vals.v.size()); };
         auto equals = [&](const Element& el) -> std::optional<bool> {
-            const auto vals = values_of(el);
+            const Values& vals = values_of(el);
             if (vals.empty()) return el.is_sequence() || el.is_encapsulated() ? std::nullopt : std::optional<bool>(false);
             const auto chosen = pick(vals);
-            if (chosen.empty()) return false;  // fewer values than the one the condition names
-            for (const auto& v : chosen)
+            if (chosen.empty()) return unseen(vals) ? std::nullopt : std::optional<bool>(false);  // fewer values than the one the condition names
+            for (const std::string_view v : chosen)
                 for (std::string_view want : c.values) {
                     if (v == want) return true;
                     if (!vr_is_string(el.vr) && el.vr != VR::AT) {
@@ -421,6 +472,7 @@ struct IodChecker {
                         if (a && b && *a == *b) return true;
                     }
                 }
+            if (unseen(vals)) return std::nullopt;
             return false;
         };
         switch (c.op) {
@@ -439,17 +491,20 @@ struct IodChecker {
             case CondOp::Greater: {
                 if (!e || c.values.empty()) return e ? std::nullopt : std::optional<bool>(false);
                 const auto lim = to_int(c.values[0]);
-                const auto vals = pick(values_of(*e));
+                const Values& all = values_of(*e);
+                const auto vals = pick(all);
                 if (!lim) return std::nullopt;
-                if (vals.empty()) return false;
+                if (vals.empty()) return unseen(all) ? std::nullopt : std::optional<bool>(false);
                 const auto v = to_int(vals[0]);
                 if (!v) return std::nullopt;
                 return *v > *lim;
             }
             case CondOp::IncludesTag: {
                 if (!e || c.values.empty()) return false;
-                for (const auto& v : values_of(*e))
+                const Values& all = values_of(*e);
+                for (const std::string_view v : all.v)
                     if (v == c.values[0]) return true;
+                if (all.more) return std::nullopt;
                 return false;
             }
             case CondOp::None: break;
@@ -572,11 +627,11 @@ struct IodChecker {
                 sink.add(Severity::Error, "empty-type1", 0, here,
                          "Type " + std::string(attr_type_name(n.type)) + " attribute has no value", module_name);
             if (!n.enumerated.empty() && !e->is_sequence()) {
-                const auto vals = values_of(*e);
-                for (std::size_t i = 0; i < vals.size(); ++i) {
+                const Values& vals = values_of(*e, &here);
+                for (std::size_t i = 0; i < vals.v.size(); ++i) {
                     bool ok = false;
                     for (std::string_view t : n.enumerated)
-                        if (enum_match(vals[i], e->vr, t)) ok = true;
+                        if (enum_match(vals.v[i], e->vr, t)) ok = true;
                     if (!ok)
                         sink.add(Severity::Error, "enumerated-value", 0, here,
                                  "value " + std::to_string(i + 1) + " is not one of the Enumerated Values (" +
@@ -643,10 +698,11 @@ void check_iod_into(const DicomFile& f, Sink& sink) {
         }
     }
     IodChecker::Unmet unmet;
+    IodChecker::ValueCache value_cache;  // one split per element for the whole run (R-112)
     for (const ModuleReq& m : iod->modules) {
         if (!m.attributes) continue;
         if (m.usage != ModuleUsage::M && !module_present(ds, m, mandatory_tags)) continue;
-        IodChecker c{sink, ds, std::string(m.name) + " Module", 0, &overrides, &unmet, {}, {}};
+        IodChecker c{sink, ds, std::string(m.name) + " Module", 0, &overrides, &unmet, &value_cache, {}, {}};
         c.check_list(ds, *m.attributes, {});
         if (c.not_evaluated)
             sink.add(Severity::Info, "condition-not-evaluated", 0, {},

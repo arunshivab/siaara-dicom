@@ -331,13 +331,14 @@ public:
         while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.remove_suffix(1);
         if (v.empty()) return true;
         const bool mv = vr != VR::LT && vr != VR::ST && vr != VR::UT && vr != VR::UR;
-        const std::size_t n = mv ? split_count(v) : 1;
-        for (std::size_t i = 0; i < n; ++i) {
-            std::string_view part = mv ? *split_value(v, i) : v;
-            if (charset::vr_uses_character_set(vr)) continue;
-            if (check_value(vr, trim_value(part, vr)) != ValueCheck::Ok) return false;
-        }
-        return true;
+        if (charset::vr_uses_character_set(vr)) return true;
+        if (!mv) return check_value(vr, trim_value(v, vr)) == ValueCheck::Ok;
+        bool good = true;
+        for_each_value(v, [&](std::size_t, std::string_view part) {  // one pass (R-112)
+            good = check_value(vr, trim_value(part, vr)) == ValueCheck::Ok;
+            return good;
+        });
+        return good;
     }
 
     bool reencode(Element& e, VR want, VR alt) {
@@ -434,20 +435,20 @@ public:
             while (!body.empty() && (body.back() == '\0' || (body.back() == ' ' && e.vr != VR::UI))) body.remove_suffix(1);
             bool changed = false;
             std::string out;
-            const std::size_t n = body.empty() ? 0 : split_count(body);
-            for (std::size_t i = 0; i < n; ++i) {
-                const std::string_view part = *split_value(body, i);
+            if (body.empty()) continue;
+            for_each_value(body, [&](std::size_t i, std::string_view part) {  // one pass (R-112)
                 if (i) out.push_back('\\');
                 const std::string_view tp = e.vr == VR::UI ? part : trim_value(part, e.vr);
                 if (check_value(e.vr, tp) != ValueCheck::Ok || (e.vr == VR::UI && tp != trim_value(part, VR::UI))) {
                     if (auto nv = normalise_value(e.vr, part)) {
                         out += *nv;
                         changed = true;
-                        continue;
+                        return true;
                     }
                 }
                 out.append(part.data(), part.size());
-            }
+                return true;
+            });
             if (!changed) continue;
             const Element old = e;
             if (out.size() & 1u) out.push_back(vr_pad_char(e.vr));
@@ -464,12 +465,12 @@ public:
                 for (const Dataset& it : e.items) collect_invalid_uids(it);
             if (e.vr != VR::UI || is_class_uid_tag(e.tag)) continue;
             std::string_view v = trim_value(e.value.as_chars(), VR::UI);
-            for (std::size_t i = 0, n = v.empty() ? 0 : split_count(v); i < n; ++i) {
-                const auto piece = split_value(v, i);
-                if (!piece) break;
-                std::string part(trim_value(*piece, VR::UI));
+            if (v.empty()) continue;
+            for_each_value(v, [&](std::size_t, std::string_view piece) {  // one pass (R-112)
+                std::string part(trim_value(piece, VR::UI));
                 if (!part.empty() && !uid_is_valid(part) && !uid_map_.count(part)) uid_map_[part] = new_uid("uid|" + part);
-            }
+                return true;
+            });
         }
     }
 
@@ -487,9 +488,9 @@ public:
             if (v.empty()) continue;
             std::string out;
             bool changed = false;
-            for (std::size_t i = 0, n = split_count(v); i < n; ++i) {
+            for_each_value(v, [&](std::size_t i, std::string_view piece) {  // one pass (R-112)
                 if (i) out.push_back('\\');
-                std::string part(trim_value(*split_value(v, i), VR::UI));
+                std::string part(trim_value(piece, VR::UI));
                 auto it = uid_map_.find(part);
                 if (it != uid_map_.end()) {
                     out += it->second;
@@ -497,7 +498,8 @@ public:
                 } else {
                     out += part;
                 }
-            }
+                return true;
+            });
             if (!changed) continue;
             const Element old = e;
             if (out.size() & 1u) out.push_back('\0');
