@@ -2488,7 +2488,10 @@ enum {
     SIAARA_UNITS_RESCALE_TYPE = 1,   /* Rescale Type (0028,1054) */
     SIAARA_UNITS_MODALITY_LUT_TYPE = 2, /* Modality LUT Type (0028,3004) */
     SIAARA_UNITS_DOSE_UNITS = 3,     /* RT Dose: Dose Units (3004,0002) */
-    SIAARA_UNITS_CT_HU = 4,          /* CT without Rescale Type: HU (PS3.3 C.8.2.1, Rescale Type 1C) */
+    SIAARA_UNITS_CT_HU = 4,          /* a CT Image, Enhanced CT or Legacy Converted Enhanced CT instance (by SOP
+                                        Class; by Modality CT only when there is no SOP Class UID) without Rescale
+                                        Type: HU (PS3.3 C.8.2.1, Rescale Type 1C). Not for a Secondary Capture
+                                        with Modality CT: its unit is unknown unless Rescale Type says so */
     SIAARA_UNITS_PET_UNITS = 5       /* PET: Units (0054,1001) (PS3.3 C.8.9.1) */
 };
 typedef struct siaara_pixel_value {

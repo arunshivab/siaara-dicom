@@ -115,7 +115,17 @@ UnitsSource modality_units(const Dataset& ds, const image::ModalityTransform& m,
         return m.has_lut ? UnitsSource::ModalityLutType : UnitsSource::RescaleType;
     }
     const std::string modality = ds.get_string(kModality).value_or(std::string());
-    if (modality == "CT" && !m.has_lut) {
+    // P3-8: the Hounsfield default belongs to the CT Image IODs (PS3.3 C.8.2.1, C.8.15: Rescale
+    // Type is 1C there and HU when absent), not to everything with Modality CT - a Secondary
+    // Capture of a CT has no defined unit unless its Rescale Type says so. A data set without a
+    // SOP Class UID (old ACR-NEMA style data) is still judged by its Modality.
+    std::string sop_class = ds.get_string(tags::SOPClassUID).value_or(std::string());
+    while (!sop_class.empty() && (sop_class.back() == ' ' || sop_class.back() == '\0')) sop_class.pop_back();
+    const bool ct_iod = sop_class.empty() ? modality == "CT"
+                                          : sop_class == "1.2.840.10008.5.1.4.1.1.2" ||      // CT Image Storage
+                                                sop_class == "1.2.840.10008.5.1.4.1.1.2.1" ||  // Enhanced CT Image Storage
+                                                sop_class == "1.2.840.10008.5.1.4.1.1.2.2";    // Legacy Converted Enhanced CT
+    if (ct_iod && !m.has_lut) {
         units = "HU";
         return UnitsSource::CtHu;
     }
