@@ -963,6 +963,8 @@ namespace {
 siaara_status web_stow(siaara_web_client* client, const siaara_file* file, const char* study_uid,
                        const siaara_web_stow_options* options) {
     if (!client || !file) return fail(Errc::InvalidArgument, "client and file must not be NULL");
+    if (!client->client.has_value()) return fail(Errc::InvalidArgument, "client is not open");
+    siaara::web::DicomwebClient& web_client = *client->client;
     bool allow_incomplete = false;
     if (options) {
         if (options->struct_size < sizeof(uint32_t) + sizeof(int32_t))
@@ -982,7 +984,7 @@ siaara_status web_stow(siaara_web_client* client, const siaara_file* file, const
     // The bytes were just written from a data set that passed the check above: not read back again.
     siaara::web::StowOptions so;
     so.allow_incomplete = true;
-    auto r = client->client->store(parts, study, so);
+    auto r = web_client.store(parts, study, so);
     if (!r) return fail(r.error());
     if (r->http_status == 200 && r->failed.empty()) return ok();
     std::string why = "HTTP " + std::to_string(r->http_status);
