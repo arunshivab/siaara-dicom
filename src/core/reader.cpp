@@ -621,6 +621,7 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
         out.offsets_are_file_offsets = false;
         Parser p(inflated, opt, &out.warnings);
         Status s = p.parse(out.dataset, *syn, inflated.size(), false, 0);
+        propagate_inherited_charset(out.dataset);  // F15: items know the character set in force
         out.stopped_at_offset = p.stop_offset();
         record_loss(p, inflated.size(), out);
         return s;
@@ -628,6 +629,7 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
     Parser p(data, opt, &out.warnings);
     p.seek(start);
     Status s = p.parse(out.dataset, *syn, data.size(), false, 0);
+    propagate_inherited_charset(out.dataset);  // F15: items know the character set in force
     out.stopped_at_offset = p.stop_offset();
     record_loss(p, data.size(), out);
     return s;

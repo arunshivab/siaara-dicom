@@ -72,13 +72,60 @@ Element* Dataset::find(Tag tag) noexcept {
     return (it != elements_.end() && it->tag == tag) ? &*it : nullptr;
 }
 
+namespace {
+
+// Gives the items of sequence `e` (and everything below them) the character set in force in the
+// data set that holds `e`.
+void propagate_into(Element& e, std::string_view in_force) {
+    if (!e.is_sequence() || e.items.empty()) return;
+    for (Dataset& item : e.items) {
+        item.set_inherited_charset(in_force);
+        propagate_inherited_charset(item);
+    }
+}
+
+}  // namespace
+
+std::string_view charset_in_force(const Dataset& ds) {
+    if (auto own = ds.get_raw_string(tags::SpecificCharacterSet)) return *own;
+    return ds.inherited_charset();
+}
+
+void propagate_inherited_charset(Dataset& ds) {
+    // Explicit stack of data sets whose items still need their inherited value.
+    std::vector<Dataset*> todo{&ds};
+    while (!todo.empty()) {
+        Dataset* d = todo.back();
+        todo.pop_back();
+        const std::string in_force(charset_in_force(*d));
+        for (Element& e : d->elements()) {
+            if (!e.is_sequence()) continue;
+            for (Dataset& item : e.items) {
+                item.set_inherited_charset(in_force);
+                todo.push_back(&item);
+            }
+        }
+    }
+}
+
 Element& Dataset::put(Element e) {
     auto it = std::lower_bound(elements_.begin(), elements_.end(), e.tag, tag_less);
     if (it != elements_.end() && it->tag == e.tag) {
         *it = std::move(e);
+    } else {
+        it = elements_.insert(it, std::move(e));
+    }
+    // Keep the inherited character set of items current (F15).
+    if (it->tag == tags::SpecificCharacterSet) {
+        propagate_inherited_charset(*this);  // does not move elements: `it` stays valid
         return *it;
     }
-    return *elements_.insert(it, std::move(e));
+    if (it->is_sequence() && !it->items.empty()) {
+        // The in-force value is copied first: it may point into this data set's elements.
+        const std::string in_force(charset_in_force(*this));
+        propagate_into(*it, in_force);
+    }
+    return *it;
 }
 
 void Dataset::append_sorted(Element e) {
@@ -112,6 +159,7 @@ bool Dataset::remove(Tag tag) {
     auto it = std::lower_bound(elements_.begin(), elements_.end(), tag, tag_less);
     if (it == elements_.end() || it->tag != tag) return false;
     elements_.erase(it);
+    if (tag == tags::SpecificCharacterSet) propagate_inherited_charset(*this);  // F15
     return true;
 }
 

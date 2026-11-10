@@ -325,19 +325,22 @@ SIAARA_API siaara_status SIAARA_CALL siaara_render_rgba8(const siaara_file* file
 /* ---------------------------------------------------------------- character sets (PS3.5 6.1) */
 /* Value vm_index of a text element decoded to UTF-8 using the data set's Specific Character Set
  * (0008,0005), padding removed. Undecodable bytes become U+FFFD. Output buffer convention as
- * above. A sequence item that has no (0008,0005) of its own is decoded with the default
- * repertoire here; use siaara_dataset_get_utf8_cs to pass the enclosing data set's value. */
+ * above. A sequence item that has no (0008,0005) of its own uses the value in force in its
+ * enclosing data set, which the item carries: it is recorded when the file (or JSON / XML) is
+ * read, when a sequence or (0008,0005) is set or removed, and by siaara_dataset_append_item, so
+ * an item handle decodes correctly on its own. siaara_dataset_get_utf8_cs overrides it. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_utf8(const siaara_dataset* ds, uint32_t tag,
                                                              uint32_t vm_index, char* buf, size_t cap,
                                                              size_t* needed);
-/* Encodes utf8 (all values, backslash separated) into the data set's Specific Character Set and
- * stores it. Fails with SIAARA_ERR_UNSUPPORTED, leaving the data set unchanged, when a character
+/* Encodes utf8 (all values, backslash separated) into the data set's Specific Character Set (for
+ * an item without its own, the inherited one as above) and stores it. Fails with SIAARA_ERR_UNSUPPORTED, leaving the data set unchanged, when a character
  * cannot be represented; the message gives the count and the first byte offset. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8(siaara_dataset* ds, uint32_t tag,
                                                              const char* vr, const char* utf8,
                                                              size_t len);
 /* As above, with the Specific Character Set to use when ds has no (0008,0005) of its own
- * (the enclosing data set's raw value, for sequence items). inherited may be NULL. */
+ * (the enclosing data set's raw value, for sequence items). inherited may be NULL: then the
+ * value the item carries is used, as siaara_dataset_get_utf8 does. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_utf8_cs(const siaara_dataset* ds, uint32_t tag,
                                                                 uint32_t vm_index, const char* inherited,
                                                                 size_t inherited_len, char* buf,

@@ -199,10 +199,27 @@ public:
     std::uint8_t item_length_mode() const noexcept { return item_length_mode_; }
     void set_item_length_mode(std::uint8_t m) noexcept { item_length_mode_ = m; }
 
+    // When this data set is a sequence item: the Specific Character Set (0008,0005) value in force
+    // in the enclosing data set (its own value, or the one it inherited), as stored with trailing
+    // padding removed; empty for the default repertoire. PS3.5 7.5.3: an item without its own
+    // (0008,0005) uses the enclosing data set's, so text in an item accessed on its own (a C API
+    // item handle, a copy) still decodes correctly (F15). Kept current by the readers, by put()
+    // and remove() of (0008,0005) or of a sequence, and by propagate_inherited_charset().
+    const std::string& inherited_charset() const noexcept { return inherited_charset_; }
+    void set_inherited_charset(std::string_view raw) { inherited_charset_.assign(raw); }
+
 private:
     std::vector<Element> elements_;
+    std::string inherited_charset_;
     std::uint8_t item_length_mode_ = kItemLengthNew;
 };
+
+// The Specific Character Set value in force for `ds`: its own (0008,0005) (padding removed), else
+// the inherited one (Dataset::inherited_charset); empty for the default repertoire.
+std::string_view charset_in_force(const Dataset& ds);
+// Sets Dataset::inherited_charset of every item below `ds` (all depths) from the value in force in
+// its enclosing data set, starting from charset_in_force(ds). Iterative: any depth is safe.
+void propagate_inherited_charset(Dataset& ds);
 
 // ---- ItemList members that need the complete Dataset
 inline ItemList::ItemList(const ItemList& o) {

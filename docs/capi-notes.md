@@ -105,8 +105,8 @@ per-row adaptive filters). Output in an owned `siaara_buffer`.
 
 ## 9. Smaller choices
 
-- `siaara_dataset_get_strings` returns NUL-separated values; for sequence items that inherit a
-  character set, C# falls back to one call per value.
+- `siaara_dataset_get_strings` returns NUL-separated values in one call, also for sequence items:
+  an item without its own (0008,0005) carries the enclosing data set's value (F15, see section 11).
 - `siaara_debug_live_handles` counts every handle through a member in each handle struct, so no
   create / free function had to change.
 - Lossless JPEG-LS of signed samples codes the two's complement bit patterns (the decoder
@@ -129,3 +129,21 @@ Frame Acquisition DateTime, the Radiopharmaceutical Information Sequence (Total 
 Start Time / DateTime), private factors by creator through the path API, and modality values with
 the pixel spacing for ROIs. `SIAARA_ABI_VERSION` stays 1: no ABI has been released yet (see the top
 of this file); the exported-symbol baseline was updated.
+
+## 11. Item character sets (F15)
+
+**Chosen:** a sequence item records the Specific Character Set in force in its enclosing data set
+(`Dataset::inherited_charset`, the raw (0008,0005) value). The readers (Part 10 / raw, DICOM
+JSON, DICOM XML) fill it in one pass after parsing; `Dataset::put` / `remove` of (0008,0005) or of
+a sequence and `siaara_dataset_append_item` keep it current. `charset::character_set_of` uses an
+item's own (0008,0005) first, then an explicit inherited value from the caller (as
+`siaara_dataset_get_utf8_cs`), then the recorded value, then the default repertoire. So a
+borrowed item handle (`siaara_dataset_item`, `siaara_dataset_by_path`) decodes and encodes text
+on its own, and C# no longer walks the parent chain for every string.
+
+- Pro: reads stay read-only (item handles may be read from many threads; nothing is computed or
+  cached at access time); one native call per value or per element again.
+- Con: one string per item. Code that edits the raw bytes of (0008,0005) in place (not through
+  `put` / `set_string` / `remove`) must call `propagate_inherited_charset` itself.
+- Alternative: a parent pointer in every item (fragile across copies and moves) or computing the
+  value when an item handle is fetched (a write during a read: a data race for concurrent readers).

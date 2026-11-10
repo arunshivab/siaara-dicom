@@ -94,7 +94,8 @@ EncodeResult encode(std::string_view utf8, const CharacterSet& cs, TextKind kind
 
 // ---- data set helpers
 // The character set in force for `ds`: its own (0008,0005) if present, else `inherited`
-// (the enclosing data set's, for sequence items), else the default repertoire.
+// (the enclosing data set's, for sequence items), else the value the item carries from the
+// enclosing data set (Dataset::inherited_charset, F15), else the default repertoire.
 CharacterSet character_set_of(const Dataset& ds, const CharacterSet* inherited = nullptr);
 
 // Value `vm` (0-based) of a text element as UTF-8, padding removed like Dataset::get_string.
