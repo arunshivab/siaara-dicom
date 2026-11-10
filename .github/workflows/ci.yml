@@ -73,21 +73,28 @@ jobs:
 
   standard-tables:
     # The generated tables must equal the generators' output for the pinned edition of the
-    # standard (tools/ci/dicom_standard.json, SHA-256 checked): the data dictionary (PS3.6/PS3.7)
-    # and the de-identification table (PS3.15 E.1-1, PS3.16 CID 7050). Fails on any drift.
+    # standard (tools/ci/dicom_standard.json, SHA-256 checked): the data dictionary (PS3.6/PS3.7),
+    # the de-identification table (PS3.15 E.1-1, PS3.16 CID 7050), the IOD requirement tables
+    # (PS3.3/PS3.4/PS3.16) and the named data layer (PS3.3/PS3.6, C++ and C#). Fails on any drift.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Download the pinned DocBook XML
-        run: python3 tools/ci/fetch_standard.py --out /tmp/dicom part06 part07 part15 part16
+        run: python3 tools/ci/fetch_standard.py --out /tmp/dicom part03 part04 part06 part07 part15 part16
       - name: Dictionary matches the generator
         run: |
           python3 tools/gen_dictionary.py /tmp/dicom/part06.xml /tmp/dicom/part07.xml /tmp/dictionary_data.inc
           diff -u src/dict/dictionary_data.inc /tmp/dictionary_data.inc
-      - name: De-identification table matches the generator (ctest deid_table_matches_generator)
+      - name: De-identification, IOD and named-module tables match their generators (ctest)
+        # Each test is asked for by name with --no-tests=error: a test that was not registered
+        # (a missing SIAARA_NEMA_* path) fails the job instead of passing with nothing run (R-122).
         run: |
-          cmake -S . -B build -DSIAARA_NEMA_PART15=/tmp/dicom/part15.xml -DSIAARA_NEMA_PART16=/tmp/dicom/part16.xml
-          ctest --test-dir build -R deid_table_matches_generator --output-on-failure --no-tests=error
+          cmake -S . -B build -DSIAARA_NEMA_PART03=/tmp/dicom/part03.xml -DSIAARA_NEMA_PART04=/tmp/dicom/part04.xml \
+            -DSIAARA_NEMA_PART06=/tmp/dicom/part06.xml -DSIAARA_NEMA_PART15=/tmp/dicom/part15.xml \
+            -DSIAARA_NEMA_PART16=/tmp/dicom/part16.xml
+          for t in deid_table_matches_generator repair_iod_table_matches_generator named_modules_match_generator; do
+            ctest --test-dir build -R "^$t\$" --output-on-failure --no-tests=error
+          done
 
   commit-rules:
     runs-on: ubuntu-24.04
@@ -177,7 +184,8 @@ jobs:
           if-no-files-found: ignore
 
   tsan:
-    # ThreadSanitizer over the tests that run threads: DIMSE and DICOMweb loopback servers, the
+    # ThreadSanitizer over the tests that run threads: DIMSE (net/, net2:) and DICOMweb (web/)
+    # servers and clients, the C API service layer (capi/), the
     # store (concurrent adders/readers), the folder scanner, parallel frame decoding, volumes and
     # TLS (R-012; the system OpenSSL is not instrumented, but the 19 tls/ tests run clean without
     # suppressions as of 2026-11-10).
@@ -198,7 +206,7 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1 history_size=4
         run: |
           set -e
-          for f in "net/" "web/loopback" "tls/" "store:" "scan:" "image: parallel" "volume"; do
+          for f in "net/" "net2:" "capi/" "web/" "tls/" "store:" "scan:" "image: parallel" "volume"; do
             echo "::group::$f"
             build-tsan/tests/siaara_tests --data tests/data "$f"
             echo "::endgroup::"
@@ -320,9 +328,11 @@ jobs:
           cmake -S . -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
           -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DSIAARA_BUILD_TESTS=OFF
       - name: clang-tidy over the library and tools
+        # The exit status is not used (baseline findings make it non-zero); the gate below reads
+        # the log and fails unless every translation unit was analysed without a crash or error.
         run: run-clang-tidy-18 -p build-tidy -j 4 -quiet -clang-tidy-binary clang-tidy-18 "src/|tools/" > tidy.log 2>&1 || true
-      - name: No findings beyond the committed baseline (tools/ci/clang_tidy_baseline.txt)
-        run: python3 tools/ci/clang_tidy_gate.py tidy.log
+      - name: Complete run, and no findings beyond the committed baseline (tools/ci/clang_tidy_baseline.txt)
+        run: python3 tools/ci/clang_tidy_gate.py --compile-commands build-tidy/compile_commands.json --files "src/|tools/" tidy.log
 
   csharp:
     name: csharp-${{ matrix.os }}
@@ -335,7 +345,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
         with:
-          dotnet-version: "10.0.x"
+          global-json-file: global.json   # the exact SDK, pinned in the repository (R-147)
       - name: Build the native library and the struct-layout printer (Release)
         run: |
           cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release
@@ -375,7 +385,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
         with:
-          dotnet-version: "10.0.x"
+          global-json-file: global.json   # the exact SDK, pinned in the repository (R-147)
       - name: Build the native library (Release)
         run: |
           cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release

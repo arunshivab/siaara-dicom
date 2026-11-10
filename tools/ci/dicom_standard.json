@@ -1,7 +1,9 @@
 {
-  "_comment": "DICOM standard DocBook XML the generated tables were made from (src/dict/dictionary_data.inc, src/deid/deid_table.inc). Pinned by SHA-256; tools/ci/fetch_standard.py tries the archived edition URL first, then 'current' (where an edition lives until NEMA archives it). To move to a new edition: regenerate the tables, update edition and hashes here in the same commit.",
+  "_comment": "DICOM standard DocBook XML the generated tables were made from (src/dict/dictionary_data.inc, src/deid/deid_table.inc, src/repair/iod_tables.inc, src/modules/module_tables.inc, bindings/csharp/src/Siaara/Generated/Modules.g.cs). Pinned by SHA-256; tools/ci/fetch_standard.py tries the archived edition URL first, then 'current' (where an edition lives until NEMA archives it). To move to a new edition: regenerate the tables, update edition and hashes here in the same commit.",
   "edition": "2026d",
   "parts": {
+    "part03": "3ae695b956ba57c490933a49220b515aeaedb5ece86f05c4bf7e94ee0fbcc6ef",
+    "part04": "25a5549ff75b37ec9f096d441ec71cff017db72721999a7b5e4eb72334b901a6",
     "part06": "fa9f0f8d67eba692dcf95cfeae0a8f4e071beeb7844215a860bc4b9d5dfaad25",
     "part07": "979da8b222a47d80260a5463ad1c2767bcc7966b6c5c2893daefedbd6c99b3df",
     "part15": "1eb2a9724822476b3f1f3de23d15ae655a4c7f6e9d32bf16f2d9ef76d7d8437c",
