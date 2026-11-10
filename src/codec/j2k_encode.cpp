@@ -717,6 +717,9 @@ Status j2k::encode(std::span<const std::uint8_t> in, const FrameInfo& info, cons
     if (info.samples_per_pixel > 16384) return invalid("too many samples per pixel");
     if (opt.ht && !opt.lossless) return invalid("the HTJ2K encoder is lossless only");
     if (opt.layers < 1 || opt.layers > 64) return invalid("layers must be 1..64");
+    // NaN or infinite values reached the step size and a double-to-integer budget cast (R-065).
+    if (!std::isfinite(opt.quality) || !std::isfinite(opt.rate) || opt.rate < 0.0 || opt.rate > 1e6)
+        return invalid("quality and rate must be finite (rate 0..1e6 bits per sample)");
     if (opt.levels < 0 || opt.levels > kMaxLevels) return invalid("levels must be 0..32");
     if (opt.cblk_width_exp < 2 || opt.cblk_height_exp < 2 || opt.cblk_width_exp > 10 || opt.cblk_height_exp > 10 ||
         opt.cblk_width_exp + opt.cblk_height_exp > 12)

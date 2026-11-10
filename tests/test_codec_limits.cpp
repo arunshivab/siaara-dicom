@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <string>
 #include <vector>
@@ -530,4 +531,30 @@ TEST_CASE("codec limits/R-062 encoders and transcode report OutOfMemory instead 
     CHECK_EQ(escaped, 0);
     CHECK(oom > 0);
     CHECK(transcode_dataset(ds, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.90", tp).is_ok());
+}
+
+// R-065: NaN / infinite JPEG 2000 quality or rate are argument errors.
+TEST_CASE("codec limits/R-065 J2K quality and rate must be finite") {
+    const FrameInfo fi = gray(32, 32, 8, 8);
+    Buf img(static_cast<std::size_t>(fi.frame_bytes()), 100);
+    for (double bad : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        j2k::EncodeOptions q;
+        q.lossless = false;
+        q.quality = bad;
+        Buf out;
+        CHECK_EQ(j2k::encode(img, fi, q, out).code, Errc::InvalidArgument);
+        j2k::EncodeOptions r;
+        r.lossless = false;
+        r.rate = bad;
+        CHECK_EQ(j2k::encode(img, fi, r, out).code, Errc::InvalidArgument);
+    }
+    j2k::EncodeOptions neg;
+    neg.lossless = false;
+    neg.rate = -1;
+    Buf out;
+    CHECK_EQ(j2k::encode(img, fi, neg, out).code, Errc::InvalidArgument);
+    j2k::EncodeOptions ok;
+    ok.lossless = false;
+    ok.rate = 1.5;
+    CHECK(j2k::encode(img, fi, ok, out).is_ok());
 }
