@@ -130,6 +130,26 @@ go to `siaara_dimse_commit(_ex)` as they are (C#: `Dimse.StoreFilesWithOutcomes`
 `Dimse.StoreWithOutcome`, `StoreOutcome`). `siaara_dimse_peer.keep_uid_on_lossy = 1`
 (`DimsePeer.KeepUidOnLossy`) keeps the file's UID instead, as `siaara_transcode_params` does.
 
+**Lossy history lists.** Lossy Image Compression Ratio (0028,2112) and Method (0028,2114) are
+parallel lists, one value per lossy step in the same order (PS3.3 C.7.6.1.1.5.1). Every lossy
+transcode - `siaara_file_transcode(_ex)` and the network paths above, with or without
+`keep_uid_on_lossy` - looks at how many values the source has in each and never guesses:
+
+| Source lists | What is written | Reported as |
+|---|---|---|
+| Same number of values in both (or neither present) | one value appended to each | `SIAARA_LOSSY_HISTORY_ALIGNED` |
+| One more Ratio than Method value, and the source pixel data is lossy coded in JPEG Baseline / Extended (.50 / .51: `ISO_10918_1`), JPEG-LS near-lossless (.81 with NEAR > 0: `ISO_14495_1`), JPEG 2000 (.91, irreversible: `ISO_15444_1`) or HTJ2K (.203, irreversible: `ISO_15444_15`) | the missing Method value of that earlier step is filled in with the term the source's own coding proves, then one value appended to each | `SIAARA_LOSSY_HISTORY_METHOD_FILLED` (`LOSSY_METHOD_FILLED`), with the term filled in |
+| Anything else: the source is uncompressed or losslessly coded (also losslessly inside .81 / .91 / .203), two or more Method values are missing, or there are more Method than Ratio values | the Ratio of this step is appended; Method is left byte for byte as it was (the method of this step is in Derivation Description unless `keep_uid_on_lossy`) | `SIAARA_LOSSY_HISTORY_MISALIGNED` (`LOSSY_HISTORY_MISALIGNED`) |
+
+A transcode that applies no lossy compression (including same-syntax pass-through) leaves both
+attributes untouched. The report: `siaara_file_transcode_ex` fills a `siaara_transcode_report`
+(`lossy_history`, `lossy_method_filled`, `lossy_history_note` with the counts found, what was
+written and why; C#: `Transcoder.TranscodeWithReport`, `TranscodeReport.LossyHistory`); for
+C-STORE the outcome flags `SIAARA_STORE_LOSSY_METHOD_FILLED` / `SIAARA_STORE_LOSSY_HISTORY_MISALIGNED`
+(`StoreOutcome.LossyHistory`). Lossy conversions made by our SCP (`store_transfer_syntax`, C-GET /
+C-MOVE sub-operations) follow the same rule and write the note (no UIDs, no patient data) to the
+log (`siaara_set_log_callback`, INFO; C++ `ScpHandlers::log`).
+
 ### 2.3a Incomplete input is not sent (testing 10b P1)
 
 A file whose read was not complete (truncated input, skipped bytes: `siaara_file_read_report`)
@@ -139,8 +159,17 @@ refuses it: the peer would store an instance that looks whole but holds less tha
 It counts as failed (`SIAARA_ERR_REJECTED`, outcome flag `SIAARA_STORE_INCOMPLETE_INPUT`, a
 message starting `INCOMPLETE_INPUT`); the association goes on with the other files. Opt in with
 `siaara_dimse_peer.allow_incomplete = 1` (C#: `DimsePeer.AllowIncomplete`; C++:
-`ScuConfig::allow_incomplete`, `ScpConfig::allow_incomplete` for sub-operations;
+`ScuConfig::allow_incomplete`, `ScpConfig::allow_incomplete` for sub-operations - from the C API
+`siaara_scp_services.allow_incomplete`, C# `ScpServiceOptions.AllowIncomplete`;
 `siaara-storescu --allow-incomplete`).
+
+STOW-RS follows the same rule: `siaara_web_stow` refuses such a file before any request
+(`SIAARA_ERR_REJECTED`, message starting `INCOMPLETE_INPUT`); `siaara_web_stow_ex` with
+`siaara_web_stow_options.allow_incomplete = 1` sends what was read (C#:
+`DicomWebClient.Store(file, study, allowIncomplete: true)`). The C++ `DicomwebClient::store` sends
+Part 10 bytes as they are, so it first reads every part back and sends nothing when one cannot be
+read or was not read completely (`StowOptions::allow_incomplete` skips the check;
+`siaara-webcli stow --allow-incomplete`).
 
 ### 2.4 Events and the drop policy (R-094)
 

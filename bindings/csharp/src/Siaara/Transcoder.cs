@@ -56,7 +56,45 @@ public sealed record TranscodeParameters
     };
 }
 
-/// <summary>Pixel data transcoding (siaara_file_transcode).</summary>
+/// <summary>What a lossy transcode did with the history lists Lossy Image Compression Ratio (0028,2112)
+/// and Method (0028,2114), which hold one value per lossy step in the same order (PS3.3 C.7.6.1.1.5.1).</summary>
+public enum LossyHistory
+{
+    /// <summary>No lossy compression was applied: both attributes are untouched.</summary>
+    NotApplicable = C.SIAARA_LOSSY_HISTORY_NOT_APPLICABLE,
+    /// <summary>The source had as many Ratio as Method values (or neither): one value appended to each.</summary>
+    Aligned = C.SIAARA_LOSSY_HISTORY_ALIGNED,
+    /// <summary>LOSSY_METHOD_FILLED: the source had one more Ratio than Method value and its own lossy
+    /// transfer syntax proves the method of that step; that Method value was filled in
+    /// (<see cref="TranscodeReport.LossyMethodFilled"/>), then one value appended to each.</summary>
+    MethodFilled = C.SIAARA_LOSSY_HISTORY_METHOD_FILLED,
+    /// <summary>LOSSY_HISTORY_MISALIGNED: any other mismatch. The Ratio was appended and Method was left
+    /// exactly as it was; nothing is guessed.</summary>
+    Misaligned = C.SIAARA_LOSSY_HISTORY_MISALIGNED,
+}
+
+/// <summary>What a transcode did (siaara_transcode_report).</summary>
+/// <param name="PixelDataRecoded">Frames were decoded and encoded again.</param>
+/// <param name="LossyApplied">This transcode applied lossy compression.</param>
+/// <param name="SourceLossy">The source was lossy already (attribute or codestream).</param>
+/// <param name="LossyHistory">What was done with the Ratio / Method history lists.</param>
+/// <param name="EncodedBytes">Total encoded frame bytes (encapsulated targets).</param>
+/// <param name="NativeBytes">Total decoded frame bytes.</param>
+/// <param name="NewSopInstanceUid">The new UID a lossy transcode gave the image, else empty.</param>
+/// <param name="LossyMethodFilled">MethodFilled: the defined term written for the earlier step, else empty.</param>
+/// <param name="LossyHistoryNote">MethodFilled / Misaligned: "LOSSY_METHOD_FILLED: ..." or
+/// "LOSSY_HISTORY_MISALIGNED: ..." with the value counts found, what was written and why; else empty.</param>
+public sealed record TranscodeReport(bool PixelDataRecoded, bool LossyApplied, bool SourceLossy, LossyHistory LossyHistory,
+                                     long EncodedBytes, long NativeBytes, string NewSopInstanceUid,
+                                     string LossyMethodFilled, string LossyHistoryNote)
+{
+    internal static TranscodeReport From(in siaara_transcode_report r) =>
+        new(r.pixel_data_recoded != 0, r.lossy_applied != 0, r.source_lossy != 0, (LossyHistory)r.lossy_history,
+            (long)r.encoded_bytes, (long)r.native_bytes, DicomDictionary.Chars(r.new_sop_instance_uid),
+            DicomDictionary.Chars(r.lossy_method_filled), DicomDictionary.Chars(r.lossy_history_note));
+}
+
+/// <summary>Pixel data transcoding (siaara_file_transcode, siaara_file_transcode_ex).</summary>
 public static class Transcoder
 {
     /// <summary>
@@ -82,6 +120,35 @@ public static class Transcoder
             siaara_transcode_params p = parameters.ToNative();
             Status.Check(Native.siaara_file_transcode(l.Pointer, ts, in p));
         }
+    }
+
+    /// <summary>
+    /// As <see cref="Transcode"/>, returning what was done: whether lossy compression was applied, the
+    /// new SOP Instance UID and how the lossy history lists were handled (<see cref="LossyHistory"/>).
+    /// </summary>
+    /// <param name="file">The file.</param>
+    /// <param name="transferSyntaxUid">Target transfer syntax.</param>
+    /// <param name="parameters">Codec parameters, or null for the C defaults.</param>
+    /// <returns>The report.</returns>
+    /// <exception cref="SiaaraException">Unsupported (cannot be represented) or Rejected (lossy not allowed).</exception>
+    public static TranscodeReport TranscodeWithReport(DicomFile file, string transferSyntaxUid,
+                                                      TranscodeParameters? parameters = null)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentException.ThrowIfNullOrEmpty(transferSyntaxUid);
+        byte[] ts = Status.Utf8Z(transferSyntaxUid)!;
+        using var l = new HandleLease(file.Handle);
+        var r = new siaara_transcode_report { struct_size = StructSize.Of<siaara_transcode_report>() };
+        if (parameters is null)
+        {
+            Status.Check(Native.siaara_file_transcode_ex(l.Pointer, ts, in Unsafe.NullRef<siaara_transcode_params>(), ref r));
+        }
+        else
+        {
+            siaara_transcode_params p = parameters.ToNative();
+            Status.Check(Native.siaara_file_transcode_ex(l.Pointer, ts, in p, ref r));
+        }
+        return TranscodeReport.From(in r);
     }
 
     /// <summary>Transcodes, returning the status instead of throwing.</summary>

@@ -50,7 +50,9 @@ Status encode_for_transfer_syntax(const DicomFile& file, std::string_view ts, co
 // A spooled instance is written to a new spool file in `spool`'s directory. When a lossy
 // conversion gives the instance a new SOP Instance UID, rq.sop_instance_uid becomes it and the
 // old one is kept in rq.original_sop_instance_uid (R-093).
+// `lossy_history_note` (may be null) receives TranscodeReport::lossy_history_note: what a lossy
+// conversion did with mismatched Lossy Image Compression Ratio / Method lists (empty otherwise).
 Status convert_received(StoreRequest& rq, std::string_view ts, const codec::TranscodeParams& p,
-                        const SpoolConfig* spool);
+                        const SpoolConfig* spool, std::string* lossy_history_note = nullptr);
 
 }  // namespace siaara::net

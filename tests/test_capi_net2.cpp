@@ -1,9 +1,11 @@
 // C API tests for the full networking service set (siaara_scp_start_ex and the SCU / DICOMweb
 // additions), loopback ours <-> ours, plus the round-3 security fixes R-093 (lossy transcodes
 // and SOP Instance UIDs) and R-094 (SCP dispatcher drop policy).
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -23,6 +25,7 @@
 #include "net/services.hpp"
 #include "siaara/siaara.h"
 #include "test.hpp"
+#include "web/client.hpp"
 #include "web/dicom_json.hpp"
 #include "web/multipart.hpp"
 
@@ -947,6 +950,173 @@ TEST_CASE("net2: DICOMweb server over the store; streaming retrieve; client limi
     CHECK(siaara_web_stow(wc, nf, nullptr) == SIAARA_OK);
     CHECK(st.instances() == 4);
     siaara_file_free(nf);
+    siaara_web_client_free(wc);
+    siaara_web_server_free(ws);
+}
+
+// ---------------------------------------------------------------- incomplete input (testing 10b P1, the gaps left)
+namespace {
+
+// A Part 10 stream whose last 62 pixel bytes are missing (as MR_truncated.dcm).
+std::vector<std::uint8_t> truncated_part10(const DicomFile& f) {
+    std::vector<std::uint8_t> b = part10(f);
+    b.resize(b.size() - 62);
+    return b;
+}
+
+// C-GET of study 2.25.9710 from the SCP on `port` (native transfer syntaxes).
+net::RetrieveResult get_study(uint32_t port, std::vector<std::size_t>& pixel_bytes) {
+    net::ScuConfig c;
+    c.calling_ae = "GETTER";
+    c.called_ae = "INC_SCP";
+    c.port = static_cast<std::uint16_t>(port);
+    net::Scu scu(c);
+    scu.add_context(std::string(net::sop::StudyRootGet), net::native_transfer_syntaxes());
+    scu.add_get_storage(kMR, net::native_transfer_syntaxes());
+    net::RetrieveResult none;
+    if (!scu.connect().is_ok()) return none;
+    Dataset id;
+    (void)id.set_string(0x00080052, VR::CS, "STUDY");
+    (void)id.set_string(tags::StudyInstanceUID, VR::UI, "2.25.9710");
+    auto rr = scu.get(net::sop::StudyRootGet, id, [&](const net::StoreRequest& rq) -> std::uint16_t {
+        const Element* px = rq.dataset.find(tags::PixelData);
+        pixel_bytes.push_back(px ? px->value.size() : 0);
+        return 0;
+    });
+    (void)scu.release();
+    return rr ? *rr : none;
+}
+
+}  // namespace
+
+TEST_CASE("net2: siaara_scp_services.allow_incomplete decides C-GET sub-operations for a truncated stored file") {
+    const auto dir = temp_dir("scpinc");
+    StoreOpen st(dir / "store");
+    REQUIRE(st.store);
+    REQUIRE(st.add(make_image("2.25.9701", "2.25.9710", "2.25.9711", "INC", "Inc^Get", true)));
+    // The store keeps a truncated file byte for byte (it is an archive of what it was given).
+    const auto cut = truncated_part10(make_image("2.25.9702", "2.25.9710", "2.25.9711", "INC", "Inc^Get", true));
+    REQUIRE(siaara_store_add_memory(st.store, cut.data(), cut.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_OK);
+    CHECK(st.instances() == 2);
+    siaara_scp_options o = scp_options("INC_SCP");
+    siaara_scp_services sv = services();
+    sv.get = 1;
+    // Default: the sub-operation for the truncated file fails; the complete one is delivered.
+    {
+        siaara_scp* scp = nullptr;
+        REQUIRE(siaara_scp_start_ex(&o, &sv, st.store, nullptr, nullptr, &scp) == SIAARA_OK);
+        std::vector<std::size_t> px;
+        const net::RetrieveResult r = get_study(port_of(scp), px);
+        CHECK(r.completed == 1);
+        CHECK(r.failed == 1);
+        REQUIRE(px.size() == 1);
+        CHECK(px[0] == 256u);
+        siaara_scp_free(scp);
+    }
+    // A services struct of the version before allow_incomplete: the field is not read (default).
+    {
+        siaara_scp_services old = sv;
+        old.struct_size = static_cast<uint32_t>(offsetof(siaara_scp_services, allow_incomplete));
+        old.allow_incomplete = 1;
+        siaara_scp* scp = nullptr;
+        REQUIRE(siaara_scp_start_ex(&o, &old, st.store, nullptr, nullptr, &scp) == SIAARA_OK);
+        std::vector<std::size_t> px;
+        const net::RetrieveResult r = get_study(port_of(scp), px);
+        CHECK(r.completed == 1);
+        CHECK(r.failed == 1);
+        siaara_scp_free(scp);
+    }
+    // Not 0 or 1: refused.
+    {
+        siaara_scp_services bad = sv;
+        bad.allow_incomplete = 2;
+        siaara_scp* scp = nullptr;
+        CHECK(siaara_scp_start_ex(&o, &bad, st.store, nullptr, nullptr, &scp) == SIAARA_ERR_INVALID_ARGUMENT);
+        CHECK(scp == nullptr);
+    }
+    // Opted in: both are sent; the truncated one with the pixel bytes that were read.
+    {
+        sv.allow_incomplete = 1;
+        siaara_scp* scp = nullptr;
+        REQUIRE(siaara_scp_start_ex(&o, &sv, st.store, nullptr, nullptr, &scp) == SIAARA_OK);
+        std::vector<std::size_t> px;
+        const net::RetrieveResult r = get_study(port_of(scp), px);
+        CHECK(r.completed == 2);
+        CHECK(r.failed == 0);
+        REQUIRE(px.size() == 2);
+        std::sort(px.begin(), px.end());
+        CHECK(px[0] < 256u);
+        CHECK(px[1] == 256u);
+        siaara_scp_free(scp);
+    }
+}
+
+TEST_CASE("net2: STOW-RS does not send an incomplete file unless siaara_web_stow_ex allows it") {
+    const auto dir = temp_dir("stowinc");
+    StoreOpen st(dir / "store");
+    REQUIRE(st.store);
+    siaara_web_server_options o;
+    std::memset(&o, 0, sizeof o);
+    o.struct_size = sizeof o;
+    siaara_web_server* ws = nullptr;
+    REQUIRE(siaara_web_server_start(&o, st.store, &ws) == SIAARA_OK);
+    uint32_t port = 0;
+    REQUIRE(siaara_web_server_port(ws, &port) == SIAARA_OK);
+    const std::string base = "http://127.0.0.1:" + std::to_string(port) + "/dicomweb";
+    siaara_web_client* wc = nullptr;
+    REQUIRE(siaara_web_client_create(base.data(), base.size(), 5000, &wc) == SIAARA_OK);
+
+    const DicomFile whole = make_image("2.25.9801", "2.25.9810", "2.25.9811", "STOWI", "Stow^Inc", true);
+    const auto cut = truncated_part10(make_image("2.25.9802", "2.25.9810", "2.25.9811", "STOWI", "Stow^Inc", true));
+    siaara_file* tf = nullptr;
+    REQUIRE(siaara_file_open_memory(cut.data(), cut.size(), nullptr, &tf) == SIAARA_OK);
+    // Refused before any request, with the C-STORE message.
+    CHECK(siaara_web_stow(wc, tf, nullptr) == SIAARA_ERR_REJECTED);
+    CHECK(std::string(siaara_last_error_message()).rfind("INCOMPLETE_INPUT", 0) == 0);
+    siaara_web_stow_options so;
+    std::memset(&so, 0, sizeof so);
+    so.struct_size = sizeof so;
+    CHECK(siaara_web_stow_ex(wc, tf, nullptr, &so) == SIAARA_ERR_REJECTED);
+    CHECK(std::string(siaara_last_error_message()).rfind("INCOMPLETE_INPUT", 0) == 0);
+    CHECK(siaara_web_stow_ex(wc, tf, nullptr, nullptr) == SIAARA_ERR_REJECTED);
+    CHECK(st.instances() == 0);
+    so.allow_incomplete = 2;
+    CHECK(siaara_web_stow_ex(wc, tf, nullptr, &so) == SIAARA_ERR_INVALID_ARGUMENT);
+    so.allow_incomplete = 1;
+    so.struct_size = 4;
+    CHECK(siaara_web_stow_ex(wc, tf, nullptr, &so) == SIAARA_ERR_INVALID_ARGUMENT);
+    so.struct_size = sizeof so;
+    CHECK(st.instances() == 0);
+    // Opted in: what was read is sent.
+    CHECK(siaara_web_stow_ex(wc, tf, nullptr, &so) == SIAARA_OK);
+    CHECK(st.instances() == 1);
+    siaara_file_free(tf);
+    // A complete file goes through both calls.
+    siaara_file* gf = to_capi(whole);
+    REQUIRE(gf);
+    CHECK(siaara_web_stow(wc, gf, nullptr) == SIAARA_OK);
+    CHECK(st.instances() == 2);
+    siaara_file_free(gf);
+
+    // The C++ client sends bytes as they are, so it reads each part back first.
+    web::DicomwebClientConfig cc;
+    cc.base_url = base;
+    web::DicomwebClient c(cc);
+    const auto cut2 = truncated_part10(make_image("2.25.9803", "2.25.9810", "2.25.9811", "STOWI", "Stow^Inc", true));
+    const std::string cut_part(reinterpret_cast<const char*>(cut2.data()), cut2.size());
+    const auto good3 = part10(make_image("2.25.9804", "2.25.9810", "2.25.9811", "STOWI", "Stow^Inc", true));
+    const std::string good_part(reinterpret_cast<const char*>(good3.data()), good3.size());
+    auto refused = c.store({good_part, cut_part});
+    REQUIRE(!refused.is_ok());
+    CHECK(refused.error().code == Errc::Rejected);
+    CHECK(refused.error().message.rfind("INCOMPLETE_INPUT", 0) == 0);
+    CHECK(refused.error().message.find("part 2 of 2") != std::string::npos);
+    auto garbage = c.store({good_part, std::string("not a DICOM file")});
+    REQUIRE(!garbage.is_ok());
+    CHECK(garbage.error().code == Errc::Rejected);
+    CHECK(garbage.error().message.rfind("INCOMPLETE_INPUT", 0) == 0);
+    CHECK(st.instances() == 2);  // nothing was sent, not even the good part
+
     siaara_web_client_free(wc);
     siaara_web_server_free(ws);
 }

@@ -309,6 +309,18 @@ int main(void) {
     printf("F siaara_transcode_params chroma_subsampling %u\n", (unsigned)offsetof(siaara_transcode_params, chroma_subsampling));
     printf("F siaara_transcode_params offset_table %u\n", (unsigned)offsetof(siaara_transcode_params, offset_table));
     printf("F siaara_transcode_params keep_uid_on_lossy %u\n", (unsigned)offsetof(siaara_transcode_params, keep_uid_on_lossy));
+    printf("S siaara_transcode_report %u\n", (unsigned)sizeof(siaara_transcode_report));
+    printf("F siaara_transcode_report struct_size %u\n", (unsigned)offsetof(siaara_transcode_report, struct_size));
+    printf("F siaara_transcode_report pixel_data_recoded %u\n", (unsigned)offsetof(siaara_transcode_report, pixel_data_recoded));
+    printf("F siaara_transcode_report lossy_applied %u\n", (unsigned)offsetof(siaara_transcode_report, lossy_applied));
+    printf("F siaara_transcode_report source_lossy %u\n", (unsigned)offsetof(siaara_transcode_report, source_lossy));
+    printf("F siaara_transcode_report lossy_history %u\n", (unsigned)offsetof(siaara_transcode_report, lossy_history));
+    printf("F siaara_transcode_report reserved0 %u\n", (unsigned)offsetof(siaara_transcode_report, reserved0));
+    printf("F siaara_transcode_report encoded_bytes %u\n", (unsigned)offsetof(siaara_transcode_report, encoded_bytes));
+    printf("F siaara_transcode_report native_bytes %u\n", (unsigned)offsetof(siaara_transcode_report, native_bytes));
+    printf("F siaara_transcode_report new_sop_instance_uid %u\n", (unsigned)offsetof(siaara_transcode_report, new_sop_instance_uid));
+    printf("F siaara_transcode_report lossy_method_filled %u\n", (unsigned)offsetof(siaara_transcode_report, lossy_method_filled));
+    printf("F siaara_transcode_report lossy_history_note %u\n", (unsigned)offsetof(siaara_transcode_report, lossy_history_note));
     printf("S siaara_volume_options %u\n", (unsigned)sizeof(siaara_volume_options));
     printf("F siaara_volume_options struct_size %u\n", (unsigned)offsetof(siaara_volume_options, struct_size));
     printf("F siaara_volume_options voxel_type %u\n", (unsigned)offsetof(siaara_volume_options, voxel_type));
@@ -769,6 +781,7 @@ int main(void) {
     printf("F siaara_scp_services max_commitment_items %u\n", (unsigned)offsetof(siaara_scp_services, max_commitment_items));
     printf("F siaara_scp_services acl_count %u\n", (unsigned)offsetof(siaara_scp_services, acl_count));
     printf("F siaara_scp_services acls %u\n", (unsigned)offsetof(siaara_scp_services, acls));
+    printf("F siaara_scp_services allow_incomplete %u\n", (unsigned)offsetof(siaara_scp_services, allow_incomplete));
     printf("S siaara_qr_keys %u\n", (unsigned)sizeof(siaara_qr_keys));
     printf("F siaara_qr_keys struct_size %u\n", (unsigned)offsetof(siaara_qr_keys, struct_size));
     printf("F siaara_qr_keys return_keys %u\n", (unsigned)offsetof(siaara_qr_keys, return_keys));
@@ -848,5 +861,8 @@ int main(void) {
     printf("F siaara_web_limits body_timeout_ms %u\n", (unsigned)offsetof(siaara_web_limits, body_timeout_ms));
     printf("F siaara_web_limits max_parts %u\n", (unsigned)offsetof(siaara_web_limits, max_parts));
     printf("F siaara_web_limits max_part_bytes %u\n", (unsigned)offsetof(siaara_web_limits, max_part_bytes));
+    printf("S siaara_web_stow_options %u\n", (unsigned)sizeof(siaara_web_stow_options));
+    printf("F siaara_web_stow_options struct_size %u\n", (unsigned)offsetof(siaara_web_stow_options, struct_size));
+    printf("F siaara_web_stow_options allow_incomplete %u\n", (unsigned)offsetof(siaara_web_stow_options, allow_incomplete));
     return 0;
 }

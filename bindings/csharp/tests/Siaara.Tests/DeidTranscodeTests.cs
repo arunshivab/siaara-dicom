@@ -125,5 +125,48 @@ internal static class DeidTranscodeTests
             g.Transcode(DicomTransferSyntaxes.JPEGBaseline8Bit, new TranscodeParameters { AllowLossy = true, KeepUidOnLossy = true });
             CheckEq(g.Dataset.GetString(DicomTags.SOPInstanceUID), "2.25.4243");
         });
+
+        Case("transcode: lossy history lists stay aligned or the mismatch is reported (owner decision 2026-11-10)", () =>
+        {
+            var ratio = new DicomTag(0x00282112);
+            var method = new DicomTag(0x00282114);
+            var lossy = new TranscodeParameters { AllowLossy = true, Lossy = true };
+            // Aligned (neither present): one value each.
+            using DicomFile a = Builders.Rgb(16, 16);
+            TranscodeReport ra = Transcoder.TranscodeWithReport(a, DicomTransferSyntaxes.JPEGBaseline8Bit, lossy);
+            Check(ra.LossyApplied && ra.PixelDataRecoded && !ra.SourceLossy);
+            CheckEq(ra.LossyHistory, LossyHistory.Aligned);
+            CheckEq(ra.LossyHistoryNote, string.Empty);
+            CheckEq(ra.NewSopInstanceUid, a.Dataset.GetString(DicomTags.SOPInstanceUID));
+            CheckEq(a.Dataset.GetString(method), "ISO_10918_1");
+            // One Ratio, no Method, JPEG source: the syntax proves ISO_10918_1.
+            a.Dataset.Remove(method);
+            a.Dataset.SetRawString(ratio, "DS", "7");
+            TranscodeReport rf = Transcoder.TranscodeWithReport(a, DicomTransferSyntaxes.JPEG2000, lossy);
+            CheckEq(rf.LossyHistory, LossyHistory.MethodFilled);
+            CheckEq(rf.LossyMethodFilled, "ISO_10918_1");
+            Check(rf.LossyHistoryNote.StartsWith("LOSSY_METHOD_FILLED: ", StringComparison.Ordinal));
+            Check(rf.SourceLossy);
+            CheckEq(a.Dataset.GetString(method, 0), "ISO_10918_1");
+            CheckEq(a.Dataset.GetString(method, 1), "ISO_15444_1");
+            CheckEq(a.Dataset.GetString(ratio, 0), "7");
+            // One Ratio, no Method, uncompressed source: nothing proves the method; Method stays absent.
+            using DicomFile m = Builders.Rgb(16, 16);
+            m.Dataset.SetRawString(ratio, "DS", "7");
+            TranscodeReport rm = Transcoder.TranscodeWithReport(m, DicomTransferSyntaxes.JPEGBaseline8Bit,
+                new TranscodeParameters { AllowLossy = true, KeepUidOnLossy = true });
+            CheckEq(rm.LossyHistory, LossyHistory.Misaligned);
+            CheckEq(rm.LossyMethodFilled, string.Empty);
+            Check(rm.LossyHistoryNote.StartsWith("LOSSY_HISTORY_MISALIGNED: ", StringComparison.Ordinal));
+            Check(!m.Dataset.Contains(method));
+            CheckEq(m.Dataset.GetString(ratio, 0), "7");
+            Check(m.Dataset.GetString(ratio, 1).Length > 0);
+            CheckEq(rm.NewSopInstanceUid, string.Empty);
+            // No lossy step: not applicable.
+            using DicomFile n = Builders.Rgb(16, 16);
+            TranscodeReport rn = Transcoder.TranscodeWithReport(n, DicomTransferSyntaxes.RLELossless);
+            CheckEq(rn.LossyHistory, LossyHistory.NotApplicable);
+            Check(!rn.LossyApplied);
+        });
     }
 }

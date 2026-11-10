@@ -248,10 +248,20 @@ public sealed record StoreOutcome(SiaaraErrorCode Error, int DimseStatus, bool S
                                   bool IncompleteInput, string SopClassUid, string SopInstanceUid,
                                   string OriginalSopInstanceUid, string TransferSyntaxUid)
 {
+    /// <summary>What the lossy transcode on the way did with the Lossy Image Compression Ratio / Method
+    /// history lists of the instance sent (NotApplicable when nothing lossy was applied).</summary>
+    public LossyHistory LossyHistory { get; init; }
+
     internal static StoreOutcome From(in siaara_store_outcome o) =>
         new((SiaaraErrorCode)o.error, (int)o.dimse_status, (o.flags & 1) != 0, (o.flags & 2) != 0, (o.flags & 4) != 0,
             (o.flags & 8) != 0, DicomDictionary.Chars(o.sop_class_uid), DicomDictionary.Chars(o.sop_instance_uid),
-            DicomDictionary.Chars(o.original_sop_instance_uid), DicomDictionary.Chars(o.transfer_syntax));
+            DicomDictionary.Chars(o.original_sop_instance_uid), DicomDictionary.Chars(o.transfer_syntax))
+        {
+            LossyHistory = (o.flags & C.SIAARA_STORE_LOSSY_METHOD_FILLED) != 0 ? LossyHistory.MethodFilled
+                           : (o.flags & C.SIAARA_STORE_LOSSY_HISTORY_MISALIGNED) != 0 ? LossyHistory.Misaligned
+                           : (o.flags & C.SIAARA_STORE_LOSSY) != 0 ? LossyHistory.Aligned
+                           : LossyHistory.NotApplicable,
+        };
 }
 
 /// <summary>DIMSE-N command (siaara_n_request.command_field).</summary>

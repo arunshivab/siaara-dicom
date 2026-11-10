@@ -101,7 +101,9 @@ int usage() {
         "  wado <url> STUDY [SERIES [INSTANCE]] --out DIR [--ts UID]...    writes DIR/<SOPInstanceUID>.dcm\n"
         "  frames <url> STUDY SERIES INSTANCE LIST --out PREFIX [--ts UID]...  writes PREFIX.<n>\n"
         "  wado-uri <url> STUDY SERIES OBJECT --out FILE [--ts UID]\n"
-        "  stow <url> [--study UID] FILE...\n"
+        "  stow <url> [--study UID] [--allow-incomplete] FILE...\n"
+        "      a file that cannot be read completely (truncated, damaged) stops the call before anything\n"
+        "      is sent, unless --allow-incomplete\n"
         "options: --token TOKEN (bearer) | --basic USER:PASSWORD, --timeout MS\n"
         "https:// URLs use TLS; --tls-name NAME sets the name the server certificate must carry.\n",
         siaara_tools::usage_stream());
@@ -144,6 +146,7 @@ int main(int argc, char** argv) {
     int timeout = 30000;
     net::TlsSettings tls;
     bool tls_verbose = false;
+    StowOptions stow_opt;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--tls" || a == "--tls-require-client-cert") return usage();  // the URL scheme decides
@@ -171,6 +174,7 @@ int main(int argc, char** argv) {
         else if (a == "--offset") { if (!next(v)) return usage(); q.offset = static_cast<std::uint32_t>(std::strtoul(v.c_str(), nullptr, 10)); }
         else if (a == "--timeout") { if (!next(v)) return usage(); timeout = std::atoi(v.c_str()); }
         else if (a == "--fuzzy") q.fuzzy_matching = true;
+        else if (a == "--allow-incomplete") stow_opt.allow_incomplete = true;
         else if (a.size() > 2 && a.compare(0, 2, "--") == 0) return usage();
         else pos.push_back(a);
     }
@@ -278,7 +282,7 @@ int main(int argc, char** argv) {
             if (!b) return fail(b.error());
             files.emplace_back(b->as_chars());
         }
-        auto r = c.store(files, study_opt);
+        auto r = c.store(files, study_opt, stow_opt);
         if (!r) return fail(r.error());
         std::string js;
         (void)dataset_to_json(r->response, js);

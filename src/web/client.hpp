@@ -52,6 +52,14 @@ struct BulkPart {
     std::string data;
 };
 
+struct StowOptions {
+    // false (default): a part that is not a readable Part 10 stream, or whose read is not
+    // complete (DicomFile::read_loss: truncated input, skipped bytes, heuristic recovery), is not
+    // sent - the server would store an instance that holds less than the sender believes.
+    // true: the parts are sent as they are, unchecked.
+    bool allow_incomplete = false;
+};
+
 struct StowResult {
     int http_status = 0;
     Dataset response;                     // the Store Instances Response (may be empty)
@@ -95,8 +103,12 @@ public:
                                  std::string_view content_type = "application/dicom",
                                  std::string_view transfer_syntax = {});
 
-    // STOW-RS: Part 10 streams. `study` empty posts to /studies.
-    Result<StowResult> store(const std::vector<std::string>& part10, std::string_view study = {});
+    // STOW-RS: Part 10 streams, sent byte for byte. `study` empty posts to /studies.
+    // Every part is first read back (StowOptions::allow_incomplete): when one cannot be read, or
+    // its read was not complete, nothing is sent and the call fails with Errc::Rejected (message
+    // starting "INCOMPLETE_INPUT", naming the part) - the same rule as C-STORE (check_sendable).
+    Result<StowResult> store(const std::vector<std::string>& part10, std::string_view study = {},
+                             const StowOptions& opt = {});
 
     // WADO-RS retrieve that hands every part to `on_part` as soon as it has arrived (content type,
     // bytes valid during the call), holding about one part in memory (max_part_bytes; Limits::

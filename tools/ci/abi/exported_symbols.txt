@@ -87,6 +87,7 @@ siaara_file_read_report
 siaara_file_save
 siaara_file_save_ex
 siaara_file_transcode
+siaara_file_transcode_ex
 siaara_file_transfer_syntax
 siaara_file_warning
 siaara_file_warning_code
@@ -242,6 +243,7 @@ siaara_web_server_free
 siaara_web_server_port
 siaara_web_server_start
 siaara_web_stow
+siaara_web_stow_ex
 siaara_web_wado_frames
 siaara_web_wado_instance
 siaara_web_wado_metadata

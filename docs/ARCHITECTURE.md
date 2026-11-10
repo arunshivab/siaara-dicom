@@ -53,8 +53,8 @@ keep it:
 
 Lenient reading never hides damage: everything it does is a read warning, and anything that
 leaves the data set short of the input or reinterprets it sets a `DicomFile::read_loss` bit
-(`siaara_read_report.loss`), so saves (`siaara_file_save`) and C-STORE refuse the file unless the
-caller opts in (`allow_incomplete`). The first warning names the reason: `PARSE_INCOMPLETE`
+(`siaara_read_report.loss`), so saves (`siaara_file_save`), C-STORE and STOW-RS refuse the file
+unless the caller opts in (`allow_incomplete`). The first warning names the reason: `PARSE_INCOMPLETE`
 (bytes skipped), `INPUT_TRUNCATED` (input ended early), `READ_RECOVERED` (a heuristic below).
 
 | Damage | What the reader does | Report |

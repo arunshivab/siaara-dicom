@@ -4,8 +4,10 @@
 // the offset tables must follow PS3.5 / PS3.3.
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,6 +20,7 @@
 #include "image/color.hpp"
 #include "image/frames.hpp"
 #include "image/pixel_info.hpp"
+#include "siaara/siaara.h"
 #include "test.hpp"
 
 using namespace siaara;
@@ -379,6 +382,293 @@ TEST_CASE("transcode: lossy history accumulates and is never reset") {
     Result<Dataset> e = codec::transcode_dataset(marked, "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.5");
     REQUIRE(e.is_ok());
     CHECK_EQ(str(*e, image::tags::LossyImageCompression), std::string("01"));
+}
+
+// ---- lossy history alignment (PS3.3 C.7.6.1.1.5.1, owner decision 2026-11-10)
+namespace {
+
+constexpr const char* kLE = "1.2.840.10008.1.2.1";
+constexpr const char* kJpeg = "1.2.840.10008.1.2.4.50";
+constexpr const char* kJls = "1.2.840.10008.1.2.4.81";
+constexpr const char* kJ2k = "1.2.840.10008.1.2.4.91";
+
+// The whole value of a multi-valued string element, exactly as stored except trailing padding.
+std::string whole(const Dataset& ds, Tag t) {
+    auto raw = ds.get_raw_string(t);
+    if (!raw) return "<absent>";
+    std::string v(*raw);
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.pop_back();
+    return v;
+}
+
+// An image coded in `ts` (lossily where the syntax allows it), with the history lists set to
+// `ratio` / `method` (nullptr removes the attribute).
+Dataset history_source(const char* ts, const char* ratio, const char* method, bool lossy = true) {
+    const Image im = make_image(Kind::Gray8, 1);
+    Dataset d = im.ds;
+    if (std::string_view(ts) != kLE) {
+        codec::TranscodeParams p;
+        p.lossy = lossy;
+        p.keep_uid_on_lossy = true;
+        Result<Dataset> r = codec::transcode_dataset(im.ds, kLE, ts, p);
+        CHECK(r.is_ok());
+        if (r) d = std::move(r.value());
+    }
+    (void)d.remove(kLossyRatio);
+    (void)d.remove(kLossyMethod);
+    if (ratio) CHECK(d.set_string(kLossyRatio, VR::DS, ratio).is_ok());
+    if (method) CHECK(d.set_string(kLossyMethod, VR::CS, method).is_ok());
+    return d;
+}
+
+struct HistoryResult {
+    Dataset ds;
+    codec::TranscodeReport rep;
+    std::string new_ratio;  // the ratio value this transcode appended
+};
+
+HistoryResult lossy_step(const Dataset& src, const char* src_ts, const char* dst_ts, bool keep_uid = false) {
+    codec::TranscodeParams p;
+    p.lossy = true;
+    p.keep_uid_on_lossy = keep_uid;
+    HistoryResult h;
+    Result<Dataset> r = codec::transcode_dataset(src, src_ts, dst_ts, p, &h.rep);
+    if (!r) std::fprintf(stderr, "  %s -> %s: %s\n", src_ts, dst_ts, r.error().message.c_str());
+    CHECK(r.is_ok());
+    if (!r) return h;
+    h.ds = std::move(r.value());
+    CHECK(h.rep.lossy_applied);
+    const std::size_t n = vm(h.ds, kLossyRatio);
+    CHECK(n > 0);
+    if (n == 0) return h;
+    h.new_ratio = h.ds.get_string(kLossyRatio, n - 1).value_or("");
+    CHECK(!h.new_ratio.empty() && h.new_ratio.find('.') != std::string::npos);
+    return h;
+}
+
+}  // namespace
+
+TEST_CASE("transcode lossy history: one Ratio and no Method in a lossy source syntax fills the Method in") {
+    struct Row {
+        const char* src_ts;
+        const char* dst_ts;
+        const char* filled;
+        const char* ours;
+    };
+    const Row rows[] = {
+        {kJpeg, kJ2k, "ISO_10918_1", "ISO_15444_1"},
+        {"1.2.840.10008.1.2.4.51", kJ2k, "ISO_10918_1", "ISO_15444_1"},
+        {kJls, kJpeg, "ISO_14495_1", "ISO_10918_1"},
+        {kJ2k, kJpeg, "ISO_15444_1", "ISO_10918_1"},
+        {kJ2k, kJls, "ISO_15444_1", "ISO_14495_1"},
+    };
+    for (const Row& row : rows) {
+        const Dataset src = history_source(row.src_ts, "7", nullptr);
+        for (bool keep_uid : {false, true}) {
+            const HistoryResult h = lossy_step(src, row.src_ts, row.dst_ts, keep_uid);
+            CHECK_EQ(whole(h.ds, kLossyRatio), "7\\" + h.new_ratio);
+            CHECK_EQ(whole(h.ds, kLossyMethod), std::string(row.filled) + "\\" + row.ours);
+            CHECK(h.rep.lossy_history == codec::LossyHistory::MethodFilled);
+            CHECK_EQ(h.rep.lossy_method_filled, std::string(row.filled));
+            CHECK(h.rep.lossy_history_note.rfind("LOSSY_METHOD_FILLED: ", 0) == 0);
+            CHECK(h.rep.lossy_history_note.find(row.filled) != std::string::npos);
+            CHECK(h.rep.lossy_history_note.find(row.src_ts) != std::string::npos);
+            CHECK(h.rep.lossy_history_note.size() < 419u);  // fits siaara_transcode_report.lossy_history_note
+            CHECK_EQ(h.rep.new_sop_instance_uid.empty(), keep_uid);
+            CHECK_EQ(str(h.ds, tags::SOPInstanceUID) == str(src, tags::SOPInstanceUID), keep_uid);
+        }
+    }
+    // An empty Method element counts as no values.
+    {
+        const Dataset src = history_source(kJpeg, "7", "");
+        const HistoryResult h = lossy_step(src, kJpeg, kJ2k);
+        CHECK_EQ(whole(h.ds, kLossyMethod), std::string("ISO_10918_1\\ISO_15444_1"));
+        CHECK(h.rep.lossy_history == codec::LossyHistory::MethodFilled);
+    }
+    // Two Ratio values and one Method value: the missing one is that of the latest earlier step.
+    {
+        const Dataset src = history_source(kJpeg, "9\\5", "ISO_15444_1");
+        const HistoryResult h = lossy_step(src, kJpeg, kJls);
+        CHECK_EQ(whole(h.ds, kLossyRatio), "9\\5\\" + h.new_ratio);
+        CHECK_EQ(whole(h.ds, kLossyMethod), std::string("ISO_15444_1\\ISO_10918_1\\ISO_14495_1"));
+        CHECK(h.rep.lossy_history == codec::LossyHistory::MethodFilled);
+        CHECK_EQ(h.rep.lossy_method_filled, std::string("ISO_10918_1"));
+    }
+}
+
+TEST_CASE("transcode lossy history: a mismatch that cannot be proven appends the Ratio only and is reported") {
+    struct Row {
+        const char* name;
+        const char* src_ts;
+        bool src_lossy_coded;
+        const char* ratio;
+        const char* method;
+    };
+    const Row rows[] = {
+        {"uncompressed, 1 Ratio / 0 Method", kLE, false, "7", nullptr},
+        {"JPEG 2000 reversible in .91, 1 Ratio / 0 Method", kJ2k, false, "7", nullptr},
+        {"JPEG-LS lossless in .81, 1 Ratio / 0 Method", kJls, false, "7", nullptr},
+        {"JPEG 2000 lossless .90, 1 Ratio / 0 Method", "1.2.840.10008.1.2.4.90", false, "7", nullptr},
+        {"RLE, 1 Ratio / 0 Method", "1.2.840.10008.1.2.5", false, "7", nullptr},
+        {"JPEG, 2 Ratio / 0 Method", kJpeg, true, "7\\3.5", nullptr},
+        {"JPEG, 3 Ratio / 1 Method", kJpeg, true, "7\\3.5\\2", "ISO_15444_1"},
+        {"uncompressed, more Method than Ratio", kLE, false, "7", "ISO_10918_1\\ISO_15444_1"},
+        {"JPEG, more Method than Ratio", kJpeg, true, "7", "ISO_15444_1\\ISO_10918_1"},
+        {"JPEG, Method without Ratio", kJpeg, true, nullptr, "ISO_10918_1"},
+        {"uncompressed, lower-case and odd Method values kept as they are", kLE, false, "7\\2", "iso_10918_1 "},
+    };
+    for (const Row& row : rows) {
+        const Dataset src = history_source(row.src_ts, row.ratio, row.method, row.src_lossy_coded);
+        for (bool keep_uid : {false, true}) {
+            const char* dst_ts = std::string_view(row.src_ts) == kJpeg ? kJ2k : kJpeg;
+            const HistoryResult h = lossy_step(src, row.src_ts, dst_ts, keep_uid);
+            if (whole(h.ds, kLossyRatio) != (row.ratio ? std::string(row.ratio) + "\\" : std::string()) + h.new_ratio)
+                std::fprintf(stderr, "  %s: Ratio %s\n", row.name, whole(h.ds, kLossyRatio).c_str());
+            CHECK_EQ(whole(h.ds, kLossyRatio), (row.ratio ? std::string(row.ratio) + "\\" : std::string()) + h.new_ratio);
+            // Method: byte for byte what the source had (absent stays absent).
+            CHECK_EQ(h.ds.contains(kLossyMethod), src.contains(kLossyMethod));
+            if (row.method) {
+                REQUIRE(h.ds.get_raw_string(kLossyMethod).has_value());
+                CHECK(*h.ds.get_raw_string(kLossyMethod) == *src.get_raw_string(kLossyMethod));
+            }
+            CHECK(h.rep.lossy_history == codec::LossyHistory::Misaligned);
+            CHECK(h.rep.lossy_method_filled.empty());
+            CHECK(h.rep.lossy_history_note.rfind("LOSSY_HISTORY_MISALIGNED: ", 0) == 0);
+            CHECK(h.rep.lossy_history_note.size() < 419u);
+            CHECK_EQ(str(h.ds, image::tags::LossyImageCompression), std::string("01"));
+            CHECK_EQ(h.rep.new_sop_instance_uid.empty(), keep_uid);
+        }
+    }
+}
+
+TEST_CASE("transcode lossy history: aligned lists get one value each; no lossy step leaves them alone") {
+    // Both absent, 1/1 and 2/2.
+    struct Row {
+        const char* src_ts;
+        const char* ratio;
+        const char* method;
+    };
+    const Row rows[] = {
+        {kLE, nullptr, nullptr},
+        {kLE, "7", "ISO_15444_1"},
+        {kJpeg, "7", "ISO_10918_1"},
+        {kJpeg, "7\\3.5", "ISO_15444_1\\ISO_10918_1"},
+        {kJls, "4", "ISO_14495_1"},
+    };
+    for (const Row& row : rows) {
+        const Dataset src = history_source(row.src_ts, row.ratio, row.method);
+        const HistoryResult h = lossy_step(src, row.src_ts, kJ2k);
+        CHECK_EQ(whole(h.ds, kLossyRatio), (row.ratio ? std::string(row.ratio) + "\\" : std::string()) + h.new_ratio);
+        CHECK_EQ(whole(h.ds, kLossyMethod), (row.method ? std::string(row.method) + "\\" : std::string()) + "ISO_15444_1");
+        CHECK(h.rep.lossy_history == codec::LossyHistory::Aligned);
+        CHECK(h.rep.lossy_method_filled.empty());
+        CHECK(h.rep.lossy_history_note.empty());
+    }
+    // Mismatched sources through steps that apply no lossy compression: nothing is touched.
+    const Dataset src = history_source(kJpeg, "7", nullptr);
+    codec::TranscodeReport rep;
+    for (const char* t : {kJpeg, kLE, "1.2.840.10008.1.2.4.90", "1.2.840.10008.1.2.5"}) {
+        Result<Dataset> r = codec::transcode_dataset(src, kJpeg, t, {}, &rep);
+        REQUIRE(r.is_ok());
+        CHECK(!rep.lossy_applied);
+        CHECK(rep.lossy_history == codec::LossyHistory::NotApplicable);
+        CHECK(rep.lossy_history_note.empty());
+        CHECK_EQ(whole(*r, kLossyRatio), std::string("7"));
+        CHECK(!r->contains(kLossyMethod));
+    }
+    // Same-syntax pass-through with lossy parameters: still nothing re-encoded, nothing touched.
+    codec::TranscodeParams p;
+    p.lossy = true;
+    Result<Dataset> same = codec::transcode_dataset(src, kJpeg, kJpeg, p, &rep);
+    REQUIRE(same.is_ok());
+    CHECK(!rep.pixel_data_recoded && !rep.lossy_applied);
+    CHECK(rep.lossy_history == codec::LossyHistory::NotApplicable);
+    CHECK_EQ(whole(*same, kLossyRatio), std::string("7"));
+    CHECK(!same->contains(kLossyMethod));
+    CHECK_EQ(str(*same, tags::SOPInstanceUID), str(src, tags::SOPInstanceUID));
+}
+
+TEST_CASE("transcode lossy history: C API siaara_file_transcode_ex report") {
+    auto open = [](const Dataset& d, const char* ts) {
+        DicomFile f;
+        f.dataset = d;
+        f.transfer_syntax = ts;
+        std::vector<std::uint8_t> buf;
+        CHECK(write_part10(f, buf).is_ok());
+        siaara_file* h = nullptr;
+        CHECK(siaara_file_open_memory(buf.data(), buf.size(), nullptr, &h) == SIAARA_OK);
+        return h;
+    };
+    auto value = [](siaara_file* h, uint32_t tag, uint32_t index) {
+        siaara_dataset* ds = nullptr;
+        if (siaara_file_dataset(h, &ds) != SIAARA_OK) return std::string("<no data set>");
+        char buf[64];
+        size_t need = 0;
+        if (siaara_dataset_get_string(ds, tag, index, buf, sizeof buf, &need) != SIAARA_OK) return std::string("<absent>");
+        return std::string(buf);
+    };
+    siaara_transcode_params p{};
+    p.struct_size = sizeof p;
+    p.lossy = 1;
+    p.allow_lossy = 1;
+    // Filled.
+    {
+        siaara_file* h = open(history_source(kJpeg, "7", nullptr), kJpeg);
+        REQUIRE(h != nullptr);
+        siaara_transcode_report r{};
+        CHECK(siaara_file_transcode_ex(h, kJ2k, &p, &r) == SIAARA_ERR_INVALID_ARGUMENT);  // struct_size not set
+        r.struct_size = sizeof r;
+        REQUIRE(siaara_file_transcode_ex(h, kJ2k, &p, &r) == SIAARA_OK);
+        CHECK_EQ(r.struct_size, static_cast<uint32_t>(sizeof r));
+        CHECK_EQ(r.pixel_data_recoded, 1);
+        CHECK_EQ(r.lossy_applied, 1);
+        CHECK_EQ(r.source_lossy, 1);
+        CHECK_EQ(r.lossy_history, SIAARA_LOSSY_HISTORY_METHOD_FILLED);
+        CHECK_EQ(std::string(r.lossy_method_filled), std::string("ISO_10918_1"));
+        CHECK(std::string(r.lossy_history_note).rfind("LOSSY_METHOD_FILLED: ", 0) == 0);
+        CHECK(r.encoded_bytes > 0 && r.native_bytes > 0);
+        CHECK_EQ(std::string(r.new_sop_instance_uid), value(h, 0x00080018, 0));
+        CHECK_EQ(value(h, kLossyMethod, 0), std::string("ISO_10918_1"));
+        CHECK_EQ(value(h, kLossyMethod, 1), std::string("ISO_15444_1"));
+        CHECK_EQ(value(h, kLossyRatio, 0), std::string("7"));
+        siaara_file_free(h);
+    }
+    // Misaligned, with keep_uid_on_lossy; a short report struct gets the fields that fit.
+    {
+        siaara_file* h = open(history_source(kLE, "7", nullptr), kLE);
+        REQUIRE(h != nullptr);
+        p.keep_uid_on_lossy = 1;
+        siaara_transcode_report r;
+        std::memset(&r, 0x55, sizeof r);
+        r.struct_size = static_cast<uint32_t>(offsetof(siaara_transcode_report, reserved0));
+        REQUIRE(siaara_file_transcode_ex(h, kJpeg, &p, &r) == SIAARA_OK);
+        CHECK_EQ(r.lossy_history, SIAARA_LOSSY_HISTORY_MISALIGNED);
+        CHECK_EQ(r.reserved0, 0x55555555u);  // not written past struct_size
+        CHECK_EQ(value(h, kLossyMethod, 0), std::string("<absent>"));
+        CHECK_EQ(value(h, kLossyRatio, 0), std::string("7"));
+        CHECK(value(h, kLossyRatio, 1) != "<absent>");
+        siaara_file_free(h);
+        p.keep_uid_on_lossy = 0;
+    }
+    // Aligned and not applicable; failure zeroes the report; NULL report is siaara_file_transcode.
+    {
+        siaara_file* h = open(history_source(kLE, nullptr, nullptr), kLE);
+        REQUIRE(h != nullptr);
+        siaara_transcode_report r{};
+        r.struct_size = sizeof r;
+        REQUIRE(siaara_file_transcode_ex(h, "1.2.840.10008.1.2.5", &p, &r) == SIAARA_OK);
+        CHECK_EQ(r.lossy_history, SIAARA_LOSSY_HISTORY_NOT_APPLICABLE);
+        CHECK_EQ(r.lossy_applied, 0);
+        CHECK_EQ(std::string(r.lossy_history_note), std::string());
+        REQUIRE(siaara_file_transcode_ex(h, kJpeg, &p, &r) == SIAARA_OK);
+        CHECK_EQ(r.lossy_history, SIAARA_LOSSY_HISTORY_ALIGNED);
+        CHECK_EQ(r.lossy_applied, 1);
+        CHECK(siaara_file_transcode_ex(h, "1.2.840.10008.1.2.4.100", &p, &r) == SIAARA_ERR_UNSUPPORTED);
+        CHECK_EQ(r.lossy_applied, 0);
+        CHECK_EQ(r.struct_size, static_cast<uint32_t>(sizeof r));
+        CHECK(siaara_file_transcode_ex(h, kLE, &p, nullptr) == SIAARA_OK);
+        siaara_file_free(h);
+    }
 }
 
 TEST_CASE("transcode: allow_lossy = false refuses lossy targets") {

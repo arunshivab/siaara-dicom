@@ -605,6 +605,9 @@ siaara_status read_services(const siaara_scp_services* o, const net::ScpConfig& 
     sv.ae_title = base.ae_title;
 
     cfg.transcode_params.allow_lossy = lossy;
+    if (o->struct_size >= offsetof(siaara_scp_services, allow_incomplete) + sizeof(int32_t)) {
+        if (siaara_status s = flag(o->allow_incomplete, "allow_incomplete", cfg.allow_incomplete); s != SIAARA_OK) return s;
+    }
     if (o->store_transfer_syntax) {
         if (!uid_ok(o->store_transfer_syntax)) return fail(Errc::InvalidArgument, "store_transfer_syntax is not a UID");
         cfg.preferred_store_ts = o->store_transfer_syntax;

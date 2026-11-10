@@ -247,6 +247,30 @@ bool codestream_lossy(const image::FrameReader& fr) {
     }
 }
 
+// Number of values of a multi-valued string element (0 when absent or empty).
+std::size_t value_count(const Dataset& ds, Tag tag) {
+    auto raw = ds.get_raw_string(tag);
+    if (!raw) return 0;
+    std::string_view v = *raw;
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.remove_suffix(1);
+    if (v.empty()) return 0;
+    return static_cast<std::size_t>(std::count(v.begin(), v.end(), '\\')) + 1;
+}
+
+// The Lossy Image Compression Method defined term (PS3.3 C.7.6.1.1.5.1) that the source's own
+// coding proves for its latest lossy step: the transfer syntax must be one that codes lossily
+// and, where the syntax also allows lossless coding (.81, .91, .203), the first frame's
+// codestream must be lossy. Empty when nothing is proven.
+std::string_view proven_source_method(std::string_view source_ts, const image::FrameReader& fr) {
+    std::string_view term;
+    if (source_ts == "1.2.840.10008.1.2.4.50" || source_ts == "1.2.840.10008.1.2.4.51") term = "ISO_10918_1";
+    else if (source_ts == "1.2.840.10008.1.2.4.81") term = "ISO_14495_1";
+    else if (source_ts == "1.2.840.10008.1.2.4.91") term = "ISO_15444_1";
+    else if (source_ts == "1.2.840.10008.1.2.4.203") term = "ISO_15444_15";
+    if (term.empty() || !codestream_lossy(fr)) return {};
+    return term;
+}
+
 struct Plan {
     Target target = Target::None;
     image::PixelInfo in;            // source description
@@ -590,13 +614,38 @@ Result<Dataset> transcode_dataset(const Dataset& ds, std::string_view source_ts,
     if (pi.samples_per_pixel > 1) (void)out.set_uint16(tags::PlanarConfiguration, 0);
     if (plan.lossy) {
         (void)out.set_string(image::tags::LossyImageCompression, VR::CS, "01");
-        if (Status s = append_value(out, kLossyRatio, VR::DS, format_ratio(rep.native_bytes, rep.encoded_bytes)); !s)
-            return s;
-        if (Status s = append_value(out, kLossyMethod, VR::CS, lossy_method(target)); !s) return s;
+        const std::string ratio = format_ratio(rep.native_bytes, rep.encoded_bytes);
+        const std::string_view method = lossy_method(target);
+        // Ratio and Method are parallel lists, one value per lossy step (PS3.3 C.7.6.1.1.5.1).
+        // Owner decision 2026-11-10: a missing earlier Method value is filled in only when the
+        // source's own coding proves it; any other mismatch is left as it is and reported.
+        const std::size_t n_ratio = value_count(ds, kLossyRatio);
+        const std::size_t n_method = value_count(ds, kLossyMethod);
+        if (Status s = append_value(out, kLossyRatio, VR::DS, ratio); !s) return s;
+        if (n_ratio == n_method) {
+            rep.lossy_history = LossyHistory::Aligned;
+            if (Status s = append_value(out, kLossyMethod, VR::CS, method); !s) return s;
+        } else if (const std::string_view proven = proven_source_method(source_ts, fr);
+                   n_ratio == n_method + 1 && !proven.empty()) {
+            if (Status s = append_value(out, kLossyMethod, VR::CS, proven); !s) return s;
+            if (Status s = append_value(out, kLossyMethod, VR::CS, method); !s) return s;
+            rep.lossy_history = LossyHistory::MethodFilled;
+            rep.lossy_method_filled = std::string(proven);
+            rep.lossy_history_note = "LOSSY_METHOD_FILLED: Lossy Image Compression Method (0028,2114) value " +
+                                     std::to_string(n_method + 1) + " set to " + std::string(proven) +
+                                     ": the source had " + std::to_string(n_ratio) + " Ratio (0028,2112) and " +
+                                     std::to_string(n_method) + " Method value(s), and its pixel data was lossy coded in " +
+                                     "transfer syntax " + std::string(source_ts) + ", which proves the method of that step";
+        } else {
+            rep.lossy_history = LossyHistory::Misaligned;
+            rep.lossy_history_note = "LOSSY_HISTORY_MISALIGNED: the source had " + std::to_string(n_ratio) +
+                                     " Lossy Image Compression Ratio (0028,2112) and " + std::to_string(n_method) +
+                                     " Method (0028,2114) value(s) and the method of the earlier step(s) cannot be " +
+                                     "proven; ratio " + ratio + " appended, Method left unchanged (this step: " +
+                                     std::string(method) + ")";
+        }
         if (!p.keep_uid_on_lossy) {
-            if (Status s = mark_derived(out, rep, lossy_method(target), format_ratio(rep.native_bytes, rep.encoded_bytes));
-                !s)
-                return s;
+            if (Status s = mark_derived(out, rep, method, ratio); !s) return s;
         }
     } else if (rep.source_lossy) {
         (void)out.set_string(image::tags::LossyImageCompression, VR::CS, "01");  // never reset once lossy
