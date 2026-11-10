@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -60,6 +61,29 @@ public sealed record TlsOptions
         tls13_only = Tls13Only ? 1 : 0,
     };
 }
+
+/// <summary>Limits of a <see cref="DicomWebClient"/> (siaara_web_limits); null keeps the current value.</summary>
+public sealed record DicomWebLimits
+{
+    /// <summary>Each wait for incoming bytes.</summary>
+    public TimeSpan? ReadTimeout { get; init; }
+    /// <summary>Largest response body of the buffered calls (default 256 MiB).</summary>
+    public long? MaxBodyBytes { get; init; }
+    /// <summary>The whole response body (default 10 min).</summary>
+    public TimeSpan? BodyTimeout { get; init; }
+    /// <summary>No overall body deadline (very large streamed retrieves).</summary>
+    public bool NoBodyTimeout { get; init; }
+    /// <summary>Parts of a multipart response.</summary>
+    public int? MaxParts { get; init; }
+    /// <summary>One part of a streamed retrieve (default: the body limit).</summary>
+    public long? MaxPartBytes { get; init; }
+}
+
+/// <summary>Progress of a streamed retrieve.</summary>
+/// <param name="Parts">Parts handled so far.</param>
+/// <param name="Bytes">Response bytes received.</param>
+/// <param name="TotalBytes">Content-Length, or 0 when unknown.</param>
+public sealed record DicomWebTransferProgress(int Parts, long Bytes, long TotalBytes);
 
 /// <summary>One part of a DICOMweb response.</summary>
 /// <param name="ContentType">Content-Type of the part.</param>
@@ -421,6 +445,114 @@ public sealed class DicomWebClient : IDisposable
                 return (int)added;
             }
         }, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>Changes the client's limits for later requests (siaara_web_client_set_limits); null values keep the current ones.</summary>
+    /// <param name="limits">The limits.</param>
+    public void SetLimits(DicomWebLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        static int Ms(TimeSpan? t) => t is null ? 0 : (int)Math.Clamp(t.Value.TotalMilliseconds, 1, int.MaxValue);
+        var l = new siaara_web_limits
+        {
+            struct_size = StructSize.Of<siaara_web_limits>(),
+            read_timeout_ms = Ms(limits.ReadTimeout),
+            max_body = (ulong)Math.Max(0, limits.MaxBodyBytes ?? 0),
+            body_timeout_ms = limits.NoBodyTimeout ? -1 : Ms(limits.BodyTimeout),
+            max_parts = (uint)Math.Max(0, limits.MaxParts ?? 0),
+            max_part_bytes = (ulong)Math.Max(0, limits.MaxPartBytes ?? 0),
+        };
+        lock (_gate)
+        {
+            using var h = new HandleLease(_handle);
+            Status.Check(Native.siaara_web_client_set_limits(h.Pointer, in l));
+        }
+    }
+
+    /// <summary>
+    /// WADO-RS retrieve that keeps each part as it arrives (siaara_web_wado_retrieve_to): added to a
+    /// store and / or written to a folder as &lt;SOP Instance UID&gt;.dcm, holding about one part in
+    /// memory. Parts kept before a failure or a cancel stay kept.
+    /// </summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <param name="store">Destination store, or null.</param>
+    /// <param name="folder">Destination folder, or null (one of the two is required).</param>
+    /// <param name="replaceDuplicates">Replace instances / files already present.</param>
+    /// <param name="transferSyntaxes">Acceptable syntaxes, or null.</param>
+    /// <param name="progress">Parts kept, bytes received and total after every part (optional).</param>
+    /// <returns>(stored, failed) parts.</returns>
+    public (int Stored, int Failed) RetrieveTo(string studyInstanceUid, string? seriesInstanceUid, string? sopInstanceUid, DicomStore? store,
+        string? folder, bool replaceDuplicates = false, IReadOnlyList<string>? transferSyntaxes = null,
+        IProgress<DicomWebTransferProgress>? progress = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(studyInstanceUid);
+        if (store is null && folder is null)
+        {
+            throw new ArgumentException("A store or a folder is required.");
+        }
+        using var mem = new NativeAllocations();
+        nint[] ts = Syntaxes(mem, transferSyntaxes);
+        var sink = new TransferSink(progress);
+        GCHandle gc = GCHandle.Alloc(sink);
+        bool added = false;
+        store?.Handle.DangerousAddRef(ref added);
+        try
+        {
+            lock (_gate)
+            {
+                using var l = new HandleLease(_handle);
+                int st = Native.siaara_web_wado_retrieve_to(l.Pointer, Status.Utf8Z(studyInstanceUid), Status.Utf8Z(seriesInstanceUid),
+                    Status.Utf8Z(sopInstanceUid), ts, (uint)ts.Length, store is null ? 0 : store.Handle.DangerousGetHandle(),
+                    replaceDuplicates ? C.SIAARA_DUP_REPLACE : C.SIAARA_DUP_KEEP, Status.Utf8Z(folder), Callbacks.WebProgressPointer,
+                    GCHandle.ToIntPtr(gc), out uint stored, out uint failed);
+                Status.Check(st);
+                return ((int)stored, (int)failed);
+            }
+        }
+        finally
+        {
+            if (added)
+            {
+                store!.Handle.DangerousRelease();
+            }
+            gc.Free();
+        }
+    }
+
+    /// <summary>The streaming WADO-RS retrieve on a thread-pool thread.</summary>
+    /// <param name="studyInstanceUid">Study.</param>
+    /// <param name="seriesInstanceUid">Series, or null.</param>
+    /// <param name="sopInstanceUid">Instance, or null.</param>
+    /// <param name="store">Destination store, or null.</param>
+    /// <param name="folder">Destination folder, or null.</param>
+    /// <param name="replaceDuplicates">Replace instances / files already present.</param>
+    /// <param name="transferSyntaxes">Acceptable syntaxes, or null.</param>
+    /// <param name="progress">Progress (optional).</param>
+    /// <param name="cancellationToken">Cancels (also a request in progress).</param>
+    /// <returns>(stored, failed) parts.</returns>
+    public Task<(int Stored, int Failed)> RetrieveToAsync(string studyInstanceUid, string? seriesInstanceUid, string? sopInstanceUid,
+        DicomStore? store, string? folder, bool replaceDuplicates = false, IReadOnlyList<string>? transferSyntaxes = null,
+        IProgress<DicomWebTransferProgress>? progress = null, CancellationToken cancellationToken = default) =>
+        Task.Run(() => WithToken(() => RetrieveTo(studyInstanceUid, seriesInstanceUid, sopInstanceUid, store, folder, replaceDuplicates,
+            transferSyntaxes, progress), cancellationToken), cancellationToken);
+
+    private sealed class TransferSink : IWebProgressSink
+    {
+        private readonly IProgress<DicomWebTransferProgress>? _progress;
+
+        internal TransferSink(IProgress<DicomWebTransferProgress>? progress) => _progress = progress;
+
+        public void OnCallbackException(Exception exception)
+        {
+        }
+
+        public int OnProgress(uint parts, ulong bytes, ulong totalBytes)
+        {
+            _progress?.Report(new DicomWebTransferProgress((int)parts, (long)bytes, (long)totalBytes));
+            return 0;
+        }
     }
 
     /// <summary>WADO-URI (legacy): the response body.</summary>

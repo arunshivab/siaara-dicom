@@ -224,10 +224,31 @@ internal sealed class WebPartsHandle : SiaaraHandle
 internal sealed class ScpHandle : SiaaraHandle
 {
     internal GCHandle CallbackTarget;
+    internal GCHandle WorklistTarget;
 
     protected override bool ReleaseHandle()
     {
         Raw.siaara_scp_free(handle);
+        if (CallbackTarget.IsAllocated)
+        {
+            CallbackTarget.Free();
+        }
+        if (WorklistTarget.IsAllocated)
+        {
+            WorklistTarget.Free();
+        }
+        return true;
+    }
+}
+
+/// <summary>siaara_web_server (siaara_web_server_free); owns the authorize callback's GCHandle.</summary>
+internal sealed class WebServerHandle : SiaaraHandle
+{
+    internal GCHandle CallbackTarget;
+
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_web_server_free(handle);
         if (CallbackTarget.IsAllocated)
         {
             CallbackTarget.Free();

@@ -184,6 +184,7 @@ internal static class Program
             InteropTests.Register();
             ViewerTests.Register();
             NetworkTests.Register();
+            Network2Tests.Register();
             EncoderTests.Register();
             return T.Run(filters);
         }
