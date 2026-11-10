@@ -49,8 +49,8 @@ struct QrKeyValues {
     bool return_keys = false;
     std::vector<std::pair<Tag, std::string>> values;
 };
-// Q/R identifier at `level` (0 patient .. 3 image).
-Result<Dataset> make_qr_identifier(int level, const QrKeyValues& keys);
+// Q/R identifier at `level` (0 patient .. 3 image), written to `out`.
+Status make_qr_identifier(int level, const QrKeyValues& keys, Dataset& out);
 
 // The DICOMweb server's store over a local store.
 web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool read_only, const StoreQrOptions& opt);

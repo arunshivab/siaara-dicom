@@ -360,10 +360,10 @@ std::uint16_t store_retrieve(const store::Store& s, std::string_view sop_class, 
     return net::dimse_status::Success;
 }
 
-Result<Dataset> make_qr_identifier(int level, const QrKeyValues& keys) {
+Status make_qr_identifier(int level, const QrKeyValues& keys, Dataset& ds) {
     static const char* const names[] = {"PATIENT", "STUDY", "SERIES", "IMAGE"};
     if (level < kPatient || level > kImage) return Status(Errc::InvalidArgument, "unknown level");
-    Dataset ds;
+    ds = Dataset{};
     if (Status s = ds.set_string(tags::SpecificCharacterSet, VR::CS, "ISO_IR 192"); !s) return s;
     if (Status s = ds.set_string(kQueryRetrieveLevel, VR::CS, names[level]); !s) return s;
     if (keys.return_keys)
@@ -379,7 +379,7 @@ Result<Dataset> make_qr_identifier(int level, const QrKeyValues& keys) {
         const VR vr = k ? k->vr : (e ? e->vr : VR::LO);
         if (Status s = ds.set_string(tag, vr, value); !s) return s;
     }
-    return ds;
+    return Status::ok();
 }
 
 web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool read_only, const StoreQrOptions& opt) {
@@ -389,8 +389,9 @@ web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool r
         const int level = q.level == web::QueryLevel::Study ? kStudy : q.level == web::QueryLevel::Series ? kSeries : kImage;
         QrKeyValues kv;
         kv.return_keys = true;
-        Result<Dataset> id = make_qr_identifier(level, kv);
-        if (!id) return id.take_error();
+        Dataset ident;
+        if (Status ms = make_qr_identifier(level, kv, ident); !ms) return ms;
+        Dataset* id = &ident;
         if (!q.study_uid.empty()) (void)id->set_string(0x0020000D, VR::UI, q.study_uid);
         if (!q.series_uid.empty()) (void)id->set_string(0x0020000E, VR::UI, q.series_uid);
         for (const auto& [tag, value] : q.match) {

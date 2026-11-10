@@ -278,6 +278,7 @@ Status DicomwebClient::retrieve_stream(
         single.append(piece.data(), piece.size());
         return Status::ok();
     };
+    if (!http_) return Status(Errc::InvalidArgument, "client not initialised");
     auto rs = http_->send_streaming(rq, sink);
     if (!rs) return rs.take_error();
     if (Status st = check_status(*rs); !st) return st;

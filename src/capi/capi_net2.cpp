@@ -93,7 +93,6 @@ bool uid_ok(std::string_view s) {
 constexpr std::uint16_t kSuccess = 0x0000;
 constexpr std::uint16_t kNotAuthorized = 0x0124;
 constexpr std::uint16_t kOutOfResources = 0xA700;
-constexpr std::uint16_t kRetrieveTooMany = 0xA701;
 constexpr std::uint16_t kResourceLimitation = 0x0213;  // Failure Reason (PS3.3 C.14.1.1)
 constexpr std::uint16_t kNoSuchObjectInstance = 0x0112;
 constexpr std::uint16_t kClassInstanceConflict = 0x0119;
@@ -832,11 +831,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_qr_identifier(int32_t level, const s
             put(0x00080016, keys->sop_class_uid);
             put(0x00200013, keys->instance_number);
         }
-        auto r = capi::make_qr_identifier(level, v);
-        if (!r) return fail(r.error());
         auto f = std::make_unique<siaara_file>();
+        if (Status st = capi::make_qr_identifier(level, v, f->file.dataset); !st) return fail(st);
         f->file.transfer_syntax = std::string(siaara::ts::ExplicitVRLittleEndian);
-        f->file.dataset = std::move(*r);
         *out = f.release();
         return ok();
     });
@@ -1176,7 +1173,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit_ex(const siaara_dimse_p
                 // The same association first (up to same_ms), watching the receiver meanwhile.
                 const auto same_end = std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(same_ms));
                 while (!report && !scope.cancelled() && std::chrono::steady_clock::now() < same_end) {
-                    if ((report = taken())) break;
+                    report = taken();
+                    if (report) break;
                     net::Association* a = scu.association();
                     if (!a || !a->established()) {
                         gone = true;
