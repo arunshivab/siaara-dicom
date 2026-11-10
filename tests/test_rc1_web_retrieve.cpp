@@ -4,6 +4,7 @@
 // for streamed replies unless configured), R-182 (too many instances under a key is 413).
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>

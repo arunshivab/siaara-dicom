@@ -4,6 +4,7 @@
 // listed), R-167 (one release at a time; the stored SOP Instance UID is returned).
 // Uses the allocation guard (alloc_guard.hpp), so this file is left out of TSan builds.
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>

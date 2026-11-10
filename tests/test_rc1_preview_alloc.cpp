@@ -4,8 +4,11 @@
 // frames, element and nesting bombs - must end in an error or a bounded preview, within a small
 // memory budget and a time limit; never a crash or a hang.
 // Uses the allocation guard (alloc_guard.hpp), so this file is left out of TSan builds.
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>

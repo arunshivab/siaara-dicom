@@ -2,6 +2,7 @@
 // (io::OpenMode Auto / Map / Read; siaara_read_options.open_mode). A file shortened after it was
 // opened never takes the process down in the default mode, and a mapped file whose size changed
 // is reported instead of being touched.
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>

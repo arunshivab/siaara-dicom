@@ -3,6 +3,7 @@
 // siaara_web_parts_open_file, and in the store's own indexing and re-read of received bytes.
 // A received data set of that kind is incomplete and goes to the receive policy; a local open of
 // the same bytes is still recovered (and flagged).
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>

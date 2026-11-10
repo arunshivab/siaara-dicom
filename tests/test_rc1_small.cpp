@@ -4,6 +4,7 @@
 // "recovered", whatever the tag order).
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
