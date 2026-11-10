@@ -40,7 +40,7 @@ COMPONENTS = [
     ("web", "HTTP/1.1, DICOMweb, DICOM JSON and XML models"),
     ("store", "Local instance store, index journal, DICOMDIR"),
     ("deid", "De-identification (PS3.15 Annex E)"),
-    ("clinical", "Clinical objects: geometry, SUV, ROI, GSPS, SR/KOS, SEG, RT Structure Set"),
+    ("clinical", "Clinical objects: geometry, GSPS, SR/KOS, SEG, RT Structure Set"),
     ("capi", "Stable C API"),
 ]
 

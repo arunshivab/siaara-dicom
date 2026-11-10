@@ -429,7 +429,7 @@ struct Canvas {
                 raster::clamp_to_i64(std::floor(a.y + t * dy), -1.0, 1e9), c);
         }
     }
-    // Even-odd fill of pixels whose centres are inside (the rule roi_mask uses).
+    // Even-odd fill of pixels whose centres are inside (PIXEL units: centre of pixel c is c + 0.5).
     void fill(const std::vector<Point2>& poly, const std::array<std::uint8_t, 4>& c) const {
         if (w <= 0 || h <= 0 || poly.size() < 3) return;
         for (const auto& q : poly)

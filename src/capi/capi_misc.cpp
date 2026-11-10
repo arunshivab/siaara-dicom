@@ -64,7 +64,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dataset_append_item(siaara_dataset* 
             return fail(Errc::TypeMismatch, "element is not a sequence");
         }
         if (e->items.size() >= 0x7FFFFFFFu) return fail(Errc::LimitExceeded, "too many items");
-        e->items.emplace_back();
+        e->items.emplace_back().set_inherited_charset(siaara::charset_in_force(d));  // F15
         if (index) *index = static_cast<uint32_t>(e->items.size() - 1);
         *out = reinterpret_cast<siaara_dataset*>(&e->items.back());
         return ok();

@@ -13,8 +13,8 @@ Oracles:
     with highdicom.color.CIELabColor.to_rgb.
   * dciodvfy (dicom3tools): IOD validation of the KOS and GSPS we write (skipped, and reported,
     when it is not installed).
-  * SUV: an independent Python evaluation of the QIBA body-weight SUV rule on a pydicom-made PET
-    image.
+  * PET inputs: the stored elements an application needs for SUV (the toolkit computes no SUV),
+    read by path from a pydicom-made PET image and compared with what pydicom wrote.
 Exit status 0 when every check passes.
 """
 import argparse
@@ -379,7 +379,7 @@ def check_our_gsps(tool, paths, tmp):
     dciodvfy(p, "our GSPS")
 
 
-def check_suv(tool, tmp):
+def check_pet_inputs(tool, tmp):
     ds = Dataset()
     ds.file_meta = FileMetaDataset()
     ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
@@ -392,21 +392,25 @@ def check_suv(tool, tmp):
     ds.SeriesDate, ds.SeriesTime = "20260515", "141203.5"
     ds.AcquisitionDate, ds.AcquisitionTime = "20260515", "141500"
     rp = Dataset()
-    rp.RadionuclideTotalDose, rp.RadionuclideHalfLife = 296000000, 6586.2
+    rp.RadionuclideTotalDose, rp.RadionuclideHalfLife = "296000000", "6586.2"  # DS text as written
     rp.RadiopharmaceuticalStartDateTime = "20260515125510"
     ds.RadiopharmaceuticalInformationSequence = [rp]
     p = os.path.join(tmp, "pet.dcm")
     ds.save_as(p, enforce_file_format=True)
-    ours = run(tool, "suv", p)
-    # Independent QIBA body-weight SUV: decay from injection to Series Date/Time.
-    t = (14 * 3600 + 12 * 60 + 3.5) - (12 * 3600 + 55 * 60 + 10)
-    want = 82.3 * 1000 / (296000000 * 2 ** (-t / 6586.2))
-    check(ours["decay_seconds"] == t, "SUV decay time")
-    check(abs(ours["bw"] - want) <= 1e-12 * want, "SUV body weight factor %r vs %r" % (ours["bw"], want))
-    w, h = 82.3, 171.0
-    james = 1.07 * w - 148 * (w / h) ** 2
-    check(abs(ours["lbm_james"] - james * 1000 / (296000000 * 2 ** (-t / 6586.2))) <= 1e-12 * want, "SUV LBM James")
-    print("SUV: body weight / LBM factors compared with an independent evaluation")
+    ours = run(tool, "pet-inputs", p)
+    want = {
+        "Units": "BQML", "DecayCorrection": "START", "CorrectedImage": "ATTN\\DECY",
+        "PatientWeight": "82.3", "PatientSize": "1.71", "PatientSex": "F",
+        "SeriesDate": "20260515", "SeriesTime": "141203.5",
+        "AcquisitionDate": "20260515", "AcquisitionTime": "141500",
+        "RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose": "296000000",
+        "RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife": "6586.2",
+        "RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartDateTime": "20260515125510",
+        "RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime": None,
+    }
+    for k, v in want.items():
+        check(ours.get(k) == v, "PET input %s: %r vs %r" % (k, ours.get(k), v))
+    print("PET inputs: %d stored elements compared with pydicom" % len(want))
 
 
 def main():
@@ -422,7 +426,7 @@ def main():
     try:
         paths = make_ct_series(tmp)
         check_sort(tool, paths)
-        check_suv(tool, tmp)
+        check_pet_inputs(tool, tmp)
         try:
             import highdicom  # noqa: F401
             have_hd = True

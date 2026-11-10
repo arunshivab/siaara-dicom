@@ -18,7 +18,6 @@
 #include "net/services.hpp"
 #include "volume/volume.hpp"
 #include "web/dicom_json.hpp"
-#include "clinical/roi.hpp"
 #include "dict/dictionary.hpp"
 #include "image/lut.hpp"
 #include "image/render.hpp"
@@ -363,7 +362,7 @@ bool has_warning(const std::vector<std::string>& w, std::string_view part) {
 
 }  // namespace
 
-TEST_CASE("testing2 P0-2a: Dose Grid Scaling gives doses in Gy (modality, frame values, ROI stats)") {
+TEST_CASE("testing2 P0-2a: Dose Grid Scaling gives doses in Gy (modality, frame values)") {
     const DicomFile f = rt_dose("0\\5\\10\\15", 4);
     auto img = image::Image::open(f.dataset, f.transfer_syntax);
     REQUIRE(img.is_ok());
@@ -377,11 +376,9 @@ TEST_CASE("testing2 P0-2a: Dose Grid Scaling gives doses in Gy (modality, frame 
     REQUIRE(image::decode_modality_f32(*img, 1, v).is_ok());
     CHECK(near(v[1 * 4 + 2], 85.13049589, 1e-4));  // hand computed: 1861000 x 4.574449e-05
     CHECK(near(v[0], 2000 * kDgs, 1e-7));            // frame 1, row 0, column 0: stored 2000
-    // ROI statistics over row 1 of frame 1 (stored 2100, 2101, kHot, 2103).
-    auto st = clinical::roi_stats(v, 3, 4, clinical::Roi::rectangle(0, 1, 4, 2));
-    REQUIRE(st.is_ok());
-    CHECK(near(st->max, 85.13049589, 1e-4));
-    CHECK(near(st->mean, (2100.0 + 2101.0 + kHot + 2103.0) / 4.0 * kDgs, 1e-4));
+    // Row 1 of frame 1 (stored 2100, 2101, kHot, 2103), each value in Gy.
+    const double row1[4] = {2100.0, 2101.0, kHot, 2103.0};
+    for (std::size_t c = 0; c < 4; ++c) CHECK(near(v[4 + c], row1[c] * kDgs, 1e-4));
     // The dose module values.
     const image::RtDoseInfo info = image::read_rt_dose_info(f.dataset);
     CHECK(info.is_rt_dose);
@@ -466,7 +463,7 @@ TEST_CASE("testing2 P0-2b: irregular or invalid Grid Frame Offset Vectors are fl
     CHECK(near(cr->grid().spacing[2], 4.0));
 }
 
-TEST_CASE("testing2 P0-2: RT Dose through the C API (frame values, info, ROI statistics, volume flag)") {
+TEST_CASE("testing2 P0-2: RT Dose through the C API (frame values, info, volume flag)") {
     const DicomFile d = rt_dose("0\\3\\6\\9", 4);
     std::vector<std::uint8_t> bytes;
     REQUIRE(write_part10(d, bytes).is_ok());

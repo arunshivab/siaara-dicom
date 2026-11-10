@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "clinical/geometry.hpp"
-#include "clinical/roi.hpp"
+#include "clinical/measure.hpp"
 #include "core/dataset.hpp"
 #include "core/status.hpp"
 #include "image/lut.hpp"

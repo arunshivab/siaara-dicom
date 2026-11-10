@@ -14,7 +14,7 @@
 
 #include "clinical/common.hpp"
 #include "clinical/geometry.hpp"
-#include "clinical/roi.hpp"
+#include "clinical/measure.hpp"
 #include "core/dataset.hpp"
 #include "core/status.hpp"
 

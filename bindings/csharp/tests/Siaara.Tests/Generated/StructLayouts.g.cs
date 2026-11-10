@@ -340,50 +340,6 @@ internal static class StructLayouts
             r.Add("F siaara_edge_labels bottom " + Offset(ref s, ref s.bottom).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
-            var s = default(siaara_suv);
-            r.Add("S siaara_suv " + Unsafe.SizeOf<siaara_suv>().ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv warnings " + Offset(ref s, ref s.warnings).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv has_bw " + Offset(ref s, ref s.has_bw).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv has_lbm_james " + Offset(ref s, ref s.has_lbm_james).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv has_lbm_janmahasatian " + Offset(ref s, ref s.has_lbm_janmahasatian).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv has_bsa " + Offset(ref s, ref s.has_bsa).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv has_ibw " + Offset(ref s, ref s.has_ibw).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv bw " + Offset(ref s, ref s.bw).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv lbm_james " + Offset(ref s, ref s.lbm_james).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv lbm_janmahasatian " + Offset(ref s, ref s.lbm_janmahasatian).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv bsa " + Offset(ref s, ref s.bsa).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv ibw " + Offset(ref s, ref s.ibw).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv decay_seconds " + Offset(ref s, ref s.decay_seconds).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv decayed_dose_bq " + Offset(ref s, ref s.decayed_dose_bq).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv scan_time_source " + Offset(ref s, ref s.scan_time_source).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv injection_time_source " + Offset(ref s, ref s.injection_time_source).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv decay_correction " + Offset(ref s, ref s.decay_correction).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv reserved1 " + Offset(ref s, ref s.reserved1).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv weight_kg " + Offset(ref s, ref s.weight_kg).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv injected_dose_bq " + Offset(ref s, ref s.injected_dose_bq).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_suv half_life_s " + Offset(ref s, ref s.half_life_s).ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
-        {
-            var s = default(siaara_roi_stats);
-            r.Add("S siaara_roi_stats " + Unsafe.SizeOf<siaara_roi_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats has_area_mm2 " + Offset(ref s, ref s.has_area_mm2).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats spacing_source " + Offset(ref s, ref s.spacing_source).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats pixels " + Offset(ref s, ref s.pixels).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats count " + Offset(ref s, ref s.count).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats sum " + Offset(ref s, ref s.sum).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats mean " + Offset(ref s, ref s.mean).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats sd " + Offset(ref s, ref s.sd).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats sd_sample " + Offset(ref s, ref s.sd_sample).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats min " + Offset(ref s, ref s.min).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats max " + Offset(ref s, ref s.max).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats area_px " + Offset(ref s, ref s.area_px).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_roi_stats area_mm2 " + Offset(ref s, ref s.area_mm2).ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
-        {
             var s = default(siaara_sr_node_info);
             r.Add("S siaara_sr_node_info " + Unsafe.SizeOf<siaara_sr_node_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_sr_node_info struct_size " + Offset(ref s, ref s.struct_size).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1123,8 +1079,6 @@ internal static class StructLayouts
         r.Add("siaara_tls_options " + Marshal.SizeOf<siaara_tls_options>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_plane_geometry " + Marshal.SizeOf<siaara_plane_geometry>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_edge_labels " + Marshal.SizeOf<siaara_edge_labels>().ToString(System.Globalization.CultureInfo.InvariantCulture));
-        r.Add("siaara_suv " + Marshal.SizeOf<siaara_suv>().ToString(System.Globalization.CultureInfo.InvariantCulture));
-        r.Add("siaara_roi_stats " + Marshal.SizeOf<siaara_roi_stats>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_sr_node_info " + Marshal.SizeOf<siaara_sr_node_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_segment_info " + Marshal.SizeOf<siaara_segment_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));
         r.Add("siaara_rt_roi_info " + Marshal.SizeOf<siaara_rt_roi_info>().ToString(System.Globalization.CultureInfo.InvariantCulture));

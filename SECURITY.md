@@ -22,13 +22,18 @@ A useful report contains:
 Do not include real patient data. If a reproduction needs an image, de-identify it or build a
 synthetic one.
 
-What to expect:
+What to expect (response times):
 
-- an acknowledgement within 5 working days;
-- an assessment (accepted or not, severity) within 15 working days;
-- a fix developed in a private fork, released as a new version with a GitHub security advisory
-  that credits the reporter unless they prefer otherwise. The target is 90 days from the report
-  for a fix, sooner for issues that are being exploited or are easy to trigger remotely.
+- **Acknowledgement** within 5 working days of the report.
+- **Triage and assessment** within 15 working days of the report: whether the report is accepted,
+  its severity, and the affected versions.
+- **Fix target** within 90 days of the report, sooner for issues that are being exploited or are
+  easy to trigger remotely. The fix is developed in a private fork and released as a new version
+  with a GitHub security advisory that credits the reporter unless they prefer otherwise.
+
+Disclosure is coordinated: please keep the report private until the fix is released or the 90
+days have passed, whichever comes first. If a fix needs longer, we will tell you why before the
+deadline and agree a new date with you.
 
 ## Supported versions
 

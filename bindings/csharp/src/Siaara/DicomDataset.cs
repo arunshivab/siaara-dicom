@@ -37,8 +37,6 @@ public sealed partial class DicomDataset
         Item,
     }
 
-    private static readonly DicomTag s_specificCharacterSet = new(0x00080005u);
-
     private readonly DicomFile _file;
     private readonly RootKind _kind;
     private readonly DicomDataset? _parent;
@@ -244,36 +242,17 @@ public sealed partial class DicomDataset
     private int TryGetStringCore(DicomTag tag, int index, out string value)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(index);
-        byte[]? inherited = _kind == RootKind.Item ? _parent!.EffectiveCharacterSet() : null;
+        // An item without its own (0008,0005) carries the enclosing data set's natively (F15).
         using var l = new HandleLease(_file.Handle);
-        var state = (Ds: Resolve(l.Pointer), Tag: tag.Value, Index: (uint)index, Inherited: inherited);
-        if (inherited is null)
-        {
-            return Status.TryReadString(state, static (s, b, out n) =>
-                Native.siaara_dataset_get_utf8(s.Ds, s.Tag, s.Index, b, out n), out value);
-        }
+        var state = (Ds: Resolve(l.Pointer), Tag: tag.Value, Index: (uint)index);
         return Status.TryReadString(state, static (s, b, out n) =>
-            Native.siaara_dataset_get_utf8_cs(s.Ds, s.Tag, s.Index, s.Inherited, b, out n), out value);
+            Native.siaara_dataset_get_utf8(s.Ds, s.Tag, s.Index, b, out n), out value);
     }
 
-    /// <summary>Every value of a text element (decoded with the character set).</summary>
+    /// <summary>Every value of a text element (decoded with the character set), in one native call.</summary>
     /// <param name="tag">The tag.</param>
     /// <returns>The values (empty for an empty element).</returns>
-    public string[] GetStrings(DicomTag tag)
-    {
-        if (_kind != RootKind.Item || _parent!.EffectiveCharacterSet() is null)
-        {
-            // One native call for every value (siaara_dataset_get_strings).
-            return GetStringsCore(tag, utf8: true);
-        }
-        int vm = GetValueMultiplicity(tag);
-        var values = new string[vm];
-        for (int i = 0; i < vm; i++)
-        {
-            values[i] = GetString(tag, i);
-        }
-        return values;
-    }
+    public string[] GetStrings(DicomTag tag) => GetStringsCore(tag, utf8: true);
 
     /// <summary>Every value as stored (no character set conversion), in one native call.</summary>
     /// <param name="tag">The tag.</param>
@@ -310,19 +289,6 @@ public sealed partial class DicomDataset
         var state = (Ds: Resolve(l.Pointer), Tag: tag.Value, Index: (uint)index);
         return Status.ReadString(state, static (s, b, out n) =>
             Native.siaara_dataset_get_string(s.Ds, s.Tag, s.Index, b, out n));
-    }
-
-    /// <summary>
-    /// The (0008,0005) value that applies to this data set: its own, or the nearest enclosing data
-    /// set's. Null when none has one.
-    /// </summary>
-    internal byte[]? EffectiveCharacterSet()
-    {
-        if (TryGetBytes(s_specificCharacterSet, out byte[]? own))
-        {
-            return own;
-        }
-        return _kind == RootKind.Item ? _parent!.EffectiveCharacterSet() : null;
     }
 
     // ------------------------------------------------------------------ numbers
@@ -526,12 +492,8 @@ public sealed partial class DicomDataset
         ArgumentNullException.ThrowIfNull(value);
         byte[] v = Vr(vr);
         byte[] utf8 = Encoding.UTF8.GetBytes(value);
-        byte[]? inherited = _kind == RootKind.Item ? _parent!.EffectiveCharacterSet() : null;
         using var l = new HandleLease(_file.Handle);
-        nint ds = Resolve(l.Pointer);
-        Status.Check(inherited is null
-            ? Native.siaara_dataset_set_utf8(ds, tag.Value, v, utf8)
-            : Native.siaara_dataset_set_utf8_cs(ds, tag.Value, v, utf8, inherited));
+        Status.Check(Native.siaara_dataset_set_utf8(Resolve(l.Pointer), tag.Value, v, utf8));
     }
 
     /// <summary>Stores a value's bytes exactly as given (UTF-8 of value), without character set conversion.</summary>

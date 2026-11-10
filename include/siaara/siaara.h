@@ -325,19 +325,22 @@ SIAARA_API siaara_status SIAARA_CALL siaara_render_rgba8(const siaara_file* file
 /* ---------------------------------------------------------------- character sets (PS3.5 6.1) */
 /* Value vm_index of a text element decoded to UTF-8 using the data set's Specific Character Set
  * (0008,0005), padding removed. Undecodable bytes become U+FFFD. Output buffer convention as
- * above. A sequence item that has no (0008,0005) of its own is decoded with the default
- * repertoire here; use siaara_dataset_get_utf8_cs to pass the enclosing data set's value. */
+ * above. A sequence item that has no (0008,0005) of its own uses the value in force in its
+ * enclosing data set, which the item carries: it is recorded when the file (or JSON / XML) is
+ * read, when a sequence or (0008,0005) is set or removed, and by siaara_dataset_append_item, so
+ * an item handle decodes correctly on its own. siaara_dataset_get_utf8_cs overrides it. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_utf8(const siaara_dataset* ds, uint32_t tag,
                                                              uint32_t vm_index, char* buf, size_t cap,
                                                              size_t* needed);
-/* Encodes utf8 (all values, backslash separated) into the data set's Specific Character Set and
- * stores it. Fails with SIAARA_ERR_UNSUPPORTED, leaving the data set unchanged, when a character
+/* Encodes utf8 (all values, backslash separated) into the data set's Specific Character Set (for
+ * an item without its own, the inherited one as above) and stores it. Fails with SIAARA_ERR_UNSUPPORTED, leaving the data set unchanged, when a character
  * cannot be represented; the message gives the count and the first byte offset. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_set_utf8(siaara_dataset* ds, uint32_t tag,
                                                              const char* vr, const char* utf8,
                                                              size_t len);
 /* As above, with the Specific Character Set to use when ds has no (0008,0005) of its own
- * (the enclosing data set's raw value, for sequence items). inherited may be NULL. */
+ * (the enclosing data set's raw value, for sequence items). inherited may be NULL: then the
+ * value the item carries is used, as siaara_dataset_get_utf8 does. */
 SIAARA_API siaara_status SIAARA_CALL siaara_dataset_get_utf8_cs(const siaara_dataset* ds, uint32_t tag,
                                                                 uint32_t vm_index, const char* inherited,
                                                                 size_t inherited_len, char* buf,
@@ -849,8 +852,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* ba
                                                                   siaara_web_client** out);
 
 /* ---------------------------------------------------------------- clinical objects (appended) */
-/* Plane geometry, orientation, series sorting, SUV, ROI statistics, Structured Reports, DICOM SEG
- * and RT Structure Sets (src/clinical). Pixel coordinates in ROI calls are PIXEL annotation
+/* Plane geometry, orientation, series sorting, Structured Reports, DICOM SEG and RT Structure
+ * Sets (src/clinical). Image coordinates (e.g. RT contours mapped to an image) are PIXEL annotation
  * units (PS3.3 C.10.5.1.2): x = column, y = row, (0,0) = top left corner of the first pixel.
  * Geometry positions use pixel indices with pixel (0,0) centred on Image Position (Patient). */
 
@@ -921,100 +924,6 @@ SIAARA_API siaara_status SIAARA_CALL siaara_series_sort(const siaara_file* const
                                                         uint32_t* out_instance, uint32_t* out_frame,
                                                         uint32_t* out_group, size_t cap, size_t* needed,
                                                         uint32_t* warnings);
-
-/* SUV warnings (bit mask; see src/clinical/suv.hpp for the meaning of each). */
-enum {
-    SIAARA_SUV_MISSING_WEIGHT = 1 << 0,
-    SIAARA_SUV_MISSING_DOSE = 1 << 1,
-    SIAARA_SUV_MISSING_HALF_LIFE = 1 << 2,
-    SIAARA_SUV_MISSING_INJECTION_TIME = 1 << 3,
-    SIAARA_SUV_MISSING_SCAN_TIME = 1 << 4,
-    SIAARA_SUV_INCONSISTENT_TIMES = 1 << 5,
-    SIAARA_SUV_COUNTS_WITHOUT_SCALE = 1 << 6,
-    SIAARA_SUV_NOT_DECAY_CORRECTED = 1 << 7,
-    SIAARA_SUV_NOT_ATTENUATION_CORRECTED = 1 << 8,
-    SIAARA_SUV_UNSUPPORTED_UNITS = 1 << 9,
-    SIAARA_SUV_SERIES_AFTER_ACQUISITION = 1 << 10,
-    SIAARA_SUV_MISSING_HEIGHT = 1 << 11,
-    SIAARA_SUV_MISSING_SEX = 1 << 12,
-    SIAARA_SUV_MIDNIGHT_ROLLOVER = 1 << 13,
-    SIAARA_SUV_INJECTION_DATE_ASSUMED = 1 << 14,
-    SIAARA_SUV_MISSING_UNITS = 1 << 15,
-    SIAARA_SUV_IMPLAUSIBLE_VALUE = 1 << 16,
-    SIAARA_SUV_ALREADY_SUV = 1 << 17,
-    SIAARA_SUV_UNKNOWN_DECAY_CORRECTION = 1 << 18,
-    SIAARA_SUV_MULTIPLE_RADIOPHARMACEUTICALS = 1 << 19,
-    SIAARA_SUV_TIMEZONE_MISMATCH = 1 << 20,
-    SIAARA_SUV_VENDOR_FACTOR_USED = 1 << 21,
-    SIAARA_SUV_PER_IMAGE_SCAN_TIME = 1 << 22
-};
-
-typedef struct siaara_suv {
-    uint32_t struct_size;            /* set to sizeof(siaara_suv) */
-    uint32_t warnings;               /* SIAARA_SUV_* */
-    int32_t has_bw;                  /* 0/1 for each factor below */
-    int32_t has_lbm_james;
-    int32_t has_lbm_janmahasatian;
-    int32_t has_bsa;
-    int32_t has_ibw;
-    int32_t reserved0;
-    double bw;                       /* SUV = modality value (Bq/ml) x factor; body weight, g/ml */
-    double lbm_james;
-    double lbm_janmahasatian;
-    double bsa;                      /* cm2/ml */
-    double ibw;
-    double decay_seconds;            /* 0 when unknown */
-    double decayed_dose_bq;          /* 0 when unknown */
-    /* Appended (F11): which inputs were used and where they came from. A caller built against
-     * the shorter struct (struct_size up to decayed_dose_bq) gets the fields above only. */
-    int32_t scan_time_source;        /* SIAARA_SUV_SRC_*: decay reference time */
-    int32_t injection_time_source;   /* SIAARA_SUV_SRC_* */
-    int32_t decay_correction;        /* SIAARA_SUV_DECAY_*: (0054,1102) as found */
-    int32_t reserved1;
-    double weight_kg;                /* as used; 0 when missing (see warnings) */
-    double injected_dose_bq;
-    double half_life_s;
-} siaara_suv;
-enum {
-    SIAARA_SUV_SRC_NONE = 0,                 /* missing: see SIAARA_SUV_MISSING_* */
-    SIAARA_SUV_SRC_SERIES = 1,               /* Series Date/Time */
-    SIAARA_SUV_SRC_ACQUISITION = 2,          /* this image's Acquisition Date/Time (SIAARA_SUV_PER_IMAGE_SCAN_TIME) */
-    SIAARA_SUV_SRC_EARLIEST_ACQUISITION = 3, /* earliest acquisition of the series (caller option) */
-    SIAARA_SUV_SRC_CALLER = 4,               /* given by the caller */
-    SIAARA_SUV_SRC_ADMINISTRATION = 5,       /* Decay Correction ADMIN: no decay */
-    SIAARA_SUV_SRC_START_DATETIME = 6,       /* Radiopharmaceutical Start DateTime */
-    SIAARA_SUV_SRC_START_TIME_SCAN_DATE = 7  /* Radiopharmaceutical Start Time + the scan date (SIAARA_SUV_INJECTION_DATE_ASSUMED) */
-};
-enum { SIAARA_SUV_DECAY_UNKNOWN = 0, SIAARA_SUV_DECAY_START = 1, SIAARA_SUV_DECAY_ADMIN = 2, SIAARA_SUV_DECAY_NONE = 3 };
-
-/* SUV factors for a PET frame. Returns SIAARA_OK even when no factor can be computed: check
- * has_bw and warnings. */
-SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, uint32_t frame, siaara_suv* out);
-
-enum {
-    SIAARA_ROI_RECTANGLE = 0,        /* params: x0 y0 x1 y1 */
-    SIAARA_ROI_ELLIPSE = 1,          /* params: cx cy rx ry angle(radians) */
-    SIAARA_ROI_CIRCLE = 2,           /* params: cx cy radius */
-    SIAARA_ROI_POLYGON = 3,          /* params: x y pairs (at least 3 vertices) */
-    SIAARA_ROI_FREEHAND = 4          /* params: x y pairs */
-};
-
-typedef struct siaara_roi_stats {
-    uint32_t struct_size;            /* set to sizeof(siaara_roi_stats) */
-    int32_t has_area_mm2;
-    int32_t spacing_source;          /* SIAARA_SPACING_* used for area_mm2 */
-    int32_t reserved0;
-    uint64_t pixels;                 /* pixels with a non-zero weight */
-    double count;                    /* sum of weights */
-    double sum, mean, sd, sd_sample, min, max;
-    double area_px, area_mm2;
-} siaara_roi_stats;
-
-/* Statistics of the modality values of a grayscale frame inside a shape. partial = 1 weights
- * pixels by covered area. */
-SIAARA_API siaara_status SIAARA_CALL siaara_roi_stats_compute(const siaara_file* file, uint32_t frame, int32_t shape,
-                                                              const double* params, size_t param_count, int32_t partial,
-                                                              siaara_roi_stats* out);
 
 /* ---- Structured Reports */
 typedef struct siaara_sr siaara_sr;
@@ -1136,7 +1045,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_rtstruct_contour_points(const siaara
 
 /* ---- RT Dose (PS3.3 C.8.8.3)
  * For an RT Dose object every modality value the library produces (SIAARA_FRAME_FLOAT32_MODALITY,
- * ROI statistics, volumes, fusion, siaara_frame_properties.rescale_slope) is the stored value
+ * volumes, fusion, siaara_frame_properties.rescale_slope) is the stored value
  * times Dose Grid Scaling (3004,000E), i.e. a dose in Dose Units (normally GY). Multi-frame RT
  * Dose volumes place the frames with the Grid Frame Offset Vector (3004,000C), relative (first
  * value 0) or absolute (first value = Image Position (Patient) z, transverse planes only). */

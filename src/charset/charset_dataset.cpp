@@ -32,7 +32,10 @@ std::optional<std::string_view> piece(std::string_view s, char delim, std::size_
 
 CharacterSet character_set_of(const Dataset& ds, const CharacterSet* inherited) {
     if (auto raw = ds.get_raw_string(tags::SpecificCharacterSet)) return CharacterSet::parse(*raw);
-    return inherited ? *inherited : default_set();
+    if (inherited) return *inherited;
+    // An item read on its own: the enclosing data set's value stored on it (F15).
+    if (!ds.inherited_charset().empty()) return CharacterSet::parse(ds.inherited_charset());
+    return default_set();
 }
 
 std::optional<std::string> get_utf8(const Dataset& ds, Tag tag, std::size_t vm, const CharacterSet* inherited) {

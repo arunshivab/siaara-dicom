@@ -72,5 +72,39 @@ internal static class CharsetTests
             Check(srcItem.GetBytes(DicomTags.SeriesDescription).Contains((byte)0xF6));
             CheckEq(srcItem.GetString(DicomTags.SeriesDescription), "Größe");
         });
+
+        Case("charset: F15 items read from a file decode on their own (ISO_IR 192, ISO_IR 100 override)", () =>
+        {
+            string dir = NewTempDir("f15");
+            string path = System.IO.Path.Combine(dir, "f15.dcm");
+            using (DicomFile f = DicomFile.Create())
+            {
+                DicomDataset ds = f.Dataset;
+                ds.SetString(DicomTags.SOPClassUID, "1.2.840.10008.5.1.4.1.1.7");
+                ds.SetString(DicomTags.SOPInstanceUID, "2.25.1515");
+                ds.SetString(DicomTags.SpecificCharacterSet, "ISO_IR 192");
+                DicomDataset a = ds.AppendItem(DicomTags.ReferencedSeriesSequence);
+                a.SetString(DicomTags.SeriesDescription, "Ωμέγα");  // inherits UTF-8
+                DicomDataset b = ds.AppendItem(DicomTags.ReferencedSeriesSequence);
+                b.SetString(DicomTags.SpecificCharacterSet, "ISO_IR 100");  // own value
+                b.SetString(DicomTags.SeriesDescription, "Größe\\Körper");
+                DicomDataset nested = b.AppendItem(DicomTags.ReferencedImageSequence);
+                nested.SetString(DicomTags.SeriesDescription, "Müller");  // inherits Latin-1 from b
+                CheckEq(nested.GetBytes(DicomTags.SeriesDescription)[1], (byte)0xFC);
+                f.Save(path);
+            }
+            using DicomFile g = DicomFile.Open(path);
+            DicomDataset ia = g.Dataset.GetItem(DicomTags.ReferencedSeriesSequence, 0);
+            DicomDataset ib = g.Dataset.GetItem(DicomTags.ReferencedSeriesSequence, 1);
+            DicomDataset inb = ib.GetItem(DicomTags.ReferencedImageSequence, 0);
+            CheckEq(ia.GetString(DicomTags.SeriesDescription), "Ωμέγα");
+            CheckEq(ib.GetString(DicomTags.SeriesDescription, 1), "Körper");
+            CheckEq(string.Join("|", ib.GetStrings(DicomTags.SeriesDescription)), "Größe|Körper");
+            CheckEq(inb.GetString(DicomTags.SeriesDescription), "Müller");
+            CheckEq(string.Join("|", inb.GetStrings(DicomTags.SeriesDescription)), "Müller");
+            // Removing the override: the nested item now inherits UTF-8, its Latin-1 byte is invalid.
+            ib.Remove(DicomTags.SpecificCharacterSet);
+            Check(inb.GetString(DicomTags.SeriesDescription).Contains('\uFFFD', StringComparison.Ordinal));
+        });
     }
 }

@@ -510,6 +510,7 @@ Result<Dataset> dataset_from_xml(std::string_view text, const ModelReadOptions& 
     Dataset ds;
     if (Status st = dec.dataset(*root, ds, 0); !st) return st;
     if (opt.set_utf8_charset) detail::apply_utf8_charset(ds, dec.non_ascii);
+    propagate_inherited_charset(ds);  // F15: items know the character set in force
     return ds;
 }
 

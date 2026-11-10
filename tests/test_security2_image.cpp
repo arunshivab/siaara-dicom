@@ -5,7 +5,6 @@
 #include <utility>
 #include <vector>
 
-#include "clinical/roi.hpp"
 #include "core/dataset.hpp"
 #include "image/overlay.hpp"
 #include "image/pixel_info.hpp"
@@ -35,12 +34,6 @@ std::size_t visible_count(const image::Shutters& sh, std::uint32_t rows, std::ui
 
 TEST_CASE("R-083: far-away vertices do not overflow the double to integer conversions") {
     // Under UBSan the old casts of 1e300 were undefined behaviour (float-cast-overflow).
-    const std::vector<clinical::Point2> poly = {{-1e300, 2.0}, {1e300, 2.0}, {1e300, 1e300}, {-1e300, 1e300}};
-    auto m = clinical::roi_mask(16, 16, clinical::Roi::polygon(poly));
-    REQUIRE(m);
-    std::size_t in = 0;
-    for (float v : *m) in += v > 0.0f ? 1u : 0u;
-    CHECK_EQ(in, 16u * 14u);  // rows 2..15 entirely inside
     image::Shutters sh;
     sh.polygonal = true;
     sh.vertices = {{-1e300, -1e300}, {-1e300, 1e300}, {1e300, 1e300}, {1e300, -1e300}};
