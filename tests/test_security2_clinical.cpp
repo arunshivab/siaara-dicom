@@ -173,7 +173,8 @@ TEST_CASE("R-054: many segments are indexed in constant time") {
 }
 
 TEST_CASE("R-056: a 2,000-point POLYLINE far outside an 8x8 image is clipped, not stepped") {
-    auto img = image::Image::open(blank_image(8, 8), "1.2.840.10008.1.2.1");
+    const Dataset img_ds = blank_image(8, 8);
+    auto img = image::Image::open(img_ds, "1.2.840.10008.1.2.1");
     REQUIRE(img);
     std::vector<Point2> pts;
     for (int i = 0; i < 2000; ++i) pts.push_back({i % 2 ? 4.0e6 : -4.0e6, i % 4 < 2 ? 4.0 : 5.0});
@@ -187,7 +188,8 @@ TEST_CASE("R-056: a 2,000-point POLYLINE far outside an 8x8 image is clipped, no
 }
 
 TEST_CASE("R-056: drawing work is budgeted per render") {
-    auto img = image::Image::open(blank_image(64, 64), "1.2.840.10008.1.2.1");
+    const Dataset img_ds = blank_image(64, 64);
+    auto img = image::Image::open(img_ds, "1.2.840.10008.1.2.1");
     REQUIRE(img);
     std::vector<GraphicObject> objs;
     for (int i = 0; i < 200; ++i) objs.push_back(object(GraphicType::Polyline, {{0.0, 0.0}, {64.0, 64.0}}));
@@ -202,7 +204,8 @@ TEST_CASE("R-056: drawing work is budgeted per render") {
 
 TEST_CASE("R-056: polygon fill is an edge-table scan and matches the ROI centre rule") {
     // Many-vertex zigzag polygon over a tall canvas: rows x vertices was the old cost.
-    auto img = image::Image::open(blank_image(8000, 40), "1.2.840.10008.1.2.1");
+    const Dataset img_ds = blank_image(8000, 40);
+    auto img = image::Image::open(img_ds, "1.2.840.10008.1.2.1");
     REQUIRE(img);
     std::vector<Point2> zig;
     for (int i = 0; i < 65000; ++i) zig.push_back({i % 2 ? 30.0 : 10.0, 1.0 + i * (7998.0 / 65000.0)});
@@ -213,7 +216,8 @@ TEST_CASE("R-056: polygon fill is an edge-table scan and matches the ROI centre 
     REQUIRE(r);
     CHECK(seconds_since(t0) < 2.0);
     // Exactness against roi_mask on simple shapes (pixel centres, even-odd).
-    auto small = image::Image::open(blank_image(20, 20), "1.2.840.10008.1.2.1");
+    const Dataset small_ds = blank_image(20, 20);
+    auto small = image::Image::open(small_ds, "1.2.840.10008.1.2.1");
     REQUIRE(small);
     const std::vector<std::vector<Point2>> polys = {
         {{2.2, 3.1}, {17.5, 4.0}, {9.0, 18.7}},

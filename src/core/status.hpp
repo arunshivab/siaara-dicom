@@ -48,6 +48,7 @@ struct [[nodiscard]] Status {
         try {
             s.message = msg;
         } catch (...) {
+            s.message.clear();  // no memory for the text: the code alone
         }
         return s;
     }

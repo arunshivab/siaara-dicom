@@ -162,7 +162,8 @@ Result<Segmentation> read_segmentation(const Dataset& ds, bool lenient) {
         s.type = read_code(it, tags::SegmentedPropertyTypeCodeSequence);
         if (auto lab = get_numbers_n(it, tags::RecommendedDisplayCielabValue, 3)) {
             std::array<std::uint16_t, 3> l{};
-            for (std::size_t k = 0; k < 3; ++k) l[k] = static_cast<std::uint16_t>(std::clamp((*lab)[k], 0.0, 65535.0));
+            const std::vector<double>& vals = *lab;
+            for (std::size_t k = 0; k < 3; ++k) l[k] = static_cast<std::uint16_t>(std::clamp(vals[k], 0.0, 65535.0));
             s.cielab = l;
             s.rgb = cielab_to_rgb8(l[0], l[1], l[2]);
         }

@@ -244,7 +244,11 @@ Status write_file_atomic(const std::string& utf8_path, const std::uint8_t* data,
     const int e = errno;
     ::unlink(tmp.c_str());
     if (e == EEXIST) return Status(Errc::Rejected, "file exists");
-    if (e == EPERM || e == ENOTSUP || e == EOPNOTSUPP || e == EMLINK || e == ENOSYS)
+    bool no_links = e == EPERM || e == EOPNOTSUPP || e == EMLINK || e == ENOSYS;
+#if defined(ENOTSUP) && ENOTSUP != EOPNOTSUPP
+    no_links = no_links || e == ENOTSUP;
+#endif
+    if (no_links)
         return write_exclusive_in_place(utf8_path, data, size);
     return Status(Errc::IoError, "rename failed");
 }

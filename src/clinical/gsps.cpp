@@ -226,7 +226,8 @@ Status read_annotations(const Dataset& ds, PresentationState& ps, bool lenient) 
             auto data = get_numbers(g, tags::GraphicData, 2 * kMaxGraphicPoints);
             const auto npts = g.get_int(tags::NumberOfGraphicPoints);
             bool ok = have_units && have_type && dims == 2 && data && data->size() % 2 == 0;
-            if (data && (total_points += data->size() / 2) > kMaxGraphicPointsTotal)
+            if (data) total_points += data->size() / 2;
+            if (total_points > kMaxGraphicPointsTotal)
                 return Status(Errc::LimitExceeded, "presentation state has more than 2^20 graphic points");
             if (ok && npts && static_cast<std::size_t>(*npts) * 2 != data->size()) ok = false;
             if (ok) {

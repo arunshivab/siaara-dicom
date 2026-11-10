@@ -449,17 +449,14 @@ bool BodyBudget::take(std::uint64_t n, const std::string& peer) noexcept {
 
 void BodyBudget::give(std::uint64_t n, const std::string& peer) noexcept {
     if (limit_ == 0) return;
-    try {
-        const std::lock_guard<std::mutex> lk(mu_);
-        used_ -= std::min(used_, n);
-        if (!peer.empty()) {
-            auto it = per_peer_.find(peer);
-            if (it != per_peer_.end()) {
-                it->second -= std::min(it->second, n);
-                if (it->second == 0) per_peer_.erase(it);
-            }
+    const std::lock_guard<std::mutex> lk(mu_);  // find/erase do not allocate
+    used_ -= std::min(used_, n);
+    if (!peer.empty()) {
+        auto it = per_peer_.find(peer);
+        if (it != per_peer_.end()) {
+            it->second -= std::min(it->second, n);
+            if (it->second == 0) per_peer_.erase(it);
         }
-    } catch (...) {
     }
 }
 
@@ -1196,16 +1193,15 @@ void Server::accept_loop() {
         if (active >= cfg_.max_connections) {
             // Handed to the reject thread; the accept thread never writes to or waits on the peer.
             constexpr std::size_t kMaxPendingRejects = 16;
-            bool queued = false;
-            {
-                std::lock_guard<std::mutex> lk(reject_mu_);
-                if (reject_queue_.size() < kMaxPendingRejects) {
-                    reject_queue_.push_back(std::move(t).value());
-                    queued = true;
-                }
+            std::unique_lock<std::mutex> lk(reject_mu_);
+            if (reject_queue_.size() < kMaxPendingRejects) {
+                reject_queue_.push_back(std::move(t).value());
+                lk.unlock();
+                reject_cv_.notify_one();
+            } else {
+                lk.unlock();
+                t.value()->close();
             }
-            if (queued) reject_cv_.notify_one();
-            else t.value()->close();
             if (cfg_.log) cfg_.log("http: connection refused (busy)");
             continue;
         }
