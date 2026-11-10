@@ -390,14 +390,14 @@ jobs:
         env:
           NUGET_PACKAGES: ${{ runner.temp }}/app-nuget-packages
           NUGET_HTTP_CACHE_PATH: ${{ runner.temp }}/app-nuget-http
+          # Env keys are case-insensitive to GitHub (a duplicate rejects the whole workflow), so the
+          # lower-case proxy variables are exported in the script instead.
           HTTP_PROXY: http://127.0.0.1:9
           HTTPS_PROXY: http://127.0.0.1:9
-          http_proxy: http://127.0.0.1:9
-          https_proxy: http://127.0.0.1:9
           NO_PROXY: ""
-          no_proxy: ""
           DOTNET_CLI_TELEMETRY_OPTOUT: "1"
         run: |
+          export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY" no_proxy=""
           dotnet restore app/Siaara.Viewer.slnx
           dotnet build app/Siaara.Viewer.slnx -c Release --no-restore
           echo "package folder:"; ls "$NUGET_PACKAGES"
