@@ -108,9 +108,10 @@ public static class AppLog
     /// <param name="folder">Log folder.</param>
     public static void Open(string folder)
     {
-        Directory.CreateDirectory(folder);
+        Platform.OwnerOnly.CreateDirectory(folder);
         string file = Path.Combine(folder, "siaara-viewer-" + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".log");
-        var fs = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        // Owner-only from the create call on (0600 / owner-only ACL).
+        FileStream fs = Platform.OwnerOnly.OpenAppend(file, FileShare.ReadWrite);
         lock (s_gate)
         {
             s_writer?.Dispose();

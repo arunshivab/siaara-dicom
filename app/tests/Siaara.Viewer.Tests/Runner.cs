@@ -183,6 +183,8 @@ internal static class Program
             RobustnessTests.Register();
             ProtocolTests.Register();
             HostTests.Register();
+            AuditTests.Register();
+            SecurityTests.Register();
             PerfTests.Register();
             return await T.RunAsync(filters).ConfigureAwait(false);
         }

@@ -20,7 +20,7 @@ namespace Siaara.Viewer.Core.Viewing;
 /// <param name="Scheduler">Scheduler.</param>
 /// <param name="Settings">Settings.</param>
 /// <param name="Annotations">Annotation store.</param>
-/// <param name="Audit">Audit log for image exports, or null (tests).</param>
+/// <param name="Audit">Audit log for image exports and annotation / calibration changes, or null (tests).</param>
 public sealed record ViewerServices(StoreService Store, RenderCache Cache, ToolkitScheduler Scheduler, SettingsStore Settings, AnnotationStore Annotations,
                                     AuditLog? Audit = null);
 
@@ -2325,8 +2325,24 @@ public sealed class ViewerSession : IDisposable
             {
                 line.TrueLengthMm = trueLengthMm;
                 double scale = trueLengthMm / px;
-                await _svc.Scheduler.RunAsync(WorkPool.StoreRead, _ => _svc.Annotations.SaveCalibration(img.Instance.SopInstanceUid, scale), _closedToken)
-                    .ConfigureAwait(false);
+                var calibration = new Dictionary<string, string>
+                {
+                    ["patientKey"] = Study?.PatientKey ?? "",
+                    ["study"] = StudyInstanceUid,
+                    ["sop"] = img.Instance.SopInstanceUid,
+                    ["mmPerPixel"] = scale.ToString("R", CultureInfo.InvariantCulture),
+                };
+                try
+                {
+                    await _svc.Scheduler.RunAsync(WorkPool.StoreRead, _ => _svc.Annotations.SaveCalibration(img.Instance.SopInstanceUid, scale), _closedToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    _svc.Audit?.Append("calibration.change", AuditOutcome.Failure, calibration, Plain(e));
+                    throw;
+                }
+                _svc.Audit?.Append("calibration.change", AuditOutcome.Success, calibration);
                 lock (_gate)
                 {
                     foreach (KeyValuePair<FrameKey, AnnotationDocument> kv in _docs.Where(k => k.Key.SopInstanceUid == img.Instance.SopInstanceUid))
@@ -2348,7 +2364,30 @@ public sealed class ViewerSession : IDisposable
         {
             snapshot = new AnnotationDocument { SopInstanceUid = doc.SopInstanceUid, Frame = doc.Frame, Annotations = [.. doc.Annotations.Select(a => a.Clone())] };
         }
-        return _svc.Scheduler.RunAsync(WorkPool.StoreRead, _ => _svc.Annotations.Save(snapshot), _closedToken);
+        return SaveAuditedAsync(snapshot);
+    }
+
+    // Every stored change of a frame's annotations is audited (R-127): which image, how many shapes; never their text.
+    private async Task SaveAuditedAsync(AnnotationDocument snapshot)
+    {
+        var fields = new Dictionary<string, string>
+        {
+            ["patientKey"] = Study?.PatientKey ?? "",
+            ["study"] = StudyInstanceUid,
+            ["sop"] = snapshot.SopInstanceUid,
+            ["frame"] = snapshot.Frame.ToString(CultureInfo.InvariantCulture),
+            ["annotations"] = snapshot.Annotations.Count.ToString(CultureInfo.InvariantCulture),
+        };
+        try
+        {
+            await _svc.Scheduler.RunAsync(WorkPool.StoreRead, _ => _svc.Annotations.Save(snapshot), _closedToken).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _svc.Audit?.Append("annotation.change", AuditOutcome.Failure, fields, Plain(e));
+            throw;
+        }
+        _svc.Audit?.Append("annotation.change", AuditOutcome.Success, fields);
     }
 
     private async Task ClearAnnotationsAsync(Viewport vp)

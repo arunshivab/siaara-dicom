@@ -112,6 +112,11 @@ internal static class MeasureTests
                 T.Eq(a.Single(x => x.Kind == AnnotationKind.Calibration).Label, "50 mm (manually calibrated)");
                 T.Eq(a.Single(x => x.Kind == AnnotationKind.Length).Spacing, "manual");
             }
+            // R-127: stored annotation and calibration changes are audited (which image, how many shapes, the scale).
+            IReadOnlyList<Core.Audit.AuditEntry> audit = Core.Audit.AuditLog.ReadEntries(env.Paths.AuditFile);
+            T.Check(audit.Count(e => e.Event == "annotation.change" && e.Outcome == "success" && e.Data.ContainsKey("sop") && e.Data.ContainsKey("annotations")) >= 2);
+            Core.Audit.AuditEntry? calibrated = audit.SingleOrDefault(e => e.Event == "calibration.change");
+            T.Check(calibrated is not null && calibrated.Outcome == "success" && calibrated.Data["mmPerPixel"] == "2.5");
         });
 
         T.Case("measure: ROI labels equal the app's ROI statistics on the toolkit's modality values", async () =>

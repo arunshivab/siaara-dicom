@@ -1,20 +1,33 @@
 // SIAARA Viewer. Copyright (c) Sthraas Intelligence Pvt Ltd.
 
 using System.Text;
+using Siaara.Viewer.Core.Logging;
+using Siaara.Viewer.Core.Platform;
+using Siaara.Viewer.Web.Security;
 
 namespace Siaara.Viewer.Host;
 
+/// <summary>What a second start reads from the instance file: where the running instance listens and one unused launch secret.</summary>
+/// <param name="Endpoint">http://host:port/launch.</param>
+/// <param name="Secret">Launch secret (single use).</param>
+internal sealed record InstanceEntry(Uri Endpoint, string Secret);
+
 /// <summary>
-/// Per-user single-instance lock: an exclusively opened lock file while the app runs, plus a file
-/// with the running instance's launch URL (owner-only permissions) so a second start can bring the
-/// existing window forward instead of opening the store twice.
+/// Per-user single-instance lock: an exclusively opened lock file while the app runs, plus the
+/// instance file with the running instance's address and one unused launch secret, so a second
+/// start can bring a window forward instead of opening the store twice. The instance file is
+/// created for the current user only in the create call itself (mode 0600 on Unix, a protected ACL
+/// naming only the user on Windows), under a temporary name, and renamed into place; a second start
+/// refuses a file that others can read. Each secret in it is single-use and is replaced the moment
+/// it is used or expires.
 /// </summary>
 internal sealed class InstanceLock : IDisposable
 {
     private readonly FileStream _lock;
     private readonly string _urlFile;
     private readonly Lock _gate = new();
-    private Uri? _published;
+    private LaunchTicket? _published;
+    private LaunchSecurity? _security;
 
     private InstanceLock(FileStream lockStream, string urlFile)
     {
@@ -24,15 +37,14 @@ internal sealed class InstanceLock : IDisposable
 
     /// <summary>Takes the lock, or returns null when another instance holds it.</summary>
     /// <param name="lockFile">Lock file.</param>
-    /// <param name="urlFile">URL file.</param>
+    /// <param name="urlFile">Instance file.</param>
     /// <returns>The lock or null.</returns>
     public static InstanceLock? TryAcquire(string lockFile, string urlFile)
     {
         try
         {
-            var fs = new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             // FileShare.None is an exclusive lock on Windows and an exclusive flock() on Unix.
-            return new InstanceLock(fs, urlFile);
+            return new InstanceLock(OwnerOnly.OpenAppend(lockFile, FileShare.None), urlFile);
         }
         catch (IOException)
         {
@@ -44,23 +56,18 @@ internal sealed class InstanceLock : IDisposable
         }
     }
 
-    /// <summary>
-    /// Writes the launch URL for a second start. The file is created owner-only BEFORE anything is
-    /// written to it (mode 0600 on Unix, a protected ACL granting only the current user on Windows),
-    /// under a temporary name, then renamed over the old file, so no other user can ever read a
-    /// secret from it. The URL is single-use; the host writes a fresh one after each use.
-    /// </summary>
-    /// <param name="url">URL.</param>
-    public void PublishUrl(Uri url)
+    /// <summary>Writes the instance file (owner-only from the create call on, then renamed over the old one).</summary>
+    /// <param name="ticket">The address and unused secret for a second start.</param>
+    public void Publish(LaunchTicket ticket)
     {
-        ArgumentNullException.ThrowIfNull(url);
+        ArgumentNullException.ThrowIfNull(ticket);
         string dir = Path.GetDirectoryName(Path.GetFullPath(_urlFile)) ?? ".";
         string tmp = Path.Combine(dir, "." + Path.GetFileName(_urlFile) + "." + Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
-            using (FileStream fs = CreateOwnerOnly(tmp))
+            using (FileStream fs = OwnerOnly.CreateNew(tmp))
             {
-                fs.Write(new UTF8Encoding(false).GetBytes(url.AbsoluteUri));
+                fs.Write(new UTF8Encoding(false).GetBytes(ticket.Url.AbsoluteUri));
                 fs.Flush(flushToDisk: true);
             }
             File.Move(tmp, _urlFile, overwrite: true);
@@ -75,86 +82,90 @@ internal sealed class InstanceLock : IDisposable
     }
 
     /// <summary>
-    /// Keeps a fresh, unused launch URL in the instance file: publishes one now and a new one each
-    /// time the published one is used (the running instance is brought forward by a second start).
+    /// Keeps a fresh, unused launch secret in the instance file: publishes one now and a new one each
+    /// time the published one is used (a second start brought a window forward) or withdrawn.
     /// </summary>
     /// <param name="security">The running instance's launch security.</param>
-    public void KeepFresh(Web.Security.LaunchSecurity security)
+    public void KeepFresh(LaunchSecurity security)
     {
         ArgumentNullException.ThrowIfNull(security);
+        _security = security;
+        Renew(null);
+        security.LaunchUsed += (_, used) => Renew(used.Secret);
+    }
+
+    /// <summary>The launch page made from the published secret expired unused: withdraw that secret and publish a new one.</summary>
+    /// <param name="fingerprint">Fingerprint from the page's file name.</param>
+    public void RenewIfFingerprint(string fingerprint)
+    {
+        LaunchTicket? current;
         lock (_gate)
         {
-            _published = security.IssueLaunchUrl();
-            PublishUrl(_published);
+            current = _published;
         }
-        security.LaunchUrlUsed += (_, used) =>
+        if (current is not null && LaunchPages.Fingerprint(current.Secret) == fingerprint)
         {
-            lock (_gate)
+            _security?.Revoke(current);
+            Renew(current.Secret);
+        }
+    }
+
+    // Publishes a new ticket when none is published yet (secret null) or the given secret is the published one.
+    private void Renew(string? secret)
+    {
+        lock (_gate)
+        {
+            if (_security is null || secret is not null && _published?.Secret != secret)
             {
-                if (_published is not null && used.Url == _published)
-                {
-                    try
-                    {
-                        _published = security.IssueLaunchUrl();
-                        PublishUrl(_published);
-                    }
-                    catch (IOException e)
-                    {
-                        Core.Logging.AppLog.Error("host", "the instance file could not be renewed", e);
-                    }
-                    catch (UnauthorizedAccessException e)
-                    {
-                        Core.Logging.AppLog.Error("host", "the instance file could not be renewed", e);
-                    }
-                }
+                return;
             }
-        };
-    }
-
-    /// <summary>Creates a new file readable and writable by the current user only (permissions set at creation).</summary>
-    /// <param name="path">File (must not exist).</param>
-    /// <returns>The open stream.</returns>
-    internal static FileStream CreateOwnerOnly(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return CreateOwnerOnlyWindows(path);
+            try
+            {
+                _published = _security.IssueLaunch();
+                Publish(_published);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Error("host", "the instance file could not be renewed", e);
+            }
         }
-        return new FileStream(path, new FileStreamOptions
-        {
-            Mode = FileMode.CreateNew,
-            Access = FileAccess.Write,
-            Share = FileShare.None,
-            UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
-        });
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static FileStream CreateOwnerOnlyWindows(string path)
-    {
-        using var me = System.Security.Principal.WindowsIdentity.GetCurrent();
-        var security = new System.Security.AccessControl.FileSecurity();
-        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        security.SetOwner(me.User!);
-        security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(me.User!,
-            System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
-        return System.IO.FileSystemAclExtensions.Create(new FileInfo(path), FileMode.CreateNew, System.Security.AccessControl.FileSystemRights.FullControl,
-            FileShare.None, 4096, FileOptions.None, security);
-    }
-
-    /// <summary>The URL of the running instance, or null.</summary>
-    /// <param name="urlFile">URL file.</param>
-    /// <returns>URL.</returns>
-    public static Uri? ReadUrl(string urlFile)
+    /// <summary>
+    /// Reads the instance file of the running instance. Null when it is missing, malformed, not an
+    /// address of this computer's loopback interface, or readable by anybody but the current user.
+    /// </summary>
+    /// <param name="urlFile">Instance file.</param>
+    /// <returns>The entry or null.</returns>
+    public static InstanceEntry? Read(string urlFile)
     {
         try
         {
-            return Uri.TryCreate(File.ReadAllText(urlFile).Trim(), UriKind.Absolute, out Uri? u) && u.IsLoopback ? u : null;
+            if (!File.Exists(urlFile) || OwnerOnly.WiderAccess(urlFile) is not null)
+            {
+                return null;
+            }
+            return Parse(File.ReadAllText(urlFile));
         }
-        catch (IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             return null;
         }
+    }
+
+    /// <summary>Parses the instance file's text: http://HOST:PORT/launch?k=SECRET with HOST 127.0.0.1 or a *.localhost name.</summary>
+    /// <param name="text">File content.</param>
+    /// <returns>The entry or null.</returns>
+    public static InstanceEntry? Parse(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (!Uri.TryCreate(text.Trim(), UriKind.Absolute, out Uri? u) || u.Scheme != Uri.UriSchemeHttp || u.AbsolutePath != "/launch"
+            || !(u.Host == "127.0.0.1" || u.Host.EndsWith(".localhost", StringComparison.Ordinal)) || !u.Query.StartsWith("?k=", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        string secret = u.Query[3..];
+        return secret.Length == 64 && secret.All(char.IsAsciiHexDigit) ? new InstanceEntry(new Uri(u.GetLeftPart(UriPartial.Path)), secret) : null;
     }
 
     /// <inheritdoc/>

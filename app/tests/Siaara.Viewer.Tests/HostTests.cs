@@ -25,56 +25,12 @@ internal static class HostTests
     private static readonly string[] RequiredEvents = ["app.start", "import", "study.open", "study.delete", "app.stop"];
 
     private static Task<RunningViewer> StartAsync(string name) =>
-        ViewerHost.StartAsync(new HostOptions { DataDir = T.NewTempDir(name), MapStaticAssets = false });
+        TestHost.StartAsync(T.NewTempDir(name));
 
-    private static HttpClient Client(RunningViewer v, bool cookie)
-    {
-        HttpClientHandler? handler = null;
-        try
-        {
-            handler = new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false };
-            // Plain HTTP on the loopback interface: there is no certificate to check (CA5399 does not apply).
-#pragma warning disable CA5399
-            var c = new HttpClient(handler, disposeHandler: true) { BaseAddress = v.BaseUrl };
-#pragma warning restore CA5399
-            handler = null;
-            if (cookie)
-            {
-                c.DefaultRequestHeaders.Add("Cookie", v.Security.CookieName + "=" + v.Security.CookieValue);
-            }
-            return c;
-        }
-        finally
-        {
-            handler?.Dispose();
-        }
-    }
+    private static HttpClient Client(RunningViewer v, bool cookie) => TestHost.Client(v, cookie);
 
-    private static async Task<(ClientWebSocket? Socket, HttpStatusCode Status)> ConnectAsync(RunningViewer v, string session, bool cookie, string? origin)
-    {
-        var ws = new ClientWebSocket();
-        ws.Options.CollectHttpResponseDetails = true;
-        if (cookie)
-        {
-            ws.Options.SetRequestHeader("Cookie", v.Security.CookieName + "=" + v.Security.CookieValue);
-        }
-        if (origin is not null)
-        {
-            ws.Options.SetRequestHeader("Origin", origin);
-        }
-        try
-        {
-            await ws.ConnectAsync(new Uri("ws://127.0.0.1:" + v.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/ws/view?s=" + session),
-                CancellationToken.None).ConfigureAwait(false);
-            return (ws, ws.HttpStatusCode);
-        }
-        catch (WebSocketException)
-        {
-            HttpStatusCode code = ws.HttpStatusCode;
-            ws.Dispose();
-            return (null, code);
-        }
-    }
+    private static Task<(ClientWebSocket? Socket, HttpStatusCode Status)> ConnectAsync(RunningViewer v, string session, bool cookie, string? origin) =>
+        TestHost.ConnectAsync(v, session, cookie, origin);
 
     private static async Task<byte[]> ReceiveAsync(ClientWebSocket ws, int timeoutMs = 10000)
     {
@@ -150,30 +106,52 @@ internal static class HostTests
                 using HttpClient anon = Client(v, cookie: false);
                 T.Eq((await anon.GetAsync(new Uri("/", UriKind.Relative)).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
                 T.Eq((await anon.GetAsync(new Uri("/launch?k=00", UriKind.Relative)).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
-                Uri launchUrl = v.Security.IssueLaunchUrl();
-                string secret = launchUrl.Query[3..];
-                using HttpResponseMessage launch = await anon.GetAsync(launchUrl).ConfigureAwait(false);
-                T.Eq(launch.StatusCode, HttpStatusCode.Redirect);
+                // The app is served under a random *.localhost name, bound to 127.0.0.1.
+                T.Check(v.Security.HostName.Length == 32 + ".localhost".Length && v.Security.HostName.EndsWith(".localhost", StringComparison.Ordinal));
+                T.Eq(v.Security.Origin, "http://" + v.Security.HostName + ":" + TestHost.PortText(v));
+                Web.Security.LaunchTicket ticket = v.Security.IssueLaunch();
+                string secret = ticket.Secret;
+                T.Eq((await anon.GetAsync(new Uri("/launch?k=" + new string('0', 64), UriKind.Relative)).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
+                // The launch page posts the secret (not in any address); the answer is a page of ours, not a redirect.
+                using HttpResponseMessage launch = await TestHost.PostLaunchAsync(anon, secret).ConfigureAwait(false);
+                T.Eq(launch.StatusCode, HttpStatusCode.OK);
                 string setCookie = string.Join(";", launch.Headers.GetValues("Set-Cookie")).ToLowerInvariant();
                 T.Check(setCookie.Contains("httponly", StringComparison.Ordinal) && setCookie.Contains("samesite=strict", StringComparison.Ordinal));
                 T.Check(setCookie.Contains(v.Security.CookieValue, StringComparison.Ordinal));
                 T.Check(!setCookie.Contains(secret, StringComparison.Ordinal));
-                // Host-only (no Domain), named after the port, path /.
+                // Host-only (no Domain), path /, no lifetime (a session cookie).
                 T.Check(!setCookie.Contains("domain=", StringComparison.Ordinal));
+                T.Check(setCookie.Contains("path=/", StringComparison.Ordinal));
+                T.Check(!setCookie.Contains("expires=", StringComparison.Ordinal) && !setCookie.Contains("max-age=", StringComparison.Ordinal));
                 T.Check(setCookie.StartsWith(v.Security.CookieName + "=", StringComparison.Ordinal));
-                // Single use: the same URL is refused the second time.
-                using (HttpResponseMessage again = await anon.GetAsync(launchUrl).ConfigureAwait(false))
+                string launched = await launch.Content.ReadAsStringAsync().ConfigureAwait(false);
+                T.Check(launched.Contains("http-equiv=\"refresh\"", StringComparison.Ordinal) && !launched.Contains(secret, StringComparison.Ordinal));
+                // Single use: the same secret is refused the second time, by POST and in an address.
+                using (HttpResponseMessage again = await TestHost.PostLaunchAsync(anon, secret).ConfigureAwait(false))
                 {
                     T.Eq(again.StatusCode, HttpStatusCode.Forbidden);
                     T.Check(!again.Headers.Contains("Set-Cookie"));
+                    T.Check((await again.Content.ReadAsStringAsync().ConfigureAwait(false)).Contains("already used", StringComparison.Ordinal));
                 }
-                // An unused URL expires; a revoked one is refused.
-                Uri shortLived = v.Security.IssueLaunchUrl(TimeSpan.FromMilliseconds(50));
+                T.Eq((await anon.GetAsync(ticket.Url).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
+                // The printed address (--print-url) works once as a GET.
+                Web.Security.LaunchTicket printed = v.Security.IssueLaunch();
+                using (HttpResponseMessage byUrl = await anon.GetAsync(printed.Url).ConfigureAwait(false))
+                {
+                    T.Eq(byUrl.StatusCode, HttpStatusCode.OK);
+                    T.Check(byUrl.Headers.Contains("Set-Cookie"));
+                }
+                // An unused secret expires; a revoked one is refused.
+                Web.Security.LaunchTicket shortLived = v.Security.IssueLaunch(TimeSpan.FromMilliseconds(50));
                 await Task.Delay(150).ConfigureAwait(false);
-                T.Eq((await anon.GetAsync(shortLived).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
-                Uri revoked = v.Security.IssueLaunchUrl();
+                using (HttpResponseMessage late = await TestHost.PostLaunchAsync(anon, shortLived.Secret).ConfigureAwait(false))
+                {
+                    T.Eq(late.StatusCode, HttpStatusCode.Forbidden);
+                    T.Check((await late.Content.ReadAsStringAsync().ConfigureAwait(false)).Contains("expired", StringComparison.Ordinal));
+                }
+                Web.Security.LaunchTicket revoked = v.Security.IssueLaunch();
                 v.Security.Revoke(revoked);
-                T.Eq((await anon.GetAsync(revoked).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
+                T.Eq((await TestHost.PostLaunchAsync(anon, revoked.Secret).ConfigureAwait(false)).StatusCode, HttpStatusCode.Forbidden);
                 T.Eq(v.Security.OutstandingSecrets, 0);
 
                 using HttpClient authed = Client(v, cookie: true);
@@ -183,9 +161,11 @@ internal static class HostTests
                     rebinding.Headers.Host = "evil.example:" + v.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     T.Eq((await authed.SendAsync(rebinding).ConfigureAwait(false)).StatusCode, HttpStatusCode.BadRequest);
                 }
-                // Only the exact origin: another port in the Host header, or "localhost", is refused.
-                foreach (string host in new[] { "127.0.0.1:" + (v.Port == 65535 ? 1 : v.Port + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
-                                                "localhost:" + v.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), "127.0.0.1" })
+                // Only the exact host name and port: plain 127.0.0.1 (where cookies are shared by every port), "localhost",
+                // another *.localhost name and another port are all refused.
+                foreach (string host in new[] { v.Security.HostName + ":" + (v.Port == 65535 ? 1 : v.Port + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                                "127.0.0.1:" + TestHost.PortText(v), "localhost:" + TestHost.PortText(v), "127.0.0.1", v.Security.HostName,
+                                                new string('a', 32) + ".localhost:" + TestHost.PortText(v) })
                 {
                     using var other = new HttpRequestMessage(HttpMethod.Get, "/api/health");
                     other.Headers.Host = host;
@@ -224,7 +204,7 @@ internal static class HostTests
         T.Case("e2e: real Kestrel host streams frames over /ws/view with the right size and format; audit and logs", async () =>
         {
             string data = T.NewTempDir("e2e");
-            RunningViewer v = await ViewerHost.StartAsync(new HostOptions { DataDir = data, MapStaticAssets = false }).ConfigureAwait(false);
+            RunningViewer v = await TestHost.StartAsync(data).ConfigureAwait(false);
             string studyUid, patientId = "E2E0001", patientName = "E2EPATIENT^SECRETNAME";
             await using (v.ConfigureAwait(false))
             {
@@ -242,10 +222,14 @@ internal static class HostTests
                 T.Check(page.Contains("_framework/blazor.web.js", StringComparison.Ordinal));
                 T.Check(page.Contains("siaara-view.js", StringComparison.Ordinal));
                 T.Check(page.Contains("SAMPLE", StringComparison.Ordinal) || page.Contains("E2EPATIENT", StringComparison.Ordinal));
-                using HttpResponseMessage viewer = await http.GetAsync(new Uri("/viewer/" + Uri.EscapeDataString(studyUid), UriKind.Relative)).ConfigureAwait(false);
+                // No UID in any address (R-145): the page and the thumbnails use per-run ids.
+                T.Check(!page.Contains(studyUid, StringComparison.Ordinal));
+                using HttpResponseMessage viewer = await http.GetAsync(new Uri("/viewer/" + v.Runtime.Ids.For(studyUid), UriKind.Relative)).ConfigureAwait(false);
                 T.Eq(viewer.StatusCode, HttpStatusCode.OK);
-                using HttpResponseMessage thumb = await http.GetAsync(new Uri("/api/thumb?series=" + Uri.EscapeDataString(
-                    (await v.Runtime.Store.GetSeriesAsync(studyUid).ConfigureAwait(false))[0].SeriesInstanceUid), UriKind.Relative)).ConfigureAwait(false);
+                string seriesUid = (await v.Runtime.Store.GetSeriesAsync(studyUid).ConfigureAwait(false))[0].SeriesInstanceUid;
+                using HttpResponseMessage byUid = await http.GetAsync(new Uri("/api/thumb?series=" + Uri.EscapeDataString(seriesUid), UriKind.Relative)).ConfigureAwait(false);
+                T.Eq(byUid.StatusCode, HttpStatusCode.NotFound);
+                using HttpResponseMessage thumb = await http.GetAsync(new Uri("/api/thumb?series=" + v.Runtime.Ids.For(seriesUid), UriKind.Relative)).ConfigureAwait(false);
                 T.Eq(thumb.Content.Headers.ContentType?.MediaType, "image/png");
 
                 var clock = Stopwatch.StartNew();
@@ -327,13 +311,17 @@ internal static class HostTests
                 T.Eq(await v.Runtime.DeleteStudyAsync(row).ConfigureAwait(false), 12);
             }
             string audit = Path.Combine(data, "audit", "audit.jsonl");
+            // Folders are never written as paths (R-142).
+            string auditText = File.ReadAllText(audit);
+            T.Check(!auditText.Contains(data, StringComparison.Ordinal) && !auditText.Contains("incoming", StringComparison.Ordinal));
+            T.Check(auditText.Contains("\"root\":\"p:", StringComparison.Ordinal) && auditText.Contains("\"store\":\"p:", StringComparison.Ordinal));
             IReadOnlyList<string> events = AuditLog.ReadEvents(audit);
             T.Note("audit events: " + string.Join(", ", events));
             foreach (string e in RequiredEvents)
             {
                 T.Check(events.Contains(e));
             }
-            T.Check(AuditLog.Verify(audit).IsIntact);
+            T.Check(AuditLog.Verify(audit, AuditKeys.KeyFile).IsIntact);
             T.Check(File.ReadAllText(audit).Contains("\"patientKey\"", StringComparison.Ordinal));
             // No PHI in the app logs: neither the name, the ID nor the study UID.
             string logs = string.Join("\n", AppLog.RecentLines) + "\n" + string.Join("\n",

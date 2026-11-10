@@ -2,7 +2,9 @@
 
 namespace Siaara.Viewer.Core.Settings;
 
-/// <summary>Atomic file replacement: write a temporary file in the same folder, flush it to disk, rename over the target.</summary>
+/// <summary>Atomic file replacement: write a temporary file in the same folder, flush it to disk, rename over the target.
+/// The temporary file is created for the current user only (0600 / owner-only ACL), so the result is too; missing
+/// folders are created owner-only.</summary>
 public static class AtomicFile
 {
     /// <summary>Writes bytes atomically.</summary>
@@ -12,11 +14,11 @@ public static class AtomicFile
     {
         string full = Path.GetFullPath(path);
         string dir = Path.GetDirectoryName(full) ?? ".";
-        Directory.CreateDirectory(dir);
+        Platform.OwnerOnly.CreateDirectory(dir);
         string tmp = Path.Combine(dir, "." + Path.GetFileName(full) + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp");
         try
         {
-            using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (FileStream fs = Platform.OwnerOnly.CreateNew(tmp))
             {
                 fs.Write(data);
                 fs.Flush(flushToDisk: true);

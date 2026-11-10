@@ -347,7 +347,7 @@ internal static class ViewerFeatureTests
             T.Check(exports[0].Contains("\"outcome\":\"" + AuditOutcome.Success + "\"", StringComparison.Ordinal));
             T.Check(exports[1].Contains("\"outcome\":\"" + AuditOutcome.Failure + "\"", StringComparison.Ordinal));
             T.Check(exports[1].Contains("\"reason\":\"NotAllowedErrorscript\"", StringComparison.Ordinal));
-            T.Check(AuditLog.Verify(env.Paths.AuditFile).IsIntact);
+            T.Check(AuditLog.Verify(env.Paths.AuditFile, AuditKeys.KeyFile).IsIntact);
         });
     }
 }

@@ -214,7 +214,8 @@ public sealed class ImportService
         string outcome = p.Cancelled ? AuditOutcome.Cancelled : job.Fault is not null ? AuditOutcome.Failure : AuditOutcome.Success;
         _audit?.Append("import", outcome, new Dictionary<string, string>
         {
-            ["root"] = root,
+            // Never the path itself: folder names often hold patient names (AuditLog.PathReference).
+            ["root"] = _audit.PathReference(root),
             ["mode"] = job.Request.IndexInPlace ? "reference" : "copy",
             ["dicomdir"] = p.UsedDicomdir ? "yes" : "no",
             ["seen"] = p.FilesSeen.ToString(CultureInfo.InvariantCulture),

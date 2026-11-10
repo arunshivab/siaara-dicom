@@ -3,6 +3,7 @@
 @implements IDisposable
 @inject ViewerRuntime Rt
 @inject NavigationManager Nav
+@inject Siaara.Viewer.Web.Security.LaunchSecurity Sec
 
 <PageTitle>SIAARA Viewer: studies</PageTitle>
 
@@ -32,8 +33,17 @@
             <button class="btn" @onclick="() => _importOpen = true">Import</button>
             <button class="btn" @onclick="() => _settingsOpen = true">Settings</button>
             <button class="btn" @onclick="() => _aboutOpen = true">About</button>
+            <button class="btn signout" @onclick="() => Rt.SignOut(Sec)" title="Lock: this window and every other one lose access at once. Start SIAARA Viewer again to get back in.">Sign out</button>
         </div>
     </header>
+    <SessionGuard />
+    @if (Rt.DataFolderWarning is string warning && !_warningClosed)
+    {
+        <div class="banner warning" role="alert">
+            <span>@warning (@Rt.Paths.BaseFolder)</span>
+            <button class="btn" @onclick="() => _warningClosed = true">Dismiss</button>
+        </div>
+    }
 
     <main class="browser-main">
         <StudyGrid Rows="_page?.Rows" Selected="_selected" NewRows="_new" OnSelect="Select" OnOpen="Open" />
@@ -89,7 +99,7 @@
     private int? _exactTotal;
     private StudyRow? _selected;
     private readonly HashSet<string> _new = new(StringComparer.Ordinal);
-    private bool _importOpen, _settingsOpen, _aboutOpen;
+    private bool _importOpen, _settingsOpen, _aboutOpen, _warningClosed;
     private Confirm _confirm;
     private string? _error;
     private string _statusText = "";
@@ -189,7 +199,8 @@
 
     private void Open(StudyRow r)
     {
-        Nav.NavigateTo("/viewer/" + Uri.EscapeDataString(r.StudyInstanceUid));
+        // The address holds a per-run id, never the Study Instance UID (browser history).
+        Nav.NavigateTo("/viewer/" + Rt.Ids.For(r.StudyInstanceUid));
     }
 
     private async Task DeleteConfirmed()
@@ -209,6 +220,10 @@
             }
             _selected = null;
             await Requery().ConfigureAwait(true);
+        }
+        catch (Siaara.Viewer.Core.Audit.AuditUnavailableException)
+        {
+            _error = "Nothing was deleted: the audit log could not be written, and a delete is never done without its audit entry.";
         }
         catch (Exception e) when (e is Siaara.Viewer.Core.Toolkit.TkException or IOException or UnauthorizedAccessException or OperationCanceledException
                                      or ObjectDisposedException)

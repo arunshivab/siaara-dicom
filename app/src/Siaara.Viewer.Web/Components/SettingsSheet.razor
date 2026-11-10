@@ -44,7 +44,7 @@
 
     private async Task Save()
     {
-        Rt.Settings.Update(p =>
+        Rt.UpdateSettings(p =>
         {
             p.Theme = _theme == "light" ? "light" : "dark";
             p.StoreRoot = string.IsNullOrWhiteSpace(_store) ? null : _store.Trim();

@@ -7,7 +7,12 @@
 # Then the M1.1 pieces: the intended-use label, the right-click menu and a colour map, the magnifier,
 # reference lines and cross-reference on the CT study's axial / sagittal / coronal series, arrow and
 # text annotations, the About box, and an exported PNG (with the label band).
-# Usage: browser_check.py CHROME_BINARY LAUNCH_URL|@INSTANCE_FILE STUDY_UID OUT_DIR
+# Then the round-4 security pieces: the page was reached through the one-shot launch page FILE (as the
+# host opens it), under the random *.localhost name; the viewer address holds no Study Instance UID; the
+# console shows no Content-Security-Policy violation; Sign out locks the window.
+# Usage: browser_check.py CHROME_BINARY LAUNCH STUDY_UID OUT_DIR
+# LAUNCH is the path the host printed with --print-launch-file (preferred: the real launch page), a
+# launch URL, or @INSTANCE_FILE.
 import base64, json, os, socket, struct, subprocess, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -162,7 +167,16 @@ def m11(c, out):
 
 def main():
     chrome, launch, study, out = sys.argv[1:5]
-    launch = resolve_launch(launch)
+    if os.path.isfile(launch):
+        # The one-shot launch page: its content must hold the secret, its address and Chrome's command line must not.
+        with open(launch, encoding="utf-8") as f:
+            page = f.read()
+        print("launch page: mode", oct(os.stat(launch).st_mode & 0o777), "posts a form:", 'method="post"' in page)
+        launch_file = launch
+        launch = "file://" + urllib.parse.quote(os.path.abspath(launch))
+    else:
+        launch_file = None
+        launch = resolve_launch(launch)
     os.makedirs(out, exist_ok=True)
     port = 9333
     proc = subprocess.Popen([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", f"--remote-debugging-port={port}",
@@ -176,6 +190,11 @@ def main():
         c.call("Page.navigate", url=launch)
         time.sleep(4)
         print("browser page title:", c.eval("document.title"))
+        host = c.eval("location.host")
+        print("served under a random *.localhost name:", bool(host) and host.split(":")[0].endswith(".localhost") and len(host.split(":")[0]) == 42)
+        print("cookie visible to scripts (HttpOnly):", repr(c.eval("document.cookie")))
+        if launch_file:
+            print("launch page deleted after use:", not os.path.exists(launch_file))
         print("rows in the study grid:", c.eval("document.querySelectorAll('table.grid tbody tr').length"))
         print("blazor connected:", c.eval("!!(window.Blazor)"))
         c.shot(f"{out}/1-browser.png")
@@ -189,6 +208,7 @@ def main():
             c.call("Input.dispatchMouseEvent", type="mouseReleased", x=row[0], y=row[1], button="left", buttons=0, clickCount=2)
         time.sleep(4)
         print("viewer url:", c.eval("location.pathname"))
+        print("study UID in the viewer address:", study in (c.eval("location.href") or ""))
         print("viewports:", c.eval("document.querySelectorAll('.vp').length"))
         vp = c.eval("(() => { const b = document.querySelector('.vp').getBoundingClientRect(); return [b.x, b.y, b.width, b.height]; })()")
         print("viewport rect:", vp)
@@ -234,6 +254,18 @@ def main():
         print("browser console errors:", len(errors))
         for e in errors[:10]:
             print("  ", json.dumps(e.get("params"))[:300])
+        csp = [e for e in c.events if "Content Security Policy" in json.dumps(e.get("params", {}))]
+        print("Content-Security-Policy violations in the console:", len(csp))
+        # Sign out from the study browser: the window is locked and a reload is refused.
+        c.call("Page.navigate", url=c.eval("location.origin") + "/")
+        time.sleep(3)
+        c.eval("document.querySelector('button.signout').click()")
+        time.sleep(2)
+        print("after Sign out:", c.eval("location.pathname + ' | ' + (document.querySelector('h1') || {}).textContent"))
+        c.call("Page.navigate", url=c.eval("location.origin") + "/")
+        time.sleep(2)
+        print("study list after Sign out:", c.eval("(document.querySelector('h1') || {}).textContent"), "| grid rows:", c.eval("document.querySelectorAll('table.grid tbody tr').length"))
+        c.shot(f"{out}/12-signed-out.png")
     finally:
         proc.terminate()
 

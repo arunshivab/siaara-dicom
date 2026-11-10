@@ -86,16 +86,16 @@ internal static class CoreTests
             T.Check(!json.Contains("secret", StringComparison.OrdinalIgnoreCase) && !json.Contains("password", StringComparison.OrdinalIgnoreCase));
         });
 
-        T.Case("audit: append-only hash chain verifies; an edited line breaks it", () =>
+        T.Case("audit: append-only signed chain verifies; an edited line breaks it", () =>
         {
             string dir = T.NewTempDir("audit");
             string path = Path.Combine(dir, "audit.jsonl");
-            using (var a = new AuditLog(path))
+            using (var a = new AuditLog(path, AuditKeys.KeyFile))
             {
                 a.Append("app.start", AuditOutcome.Success);
                 a.Append("study.open", AuditOutcome.Success, new Dictionary<string, string> { ["patientKey"] = "K1", ["study"] = "1.2.3" });
             }
-            using (var a = new AuditLog(path))
+            using (var a = new AuditLog(path, AuditKeys.KeyFile))
             {
                 a.Append("study.delete", AuditOutcome.Failure, new Dictionary<string, string> { ["patientKey"] = "K1" }, "file system error");
             }
@@ -106,16 +106,17 @@ internal static class CoreTests
                 T.Check(doc.RootElement.TryGetProperty("outcome", out System.Text.Json.JsonElement o) && o.GetString() is "success" or "failure");
             }
             T.Check(File.ReadAllLines(path)[2].Contains("\"reason\":\"file system error\"", StringComparison.Ordinal));
-            AuditVerification v = AuditLog.Verify(path);
+            AuditVerification v = AuditLog.Verify(path, AuditKeys.KeyFile);
             T.Check(v.IsIntact);
             T.Eq(v.Lines, 3);
             T.Check(AuditLog.ReadEvents(path).SequenceEqual(["app.start", "study.open", "study.delete"]));
             string[] lines = File.ReadAllLines(path);
             lines[1] = lines[1].Replace("K1", "K2", StringComparison.Ordinal);
             File.WriteAllLines(path, lines);
-            AuditVerification broken = AuditLog.Verify(path);
+            AuditVerification broken = AuditLog.Verify(path, AuditKeys.KeyFile);
             T.Check(!broken.IsIntact);
-            T.Eq(broken.FirstBadLine, 3);
+            // The edited line itself fails its signature (the unkeyed chain only noticed at the line after it).
+            T.Eq(broken.FirstBadLine, 2);
         });
 
         T.Case("logging: the PHI redactor removes UIDs, names, dates, IDs and paths", () =>

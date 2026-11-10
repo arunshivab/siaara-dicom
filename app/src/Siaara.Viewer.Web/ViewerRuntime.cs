@@ -36,7 +36,14 @@ public sealed class ViewerRuntime : IDisposable
         Import = new ImportService(store, scheduler, audit);
         Thumbnails = new ThumbnailService(store, scheduler);
         Sessions = new SessionRegistry(new ViewerServices(store, Cache, scheduler, settings, Annotations, audit));
+        DataFolderWarning = paths.AccessWarning();
     }
+
+    /// <summary>Per-run ids that stand for Study and Series Instance UIDs in URLs.</summary>
+    public OpaqueIds Ids { get; } = new();
+
+    /// <summary>Set when the data folder can be reached by other users (shown as a banner; null when it is private).</summary>
+    public string? DataFolderWarning { get; }
 
     /// <summary>Paths.</summary>
     public AppPaths Paths { get; }
@@ -80,10 +87,62 @@ public sealed class ViewerRuntime : IDisposable
             ["patientKey"] = study?.PatientKey ?? "",
             ["study"] = studyInstanceUid,
         }, study is null ? "study not in the store" : null);
-        return Sessions.Create(studyInstanceUid);
+        try
+        {
+            return Sessions.Create(studyInstanceUid);
+        }
+        catch (SessionLimitException)
+        {
+            Audit.Append("study.open", AuditOutcome.Failure, new Dictionary<string, string> { ["patientKey"] = study?.PatientKey ?? "", ["study"] = studyInstanceUid },
+                "too many viewer sessions are open");
+            throw;
+        }
     }
 
-    /// <summary>Deletes a study and audits study.delete with the patient key and the outcome (failed deletes too).
+    /// <summary>Sign out / lock: closes every viewer session (and so its socket) and invalidates the session cookie;
+    /// every open page then leaves. Audited as session.signout.</summary>
+    /// <param name="security">The app's launch security.</param>
+    public void SignOut(Security.LaunchSecurity security)
+    {
+        ArgumentNullException.ThrowIfNull(security);
+        Sessions.CloseAll();
+        security.SignOut();
+    }
+
+    /// <summary>Changes the settings and audits settings.change with the names of the settings that changed (a changed
+    /// store folder as a path reference, never the path).</summary>
+    /// <param name="change">Mutation of a copy of the settings.</param>
+    public void UpdateSettings(Action<UserPrefs> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        UserPrefs before = Settings.Current;
+        var fields = new Dictionary<string, string>();
+        try
+        {
+            Settings.Update(change);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Audit.Append("settings.change", AuditOutcome.Failure, fields, Reason(e));
+            throw;
+        }
+        UserPrefs after = Settings.Current;
+        IReadOnlyList<string> changed = SettingsStore.ChangedNames(before, after);
+        if (changed.Count == 0)
+        {
+            return;
+        }
+        fields["changed"] = string.Join(",", changed);
+        if (changed.Contains("storeRoot"))
+        {
+            fields["storeRoot"] = Audit.PathReference(after.StoreRoot);
+        }
+        Audit.Append("settings.change", AuditOutcome.Success, fields);
+    }
+
+    /// <summary>Deletes a study. The intent is written to the audit log first (study.delete, outcome "intent"): when that
+    /// cannot be written, <see cref="AuditUnavailableException"/> is thrown and nothing is deleted. The outcome
+    /// (success with the number of instances, or failure with the reason) is written after it.
     /// Viewer sessions of the study are closed and cached handles released first, so no file stays open.</summary>
     /// <param name="study">Study row.</param>
     /// <returns>Instances removed.</returns>
@@ -91,6 +150,7 @@ public sealed class ViewerRuntime : IDisposable
     {
         ArgumentNullException.ThrowIfNull(study);
         var fields = new Dictionary<string, string> { ["patientKey"] = study.PatientKey, ["study"] = study.StudyInstanceUid };
+        Audit.AppendRequired("study.delete", AuditOutcome.Intent, fields);
         try
         {
             await ReleaseAsync([study.StudyInstanceUid]).ConfigureAwait(false);
@@ -107,13 +167,15 @@ public sealed class ViewerRuntime : IDisposable
         }
     }
 
-    /// <summary>Deletes every study of the row's patient (by patient key) and audits patient.delete with the outcome.</summary>
+    /// <summary>Deletes every study of the row's patient (by patient key). As for a study: the intent is audited first
+    /// (patient.delete, outcome "intent") and nothing is deleted when it cannot be written; the outcome follows.</summary>
     /// <param name="study">A study row of the patient.</param>
     /// <returns>Instances removed.</returns>
     public async Task<int> DeletePatientAsync(StudyRow study)
     {
         ArgumentNullException.ThrowIfNull(study);
         var fields = new Dictionary<string, string> { ["patientKey"] = study.PatientKey };
+        Audit.AppendRequired("patient.delete", AuditOutcome.Intent, fields);
         try
         {
             IReadOnlyList<string> studies = await Store.GetPatientStudyUidsAsync(study.PatientId, study.PatientKey).ConfigureAwait(false);
