@@ -7,11 +7,13 @@
 
 #include "core/dataset.hpp"
 #include "core/status.hpp"
+#include "siaara_version.hpp"  // generated: <build>/generated (cmake/siaara_version.hpp.in)
 
 namespace siaara {
 
 constexpr std::string_view kImplementationClassUid = "2.25.208936390756097257212108686309372694101";
-constexpr std::string_view kImplementationVersionName = "SIAARA_010";
+// From the CMake project version (cmake/siaara_version.hpp.in): SIAARA_<major><minor><patch>.
+constexpr std::string_view kImplementationVersionName = SIAARA_IMPLEMENTATION_VERSION_NAME;
 
 // How sequence (SQ) and item lengths are encoded.
 enum class SequenceLengths : std::uint8_t {

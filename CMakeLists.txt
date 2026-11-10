@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
+# THE version of the toolkit: this line is the single source. Everything else derives from it
+# (siaara_version_string(), the Implementation Version Name, the CMake package version, the C#
+# assembly and package versions, archive and SBOM names). See docs/RELEASING.md.
 project(siaara VERSION 0.1.0 LANGUAGES C CXX)
+
+# Implementation Version Name (0002,0013), written into every file and sent in every association:
+# "SIAARA_" + the version digits (0.1.0 -> SIAARA_010). VR SH: at most 16 characters.
+set(SIAARA_IMPLEMENTATION_VERSION_NAME
+    "SIAARA_${PROJECT_VERSION_MAJOR}${PROJECT_VERSION_MINOR}${PROJECT_VERSION_PATCH}")
+string(LENGTH "${SIAARA_IMPLEMENTATION_VERSION_NAME}" _siaara_ivn_length)
+if(_siaara_ivn_length GREATER 16)
+  message(FATAL_ERROR "Implementation Version Name '${SIAARA_IMPLEMENTATION_VERSION_NAME}' is longer than 16 characters")
+endif()
+configure_file(cmake/siaara_version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/siaara_version.hpp @ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -125,7 +138,7 @@ file(GLOB_RECURSE SIAARA_SOURCES CONFIGURE_DEPENDS
 add_library(siaara_obj OBJECT ${SIAARA_SOURCES})
 target_include_directories(siaara_obj
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_compile_options(siaara_obj PRIVATE ${SIAARA_WARN})
 target_compile_definitions(siaara_obj PRIVATE SIAARA_BUILDING=1)
 siaara_harden(siaara_obj)
@@ -149,6 +162,7 @@ add_library(siaara_static STATIC $<TARGET_OBJECTS:siaara_obj>)
 target_include_directories(siaara_static
   PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+          $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(siaara_static PUBLIC SIAARA_STATIC=1)
 if(NOT WIN32)
