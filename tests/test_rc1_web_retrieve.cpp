@@ -276,7 +276,7 @@ TEST_CASE("web/ rc1 R-168 a streamed reply to a healthy client is not cut by the
     web::DicomwebServerConfig cfg;
     cfg.http.limits.send_timeout_ms = 300;  // the deadline of responses that are not streamed
     CHECK_EQ(cfg.http.limits.stream_send_timeout_ms, web::http::kDefaultStreamSendTimeoutMs);
-    CHECK_EQ(web::http::kDefaultStreamSendTimeoutMs, 0);
+    static_assert(web::http::kDefaultStreamSendTimeoutMs == 0);
     {
         web::DicomwebServer server;
         REQUIRE(server.start(cfg, store));

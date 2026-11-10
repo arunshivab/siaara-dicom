@@ -81,8 +81,8 @@ TEST_CASE("rc1 R-160: Auto, Map and Read give the same values, the same read rep
     cut.resize(cut.size() - 1000);  // ends inside Pixel Data: an incomplete read with a report
     write_file(dir / "whole.dcm", whole);
     write_file(dir / "cut.dcm", cut);
-    CHECK(io::kDefaultOpenMode == io::OpenMode::Auto);
-    CHECK_EQ(io::kDefaultOpenReadThreshold, std::uint64_t{256} << 20);
+    static_assert(io::kDefaultOpenMode == io::OpenMode::Auto);
+    static_assert(io::kDefaultOpenReadThreshold == (std::uint64_t{256} << 20));
     CHECK(ReadOptions{}.open_mode == io::kDefaultOpenMode);
 
     auto ref = read_part10(Bytes::copy_of(whole.data(), whole.size()));
@@ -177,6 +177,11 @@ TEST_CASE("rc1 R-160: a file shortened after opening - the default mode is unaff
         const Element* px = f->dataset.find(tags::PixelData);
         REQUIRE(px != nullptr);
         CHECK(io::check_mapping(px->value.data()));
+#ifdef _WIN32
+        // Windows refuses to shorten a file that has a mapped view, so the hazard cannot arise.
+        CHECK(!shrink(p));
+        CHECK(io::check_mapping(px->value.data()));
+#else
         REQUIRE(shrink(p));
         const Status s = io::check_mapping(px->value.data());
         CHECK(!s);
@@ -184,8 +189,11 @@ TEST_CASE("rc1 R-160: a file shortened after opening - the default mode is unaff
         auto fr = image::FrameReader::open(f->dataset, f->transfer_syntax);
         REQUIRE(!fr);  // on the old code this opened and the decode below ended the process
         CHECK(fr.error().code == Errc::Truncated);
+#endif
     }
+#ifndef _WIN32
     // A file replaced by rename is another file: the mapping of the old one is whole.
+    // (Windows does not replace a file that has a mapped view.)
     {
         const auto p = dir / "replaced.dcm";
         write_file(p, whole);
@@ -197,6 +205,7 @@ TEST_CASE("rc1 R-160: a file shortened after opening - the default mode is unaff
         REQUIRE(fr);
         CHECK(fr->decode(0));
     }
+#endif
     // A pointer that is in no mapping is fine.
     CHECK(io::check_mapping(whole.data()));
     CHECK(io::check_mapping(nullptr));
@@ -238,8 +247,14 @@ TEST_CASE("rc1 R-160: C API open_mode - default AUTO, READ with a size limit, ol
     o.open_mode = SIAARA_OPEN_MAP;
     REQUIRE(siaara_file_open(path.c_str(), path.size(), &o, &f) == SIAARA_OK);
     std::filesystem::resize_file(p, 4096, ec);
+#ifdef _WIN32
+    // Windows refuses to shorten a file that has a mapped view: the frame is still whole.
+    CHECK(static_cast<bool>(ec));
+    CHECK(siaara_frame_decode(f, 0, SIAARA_FRAME_NATIVE, out.data(), out.size(), &need) == SIAARA_OK);
+#else
     REQUIRE(!ec);
     CHECK(siaara_frame_decode(f, 0, SIAARA_FRAME_NATIVE, out.data(), out.size(), &need) == SIAARA_ERR_TRUNCATED);
+#endif
     siaara_file_free(f);
     // A caller built before the field existed: struct_size stops before open_mode.
     write_file(p, whole);
