@@ -415,7 +415,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_waveform_samples(const siaara_datase
         }
         auto r = mod::waveform_raw(*ds_cast(ds), group, channel);
         if (!r) return fail(r.error());
-        std::vector<double> d(r.value().begin(), r.value().end());
+        // Explicit conversion: MSVC C4244 (an error under /WX) on the int64 -> double range constructor.
+        std::vector<double> d;
+        d.reserve(r.value().size());
+        for (const auto v : r.value()) d.push_back(static_cast<double>(v));
         return copy_array(d, buf, cap, count);
     });
 }
