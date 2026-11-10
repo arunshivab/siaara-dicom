@@ -37,7 +37,14 @@ jobs:
         if: matrix.multilib
         run: sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
       - name: Configure
-        run: cmake -S . -B build ${{ matrix.cmake }}
+        shell: bash
+        run: |
+          launcher=""
+          # Name any translation unit that compiles slowly (Makefile/Ninja generators only).
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            launcher="-DCMAKE_C_COMPILER_LAUNCHER=$PWD/tools/ci/timed_compile.sh -DCMAKE_CXX_COMPILER_LAUNCHER=$PWD/tools/ci/timed_compile.sh"
+          fi
+          cmake -S . -B build ${{ matrix.cmake }} $launcher
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
