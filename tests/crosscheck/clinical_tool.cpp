@@ -4,7 +4,7 @@
 //   clinical_tool sr <file>
 //   clinical_tool seg <file>
 //   clinical_tool gsps <file>
-//   clinical_tool suv <file>
+//   clinical_tool pet-inputs <file>   (stored PET data elements by path, as text; no calculation)
 //   clinical_tool geometry <file> [frame]
 //   clinical_tool sort <file>...
 //   clinical_tool write-kos <out> <image>...
@@ -20,9 +20,9 @@
 #include "clinical/rtstruct.hpp"
 #include "clinical/seg.hpp"
 #include "clinical/sr.hpp"
-#include "clinical/suv.hpp"
 #include "core/reader.hpp"
 #include "core/writer.hpp"
+#include "modules/modules.hpp"
 
 using namespace siaara;
 using namespace siaara::clinical;
@@ -195,11 +195,24 @@ int cmd_gsps(const DicomFile& f) {
     return 0;
 }
 
-int cmd_suv(const DicomFile& f) {
-    auto r = compute_suv(f.dataset);
-    std::string o = "{\"bw\":" + (r.bw ? num(*r.bw) : std::string("null")) + ",\"lbm_james\":" + (r.lbm_james ? num(*r.lbm_james) : std::string("null")) +
-                    ",\"bsa\":" + (r.bsa ? num(*r.bsa) : std::string("null")) + ",\"decay_seconds\":" +
-                    (r.decay_seconds ? num(*r.decay_seconds) : std::string("null")) + ",\"warnings\":" + std::to_string(r.warnings) + "}";
+// The stored elements an application needs for SUV, read by path exactly as stored.
+int cmd_pet_inputs(const DicomFile& f) {
+    static const char* const kPaths[] = {
+        "Units", "DecayCorrection", "CorrectedImage", "PatientWeight", "PatientSize", "PatientSex",
+        "SeriesDate", "SeriesTime", "AcquisitionDate", "AcquisitionTime",
+        "RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose",
+        "RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife",
+        "RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartDateTime",
+        "RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime",
+    };
+    std::string o = "{";
+    bool first = true;
+    for (const char* p : kPaths) {
+        auto v = modules::get_by_path(f.dataset, p);
+        o += (first ? "" : ",") + js(p) + ":" + (v ? js(v->text) : std::string("null"));
+        first = false;
+    }
+    o += "}";
     std::puts(o.c_str());
     return 0;
 }
@@ -336,7 +349,7 @@ int main(int argc, char** argv) {
     if (cmd == "sr") return cmd_sr(*f);
     if (cmd == "seg") return cmd_seg(*f);
     if (cmd == "gsps") return cmd_gsps(*f);
-    if (cmd == "suv") return cmd_suv(*f);
+    if (cmd == "pet-inputs") return cmd_pet_inputs(*f);
     if (cmd == "geometry") return cmd_geometry(*f, argc > 3 ? static_cast<std::uint32_t>(std::atoi(argv[3])) : 0u);
     std::fprintf(stderr, "unknown command\n");
     return 2;

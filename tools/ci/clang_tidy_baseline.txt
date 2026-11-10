@@ -28,7 +28,6 @@ src/clinical/geometry.hpp|clang-analyzer-core.uninitialized.Assign|Assigned valu
 src/clinical/gsps.cpp|bugprone-implicit-widening-of-multiplication-result|result of multiplication in type '_' is used as a pointer offset after an implicit widening conversion to type '_'
 src/clinical/sr.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
 src/clinical/sr.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
-src/clinical/suv.cpp|bugprone-optional-value-conversion|conversion from '_' into '_' and back into '_', remove potentially error-prone optional dereference
 src/codec/j2k_decode.cpp|bugprone-implicit-widening-of-multiplication-result|performing an implicit widening conversion to type '_' (aka '_') of a multiplication performed in type '_'
 src/codec/j2k_decode.cpp|clang-analyzer-core.CallAndMessage|1st function call argument is an uninitialized value
 src/codec/j2k_encode.cpp|bugprone-misplaced-widening-cast|either cast from '_' to '_' (aka '_') is ineffective, or there is loss of precision before the conversion

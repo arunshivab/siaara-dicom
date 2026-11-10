@@ -7,7 +7,7 @@
 
 #include "clinical/common.hpp"
 #include "clinical/gsps.hpp"
-#include "clinical/roi.hpp"
+#include "clinical/measure.hpp"
 #include "clinical/seg.hpp"
 #include "image/render.hpp"
 #include "test.hpp"
@@ -17,6 +17,16 @@ using namespace siaara::clinical;
 namespace ct = siaara::clinical::tags;
 
 namespace {
+
+// Even-odd test of a point against a closed polygon (independent of the renderer).
+bool centre_inside(const std::vector<Point2>& poly, double x, double y) {
+    bool in = false;
+    for (std::size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+        const Point2 a = poly[i], b = poly[j];
+        if ((a.y > y) != (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) in = !in;
+    }
+    return in;
+}
 
 double seconds_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -215,7 +225,7 @@ TEST_CASE("R-056: polygon fill is an edge-table scan and matches the ROI centre 
     auto r = render_with_presentation_state(*img, ps_with({object(GraphicType::Polygon, zig, true)}), 0, "1.2.3.100");
     REQUIRE(r);
     CHECK(seconds_since(t0) < 2.0);
-    // Exactness against roi_mask on simple shapes (pixel centres, even-odd).
+    // Exactness against the pixel-centre even-odd rule on simple shapes.
     const Dataset small_ds = blank_image(20, 20);
     auto small = image::Image::open(small_ds, "1.2.840.10008.1.2.1");
     REQUIRE(small);
@@ -228,11 +238,10 @@ TEST_CASE("R-056: polygon fill is an edge-table scan and matches the ROI centre 
         PsRenderOptions o;
         auto rr = render_with_presentation_state(*small, ps_with({object(GraphicType::Polygon, poly, true)}), 0, "1.2.3.100", o);
         REQUIRE(rr);
-        auto m = roi_mask(20, 20, Roi::polygon(poly));
-        REQUIRE(m);
         // Every centre-inside pixel is drawn (the outline adds pixels, never removes them).
-        for (std::size_t i = 0; i < m->size(); ++i)
-            if ((*m)[i] > 0.0f) CHECK(rr->rgba[4 * i] == 255 && rr->rgba[4 * i + 2] == 0);
+        for (std::size_t i = 0; i < 400; ++i)
+            if (centre_inside(poly, static_cast<double>(i % 20) + 0.5, static_cast<double>(i / 20) + 0.5))
+                CHECK(rr->rgba[4 * i] == 255 && rr->rgba[4 * i + 2] == 0);
     }
 }
 

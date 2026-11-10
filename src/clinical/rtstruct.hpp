@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "clinical/geometry.hpp"
-#include "clinical/roi.hpp"
+#include "clinical/measure.hpp"
 #include "clinical/seg.hpp"
 #include "core/dataset.hpp"
 #include "core/status.hpp"

@@ -16,7 +16,7 @@ public enum GridFrameOffsetForm
 
 /// <summary>
 /// RT Dose module values (siaara_rt_dose_info). For an RT Dose object every modality value the
-/// library produces (float frames, ROI statistics, volumes, fusion) is the stored value times
+/// library produces (float frames, volumes, fusion) is the stored value times
 /// <see cref="DoseGridScaling"/>, a dose in <see cref="DoseUnits"/>.
 /// </summary>
 public sealed record RtDoseInfo

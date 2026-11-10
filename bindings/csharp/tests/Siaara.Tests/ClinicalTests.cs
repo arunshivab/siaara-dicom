@@ -7,7 +7,8 @@ namespace Siaara.Tests;
 
 internal static class ClinicalTests
 {
-    // The worked example of tests/test_suv.cpp (F-18, 370 MBq, 75 kg, 1.80 m, male, 1 h decay).
+    // A PET image with every stored input an application needs for SUV (F-18, 370 MBq, 75 kg, 1.80 m,
+    // male). The toolkit computes no SUV: these are read back exactly as stored.
     private const string PetJson =
         "{\"00080016\":{\"vr\":\"UI\",\"Value\":[\"1.2.840.10008.5.1.4.1.1.128\"]}," +
         "\"00080018\":{\"vr\":\"UI\",\"Value\":[\"1.2.3.4.5\"]}," +
@@ -27,30 +28,28 @@ internal static class ClinicalTests
         "\"00181075\":{\"vr\":\"DS\",\"Value\":[6586.2]}," +
         "\"00181078\":{\"vr\":\"DT\",\"Value\":[\"20260301093000\"]}}]}}";
 
-    private static bool Rel(double a, double b, double r = 1e-9) => Math.Abs(a - b) <= r * Math.Abs(b);
-
     internal static void Register()
     {
-        Case("clinical: SUV factors (worked example of test_suv.cpp)", () =>
+        Case("clinical: PET SUV inputs are plain data (named classes and path API)", () =>
         {
             using DicomFile f = DicomFile.FromJson(PetJson);
-            SuvFactors s = SuvFactors.Compute(f);
-            Require(s.BodyWeight is not null);
-            Check(Rel(s.BodyWeight!.Value, 2.96075016126046e-4));
-            Check(Rel(s.LeanBodyMassJames!.Value, 2.37956587034637e-4));
-            Check(Rel(s.LeanBodyMassJanmahasatian!.Value, 2.34984195161682e-4));
-            Check(Rel(s.BodySurfaceArea!.Value, 7.66797035188891e-5));
-            Check(Rel(s.IdealBodyWeight!.Value, 2.96043932134852e-4));
-            CheckNear(s.DecaySeconds, 3600, 1e-9);
-            CheckEq(s.DecayCorrection, SuvDecayCorrection.Start);
-            Check(s.ScanTimeSource != SuvTimeSource.None);
-            Check(s.InjectionTimeSource != SuvTimeSource.None);
-            Check(s.WeightKg is not null && s.InjectedDoseBq is not null && s.HalfLifeSeconds is not null);
-            Check(Rel(s.DecayedDoseBq, 253314180.241641));
+            CheckEq(f.PETSeries.Units, "BQML");
+            CheckEq(f.PETSeries.DecayCorrection, "START");
+            CheckEq(string.Join("\\", f.PETSeries.CorrectedImage!), "ATTN\\DECY");
+            CheckEq(f.PETSeries.SeriesTimeRaw, "103000");
+            var rp = f.PETIsotope.RadiopharmaceuticalInformationSequence;
+            CheckEq(rp.Count, 1);
+            CheckEq(rp[0].RadionuclideTotalDose, 370000000.0);
+            CheckEq(rp[0].RadionuclideHalfLife, 6586.2);
+            CheckEq(rp[0].RadiopharmaceuticalStartTimeRaw, "093000");
+            CheckEq(rp[0].RadiopharmaceuticalStartDateTimeRaw, "20260301093000");
+            CheckEq(f.Dataset.GetByPath("PatientWeight")!.RealValue, 75.0);
+            CheckEq(f.Dataset.GetByPath("PatientSize")!.RealValue, 1.8);
+            CheckEq(f.Dataset.GetByPath("PatientSex")!.Text, "M");
+            CheckEq(f.Dataset.GetByPath("AcquisitionTime")!.Text, "103512");
+            CheckEq(f.Dataset.GetByPath("RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife")!.RealValue, 6586.2);
             f.Dataset.Remove(DicomTags.PatientWeight);
-            SuvFactors none = SuvFactors.Compute(f);
-            Check(none.BodyWeight is null);
-            Check(none.Warnings.HasFlag(SuvWarnings.MissingWeight));
+            Check(f.Dataset.GetByPath("PatientWeight") is null);  // missing stays missing, never defaulted
         });
 
         Case("clinical: RT Dose values in Gy and the dose module (testing2 P0-2)", () =>
@@ -88,7 +87,7 @@ internal static class ClinicalTests
             CheckEq(info.GridFrameOffsetForm, GridFrameOffsetForm.None);
         });
 
-        Case("clinical: ROI statistics (rectangle, circle, polygon) with area in mm2", () =>
+        Case("clinical: modality values and pixel spacing (inputs of app-side ROI statistics)", () =>
         {
             var px = new short[4 * 4];
             for (int i = 0; i < 16; i++)
@@ -97,22 +96,15 @@ internal static class ClinicalTests
             }
             using DicomFile f = Builders.Ct(4, 4, px);
             f.Dataset.SetString(DicomTags.PixelSpacing, "0.5\\0.5");
-            RoiStatistics r = RoiStatistics.Compute(f, 0, RoiShape.Rectangle, new double[] { 0, 0, 2, 2 });
-            CheckEq(r.Pixels, 4L);
-            CheckNear(r.Mean, (0 + 10 + 40 + 50) / 4.0, 1e-9);
-            CheckNear(r.Min, 0, 1e-9);
-            CheckNear(r.Max, 50, 1e-9);
-            CheckNear(r.AreaPixels, 4, 1e-9);
-            Require(r.AreaSquareMillimetres is not null);
-            CheckNear(r.AreaSquareMillimetres!.Value, 1.0, 1e-9);
-            CheckEq(r.SpacingSource, SpacingSource.PixelSpacing);
-            RoiStatistics full = RoiStatistics.Compute(f, 0, RoiShape.Polygon, new double[] { 0, 0, 4, 0, 4, 4, 0, 4 });
-            CheckEq(full.Pixels, 16L);
-            CheckNear(full.Mean, 75, 1e-9);
-            RoiStatistics c = RoiStatistics.Compute(f, 0, RoiShape.Circle, new double[] { 2, 2, 1.5 }, partialVolume: true);
-            Check(c.Count > 0 && c.Count < 16);
-            CheckEq(Throws<SiaaraException>(() => RoiStatistics.Compute(f, 0, RoiShape.Polygon, new double[] { 0, 0, 1, 1 }))?.ErrorCode,
-                SiaaraErrorCode.InvalidArgument);
+            float[] v = f.DecodeFrameModality(0);
+            CheckEq(v.Length, 16);
+            for (int i = 0; i < 16; i++)
+            {
+                CheckNear(v[i], i * 10, 1e-9);
+            }
+            PlaneGeometry g = ImageGeometry.GetFrameGeometry(f);
+            CheckNear(g.RowSpacing, 0.5, 1e-12);
+            CheckEq(g.SpacingSource, SpacingSource.PixelSpacing);
         });
 
         Case("clinical: frame geometry, orientation labels, series sort", () =>

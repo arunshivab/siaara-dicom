@@ -114,3 +114,18 @@ per-row adaptive filters). Output in an owned `siaara_buffer`.
   bound the error of the bit pattern, not of the value.
 - `siaara_gpu_select` affects views that have not rendered on the GPU yet; views that did keep
   their device.
+
+## 10. Removed: SUV and ROI statistics (ABI change)
+
+Owner's rule: the toolkit returns DICOM data; applications do the calculations. Removed from the
+C API: `siaara_suv_factor`, `siaara_suv`, `SIAARA_SUV_*` (warnings, `SIAARA_SUV_SRC_*`,
+`SIAARA_SUV_DECAY_*`), `siaara_roi_stats_compute`, `siaara_roi_stats`, `SIAARA_ROI_*`; in C#
+`SuvFactors`, `SuvWarnings`, `SuvTimeSource`, `SuvDecayCorrection`, `RoiStatistics`, `RoiShape`; in
+C++ `clinical::compute_suv` and the body-size / decay formulas (`clinical/suv.*`), `roi_stats`,
+`roi_mask`, `Roi`, `RoiStats`, `RoiOptions`. The Blazor viewer computes SUV and ROI statistics
+itself (`app/src/Siaara.Viewer.Core/Measure/`). Every input stays reachable as data: Patient's
+Weight / Size / Sex, Units, Decay Correction, Corrected Image, Series / Acquisition Date and Time,
+Frame Acquisition DateTime, the Radiopharmaceutical Information Sequence (Total Dose, Half Life,
+Start Time / DateTime), private factors by creator through the path API, and modality values with
+the pixel spacing for ROIs. `SIAARA_ABI_VERSION` stays 1: no ABI has been released yet (see the top
+of this file); the exported-symbol baseline was updated.

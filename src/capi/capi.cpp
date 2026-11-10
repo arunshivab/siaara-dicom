@@ -1625,11 +1625,10 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_create_tls(const char* ba
 
 // ---------------------------------------------------------------- clinical objects (appended)
 #include "clinical/geometry.hpp"
-#include "clinical/roi.hpp"
+#include "clinical/measure.hpp"
 #include "clinical/rtstruct.hpp"
 #include "clinical/seg.hpp"
 #include "clinical/sr.hpp"
-#include "clinical/suv.hpp"
 
 struct siaara_sr {
     siaara::clinical::SrDocument doc;
@@ -1739,116 +1738,6 @@ SIAARA_API siaara_status SIAARA_CALL siaara_series_sort(const siaara_file* const
             if (out_frame) out_frame[k] = it.frame;
             if (out_group) out_group[k] = group_of[r.order[k]];
         }
-        return ok();
-    });
-}
-
-SIAARA_API siaara_status SIAARA_CALL siaara_suv_factor(const siaara_file* file, uint32_t frame, siaara_suv* out) {
-    return guarded([&]() -> siaara_status {
-        constexpr uint32_t kV1 = offsetof(siaara_suv, scan_time_source);  // struct before F11
-        if (!file || !out || out->struct_size < kV1)
-            return fail(Errc::InvalidArgument, "file and out (with struct_size) must be set");
-        const cl::SuvResult r = cl::compute_suv(file->file.dataset, frame);
-        const uint32_t size = out->struct_size < sizeof(siaara_suv) ? out->struct_size : static_cast<uint32_t>(sizeof(siaara_suv));
-        siaara_suv full{};
-        siaara_suv* const dst = out;
-        siaara_suv* const o = &full;
-        o->struct_size = dst->struct_size;
-        o->warnings = r.warnings;
-        const auto src = [](const std::string& s) -> int32_t {
-            if (s == "Series Date/Time") return SIAARA_SUV_SRC_SERIES;
-            if (s == "Acquisition Date/Time") return SIAARA_SUV_SRC_ACQUISITION;
-            if (s == "earliest acquisition") return SIAARA_SUV_SRC_EARLIEST_ACQUISITION;
-            if (s == "caller") return SIAARA_SUV_SRC_CALLER;
-            if (s == "administration (ADMIN)") return SIAARA_SUV_SRC_ADMINISTRATION;
-            if (s == "Radiopharmaceutical Start DateTime") return SIAARA_SUV_SRC_START_DATETIME;
-            if (s == "Radiopharmaceutical Start Time + scan date") return SIAARA_SUV_SRC_START_TIME_SCAN_DATE;
-            return SIAARA_SUV_SRC_NONE;
-        };
-        o->scan_time_source = src(r.scan_time_source);
-        o->injection_time_source = src(r.injection_time_source);
-        o->decay_correction = r.decay_correction == "START"   ? SIAARA_SUV_DECAY_START
-                                : r.decay_correction == "ADMIN" ? SIAARA_SUV_DECAY_ADMIN
-                                : r.decay_correction == "NONE"  ? SIAARA_SUV_DECAY_NONE
-                                                                : SIAARA_SUV_DECAY_UNKNOWN;
-        o->weight_kg = r.weight_kg.value_or(0.0);
-        o->injected_dose_bq = r.injected_dose_bq.value_or(0.0);
-        o->half_life_s = r.half_life_s.value_or(0.0);
-        auto put = [](const std::optional<double>& v, int32_t& has, double& d) {
-            has = v ? 1 : 0;
-            d = v.value_or(0.0);
-        };
-        put(r.bw, o->has_bw, o->bw);
-        put(r.lbm_james, o->has_lbm_james, o->lbm_james);
-        put(r.lbm_janmahasatian, o->has_lbm_janmahasatian, o->lbm_janmahasatian);
-        put(r.bsa, o->has_bsa, o->bsa);
-        put(r.ibw, o->has_ibw, o->ibw);
-        o->decay_seconds = r.decay_seconds.value_or(0.0);
-        o->decayed_dose_bq = r.decayed_dose_bq.value_or(0.0);
-        std::memcpy(dst, &full, size);
-        return ok();
-    });
-}
-
-SIAARA_API siaara_status SIAARA_CALL siaara_roi_stats_compute(const siaara_file* file, uint32_t frame, int32_t shape,
-                                                              const double* params, size_t param_count, int32_t partial,
-                                                              siaara_roi_stats* out) {
-    return guarded([&]() -> siaara_status {
-        if (!file || !out || out->struct_size < sizeof(siaara_roi_stats) || (param_count && !params))
-            return fail(Errc::InvalidArgument, "file, params and out (with struct_size) must be set");
-        cl::Roi roi;
-        auto need = [&](size_t n) { return param_count == n; };
-        switch (shape) {
-            case SIAARA_ROI_RECTANGLE:
-                if (!need(4)) return fail(Errc::InvalidArgument, "rectangle needs 4 parameters");
-                roi = cl::Roi::rectangle(params[0], params[1], params[2], params[3]);
-                break;
-            case SIAARA_ROI_ELLIPSE:
-                if (!need(5)) return fail(Errc::InvalidArgument, "ellipse needs 5 parameters");
-                roi = cl::Roi::ellipse(params[0], params[1], params[2], params[3], params[4]);
-                break;
-            case SIAARA_ROI_CIRCLE:
-                if (!need(3)) return fail(Errc::InvalidArgument, "circle needs 3 parameters");
-                roi = cl::Roi::circle(params[0], params[1], params[2]);
-                break;
-            case SIAARA_ROI_POLYGON:
-            case SIAARA_ROI_FREEHAND: {
-                if (param_count < 6 || param_count % 2) return fail(Errc::InvalidArgument, "polygon needs x y pairs");
-                std::vector<cl::Point2> v;
-                v.reserve(param_count / 2);
-                for (size_t i = 0; i + 1 < param_count; i += 2) v.push_back({params[i], params[i + 1]});
-                roi = shape == SIAARA_ROI_POLYGON ? cl::Roi::polygon(std::move(v)) : cl::Roi::freehand(std::move(v));
-                break;
-            }
-            default: return fail(Errc::InvalidArgument, "unknown ROI shape");
-        }
-        auto img = siaara::image::Image::open(file->file.dataset, file->file.transfer_syntax);
-        if (!img) return fail(img.error());
-        const auto& pi = img->info();
-        if (pi.samples_per_pixel != 1) return fail(Errc::Unsupported, "ROI statistics need a grayscale image");
-        if (frame >= img->frames().frame_count()) return fail(Errc::InvalidArgument, "frame index out of range");
-        std::vector<float> values(static_cast<size_t>(pi.pixels()));
-        if (Status s = siaara::image::decode_modality_f32(*img, frame, values); !s) return fail(s);
-        const cl::PixelSpacingInfo sp = cl::resolve_pixel_spacing(file->file.dataset, frame);
-        cl::RoiOptions o;
-        o.partial_pixels = partial != 0;
-        auto r = cl::roi_stats(values, pi.rows, pi.columns, roi, &sp, o);
-        if (!r) return fail(r.error());
-        const uint32_t size = out->struct_size;
-        std::memset(out, 0, sizeof(siaara_roi_stats));
-        out->struct_size = size;
-        out->has_area_mm2 = r->area_mm2 ? 1 : 0;
-        out->spacing_source = static_cast<int32_t>(r->spacing_source);
-        out->pixels = r->pixels;
-        out->count = r->count;
-        out->sum = r->sum;
-        out->mean = r->mean;
-        out->sd = r->sd;
-        out->sd_sample = r->sd_sample;
-        out->min = r->min;
-        out->max = r->max;
-        out->area_px = r->area_px;
-        out->area_mm2 = r->area_mm2.value_or(0.0);
         return ok();
     });
 }

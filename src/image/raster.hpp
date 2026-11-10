@@ -1,6 +1,6 @@
 // SIAARA DICOM Toolkit - shared 2D rasterisation helpers (internal): segment clipping, safe
 // double -> integer conversion, a work budget, and an edge-table scan-line polygon walk.
-// Used by overlay/shutter masks, GSPS annotation drawing and ROI masks (R-056, R-083, R-084).
+// Used by overlay/shutter masks and GSPS annotation drawing (R-056, R-083, R-084).
 // Liang-Barsky clipping: Liang & Barsky, "A New Concept and Method for Line Clipping", ACM TOG 3(1), 1984.
 #pragma once
 
