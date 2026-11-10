@@ -41,13 +41,32 @@ The native library is copied into every output folder as `runtimes/<rid>/native/
 (`siaara.dll`, `libsiaara.dylib`) by the `Siaara.Interop` project, as for the bindings
 (`-p:SiaaraNativeBuildDir=...` or `-p:SiaaraNativeLibrary=...` to point elsewhere).
 
-Dependencies: none beyond the .NET SDK and the ASP.NET Core shared framework. One note: in .NET 10,
-Blazor's own script (`_framework/blazor.web.js`) ships as the SDK pack
-`Microsoft.AspNetCore.App.Internal.Assets`, which the Web SDK fetches like the NativeAOT compiler
-pack. The SDK only does so when the app project itself has `.razor` files; ours are in the class
-library, so the host sets `RequiresAspNetWebAssets=true`. It is a framework pack, not a
-PackageReference (the build check stays green), but it is downloaded from the NuGet feed at the
-first restore.
+Dependencies: none beyond the .NET SDK and the ASP.NET Core shared framework (the build fails on any
+`PackageReference`).
+
+Zero downloads (owner decision b): the build never touches the network.
+
+- In .NET 10, Blazor's script (`_framework/blazor.web.js`) ships as the SDK pack
+  `Microsoft.AspNetCore.App.Internal.Assets`, which the Web SDK would fetch from nuget.org (it does so
+  only when the app project itself has `.razor` files; ours are in the class library, so the host
+  sets `RequiresAspNetWebAssets=true`). A copy of exactly that pack (10.0.14, the version SDK 10.0.403
+  resolves; SHA-256 in `vendor/packs/SHA256SUMS`) is kept in `vendor/packs/`. `NuGet.config` clears
+  every other source and `Directory.Build.props` points `RestoreSources` / `RestoreConfigFile` at
+  that folder only; `Directory.Build.targets` pins the pack version to the vendored file, so a newer
+  10.0 SDK still restores offline. To move to another pack version, copy the new `.nupkg` from
+  `~/.nuget/packages/microsoft.aspnetcore.app.internal.assets/<v>/`, update `SHA256SUMS` and
+  `SiaaraAspNetAssetsPackVersion`.
+- The bindings projects set `IsAotCompatible` / `IsTrimmable`, which would make the SDK fetch the
+  trimming analyzer pack `Microsoft.NET.ILLink.Tasks`. `Directory.Build.rsp` (read by MSBuild for any
+  build started under `app/`) turns those two off for the app build only; the bindings' own solution
+  keeps its analyzers. NuGet audit is off for the same reason (it would query the feed).
+- Proof: a fresh `NUGET_PACKAGES` folder, a dead proxy and no network interface (`unshare -rn`):
+  `dotnet build app/Siaara.Viewer.slnx -c Release` succeeds and the folder then holds only
+  `microsoft.aspnetcore.app.internal.assets` (copied from `vendor/packs`); no HTTP cache is created.
+- Not covered: a self-contained or RID-specific publish (`-r <rid>`) needs the runtime packs
+  `Microsoft.NETCore.App.Runtime.<rid>` and `Microsoft.AspNetCore.App.Runtime.<rid>`, which are not
+  vendored (owner decision pending). Builds from an IDE that ignores `Directory.Build.rsp` would ask
+  for the ILLink pack.
 
 ## Run
 
