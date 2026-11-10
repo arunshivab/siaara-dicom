@@ -64,6 +64,7 @@ public sealed class NetworkJob : IDisposable
         StudyInstanceUid = studyInstanceUid;
         _total = Math.Max(0, total);
         CreatedUtc = DateTime.UtcNow;
+        Token = _cts.Token;
     }
 
     /// <summary>Id of the row.</summary>
@@ -83,7 +84,8 @@ public sealed class NetworkJob : IDisposable
     /// <summary>Ends when the job has reached a final state.</summary>
     public Task Completion => _done.Task;
 
-    internal CancellationToken Token => _cts.Token;
+    // Taken once: it stays usable after the row was dropped from the list and its source disposed.
+    internal CancellationToken Token { get; }
 
     /// <summary>State.</summary>
     public NetworkJobState State
@@ -282,6 +284,7 @@ public sealed class NetworkJob : IDisposable
             EndedUtc = DateTime.UtcNow;
         }
         _done.TrySetResult();
+        _owner.Trim();
         _owner.Touch();
         return true;
     }
@@ -382,7 +385,16 @@ public sealed class NetworkJobs : IDisposable
         lock (_gate)
         {
             _jobs.Add(job);
-            // Finished rows beyond the limit go, oldest first; unfinished ones always stay.
+        }
+        Trim();
+        Touch();
+    }
+
+    // Finished rows beyond the limit go, oldest first; unfinished ones always stay.
+    internal void Trim()
+    {
+        lock (_gate)
+        {
             for (int i = 0; _jobs.Count > MaxKept && i < _jobs.Count;)
             {
                 if (_jobs[i].IsFinished)
@@ -396,7 +408,6 @@ public sealed class NetworkJobs : IDisposable
                 }
             }
         }
-        Touch();
     }
 
     /// <summary>Adds a row that is not a transfer of ours (images arriving at the receiver); it is running at once and

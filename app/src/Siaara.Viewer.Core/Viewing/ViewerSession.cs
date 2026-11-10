@@ -84,6 +84,8 @@ public sealed class ViewerSession : IDisposable
         {
             _viewports[i] = new Viewport(i);
         }
+        // Open while arriving: images added to this study later (retrieve, receiver, import) join the open series.
+        _svc.Store.EventReceived += OnStoreEvent;
     }
 
     /// <summary>Session id (in the socket URL).</summary>
@@ -345,7 +347,208 @@ public sealed class ViewerSession : IDisposable
         {
             RaiseUi();
             InvalidateAll();
+            // Images that arrived while the headers were being read.
+            StartGrowIfPending();
         }
+    }
+
+    // ================================================================== open while arriving
+
+    private readonly HashSet<string> _arrived = new(StringComparer.Ordinal);
+    private bool _growing;
+    private long _grown;
+
+    /// <summary>How many images joined open series after the study was loaded (tests, status).</summary>
+    public long ImagesArrived => Interlocked.Read(ref _grown);
+
+    // On the store's event pump: remember the series and leave.
+    private void OnStoreEvent(object? sender, StoreEventArgs e)
+    {
+        StoreEvent ev = e.Event;
+        if (ev.Kind != TkStoreEventKind.Added || ev.SeriesInstanceUid.Length == 0 || !string.Equals(ev.StudyInstanceUid, StudyInstanceUid, StringComparison.Ordinal))
+        {
+            return;
+        }
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _arrived.Add(ev.SeriesInstanceUid);
+        }
+        StartGrowIfPending();
+    }
+
+    private void StartGrowIfPending()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _growing || !Loaded || _arrived.Count == 0)
+            {
+                return;
+            }
+            _growing = true;
+        }
+        Observe(GrowLoopAsync(), "adding arriving images");
+    }
+
+    private async Task GrowLoopAsync()
+    {
+        try
+        {
+            while (true)
+            {
+                // Images arrive in bursts: gather a moment, then read the new headers in one go.
+                await Task.Delay(250, _closedToken).ConfigureAwait(false);
+                string[] series;
+                lock (_gate)
+                {
+                    series = [.. _arrived];
+                    _arrived.Clear();
+                    if (series.Length == 0 || _disposed)
+                    {
+                        _growing = false;
+                        return;
+                    }
+                }
+                await GrowAsync(series, _closedToken).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            lock (_gate)
+            {
+                _growing = false;
+            }
+            throw;
+        }
+    }
+
+    private async Task GrowAsync(string[] seriesUids, CancellationToken ct)
+    {
+        IReadOnlyList<SeriesRow> rows = await _svc.Store.GetSeriesAsync(StudyInstanceUid, ct).ConfigureAwait(false);
+        StudyRow? study = Study ?? await _svc.Store.GetStudyAsync(StudyInstanceUid, ct).ConfigureAwait(false);
+        bool changed = false;
+        foreach (string uid in seriesUids)
+        {
+            SeriesRow? row = rows.FirstOrDefault(r => r.SeriesInstanceUid == uid);
+            if (row is null)
+            {
+                continue;
+            }
+            IReadOnlyList<InstanceRow> inst = await _svc.Store.GetInstancesAsync(uid, ct).ConfigureAwait(false);
+            ImageInstance[] open;
+            lock (_gate)
+            {
+                open = [.. _series.Where(s => s.SeriesInstanceUid == uid).SelectMany(s => s.Images).Select(i => i.Instance).Distinct()];
+            }
+            var known = new HashSet<string>(open.Select(i => i.FilePath), StringComparer.Ordinal);
+            string[] fresh = [.. inst.Where(i => i.HasPixelData && !known.Contains(i.FilePath)).Select(i => i.FilePath)];
+            if (fresh.Length == 0)
+            {
+                continue;
+            }
+            IReadOnlyList<SeriesSource> grown = await _svc.Scheduler.RunAsync(WorkPool.Decode, t => SeriesSource.Grow(row.Record, open, fresh, t),
+                WorkPriority.Normal, ct).ConfigureAwait(false);
+            bool keep;
+            lock (_gate)
+            {
+                keep = !_disposed;
+                if (keep)
+                {
+                    ReplaceSeriesLocked(uid, [.. grown.Where(s => s.Images.Count > 0)]);
+                    Study ??= study;
+                    if (_series.Count > 0)
+                    {
+                        LoadError = null;
+                    }
+                }
+            }
+            if (!keep)
+            {
+                // The session closed meanwhile: its own headers are released by Dispose, the new ones here.
+                foreach (ImageInstance i in grown.SelectMany(s => s.Images).Select(x => x.Instance).Distinct().Except(open))
+                {
+                    i.Dispose();
+                }
+                return;
+            }
+            Interlocked.Add(ref _grown, fresh.Length);
+            changed = true;
+        }
+        if (changed)
+        {
+            RaiseUi();
+            InvalidateAll();
+        }
+    }
+
+    // Under the lock: the sources of one series are replaced by its grown form. A viewport showing the series keeps
+    // the image it shows (found again by SOP Instance UID and frame), its window, zoom and pan; only its position in
+    // the re-sorted stack changes.
+    private void ReplaceSeriesLocked(string seriesUid, List<SeriesSource> grown)
+    {
+        int at = _series.FindIndex(s => s.SeriesInstanceUid == seriesUid);
+        var shown = new List<(Viewport Vp, FrameKey? Key, int Stack)>();
+        foreach (Viewport vp in _viewports)
+        {
+            if (vp.Series is { } s && s.SeriesInstanceUid == seriesUid)
+            {
+                shown.Add((vp, vp.CurrentImage?.Key, s.Stack));
+            }
+        }
+        _series.RemoveAll(s => s.SeriesInstanceUid == seriesUid);
+        if (at < 0 || at > _series.Count)
+        {
+            at = _series.Count;
+        }
+        _series.InsertRange(at, grown);
+        foreach ((Viewport vp, FrameKey? key, int stack) in shown)
+        {
+            SeriesSource? target = null;
+            int index = -1;
+            if (key is FrameKey k)
+            {
+                foreach (SeriesSource g in grown)
+                {
+                    for (int i = 0; i < g.Images.Count; i++)
+                    {
+                        if (g.Images[i].Key == k)
+                        {
+                            (target, index) = (g, i);
+                            break;
+                        }
+                    }
+                    if (target is not null)
+                    {
+                        break;
+                    }
+                }
+            }
+            target ??= grown.FirstOrDefault(g => g.Stack == stack) ?? grown.FirstOrDefault();
+            bool wasPlaying = vp.Cine.IsPlaying;
+            if (target is null)
+            {
+                StopCineLocked(vp);
+                vp.Series = null;
+                vp.SeriesIndex = -1;
+                continue;
+            }
+            vp.Series = target;
+            vp.ImageIndex = index >= 0 ? index : Math.Clamp(vp.ImageIndex, 0, target.Images.Count - 1);
+            // Rendered frames are cached by position in the stack, which has just changed.
+            vp.Ring.Reset("");
+            if (wasPlaying)
+            {
+                RestartCineLocked(vp);
+            }
+        }
+        foreach (Viewport vp in _viewports)
+        {
+            vp.SeriesIndex = vp.Series is null ? -1 : _series.IndexOf(vp.Series);
+        }
+        AssignDefaults();
     }
 
     private static void DisposeHeaders(IEnumerable<SeriesSource> series)
@@ -2480,7 +2683,9 @@ public sealed class ViewerSession : IDisposable
             _sink = null;
             series = [.. _series];
             _series.Clear();
+            _arrived.Clear();
         }
+        _svc.Store.EventReceived -= OnStoreEvent;
         _closed.Cancel();
         // Header handles (one per instance) are released now; work still running on them sees
         // ObjectDisposedException after the cancellation and stops quietly.

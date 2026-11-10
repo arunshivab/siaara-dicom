@@ -113,7 +113,11 @@ public sealed class TransferService
             catch (Exception e)
             {
                 end = e is OperationCanceledException || ct.IsCancellationRequested ? NetworkJobState.Cancelled : NetworkJobState.Failed;
-                why = end == NetworkJobState.Failed ? NetworkText.Describe(e) : null;
+                why = end == NetworkJobState.Failed ? (web is not null ? NetworkText.DescribeWeb(e) : NetworkText.Describe(e)) : null;
+                if (web is not null && e is TkException && end == NetworkJobState.Failed)
+                {
+                    throw new NetworkException(why!, e);
+                }
                 throw;
             }
             finally
@@ -241,7 +245,11 @@ public sealed class TransferService
             catch (Exception e)
             {
                 end = e is OperationCanceledException || ct.IsCancellationRequested ? NetworkJobState.Cancelled : NetworkJobState.Failed;
-                why = end == NetworkJobState.Failed ? NetworkText.Describe(e) : null;
+                why = end == NetworkJobState.Failed ? (web is not null ? NetworkText.DescribeWeb(e) : NetworkText.Describe(e)) : null;
+                if (web is not null && e is TkException && end == NetworkJobState.Failed)
+                {
+                    throw new NetworkException(why!, e);
+                }
                 throw;
             }
             finally
@@ -279,6 +287,7 @@ public sealed class TransferService
             p => job.Report(p.Completed + p.Warning, p.Failed, p.Warning), ct);
         int sent = 0, failed = 0, changed = 0;
         var committed = new List<(string, string)>();
+        var notSent = new List<string>();
         for (int i = 0; i < outcomes.Count; i++)
         {
             TkStoreOutcome o = outcomes[i];
@@ -297,17 +306,22 @@ public sealed class TransferService
             }
             failed++;
             string reason = o.IncompleteInput ? IncompleteText
+                : o.Error == TkError.Cancelled ? "the transfer ended before this image"
                 : o.Error != TkError.None && o.DimseStatus is 0xFFFF or 0 ? Tk.Describe(o.Error)
                 : NetworkText.DescribeStatus(o.DimseStatus);
-            job.Note("Not sent: image " + uid + ": " + reason + ".");
+            notSent.Add("Not sent: image " + uid + ": " + reason + ".");
         }
         job.Report(sent, failed, 0, files.Count);
         fields["uidChanged"] = N(changed);
+        if (sent == 0 && outcomes.All(o => !o.IncompleteInput && o.DimseStatus == 0xFFFF && o.Error is TkError.Cancelled or TkError.Rejected or TkError.Network))
+        {
+            // Nothing went out at all: the connection was not accepted.
+            throw Refusal(r);
+        }
+        notSent.ForEach(job.Note);
         if (sent == 0)
         {
-            throw outcomes.All(o => o.IncompleteInput) ? new NetworkException("no image was sent: " + IncompleteText)
-                : r.DimseStatus == 0 && outcomes.All(o => o.Error is TkError.Rejected or TkError.Network) ? Refusal(r)
-                : new NetworkException("no image was sent (see the lines below)");
+            throw new NetworkException(outcomes.All(o => o.IncompleteInput) ? "no image was sent: " + IncompleteText : "no image was sent (see the lines below)");
         }
         bool problems = failed > 0;
         if (request.RequestCommitment ?? node.RequestCommitment)
@@ -337,6 +351,12 @@ public sealed class TransferService
             job.Note("The PACS did not confirm storage: the confirmation request failed (" + NetworkText.Describe(e) + ").");
             return false;
         }
+        if (c.Refused)
+        {
+            fields["commitment"] = "refused";
+            job.Note("The PACS did not confirm storage: it does not offer storage confirmation to this viewer.");
+            return false;
+        }
         if (!c.Reported)
         {
             fields["commitment"] = "unconfirmed";
@@ -362,6 +382,14 @@ public sealed class TransferService
         return false;
     }
 
+    // The commitment step on its own, as a job (the app's tests ask about images the archive does not hold).
+    internal NetworkJob CommitOnly(string nodeId, IReadOnlyList<(string SopClassUid, string SopInstanceUid)> instances)
+    {
+        DimseNodeSetting node = _nodes.FindDimse(nodeId) ?? throw new NetworkException("This node no longer exists.");
+        return _jobs.Start(NetworkJobKind.Send, node.Name, "Storage confirmation", null, instances.Count, (job, ct) =>
+            Commit(job, node, _nodes.PeerFor(node), [.. instances], [], ct) ? NetworkJobState.Completed : NetworkJobState.CompletedWithErrors, null);
+    }
+
     private NetworkJobState SendWeb(NetworkJob job, WebNodeSetting node, List<(string Path, string Sop)> files, SendRequest request, CancellationToken ct)
     {
         using TkWebClient client = _nodes.ClientFor(node);
@@ -379,19 +407,19 @@ public sealed class TransferService
             {
                 failed++;
                 first ??= e;
-                job.Note("Not sent: image " + sop + ": " + (e.Error == TkError.Truncated ? IncompleteText : NetworkText.Describe(e)) + ".");
+                job.Note("Not sent: image " + sop + ": " + (e.Error == TkError.Truncated ? IncompleteText : NetworkText.DescribeWeb(e)) + ".");
                 if (sent == 0 && failed >= 3 && e.Error is TkError.Network or TkError.Timeout or TkError.Rejected)
                 {
                     // The server is not reachable or refuses us: do not walk through the whole study.
                     job.Report(sent, failed, 0, files.Count);
-                    throw new NetworkException(NetworkText.Describe(e), e);
+                    throw new NetworkException(NetworkText.DescribeWeb(e), e);
                 }
             }
             job.Report(sent, failed, 0, files.Count);
         }
         if (sent == 0)
         {
-            throw new NetworkException("no image was sent: " + (first is null ? "nothing to send" : first.Error == TkError.Truncated ? IncompleteText : NetworkText.Describe(first)));
+            throw new NetworkException("no image was sent: " + (first is null ? "nothing to send" : first.Error == TkError.Truncated ? IncompleteText : NetworkText.DescribeWeb(first)));
         }
         return failed > 0 ? NetworkJobState.CompletedWithErrors : NetworkJobState.Completed;
     }

@@ -185,6 +185,7 @@ internal static class Program
             HostTests.Register();
             AuditTests.Register();
             SecurityTests.Register();
+            NetworkTests.Register();
             PerfTests.Register();
             return await T.RunAsync(filters).ConfigureAwait(false);
         }

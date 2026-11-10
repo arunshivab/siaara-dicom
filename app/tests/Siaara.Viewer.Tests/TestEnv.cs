@@ -29,7 +29,10 @@ internal sealed class TestEnv : IDisposable
         Annotations = new AnnotationStore(Paths.AnnotationFolder, "tester");
         Import = new ImportService(Store, Scheduler, Audit);
         Services = new ViewerServices(Store, Cache, Scheduler, Settings, Annotations, Audit);
+        Network = new Core.Network.NetworkServices(Settings, Core.Platform.SecretStores.EncryptedFiles(Paths.SecretsFolder), Store, Audit);
     }
+
+    public Core.Network.NetworkServices Network { get; }
 
     public string Root { get; }
     public AppPaths Paths { get; }
@@ -69,6 +72,7 @@ internal sealed class TestEnv : IDisposable
 
     public void Dispose()
     {
+        Network.Dispose();
         Cache.Dispose();
         Store.Dispose();
         Audit.Dispose();

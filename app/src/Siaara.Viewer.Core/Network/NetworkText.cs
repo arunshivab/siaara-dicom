@@ -53,6 +53,18 @@ public static class NetworkText
         _ => "unexpected error (" + e.GetType().Name + ")",
     };
 
+    /// <summary>Plain words for a failed DICOMweb call (the same failures read differently for a web server).</summary>
+    /// <param name="e">The failure.</param>
+    /// <returns>A sentence fragment without a full stop.</returns>
+    public static string DescribeWeb(Exception e) => e switch
+    {
+        TkException { Error: TkError.Rejected } => "the server refused the request (check the user name, the password or token, and that this account may use the service)",
+        TkException { Error: TkError.NotFound } => "the server does not know this address or study (check the address of the DICOMweb service)",
+        TkException { Error: TkError.Malformed or TkError.NotDicom } => "the server's answer was not DICOM (check the address of the DICOMweb service)",
+        System.Text.Json.JsonException => "the server's answer was not DICOM JSON (check the address of the DICOMweb service)",
+        _ => Describe(e),
+    };
+
     /// <summary>Plain words for a final DIMSE status that is not success.</summary>
     /// <param name="status">The status.</param>
     /// <returns>A sentence fragment.</returns>

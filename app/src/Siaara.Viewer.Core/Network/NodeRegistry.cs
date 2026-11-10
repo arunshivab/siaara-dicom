@@ -612,9 +612,16 @@ public sealed class NodeRegistry
             }
             if (FindWeb(id) is WebNodeSetting w)
             {
-                using TkWebClient c = ClientFor(w);
-                c.Search(TkLevel.Study, "limit=1", null, cancellationToken);
-                return new NodeTestResult(true, "The server answered (study search).");
+                try
+                {
+                    using TkWebClient c = ClientFor(w);
+                    c.Search(TkLevel.Study, "limit=1", null, cancellationToken);
+                    return new NodeTestResult(true, "The server answered (study search).");
+                }
+                catch (TkException e)
+                {
+                    return new NodeTestResult(false, "The test failed: " + NetworkText.DescribeWeb(e) + ".");
+                }
             }
             return new NodeTestResult(false, "This node no longer exists.");
         }

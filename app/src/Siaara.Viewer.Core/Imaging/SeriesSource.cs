@@ -117,21 +117,37 @@ public sealed class SeriesSource
         return list;
     }
 
-    /// <summary>Reads the headers of a series (stop before pixel data) and sorts it (multi-frame expanded).</summary>
-    /// <param name="series">Series row (UID, number, description, modality).</param>
-    /// <param name="instancePaths">Instance file paths.</param>
+    /// <summary>Reads the headers of a series and sorts it; a series with several stacks gives one source per stack.</summary>
+    /// <param name="series">The series row.</param>
+    /// <param name="instancePaths">Files of the series.</param>
     /// <param name="cancellationToken">Token.</param>
-    /// <returns>One SeriesSource per stack.</returns>
-    public static IReadOnlyList<SeriesSource> Load(TkRecord series, IReadOnlyList<string> instancePaths, CancellationToken cancellationToken)
+    /// <returns>The sources (empty when no file could be read).</returns>
+    public static IReadOnlyList<SeriesSource> Load(TkRecord series, IReadOnlyList<string> instancePaths, CancellationToken cancellationToken) =>
+        Grow(series, [], instancePaths, cancellationToken);
+
+    /// <summary>
+    /// A series that gained images while it is open (a retrieve or the receiver is still filling it): the headers of
+    /// the new files are read, the instances already open are kept as they are, and the whole series is sorted again.
+    /// When the call fails or is cancelled, only the newly opened headers are released.
+    /// </summary>
+    /// <param name="series">The series row.</param>
+    /// <param name="existing">Instances already open (kept, not re-read).</param>
+    /// <param name="newPaths">Files that arrived.</param>
+    /// <param name="cancellationToken">Token.</param>
+    /// <returns>The sources of the whole series.</returns>
+    public static IReadOnlyList<SeriesSource> Grow(TkRecord series, IReadOnlyList<ImageInstance> existing, IReadOnlyList<string> newPaths,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(series);
-        ArgumentNullException.ThrowIfNull(instancePaths);
-        var instances = new List<ImageInstance>(instancePaths.Count);
+        ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(newPaths);
+        var instances = new List<ImageInstance>(existing.Count + newPaths.Count);
+        instances.AddRange(existing);
         var unreadable = 0;
         TkSortResult sorted;
         try
         {
-            foreach (string p in instancePaths)
+            foreach (string p in newPaths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 try
@@ -148,8 +164,8 @@ public sealed class SeriesSource
         }
         catch
         {
-            // Cancelled or failed: release the header handles opened so far.
-            instances.ForEach(i => i.Dispose());
+            // Cancelled or failed: release the header handles opened by this call.
+            instances.Skip(existing.Count).ToList().ForEach(i => i.Dispose());
             throw;
         }
         var warnings = DescribeWarnings(sorted.Warnings).ToList();

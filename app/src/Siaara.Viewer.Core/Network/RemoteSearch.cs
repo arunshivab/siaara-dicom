@@ -199,8 +199,8 @@ public sealed class RemoteSearchService
         catch (Exception e) when (e is TkException or NetworkException or System.Security.Cryptography.CryptographicException or JsonException)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string why = e is JsonException ? "the server's answer was not DICOM JSON" : e is System.Security.Cryptography.CryptographicException
-                ? "the secret store of this computer could not be read" : NetworkText.Describe(e);
+            string why = e is System.Security.Cryptography.CryptographicException ? "the secret store of this computer could not be read"
+                : web is not null ? NetworkText.DescribeWeb(e) : NetworkText.Describe(e);
             Audit(nodeId, kind, "study", AuditOutcome.Failure, found.Count, false, why);
             AppLog.Warn("network", "remote search failed: " + why);
             throw new NetworkException("The search failed: " + why + ".", e);
@@ -272,8 +272,8 @@ public sealed class RemoteSearchService
         catch (Exception e) when (e is TkException or NetworkException or System.Security.Cryptography.CryptographicException or JsonException)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string why = e is JsonException ? "the server's answer was not DICOM JSON" : e is System.Security.Cryptography.CryptographicException
-                ? "the secret store of this computer could not be read" : NetworkText.Describe(e);
+            string why = e is System.Security.Cryptography.CryptographicException ? "the secret store of this computer could not be read"
+                : web is not null ? NetworkText.DescribeWeb(e) : NetworkText.Describe(e);
             Audit(nodeId, kind, "series", AuditOutcome.Failure, 0, false, why);
             throw new NetworkException("The series could not be listed: " + why + ".", e);
         }

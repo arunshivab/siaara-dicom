@@ -134,8 +134,9 @@ public sealed record TkStoreOutcome(bool Sent, TkError Error, int DimseStatus, b
 
 /// <summary>Result of a Storage Commitment request.</summary>
 /// <param name="Reported">The other side answered within the wait.</param>
+/// <param name="Refused">The other side did not accept the request at all (it does not offer the service to us).</param>
 /// <param name="FailureReasons">Per instance: 0 committed, 0xFFFF not reported, else the DICOM failure reason.</param>
-public sealed record TkCommitResult(bool Reported, IReadOnlyList<int> FailureReasons);
+public sealed record TkCommitResult(bool Reported, bool Refused, IReadOnlyList<int> FailureReasons);
 
 /// <summary>DIMSE service class user calls. Each call opens one association, blocks the calling thread, and is
 /// cancelled through the token (the association is aborted). Failures decided by the other side come back in the
@@ -384,11 +385,16 @@ public static class TkNet
         {
             CommitmentResult r = Dimse.Commit(peer.ToBinding(), instances, new CommitmentOptions { Wait = wait, Receiver = receiver?.Binding },
                 cancellationToken);
-            return new TkCommitResult(r.FailureReasons.Any(x => x != 0xFFFF), r.FailureReasons);
+            bool reported = r.FailureReasons.Any(x => x != 0xFFFF);
+            return new TkCommitResult(reported, !reported && !r.Result.IsSuccess, r.FailureReasons);
         }
         catch (SiaaraException e) when (e.ErrorCode == SiaaraErrorCode.Timeout)
         {
-            return new TkCommitResult(false, [.. Enumerable.Repeat(0xFFFF, instances.Count)]);
+            return new TkCommitResult(false, false, [.. Enumerable.Repeat(0xFFFF, instances.Count)]);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
         }
         catch (SiaaraException e)
         {
@@ -465,6 +471,9 @@ public sealed record TkScpOptions
     public bool ServeQueryRetrieve { get; init; }
     /// <summary>C-MOVE destinations and commitment report receivers.</summary>
     public IReadOnlyList<TkAeEntry> AeTable { get; init; } = [];
+    /// <summary>Also answer Storage Commitment requests from the store. The viewer never sets this (it is not an
+    /// archive and makes no promise to keep images); the app's tests use it for the archive they talk to.</summary>
+    public bool ServeCommitment { get; init; }
 }
 
 /// <summary>Our Storage SCP (also Verification; optionally Query/Retrieve from the store). The only listener of the
@@ -508,6 +517,7 @@ public sealed class TkScp : IDisposable
             Get = options.ServeQueryRetrieve,
             Move = options.ServeQueryRetrieve,
             CommitmentReports = true,
+            Commitment = options.ServeCommitment,
             AeTable = [.. options.AeTable.Select(a => new ScpAeEntry(a.AeTitle, a.Host, a.Port))],
         };
         return new TkScp(Tk.Call(() => StorageScp.Start(o, s, store.Binding)));
