@@ -512,7 +512,7 @@ Status TcpListener::listen(const std::string& bind_address, std::uint16_t port, 
         ::freeaddrinfo(list);
     }
     // C6: a taken port is reported as such, with the port, so a caller can tell the user.
-    if (in_use) return Status(Errc::AddressInUse, "port " + std::to_string(port) + " is already in use");
+    if (in_use) return Status(Errc::AddressInUse, "the port is in use: " + std::to_string(port));
     return err;
 }
 

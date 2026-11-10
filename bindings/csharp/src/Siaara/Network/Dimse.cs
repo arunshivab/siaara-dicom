@@ -128,7 +128,7 @@ public sealed class StoreCanceledException : OperationCanceledException
     {
     }
 
-    internal StoreCanceledException(string message, CancellationToken token, DimseResult result, IReadOnlyList<StoreOutcome> files)
+    internal StoreCanceledException(string message, DimseResult result, IReadOnlyList<StoreOutcome> files, CancellationToken token)
         : base(message, token)
     {
         Result = result;
@@ -836,7 +836,7 @@ public static class Dimse
             if (res.Outcome == SiaaraErrorCode.Cancelled)
             {
                 // Still an OperationCanceledException, now with what was sent before the cancel.
-                throw new StoreCanceledException(res.Message, cancellationToken, res, files);
+                throw new StoreCanceledException(res.Message, res, files, cancellationToken);
             }
             return (res, files);
         }

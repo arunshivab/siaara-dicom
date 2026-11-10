@@ -48,6 +48,8 @@ public enum TkError
     Cancelled = 14,
     /// <summary>Buffer too small.</summary>
     BufferTooSmall = 15,
+    /// <summary>The address or port is already in use.</summary>
+    AddressInUse = 16,
     /// <summary>Internal error.</summary>
     Internal = 99,
 }
@@ -162,6 +164,7 @@ public static class Tk
         TkError.Rejected => "rejected (in use or not allowed)",
         TkError.Cancelled => "cancelled",
         TkError.BufferTooSmall => "buffer too small",
+        TkError.AddressInUse => "the address or port is already in use",
         _ => "internal toolkit error",
     };
 

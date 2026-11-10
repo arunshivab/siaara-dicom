@@ -222,7 +222,8 @@ public sealed class ScpService : IDisposable
         }
         catch (Exception e) when (e is TkException or System.Security.Cryptography.CryptographicException)
         {
-            string why = e is TkException { Error: TkError.Network or TkError.IO or TkError.Rejected }
+            string why = e is TkException { Error: TkError.AddressInUse } ? "the port is in use"
+                : e is TkException { Error: TkError.Network or TkError.IO or TkError.Rejected }
                 ? "the port is in use, or the listen address is not an address of this computer"
                 : e is System.Security.Cryptography.CryptographicException ? "the password of the TLS identity could not be read from the secret store"
                 : NetworkText.Describe(e);

@@ -301,8 +301,8 @@ internal static unsafe class Callbacks
                 static string S(nint p) => p == 0 ? string.Empty : Marshal.PtrToStringUTF8(p) ?? string.Empty;
                 // Fields after peer_address exist only when struct_size covers them (older libraries).
                 // v2 ends with command_field; association_id and read_loss came later.
-                bool full = e->struct_size >= (uint)Marshal.OffsetOf<siaara_scp_event>(nameof(siaara_scp_event.command_field)) + sizeof(uint);
-                bool v3 = e->struct_size >= (uint)Marshal.OffsetOf<siaara_scp_event>(nameof(siaara_scp_event.read_loss)) + sizeof(uint);
+                bool full = e->struct_size >= (ulong)((byte*)&e->command_field - (byte*)e) + sizeof(uint);
+                bool v3 = e->struct_size >= (ulong)((byte*)&e->read_loss - (byte*)e) + sizeof(uint);
                 var d = new ScpEventData(e->kind, (int)e->dimse_status, e->outcome, S(e->calling_ae), S(e->sop_class_uid),
                     S(e->sop_instance_uid), S(e->peer_address),
                     full && e->uid_mismatch != 0, full ? S(e->command_sop_class_uid) : string.Empty,
