@@ -262,11 +262,29 @@ private:
     }
 
     Status encapsulated(const Element& e) {
-        header(e.tag, e.vr == VR::None ? VR::OB : e.vr, kUndefinedLength);
         // Fragments read with an odd length (typically the last one) are kept that way unless
         // padding is asked for or the fragment list was changed.
         const bool keep = opt_.odd_lengths == OddLengths::Keep && e.read.parsed &&
                           e.read.fragment_count == e.fragments.size();
+        // Read with a defined length (testing 10b item 5): written back the same way while the
+        // fragments are as read and lengths are kept as read, so the file is reproduced.
+        if (e.read.fragments_defined_length && keep && opt_.sequence_lengths == SequenceLengths::KeepAsRead) {
+            std::uint64_t total = e.read.fragments_defined_length == 2 ? 8u : 0u;
+            for (const Bytes& f : e.fragments) total += 8u + f.size();
+            if (total >= kUndefinedLength) return Status(Errc::LimitExceeded, "pixel data too large");
+            header(e.tag, e.vr == VR::None ? VR::OB : e.vr, static_cast<std::uint32_t>(total));
+            for (const Bytes& f : e.fragments) {
+                tag(tags::Item);
+                u32(static_cast<std::uint32_t>(f.size()));
+                out_.insert(out_.end(), f.data(), f.data() + f.size());
+            }
+            if (e.read.fragments_defined_length == 2) {
+                tag(tags::SequenceDelimitationItem);
+                u32(0);
+            }
+            return Status::ok();
+        }
+        header(e.tag, e.vr == VR::None ? VR::OB : e.vr, kUndefinedLength);
         for (const Bytes& f : e.fragments) {
             tag(tags::Item);
             const bool pad = (f.size() & 1u) != 0 && !keep;

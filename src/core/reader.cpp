@@ -33,6 +33,7 @@ struct Syntax {
     bool explicit_vr = true;
     bool big_endian = false;
     bool pixel_big_endian = false;  // F6b: only top-level OW Pixel Data is big endian
+    bool encapsulated = false;      // an encapsulated (compressed) transfer syntax, or an unknown one
 };
 
 class Parser {
@@ -204,6 +205,16 @@ public:
                         e.read.private_vr = VR::None;
                         e.value = buf_.sub(vstart, static_cast<std::size_t>(vend) - vstart);
                     }
+                    if (Status s = advance_to(vend, tag); !s) return s;
+                } else if (depth == 0 && tag == tags::PixelData && syn.encapsulated && opt_.lenient &&
+                           defined_length_fragments(e, len, static_cast<std::size_t>(vend))) {
+                    // Testing 10b item 5: encapsulated Pixel Data with a defined length (items
+                    // inside, no delimiter), as some writers produce (gdcmData
+                    // JPEGDefinedLengthSequenceOfFragments). PS3.5 A.4 requires undefined length;
+                    // the fragments are read and the writer keeps the defined length as read.
+                    warn("PIXEL_DATA_DEFINED_LENGTH: encapsulated Pixel Data has a defined length (" +
+                         std::to_string(len) + " bytes) instead of undefined length (PS3.5 A.4); read as " +
+                         std::to_string(e.fragments.size()) + " item(s) (Basic Offset Table and fragments); kept as read on save");
                     if (Status s = advance_to(vend, tag); !s) return s;
                 } else {
                     std::size_t unit = 0;
@@ -471,6 +482,36 @@ private:
         }
     }
 
+    // Reads [pos_, vend) as fragment items when it is exactly a run of defined-length items (FFFE,E000),
+    // optionally followed by a Sequence Delimitation Item at the very end. Fills e.fragments and
+    // returns true then; leaves e and the cursor unchanged and returns false otherwise.
+    bool defined_length_fragments(Element& e, std::uint32_t len, std::size_t vend) {
+        if (len < 8 || vend > limit_) return false;
+        std::vector<Bytes> frags;
+        std::size_t at = pos_;
+        bool delimiter = false;
+        while (at < vend) {
+            if (vend - at < 8) return false;
+            const std::uint32_t t = (std::uint32_t{load_le16(p_ + at)} << 16) | load_le16(p_ + at + 2);
+            const std::uint32_t n = load_le32(p_ + at + 4);
+            if (t == tags::SequenceDelimitationItem && n == 0 && at + 8 == vend && !frags.empty()) {
+                delimiter = true;
+                at = vend;
+                break;
+            }
+            if (t != tags::Item || n == kUndefinedLength || n > vend - at - 8) return false;
+            if (frags.size() >= opt_.max_fragments) return false;
+            frags.push_back(buf_.sub(at + 8, n));
+            at += 8 + std::size_t{n};
+        }
+        if (frags.empty()) return false;
+        e.fragments = std::move(frags);
+        e.read.length = len;
+        e.read.fragment_count = static_cast<std::uint32_t>(e.fragments.size());
+        e.read.fragments_defined_length = delimiter ? 2 : 1;
+        return true;
+    }
+
     Bytes value_bytes(VR vr, std::size_t at, std::uint32_t len, Syntax syn, std::size_t unit = 0) {
         if (!syn.big_endian) return buf_.sub(at, len);
         // AT is a pair of 16-bit values (group, element), so it swaps in 16-bit units (PS3.5 6.2).
@@ -549,10 +590,10 @@ private:
 Result<Syntax> syntax_for(std::string_view uid, bool lenient, const TransferSyntaxInfo** info) {
     const TransferSyntaxInfo* t = find_transfer_syntax(uid);
     *info = t;
-    if (t) return Syntax{t->explicit_vr, t->big_endian, t->pixel_big_endian};
+    if (t) return Syntax{t->explicit_vr, t->big_endian, t->pixel_big_endian, t->encapsulated};
     if (!lenient) return Status(Errc::Unsupported, "unknown transfer syntax");
     // Unknown (often private) transfer syntax: PS3.5 says encapsulated ones are explicit VR LE.
-    return Syntax{true, false};
+    return Syntax{true, false, false, true};
 }
 
 // Looks at the first element to guess the encoding of a raw data set (no file meta).

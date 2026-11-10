@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "codec/transcode.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -23,6 +24,7 @@
 #include "net/scu.hpp"
 #include "net/services.hpp"
 #include "net/store_support.hpp"
+#include "repair/validate.hpp"
 #include "siaara/siaara.h"
 #include "test.hpp"
 
@@ -555,4 +557,93 @@ TEST_CASE("10b 4.3: outcomes carry the UID sent after a lossy C-STORE; commitmen
           SIAARA_ERR_INVALID_ARGUMENT);
     siaara_scp_free(scp);
     siaara_store_free(store);
+}
+
+// ---------------------------------------------------------------- item 5: defined-length fragments
+
+namespace {
+
+// A JPEG Lossless file whose Pixel Data is written with a defined length (items, no delimiter;
+// with `keep_delimiter` the Sequence Delimitation Item stays inside the length).
+bool defined_length_jpeg(bool keep_delimiter, DicomFile& native, std::vector<std::uint8_t>& b) {
+    native = mr8("2.25.10120");
+    DicomFile f = native;
+    if (!codec::transcode_file(f, "1.2.840.10008.1.2.4.70").is_ok()) return false;
+    b = bytes_of(f);
+    // Find (7FE0,0010) OB 00 00 FFFFFFFF at the top level (the last occurrence).
+    static constexpr std::uint8_t hdr[] = {0xE0, 0x7F, 0x10, 0x00, 'O', 'B', 0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
+    std::size_t at = std::string::npos;
+    for (std::size_t i = 0; i + sizeof hdr <= b.size(); ++i)
+        if (std::memcmp(b.data() + i, hdr, sizeof hdr) == 0) at = i;
+    static constexpr std::uint8_t delim[] = {0xFE, 0xFF, 0xDD, 0xE0, 0, 0, 0, 0};
+    if (at == std::string::npos || b.size() < at + sizeof hdr + 8) return false;
+    if (std::memcmp(b.data() + b.size() - 8, delim, 8) != 0) return false;  // Pixel Data is the last element
+    if (!keep_delimiter) b.resize(b.size() - 8);
+    const auto len = static_cast<std::uint32_t>(b.size() - (at + sizeof hdr));
+    for (int k = 0; k < 4; ++k) b[at + 8 + static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(len >> (8 * k));
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("10b item 5: encapsulated Pixel Data with a defined length is read leniently and kept as read") {
+    for (bool keep_delimiter : {false, true}) {
+        DicomFile native;
+        std::vector<std::uint8_t> in;
+        REQUIRE(defined_length_jpeg(keep_delimiter, native, in));
+        auto f = read_part10(Bytes::copy_of(in.data(), in.size()));
+        REQUIRE(f.is_ok());
+        CHECK(f->complete());
+        const Element* px = f->dataset.find(tags::PixelData);
+        REQUIRE(px != nullptr);
+        CHECK(px->is_encapsulated());
+        CHECK(px->fragments.size() == 2);  // empty Basic Offset Table + one fragment
+        CHECK(px->read.fragments_defined_length == (keep_delimiter ? 2 : 1));
+        bool warned = false;
+        for (const std::string& w : f->warnings) warned = warned || w.rfind("PIXEL_DATA_DEFINED_LENGTH", 0) == 0;
+        CHECK(warned);
+        // Decodes to the original pixels.
+        auto dec = codec::transcode_dataset(f->dataset, f->transfer_syntax, ts::ExplicitVRLittleEndian);
+        REQUIRE(dec.is_ok());
+        const Element* a = dec->find(tags::PixelData);
+        const Element* b = native.dataset.find(tags::PixelData);
+        REQUIRE(a && b);
+        CHECK(a->value.size() == b->value.size());
+        CHECK(std::memcmp(a->value.data(), b->value.data(), b->value.size()) == 0);
+        // Saved byte for byte as read.
+        std::vector<std::uint8_t> out;
+        REQUIRE(write_part10(*f, out).is_ok());
+        CHECK(out == in);
+        // The validator reports it as a warning, not as native pixel data.
+        auto v = repair::validate_bytes(Bytes::copy_of(in.data(), in.size()));
+        REQUIRE(v.is_ok());
+        bool flagged = false, native_error = false;
+        for (const repair::Finding& x : *v) {
+            flagged = flagged || (x.code == "pixel-defined-length" && x.severity == repair::Severity::Warning);
+            native_error = native_error || x.code == "pixel-encoding";
+        }
+        CHECK(flagged);
+        CHECK(!native_error);
+        // Strict mode still refuses to interpret it as fragments (the value stays bytes).
+        ReadOptions strict;
+        strict.lenient = false;
+        auto s = read_part10(Bytes::copy_of(in.data(), in.size()), strict);
+        if (s.is_ok()) CHECK(s->dataset.find(tags::PixelData)->fragments.empty());
+    }
+    // Items that do not fill the length exactly: left as bytes (nothing is guessed).
+    DicomFile native;
+    std::vector<std::uint8_t> bad;
+    REQUIRE(defined_length_jpeg(false, native, bad));
+    bad.push_back(0);
+    bad.push_back(0);
+    for (std::size_t i = 0; i + 12 <= bad.size(); ++i)
+        if (bad[i] == 0xE0 && bad[i + 1] == 0x7F && bad[i + 2] == 0x10 && bad[i + 3] == 0x00 && bad[i + 4] == 'O') {
+            std::uint32_t l = 0;
+            for (int k = 0; k < 4; ++k) l |= std::uint32_t{bad[i + 8 + static_cast<std::size_t>(k)]} << (8 * k);
+            l += 2;
+            for (int k = 0; k < 4; ++k) bad[i + 8 + static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(l >> (8 * k));
+        }
+    auto g = read_part10(Bytes::copy_of(bad.data(), bad.size()));
+    REQUIRE(g.is_ok());
+    CHECK(g->dataset.find(tags::PixelData)->fragments.empty());
 }

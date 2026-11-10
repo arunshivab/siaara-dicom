@@ -126,6 +126,10 @@ struct Element {
         bool un_sequence = false;         // SQ stored as UN with undefined length (items implicit VR LE)
         std::uint32_t length = 0;         // stored value length (defined-length values)
         std::uint32_t fragment_count = 0; // encapsulated: fragments as read (including the offset table)
+        // Encapsulated Pixel Data read with a defined length (lenient, PS3.5 A.4 asks for undefined
+        // length): 1 items only, 2 items and a Sequence Delimitation Item inside the length. The
+        // writer keeps that form while the fragments are unchanged. 0 otherwise.
+        std::uint8_t fragments_defined_length = 0;
         std::uint32_t group_bytes = 0;    // group length (gggg,0000): actual size of the group as read
         // The VR was not in the stream (implicit VR, or an unknown VR read as implicit): it came
         // from the dictionary, and for "US or SS" elements from Pixel Representation (F8).
