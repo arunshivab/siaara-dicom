@@ -728,6 +728,127 @@ public readonly record struct TkSlice(int FileIndex, int Frame, int Group);
 /// <param name="Warnings">Warnings.</param>
 public sealed record TkSortResult(IReadOnlyList<TkSlice> Slices, TkSortWarnings Warnings);
 
+/// <summary>
+/// A data set read (and, for generated test data, written) with generic getters: the file's main
+/// data set or a sequence item. Getters return null instead of throwing for absent, empty or
+/// unreadable values; text comes back as the toolkit decodes it (padding removed per VR).
+/// </summary>
+public sealed class TkDataset
+{
+    private readonly DicomDataset _ds;
+
+    internal TkDataset(DicomDataset ds) => _ds = ds;
+
+    /// <summary>The element is present.</summary>
+    /// <param name="tag">Tag.</param>
+    /// <returns>True when present.</returns>
+    public bool Contains(TkTag tag)
+    {
+        try
+        {
+            return _ds.Contains(tag.ToBinding());
+        }
+        catch (SiaaraException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Value <paramref name="index"/> as text, or null when absent, out of range or empty.</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="index">Value index.</param>
+    /// <returns>The text.</returns>
+    public string? GetString(TkTag tag, int index = 0)
+    {
+        try
+        {
+            return _ds.TryGetString(tag.ToBinding(), index, out string? v) && v.Length > 0 ? v : null;
+        }
+        catch (SiaaraException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Number of values (0 when absent).</summary>
+    /// <param name="tag">Tag.</param>
+    /// <returns>The count.</returns>
+    public int ValueCount(TkTag tag)
+    {
+        try
+        {
+            return _ds.Contains(tag.ToBinding()) ? _ds.GetValueMultiplicity(tag.ToBinding()) : 0;
+        }
+        catch (SiaaraException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Value <paramref name="index"/> as a number (DS / IS text or a binary VR), or null.</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="index">Value index.</param>
+    /// <returns>The number.</returns>
+    public double? GetDouble(TkTag tag, int index = 0)
+    {
+        try
+        {
+            return _ds.TryGetDouble(tag.ToBinding(), out double v, index) ? v : null;
+        }
+        catch (SiaaraException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Items of a sequence (0 when absent or not a sequence).</summary>
+    /// <param name="sequence">Sequence tag.</param>
+    /// <returns>The count.</returns>
+    public int ItemCount(TkTag sequence)
+    {
+        try
+        {
+            return _ds.Contains(sequence.ToBinding()) ? _ds.GetItemCount(sequence.ToBinding()) : 0;
+        }
+        catch (SiaaraException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Item <paramref name="index"/> of a sequence, or null.</summary>
+    /// <param name="sequence">Sequence tag.</param>
+    /// <param name="index">Item index.</param>
+    /// <returns>The item.</returns>
+    public TkDataset? Item(TkTag sequence, int index)
+    {
+        try
+        {
+            return index >= 0 && index < ItemCount(sequence) ? new TkDataset(_ds.GetItem(sequence.ToBinding(), index)) : null;
+        }
+        catch (SiaaraException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Sets a text value with the dictionary VR (generated data).</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="value">Value.</param>
+    public void SetString(TkTag tag, string value) => Tk.Call(() => _ds.SetString(tag.ToBinding(), value));
+
+    /// <summary>Sets a raw text value with an explicit VR (generated data, private elements).</summary>
+    /// <param name="tag">Tag.</param>
+    /// <param name="vr">VR.</param>
+    /// <param name="value">Value.</param>
+    public void SetRawString(TkTag tag, string vr, string value) => Tk.Call(() => _ds.SetRawString(tag.ToBinding(), vr, value));
+
+    /// <summary>Appends an empty item to a sequence (generated data).</summary>
+    /// <param name="sequence">Sequence.</param>
+    /// <returns>The item.</returns>
+    public TkDataset AppendItem(TkTag sequence) => new(Tk.Call(() => _ds.AppendItem(sequence.ToBinding())));
+}
+
 /// <summary>A DICOM file (headers only or with pixel data). Readable from many threads.</summary>
 public sealed class TkFile : IDisposable
 {
@@ -754,6 +875,23 @@ public sealed class TkFile : IDisposable
 
     /// <summary>True after Dispose.</summary>
     public bool IsDisposed => File.IsDisposed;
+
+    /// <summary>The main data set, for the generic getters.</summary>
+    public TkDataset Dataset => new(File.Dataset);
+
+    /// <summary>
+    /// Modality values of a grayscale frame as float32 (after the Modality LUT / rescale), row by
+    /// row: the input of the app's ROI statistics. Needs pixel data.
+    /// </summary>
+    /// <param name="frame">Frame.</param>
+    /// <returns>rows x columns values.</returns>
+    public float[] DecodeModalityFloat32(int frame)
+    {
+        byte[] bytes = Tk.Call(() => File.DecodeFrame(frame, FrameFormat.Float32Modality));
+        float[] values = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, values, 0, values.Length * sizeof(float));
+        return values;
+    }
 
     /// <summary>Opened with stop-before-pixel-data.</summary>
     public bool HeadersOnly { get; }

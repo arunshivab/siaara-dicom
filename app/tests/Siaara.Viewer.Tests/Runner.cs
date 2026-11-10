@@ -158,6 +158,12 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         var filters = new List<string>();
+        int golden = Array.IndexOf(args, "--write-golden");
+        if (golden >= 0 && golden + 1 < args.Length)
+        {
+            GoldenWriter.Write(args[golden + 1]);
+            return 0;
+        }
         foreach (string a in args)
         {
             if (a == "--quick")
