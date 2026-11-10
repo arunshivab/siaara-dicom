@@ -33,7 +33,7 @@ namespace {
 
 constexpr const char* kCT = "1.2.840.10008.5.1.4.1.1.2";
 constexpr const char* kMR = "1.2.840.10008.5.1.4.1.1.4";
-constexpr const char* kMppsClass = "1.2.840.10008.3.1.2.3.3";
+[[maybe_unused]] constexpr const char* kMppsClass = "1.2.840.10008.3.1.2.3.3";
 constexpr const char* kUpsPush = "1.2.840.10008.5.1.4.34.6.1";
 constexpr const char* kUpsPull = "1.2.840.10008.5.1.4.34.6.3";
 constexpr const char* kUpsWatch = "1.2.840.10008.5.1.4.34.6.2";

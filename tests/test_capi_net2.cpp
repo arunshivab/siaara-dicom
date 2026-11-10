@@ -1121,6 +1121,39 @@ TEST_CASE("net2: STOW-RS does not send an incomplete file unless siaara_web_stow
     siaara_web_server_free(ws);
 }
 
+TEST_CASE("net2: multipart StreamParser gives the same answer however the body is cut (fuzz finding)") {
+    // A dash-boundary in the middle of a line is not a delimiter. Before the fix, trimming the
+    // preamble buffer could leave it at offset 0 and it was taken for one: "ggg--g--g" with
+    // boundary "g" failed when fed whole and passed when fed in small pieces.
+    const std::string body = "ggg--g--g";
+    for (std::size_t piece = 1; piece <= body.size(); ++piece) {
+        web::multipart::StreamParser p("g", {}, 1 << 20, [](const web::multipart::Part&) { return Status::ok(); });
+        bool fed = true;
+        for (std::size_t i = 0; i < body.size() && fed; i += piece) fed = static_cast<bool>(p.feed(std::string_view(body).substr(i, piece)));
+        CHECK(!(fed && static_cast<bool>(p.finish())));
+    }
+    // A dash-boundary cut exactly at the end of a piece is judged by the byte that follows it.
+    const std::string good = "x\r\n--b\r\n\r\nabc--bX\r\n--b--";
+    for (std::size_t piece = 1; piece <= good.size(); ++piece) {
+        std::vector<std::string> bodies;
+        web::multipart::StreamParser p("b", {}, 1 << 20, [&](const web::multipart::Part& part) {
+            bodies.emplace_back(part.body);
+            return Status::ok();
+        });
+        bool fed = true;
+        for (std::size_t i = 0; i < good.size() && fed; i += piece) fed = static_cast<bool>(p.feed(std::string_view(good).substr(i, piece)));
+        CHECK(fed);
+        CHECK(static_cast<bool>(p.finish()));
+        REQUIRE(bodies.size() == 1u);
+        CHECK(bodies[0] == "abc--bX");
+    }
+    // Transport padding after a boundary has the same limit in the whole-body parser.
+    const std::string padded = "--b" + std::string(65, '\t') + "\n--b--";
+    CHECK(!web::multipart::parse(padded, "b", {}));
+    web::multipart::StreamParser p("b", {}, 1 << 20, [](const web::multipart::Part&) { return Status::ok(); });
+    CHECK(!(static_cast<bool>(p.feed(padded)) && static_cast<bool>(p.finish())));
+}
+
 TEST_CASE("net2: multipart StreamParser handles any split of the body") {
     web::multipart::Writer w;
     w.add("application/dicom", std::string(300, 'a'));

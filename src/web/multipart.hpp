@@ -18,6 +18,7 @@ struct Limits {
     std::size_t max_boundary = 70;          // RFC 2046 maximum
     std::size_t max_part_headers = 32;
     std::size_t max_part_header_bytes = 16384;
+    std::size_t max_delimiter_padding = 64;  // blanks allowed after a boundary (RFC 2046 transport padding)
 };
 
 struct Part {
@@ -53,6 +54,7 @@ private:
     std::function<Status(const Part&)> on_part_;
     std::string buf_;
     std::size_t scanned_ = 0;
+    bool at_line_start_ = true;  // whether buf_[0] follows a line end (or is the start of the stream)
     std::size_t parts_ = 0;
     State state_ = State::Preamble;
 };

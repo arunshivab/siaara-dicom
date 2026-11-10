@@ -976,7 +976,7 @@ Status Connection::write_raw(std::string_view data) {
     const std::uint64_t need = lim_.min_send_rate > 0 && window > 0
                                    ? static_cast<std::uint64_t>(lim_.min_send_rate) * static_cast<std::uint64_t>(window) / 1000u
                                    : 0;
-    const std::size_t slice_max = need ? static_cast<std::size_t>(std::min<std::uint64_t>(need, 64u * 1024u)) : 64u * 1024u;
+    const std::size_t slice_max = need ? static_cast<std::size_t>(std::min<std::uint64_t>(need, std::uint64_t{64} * 1024)) : std::size_t{64} * 1024;
     std::size_t done = 0;
     while (done < data.size()) {
         const std::int64_t now = now_ms();

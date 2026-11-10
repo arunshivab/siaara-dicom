@@ -511,7 +511,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
                     if (!rec) r.failed.push_back({ref, kNoSuchObjectInstance});
                     else if ((*rec)[st::Str::SopClassUid] != ref.sop_class) r.failed.push_back({ref, kClassInstanceConflict});
                     // Kept although incomplete (flagged): committed only when kCommitFlaggedIncomplete.
-                    else if (!siaara::kCommitFlaggedIncomplete && ((*rec).flags & st::kIncompleteRead) != 0)
+                    else if (((*rec).flags & st::kIncompleteRead) != 0 && !siaara::commit_flagged_incomplete())
                         r.failed.push_back({ref, net::dimse_status::ProcessingFailure});
                     else r.committed.push_back(ref);
                 }

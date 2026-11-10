@@ -1178,8 +1178,7 @@ void EventSender::run() {
         }
         try {
             if (job.done) job.done(st);
-        } catch (...) {
-            // a callback must not end the sender
+        } catch (...) {  // NOLINT(bugprone-empty-catch): a callback must not end the sender
         }
     }
 }

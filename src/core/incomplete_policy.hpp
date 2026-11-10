@@ -51,6 +51,8 @@ inline constexpr std::uint16_t kIncompleteFailureStatus = 0xC000;
 // not in the archive and are never committed. One kept in the archive and flagged
 // (AcceptAsReceived, or released from quarantine) is committed when this is true.
 inline constexpr bool kCommitFlaggedIncomplete = true;
+// The same value through a function, for use in conditions (a constant there is MSVC C4127).
+inline bool commit_flagged_incomplete() noexcept { return kCommitFlaggedIncomplete; }
 
 // ReadOptions::recover_overlong_lengths for data that arrives over the network (C-STORE data
 // sets at the SCP, C-GET / C-MOVE sub-operations received, every other DIMSE data set, STOW-RS

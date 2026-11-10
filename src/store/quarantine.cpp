@@ -17,7 +17,7 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr std::string_view kMagic = "SIAARAQUARANTINE1";
-constexpr std::uint64_t kMaxRecordFile = 64 * 1024;
+constexpr std::uint64_t kMaxRecordFile = std::uint64_t{64} * 1024;
 
 bool id_ok(std::string_view id) noexcept {
     if (id.size() != 64) return false;
