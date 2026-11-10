@@ -2097,7 +2097,7 @@ siaara_status transcode_impl(siaara_file* file, const char* ts_uid, const siaara
         if (report_size < 2 * sizeof(uint32_t) || report_size > 0x10000u)
             return fail(Errc::InvalidArgument, "report struct_size not set");
         caller_size = report_size;
-        report_size = std::min<std::uint32_t>(report_size, sizeof(siaara_transcode_report));
+        report_size = std::min(report_size, static_cast<std::uint32_t>(sizeof(siaara_transcode_report)));
         std::memset(report, 0, report_size);
         report->struct_size = caller_size;
     }

@@ -488,10 +488,13 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                         : "C-STORE: command UIDs differ from the data set's; refused (0xA900)");
         }
         if (ds && st == dimse_status::Success) {
-            if (!cfg_.preferred_store_ts.empty() && rq.transfer_syntax != cfg_.preferred_store_ts)
+            if (!cfg_.preferred_store_ts.empty() && rq.transfer_syntax != cfg_.preferred_store_ts) {
+                std::string history_note;
                 if (Status cs = convert_received(rq, cfg_.preferred_store_ts, cfg_.transcode_params,
-                                                 cfg_.spool ? &*cfg_.spool : nullptr); !cs)
+                                                 cfg_.spool ? &*cfg_.spool : nullptr, &history_note); !cs)
                     log("kept received transfer syntax: " + cs.message);
+                else if (!history_note.empty()) log("C-STORE conversion: " + history_note);
+            }
             st = h_.on_store(rq);
         }
     }
@@ -717,6 +720,9 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
                     break;
                 }
             if (spc) {
+                // A lossy transcode that filled in or could not align the lossy history lists says so.
+                if (!report.lossy_history_note.empty())
+                    log("C-GET sub-operation " + std::to_string(done + 1) + ": " + report.lossy_history_note);
                 // R-093: a lossy transcode gave the image a new SOP Instance UID; send that one.
                 if (!report.new_sop_instance_uid.empty() && report.new_sop_instance_uid != l.sop_instance) {
                     if (h_.on_sop_instance_uid_changed)
@@ -763,6 +769,8 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         } else if (f) {
             StoreSent sent;
             Result<std::uint16_t> r = sub->store(*f, q.calling_ae, q.message_id, &sent);
+            if (!sent.lossy_history_note.empty())
+                log("C-MOVE sub-operation " + std::to_string(done + 1) + ": " + sent.lossy_history_note);
             if (sent.uid_changed) {
                 if (h_.on_sop_instance_uid_changed)
                     h_.on_sop_instance_uid_changed(q.calling_ae, l.sop_instance, sent.sop_instance_uid);

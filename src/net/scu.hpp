@@ -56,6 +56,7 @@ struct StoreSent {
     bool incomplete = false;                // refused: the file was not read completely (allow_incomplete)
     // What the lossy transcode did with the Ratio / Method history lists (codec/transcode.hpp).
     codec::LossyHistory lossy_history = codec::LossyHistory::NotApplicable;
+    std::string lossy_history_note;         // TranscodeReport::lossy_history_note (no UIDs, no PHI)
 };
 
 // Compares the command's Affected SOP Class / Instance UIDs (already in rq.sop_class_uid /

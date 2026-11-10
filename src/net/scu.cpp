@@ -254,6 +254,7 @@ Result<std::uint16_t> Scu::store(const DicomFile& file, std::string_view move_or
         sent->uid_changed = sent_uid != sop_instance;
         sent->lossy = report.lossy_applied;
         sent->lossy_history = report.lossy_history;
+        sent->lossy_history_note = report.lossy_history_note;
     }
     const std::uint16_t mid = assoc_->next_message_id();
     const Command rq = make_c_store_rq(mid, sop_class, sent_uid, priority::Medium, move_originator_ae,

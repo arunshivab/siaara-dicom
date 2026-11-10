@@ -362,6 +362,89 @@ TEST_CASE("10b P1: C-GET and C-MOVE sub-operations from our SCP refuse incomplet
     dest.stop();
 }
 
+// ---------------------------------------------------------------- lossy history on the SCP's own conversions
+
+TEST_CASE("lossy history: conversions made by our SCP follow the rule and log the note") {
+    const auto dir = temp_dir("lossyhist_scp");
+    // Uncompressed, one Ratio value, no Method: nothing proves the earlier method.
+    DicomFile mis = mr8("2.25.10121");
+    (void)mis.dataset.set_string(0x00282110, VR::CS, "01");
+    (void)mis.dataset.set_string(0x00282112, VR::DS, "7");
+    const auto mis_path = dir / "mis.dcm";
+    write_bytes(mis_path, bytes_of(mis));
+    std::mutex mu;
+    std::vector<std::string> lines;
+    auto logged = [&](const char* what) {
+        std::lock_guard<std::mutex> l(mu);
+        for (const std::string& s : lines)
+            if (s.find(what) != std::string::npos) return true;
+        return false;
+    };
+    // The method values and ratio count of what was delivered.
+    std::string method = "?";
+    std::size_t ratios = 0;
+    auto note_values = [&](const StoreRequest& rq) {
+        std::lock_guard<std::mutex> l(mu);
+        method = rq.dataset.contains(0x00282114) ? std::string(*rq.dataset.get_raw_string(0x00282114)) : "<absent>";
+        ratios = rq.dataset.contains(0x00282112) ? rq.dataset.value_multiplicity(0x00282112) : 0;
+    };
+    ScpHandlers h;
+    h.log = [&](const std::string& s) {
+        std::lock_guard<std::mutex> l(mu);
+        lines.push_back(s);
+    };
+    h.on_get = [&](const QueryRequest&, std::vector<RetrieveItem>& items) -> std::uint16_t {
+        items.push_back({mis_path.string(), nullptr});
+        return 0;
+    };
+    h.on_store = [&](const StoreRequest& rq) -> std::uint16_t {
+        note_values(rq);
+        return 0;
+    };
+    ScpConfig cfg = scp_cfg("T10B_HIST");
+    cfg.transcode_params.allow_lossy = true;
+    cfg.preferred_store_ts = kJpegBaseline;
+    cfg.transfer_syntaxes.push_back(kJpegBaseline);  // the C-GET requestor accepts only this one
+    ScpServer scp(cfg, h);
+    REQUIRE(scp.start().is_ok());
+    // C-GET where the requestor accepts only JPEG Baseline for the storage sub-operation.
+    {
+        Scu scu(scu_cfg(scp.port(), "T10B_HIST"));
+        scu.add_context(std::string(sop::StudyRootGet), native_transfer_syntaxes());
+        scu.add_get_storage(kMR, {kJpegBaseline});
+        REQUIRE(scu.connect().is_ok());
+        Dataset id;
+        (void)id.set_string(0x00080052, VR::CS, "STUDY");
+        (void)id.set_string(tags::StudyInstanceUID, VR::UI, "2.25.10100");
+        auto g = scu.get(sop::StudyRootGet, id, [&](const StoreRequest& rq) -> std::uint16_t {
+            note_values(rq);
+            return 0;
+        });
+        REQUIRE(g.is_ok());
+        CHECK(g->completed == 1);
+        CHECK(scu.release().is_ok());
+    }
+    CHECK(logged("C-GET sub-operation 1: LOSSY_HISTORY_MISALIGNED: "));
+    CHECK_EQ(method, std::string("<absent>"));
+    CHECK_EQ(ratios, 2u);
+    // C-STORE to the SCP, which converts to JPEG Baseline before storing (store_transfer_syntax).
+    method = "?";
+    ratios = 0;
+    {
+        Scu scu(scu_cfg(scp.port(), "T10B_HIST"));
+        REQUIRE(scu.add_contexts_for_files({mis_path.string()}).is_ok());
+        REQUIRE(scu.connect().is_ok());
+        auto r = scu.store_file(mis_path.string());
+        REQUIRE(r.is_ok());
+        CHECK(*r == 0);
+        CHECK(scu.release().is_ok());
+    }
+    CHECK(logged("C-STORE conversion: LOSSY_HISTORY_MISALIGNED: "));
+    CHECK_EQ(method, std::string("<absent>"));
+    CHECK_EQ(ratios, 2u);
+    scp.stop();
+}
+
 // ---------------------------------------------------------------- P2: lossy targets are proposed
 
 TEST_CASE("10b P2: transcode_targets lists lossless and (when allowed) lossy syntaxes") {

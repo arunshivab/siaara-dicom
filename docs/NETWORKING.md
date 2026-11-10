@@ -147,7 +147,8 @@ attributes untouched. The report: `siaara_file_transcode_ex` fills a `siaara_tra
 written and why; C#: `Transcoder.TranscodeWithReport`, `TranscodeReport.LossyHistory`); for
 C-STORE the outcome flags `SIAARA_STORE_LOSSY_METHOD_FILLED` / `SIAARA_STORE_LOSSY_HISTORY_MISALIGNED`
 (`StoreOutcome.LossyHistory`). Lossy conversions made by our SCP (`store_transfer_syntax`, C-GET /
-C-MOVE sub-operations) follow the same rule in the data set but have no event carrying the report.
+C-MOVE sub-operations) follow the same rule and write the note (no UIDs, no patient data) to the
+log (`siaara_set_log_callback`, INFO; C++ `ScpHandlers::log`).
 
 ### 2.3a Incomplete input is not sent (testing 10b P1)
 

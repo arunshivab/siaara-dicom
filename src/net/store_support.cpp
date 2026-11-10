@@ -98,7 +98,8 @@ Status encode_for_transfer_syntax(const DicomFile& file, std::string_view ts, co
 }
 
 Status convert_received(StoreRequest& rq, std::string_view ts, const codec::TranscodeParams& p,
-                        const SpoolConfig* spool) {
+                        const SpoolConfig* spool, std::string* lossy_history_note) {
+    if (lossy_history_note) lossy_history_note->clear();
     if (rq.transfer_syntax == ts) return Status::ok();
     DicomFile f;
     f.dataset = rq.dataset;
@@ -106,6 +107,7 @@ Status convert_received(StoreRequest& rq, std::string_view ts, const codec::Tran
     auto body = std::make_shared<std::vector<std::uint8_t>>();
     codec::TranscodeReport report;
     if (Status s = encode_for_transfer_syntax(f, ts, p, *body, &report); !s) return s;
+    if (lossy_history_note) *lossy_history_note = report.lossy_history_note;
     // R-093: a lossy conversion gave the instance a new SOP Instance UID; the file meta, the file
     // name and the index must use it.
     const std::string sop_instance = report.new_sop_instance_uid.empty() ? rq.sop_instance_uid
