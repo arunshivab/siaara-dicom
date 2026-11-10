@@ -41,8 +41,14 @@ public sealed record DimsePeer
     public TimeSpan? DimseTimeout { get; init; }
     /// <summary>Largest PDU we accept; 0 = 65536.</summary>
     public int MaxPdu { get; init; }
-    /// <summary>C-STORE may code lossily when the peer accepts only lossy syntaxes.</summary>
+    /// <summary>C-STORE may code lossily when the peer accepts only lossy syntaxes (they are then proposed too).</summary>
     public bool AllowLossyTranscode { get; init; }
+    /// <summary>Send files whose read was not complete (truncated, bytes skipped). False (default): such a file is
+    /// not sent and counts as failed (<see cref="StoreOutcome.IncompleteInput"/>), as saving refuses it.</summary>
+    public bool AllowIncomplete { get; init; }
+    /// <summary>Keep the file's SOP Instance UID when a lossy transcode is needed. False (default): the instance
+    /// gets a new UID (R-093), reported in <see cref="StoreOutcome"/> and by the UID change callback.</summary>
+    public bool KeepUidOnLossy { get; init; }
 
     private static int Ms(TimeSpan? t) => t is null ? 0 : (int)Math.Clamp(t.Value.TotalMilliseconds, 1, int.MaxValue);
 
@@ -62,6 +68,8 @@ public sealed record DimsePeer
             dimse_timeout_ms = Ms(DimseTimeout),
             max_pdu = (uint)MaxPdu,
             allow_lossy_transcode = AllowLossyTranscode ? 1 : 0,
+            allow_incomplete = AllowIncomplete ? 1 : 0,
+            keep_uid_on_lossy = KeepUidOnLossy ? 1 : 0,
         };
         if (Tls is not null)
         {
@@ -223,6 +231,28 @@ public sealed record CommitmentOptions
 /// <param name="OriginalSopInstanceUid">The file's own UID.</param>
 /// <param name="NewSopInstanceUid">The UID sent.</param>
 public sealed record UidChange(int Index, string OriginalSopInstanceUid, string NewSopInstanceUid);
+
+/// <summary>What happened to one instance of a C-STORE call (siaara_store_outcome). The UIDs are what the
+/// peer received, so <see cref="SopClassUid"/> / <see cref="SopInstanceUid"/> can go to <see cref="Dimse.Commit"/>.</summary>
+/// <param name="Error">Ok when the instance was sent; else why not (Rejected for incomplete input ...).</param>
+/// <param name="DimseStatus">The peer's C-STORE status; 0xFFFF when not sent.</param>
+/// <param name="Sent">A C-STORE request was sent.</param>
+/// <param name="UidChanged">Lossy compression gave the instance a new SOP Instance UID (R-093).</param>
+/// <param name="Lossy">This transfer applied lossy compression.</param>
+/// <param name="IncompleteInput">Not sent: the file was not read completely.</param>
+/// <param name="SopClassUid">SOP Class UID.</param>
+/// <param name="SopInstanceUid">As sent (the new UID after a lossy transcode), else the file's.</param>
+/// <param name="OriginalSopInstanceUid">The file's own SOP Instance UID.</param>
+/// <param name="TransferSyntaxUid">Of the presentation context used; empty when not sent.</param>
+public sealed record StoreOutcome(SiaaraErrorCode Error, int DimseStatus, bool Sent, bool UidChanged, bool Lossy,
+                                  bool IncompleteInput, string SopClassUid, string SopInstanceUid,
+                                  string OriginalSopInstanceUid, string TransferSyntaxUid)
+{
+    internal static StoreOutcome From(in siaara_store_outcome o) =>
+        new((SiaaraErrorCode)o.error, (int)o.dimse_status, (o.flags & 1) != 0, (o.flags & 2) != 0, (o.flags & 4) != 0,
+            (o.flags & 8) != 0, DicomDictionary.Chars(o.sop_class_uid), DicomDictionary.Chars(o.sop_instance_uid),
+            DicomDictionary.Chars(o.original_sop_instance_uid), DicomDictionary.Chars(o.transfer_syntax));
+}
 
 /// <summary>DIMSE-N command (siaara_n_request.command_field).</summary>
 public enum NCommand
@@ -659,6 +689,79 @@ public static class Dimse
         {
             gc.Free();
         }
+    }
+
+    /// <summary>C-STORE of files over one association, with what happened to each file: the UID and transfer
+    /// syntax sent, or why it was not sent.</summary>
+    /// <param name="peer">The peer.</param>
+    /// <param name="paths">Files.</param>
+    /// <param name="progress">After every file (optional).</param>
+    /// <param name="cancellationToken">Cancels.</param>
+    /// <returns>The outcome (Rejected when some files were not stored) and one <see cref="StoreOutcome"/> per path.</returns>
+    public static (DimseResult Result, IReadOnlyList<StoreOutcome> Files) StoreFilesWithOutcomes(DimsePeer peer,
+        IReadOnlyList<string> paths, IProgress<DimseResult>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        if (paths.Count == 0)
+        {
+            throw new ArgumentException("At least one path is needed.", nameof(paths));
+        }
+        var sink = new ProgressSink(progress);
+        GCHandle gc = GCHandle.Alloc(sink);
+        using var mem = new NativeAllocations();
+        var outs = new siaara_store_outcome[paths.Count];
+        for (int i = 0; i < outs.Length; i++)
+        {
+            outs[i].struct_size = StructSize.Of<siaara_store_outcome>();
+        }
+        try
+        {
+            var ptrs = new nint[paths.Count];
+            for (int i = 0; i < paths.Count; i++)
+            {
+                ArgumentException.ThrowIfNullOrEmpty(paths[i], nameof(paths));
+                ptrs[i] = mem.Utf8(paths[i]);
+            }
+            DimseResult res = Run(peer, (p, c) =>
+            {
+                siaara_dimse_result r = NewResult();
+                int st = Native.siaara_dimse_store_files_report(in p, ptrs, default, (uint)ptrs.Length, c,
+                    Callbacks.DimseProgressPointer, GCHandle.ToIntPtr(gc), outs, ref r);
+                return (st, r);
+            }, cancellationToken);
+            sink.ThrowIfFailed();
+            var files = new StoreOutcome[outs.Length];
+            for (int i = 0; i < outs.Length; i++)
+            {
+                files[i] = StoreOutcome.From(in outs[i]);
+            }
+            return (res, files);
+        }
+        finally
+        {
+            gc.Free();
+        }
+    }
+
+    /// <summary>C-STORE of one file in memory, with what happened to it.</summary>
+    /// <param name="peer">The peer.</param>
+    /// <param name="file">The instance.</param>
+    /// <param name="cancellationToken">Cancels.</param>
+    /// <returns>The outcome and the <see cref="StoreOutcome"/> of the instance.</returns>
+    public static (DimseResult Result, StoreOutcome File) StoreWithOutcome(DimsePeer peer, DicomFile file,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        using var l = new HandleLease(file.Handle);
+        nint f = l.Pointer;
+        var o = new siaara_store_outcome { struct_size = StructSize.Of<siaara_store_outcome>() };
+        DimseResult res = Run(peer, (p, c) =>
+        {
+            siaara_dimse_result r = NewResult();
+            int st = Native.siaara_dimse_store_report(in p, f, c, ref o, ref r);
+            return (st, r);
+        }, cancellationToken);
+        return (res, StoreOutcome.From(in o));
     }
 
     /// <summary>C-STORE of files on a thread-pool thread.</summary>

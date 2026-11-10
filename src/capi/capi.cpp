@@ -300,6 +300,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_warning_code(const siaara_file*
         const auto starts = [&](std::string_view p) { return w.compare(0, p.size(), p) == 0; };
         *out = starts(siaara::kWarnParseIncomplete)  ? SIAARA_FILE_WARNING_PARSE_INCOMPLETE
                : starts(siaara::kWarnInputTruncated) ? SIAARA_FILE_WARNING_INPUT_TRUNCATED
+               : starts(siaara::kWarnReadRecovered) ? SIAARA_FILE_WARNING_READ_RECOVERED
                                                      : SIAARA_FILE_WARNING_GENERAL;
         return ok();
     });
@@ -315,7 +316,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_read_report(const siaara_file* 
         const siaara::DicomFile& f = file->file;
         r.loss = (f.read_loss & siaara::DicomFile::kReadBytesSkipped ? static_cast<uint32_t>(SIAARA_READ_BYTES_SKIPPED) : 0u) |
                  (f.read_loss & siaara::DicomFile::kReadInputTruncated ? static_cast<uint32_t>(SIAARA_READ_INPUT_TRUNCATED) : 0u) |
-                 (f.read_loss & siaara::DicomFile::kReadHeaderOnly ? static_cast<uint32_t>(SIAARA_READ_HEADER_ONLY) : 0u);
+                 (f.read_loss & siaara::DicomFile::kReadHeaderOnly ? static_cast<uint32_t>(SIAARA_READ_HEADER_ONLY) : 0u) |
+                 (f.read_loss & siaara::DicomFile::kReadRecovered ? static_cast<uint32_t>(SIAARA_READ_RECOVERED) : 0u);
         r.first_loss_offset = f.read_loss_offset;
         r.bytes_not_read = f.bytes_not_read;
         r.stopped_at_offset = f.stopped_at_offset;

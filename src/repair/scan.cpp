@@ -14,6 +14,7 @@ namespace {
 struct Syntax {
     bool explicit_vr = true;
     bool big_endian = false;
+    bool encapsulated = false;  // encapsulated (or unknown) transfer syntax
 };
 
 bool is_upper(std::uint8_t c) { return c >= 'A' && c <= 'Z'; }
@@ -236,6 +237,20 @@ public:
                 if (e.vr == VR::SQ) {
                     parse_items(e, syn, vend, false, depth, here);
                     pos_ = static_cast<std::size_t>(vend);
+                } else if (depth == 0 && tag == tags::PixelData && syn.encapsulated && !overrun &&
+                           defined_length_fragments(e, len, static_cast<std::size_t>(vend))) {
+                    // Testing 10b item 5: encapsulated Pixel Data with a defined length.
+                    out_.pixel.present = true;
+                    out_.pixel.encapsulated = true;
+                    out_.pixel.tag = tag;
+                    out_.pixel.offset = start;
+                    out_.pixel.declared_length = len;
+                    add(Severity::Warning, "pixel-defined-length", 0, here,
+                        "encapsulated Pixel Data has a defined length (" + std::to_string(len) +
+                            " bytes) instead of undefined length (PS3.5 A.4); read as " +
+                            std::to_string(e.fragments.size()) + " item(s), kept as read",
+                        start);
+                    pos_ = static_cast<std::size_t>(vend);
                 } else {
                     std::size_t unit = 0;
                     if (syn.big_endian && depth == 0 && tag == tags::PixelData && e.vr == VR::OW &&
@@ -457,6 +472,39 @@ private:
         }
     }
 
+    // [pos_, vend) as a run of defined-length items (FFFE,E000), optionally ended by a Sequence
+    // Delimitation Item at the very end: fills e.fragments (and the offsets) and returns true;
+    // otherwise leaves e unchanged and returns false (the value is then read as bytes).
+    bool defined_length_fragments(Element& e, std::uint32_t len, std::size_t vend) {
+        if (len < 8 || vend > size_) return false;
+        std::vector<Bytes> frags;
+        std::vector<std::uint64_t> offsets;
+        std::size_t at = pos_;
+        std::uint8_t form = 1;
+        while (at < vend) {
+            if (vend - at < 8) return false;
+            const std::uint32_t t = (std::uint32_t{load_le16(p_ + at)} << 16) | load_le16(p_ + at + 2);
+            const std::uint32_t n = load_le32(p_ + at + 4);
+            if (t == tags::SequenceDelimitationItem && n == 0 && at + 8 == vend && !frags.empty()) {
+                form = 2;
+                break;
+            }
+            if (t != tags::Item || n == kUndefinedLength || n > vend - at - 8) return false;
+            if (frags.size() >= opt_.max_fragments) return false;
+            if (!frags.empty()) offsets.push_back(at);
+            frags.push_back(buf_.sub(at + 8, n));
+            at += 8 + std::size_t{n};
+        }
+        if (frags.empty()) return false;
+        e.fragments = std::move(frags);
+        e.read.length = len;
+        e.read.fragment_count = static_cast<std::uint32_t>(e.fragments.size());
+        e.read.fragments_defined_length = form;
+        if (!offsets.empty())
+            for (std::uint64_t o : offsets) out_.pixel.item_offsets.push_back(o - offsets.front());
+        return true;
+    }
+
     void parse_fragments(Element& e, Syntax syn, const Path& path, std::size_t element_start) {
         PixelScan* ps = (is_pixel_tag(e.tag) && path.size() == 1) ? &out_.pixel : nullptr;
         if (ps) {
@@ -591,8 +639,8 @@ void add_file_finding(ScanResult& r, Severity s, const char* code, std::uint32_t
 }
 
 Syntax syntax_of(const TransferSyntaxInfo* t) {
-    if (!t) return {true, false};
-    return {t->explicit_vr, t->big_endian};
+    if (!t) return {true, false, true};
+    return {t->explicit_vr, t->big_endian, t->encapsulated};
 }
 
 // Picks how the body is really encoded, starting from the transfer syntax's claim.
@@ -604,13 +652,13 @@ Syntax detect_body(const Bytes& data, std::size_t pos, Syntax claimed, const Sca
     const bool imp = probe.looks_implicit(pos, claimed);
     if (claimed.explicit_vr && !exp && imp) {
         out.encoding_mismatch = true;
-        return {false, claimed.big_endian};
+        return {false, claimed.big_endian, claimed.encapsulated};
     }
     if (!claimed.explicit_vr && exp) {
         // An implicit stream whose length bytes happen to spell a VR is unlikely; also require
         // the explicit reading to agree with the next element.
         out.encoding_mismatch = true;
-        return {true, claimed.big_endian};
+        return {true, claimed.big_endian, claimed.encapsulated};
     }
     if (!exp && !imp) {
         // Try the other byte order.
@@ -619,7 +667,7 @@ Syntax detect_body(const Bytes& data, std::size_t pos, Syntax claimed, const Sca
             const std::uint16_t g = other.big_endian ? load_be16(data.data() + pos) : load_le16(data.data() + pos);
             if (g <= 0x0FFF) {
                 out.encoding_mismatch = true;
-                return {probe.looks_explicit(pos, other), other.big_endian};
+                return {probe.looks_explicit(pos, other), other.big_endian, claimed.encapsulated};
             }
         }
     }

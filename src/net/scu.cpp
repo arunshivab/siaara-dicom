@@ -122,11 +122,21 @@ Status Scu::add_contexts_for_files(const std::vector<std::string>& paths) {
         if (is_native(f->transfer_syntax))
             for (const std::string& n : native_transfer_syntaxes())
                 if (n != f->transfer_syntax) ts.push_back(n);
-        const bool known = std::any_of(proposals_.begin(), proposals_.end(), [&](const ProposedContext& c) {
-            return c.abstract_syntax == sop_class && c.transfer_syntaxes == ts;
-        });
-        if (!known) add_context(sop_class, std::move(ts));
+        const auto known = [&](const std::vector<std::string>& list) {
+            return std::any_of(proposals_.begin(), proposals_.end(), [&](const ProposedContext& c) {
+                return c.abstract_syntax == sop_class && c.transfer_syntaxes == list;
+            });
+        };
+        if (!known(ts)) add_context(sop_class, std::move(ts));
+        // With transcoding, the compressed syntaxes the transcoder writes (lossy ones only when
+        // allowed), each group in its own context, so a peer that accepts only those gets the file.
+        if (cfg_.transcode)
+            for (bool lossy : {false, true}) {
+                std::vector<std::string> extra = transcode_targets(cfg_.transcode_params, lossy);
+                if (!extra.empty() && !known(extra) && proposals_.size() < 128) add_context(sop_class, std::move(extra));
+            }
     }
+    if (proposals_.size() > 128) return Status(Errc::LimitExceeded, "more than 128 presentation contexts needed");
     return Status::ok();
 }
 
@@ -209,6 +219,15 @@ Result<std::uint16_t> Scu::store(const DicomFile& file, std::string_view move_or
     const std::string sop_class = sop_class_of(file);
     const std::string sop_instance = sop_instance_of(file);
     if (sop_class.empty() || sop_instance.empty()) return Status(Errc::Malformed, "instance lacks SOP Class/Instance UID");
+    if (sent) {
+        *sent = StoreSent{};
+        sent->sop_instance_uid = sop_instance;
+        sent->original_sop_instance_uid = sop_instance;
+    }
+    if (Status s = check_sendable(file, cfg_.allow_incomplete); !s) {
+        if (sent) sent->incomplete = true;
+        return s;
+    }
     // Same transfer syntax, a native re-encoding, or (cfg_.transcode) a transcode on the fly.
     const std::vector<const NegotiatedContext*> cands = store_contexts(
         *assoc_, sop_class, file.transfer_syntax, false, cfg_.transcode, cfg_.transcode_params);

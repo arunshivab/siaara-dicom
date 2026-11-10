@@ -55,6 +55,8 @@ ARRAY_RULES = {
     "siaara_volume_build_ex": {"utf8_paths": ("count", "count", 1, False), "path_lens": ("count", "count", 1, True)},
     "siaara_dicomdir_write_ex": {"files": ("count", "count", 1, False), "lens": ("count", "count", 1, False)},
     "siaara_dimse_store_files": {"paths": ("count", "count", 1, False), "lens": ("count", "count", 1, True)},
+    "siaara_dimse_store_files_report": {"paths": ("count", "count", 1, False), "lens": ("count", "count", 1, True),
+                                        "outcomes": ("count", "count", 1, True)},
     "siaara_dimse_commit": {"sop_classes": ("count", "count", 1, False), "sop_instances": ("count", "count", 1, False),
                             "failure_reasons": ("count", "count", 1, True)},
     "siaara_web_wado_frames": {"frames": ("count", "count", 1, False),
@@ -364,6 +366,14 @@ def gen_safe(model, w, fname, ret, params):
                 call.append(f"p_{n}")
                 call.append(f"(nuint){nm}.Length")
                 collapsed.add(nxt[1])
+                continue
+            srule = rules.get(n)
+            if not ct.const and srule and srule[0] == "count":
+                # output array of structs whose length another parameter gives
+                sig.append(f"Span<{base}> {nm}")
+                add_rule(pre, nm, n, srule)
+                fixed.append(f"fixed ({base}* p_{n} = {nm})")
+                call.append(f"p_{n}")
                 continue
             mod = "in" if ct.const else "ref"
             sig.append(f"{mod} {base} {nm}")

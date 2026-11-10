@@ -126,6 +126,10 @@ struct Element {
         bool un_sequence = false;         // SQ stored as UN with undefined length (items implicit VR LE)
         std::uint32_t length = 0;         // stored value length (defined-length values)
         std::uint32_t fragment_count = 0; // encapsulated: fragments as read (including the offset table)
+        // Encapsulated Pixel Data read with a defined length (lenient, PS3.5 A.4 asks for undefined
+        // length): 1 items only, 2 items and a Sequence Delimitation Item inside the length. The
+        // writer keeps that form while the fragments are unchanged. 0 otherwise.
+        std::uint8_t fragments_defined_length = 0;
         std::uint32_t group_bytes = 0;    // group length (gggg,0000): actual size of the group as read
         // The VR was not in the stream (implicit VR, or an unknown VR read as implicit): it came
         // from the dictionary, and for "US or SS" elements from Pixel Representation (F8).
@@ -275,11 +279,17 @@ struct DicomFile {
     // Whether the data set holds everything the input held (testing-chat P0-1). Any bit set
     // means a save would write less than the input, or would turn damaged input into a file
     // that looks whole: the writer refuses such a file unless WriteOptions::allow_incomplete is
-    // set. The first warning then starts with kWarnParseIncomplete or kWarnInputTruncated.
+    // set. The first warning then starts with kWarnParseIncomplete, kWarnInputTruncated or
+    // kWarnReadRecovered.
     enum ReadLoss : std::uint32_t {
         kReadBytesSkipped = 1u << 0,    // input bytes that are in no element (lenient skip)
         kReadInputTruncated = 1u << 1,  // the input ended inside an element, item or sequence
         kReadHeaderOnly = 1u << 2,      // ReadOptions::stop_before_pixel_data: the rest not read
+        // Lenient reading recovered damaged input with a heuristic (an element length corrected,
+        // an encoding detected without file meta; testing 10b item 7): the data set is the
+        // reader's interpretation, so a save (or a C-STORE) would write something the input did
+        // not hold literally. Every recovery is also a read warning.
+        kReadRecovered = 1u << 3,
     };
     std::uint32_t read_loss = 0;          // ReadLoss bits
     std::uint64_t read_loss_offset = 0;   // offset of the first loss (parsed-stream offset)
@@ -292,6 +302,7 @@ struct DicomFile {
 // Fixed codes that start the first warning of an incomplete read (DicomFile::read_loss).
 inline constexpr std::string_view kWarnParseIncomplete = "PARSE_INCOMPLETE";
 inline constexpr std::string_view kWarnInputTruncated = "INPUT_TRUNCATED";
+inline constexpr std::string_view kWarnReadRecovered = "READ_RECOVERED";
 
 // Strips trailing spaces/NULs (and leading spaces for VRs where they are insignificant).
 std::string_view trim_value(std::string_view s, VR vr) noexcept;

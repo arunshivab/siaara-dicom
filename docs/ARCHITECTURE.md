@@ -49,5 +49,21 @@ keep it:
   read and swapped back on write. `siaara_dataset_get_raw` returns the in-memory (little-endian)
   bytes; `siaara_file_get_raw_stored` / `stored_value_bytes` return the bytes as stored.
 
+### Reading damaged input (lenient mode)
+
+Lenient reading never hides damage: everything it does is a read warning, and anything that
+leaves the data set short of the input or reinterprets it sets a `DicomFile::read_loss` bit
+(`siaara_read_report.loss`), so saves (`siaara_file_save`) and C-STORE refuse the file unless the
+caller opts in (`allow_incomplete`). The first warning names the reason: `PARSE_INCOMPLETE`
+(bytes skipped), `INPUT_TRUNCATED` (input ended early), `READ_RECOVERED` (a heuristic below).
+
+| Damage | What the reader does | Report |
+|---|---|---|
+| Encapsulated Pixel Data with a defined length (items inside, no delimiter) | read as the fragments when the items fill the length exactly (optionally with a delimiter at its end); written back the same way | `PIXEL_DATA_DEFINED_LENGTH` warning; complete (the bytes round-trip) |
+| A value length a few bytes too large (GE Genesis: 13 for 10) | when the bytes at the stated end are no element header (unknown VR, or a length past the container) and 1..7 bytes earlier a run of at least two headers starts - the first after the current tag and known to the dictionary (or a group length), later values allowed to repeat the same error - and the stated end does not begin a run of three; the value is read that much shorter | `ELEMENT_LENGTH_RECOVERED` per element; `READ_RECOVERED` |
+| ACR-NEMA implicit VR big endian, no file meta | when no explicit VR is seen, the first little-endian length does not fit and the first six elements read big endian are plausible (even groups up to 7FE0, ascending, defined lengths that fit); values held little endian, labelled Implicit VR Little Endian (no UID exists for the input's encoding) | `ACR_NEMA_IMPLICIT_BIG_ENDIAN`; `READ_RECOVERED` (a save would write little endian) |
+
+Strict mode (`lenient = false`) applies none of these.
+
 `tests/crosscheck/roundtrip_crosscheck.py <folder> <libsiaara>` reports how many files of a corpus
 round-trip byte for byte.

@@ -64,9 +64,11 @@ siaara_status get_impl(const siaara_dimse_peer* peer, int32_t model, const siaar
                        siaara_dimse_progress_callback cb, void* user, siaara_dimse_result* result);
 siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const* paths, const size_t* lens,
                                uint32_t count, siaara_cancel* cancel, siaara_dimse_progress_callback cb,
-                               siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result);
+                               siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result,
+                               siaara_store_outcome* outcomes = nullptr);
 siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file, siaara_cancel* cancel,
-                         siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result);
+                         siaara_uid_change_callback uid_cb, void* user, siaara_dimse_result* result,
+                         siaara_store_outcome* outcome = nullptr);
 // siaara_scp_options -> ScpConfig (validated).
 siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg);
 // The Verification and Storage handlers of siaara_scp_start (events, counters, the store).

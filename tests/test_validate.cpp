@@ -198,7 +198,9 @@ TEST_CASE("repair: reports never contain data set values unless detailed") {
     Change c;
     c.category = kStudy;
     c.action = "set";
-    c.path = {{tags::PatientName, -1}};
+    // push_back, not assignment from a one-element initializer list: GCC 13 -O2 with ASan reports a
+    // false -Warray-bounds in the inlined copy of the list (testing 10b P3).
+    c.path.push_back({tags::PatientName, -1});
     c.values_withheld = true;
     fr.changes.push_back(c);
     rep.files.push_back(fr);
@@ -248,4 +250,91 @@ TEST_CASE("repair: JSON report shape") {
         else if (ch == '}' || ch == ']') ok = ok && --depth >= 0;
     }
     CHECK(ok && depth == 0 && !in_str);
+}
+
+// ---------------------------------------------------------------- Type 1C / 2C conditions (testing 10b item 4)
+
+namespace {
+
+bool finding_at(const std::vector<Finding>& f, std::string_view code, Tag tag) {
+    return std::any_of(f.begin(), f.end(), [&](const Finding& x) {
+        return x.code == code && x.path.size() == 1 && x.path.back().tag == tag;
+    });
+}
+
+Dataset rgb_sc(bool planar) {
+    Dataset ds = repair_samples::base_sc();
+    (void)ds.set_uint16(0x00280002, 3);
+    (void)ds.set_string(0x00280004, VR::CS, "RGB");
+    if (planar) (void)ds.set_uint16(0x00280006, 0);
+    std::vector<std::uint8_t> px(8 * 8 * 3, 0x40);
+    (void)ds.set_bytes(0x7FE00010, VR::OB, Bytes::copy_of(px.data(), px.size()));
+    return ds;
+}
+
+}  // namespace
+
+TEST_CASE("repair: 1C condition with Greater (Planar Configuration, Samples per Pixel > 1)") {
+    CHECK(finding_at(findings_of(repair_samples::part10(rgb_sc(false))), "missing-type1", 0x00280006));
+    const auto ok = findings_of(repair_samples::part10(rgb_sc(true)));
+    CHECK(!finding_at(ok, "missing-type1", 0x00280006));
+    CHECK(!finding_at(ok, "present-condition-unmet", 0x00280006));
+    // Present although Samples per Pixel is 1: PS3.5 7.4.4, the description has no "may be
+    // present otherwise".
+    Dataset mono = repair_samples::base_sc();
+    (void)mono.set_uint16(0x00280006, 0);
+    CHECK(finding_at(findings_of(repair_samples::part10(mono)), "present-condition-unmet", 0x00280006));
+    CHECK(!finding_at(findings_of(repair_samples::part10(repair_samples::base_sc())), "present-condition-unmet",
+                      0x00280006));
+}
+
+TEST_CASE("repair: 1C condition with OR of Equals terms (palette descriptors for PALETTE COLOR)") {
+    Dataset ds = repair_samples::base_sc();
+    (void)ds.set_string(0x00280004, VR::CS, "PALETTE COLOR");
+    const auto f = findings_of(repair_samples::part10(ds));
+    CHECK(finding_at(f, "missing-type1", 0x00281101));
+    CHECK(finding_at(f, "missing-type1", 0x00281203));
+    CHECK(!finding_at(findings_of(repair_samples::part10(repair_samples::base_sc())), "missing-type1", 0x00281101));
+}
+
+TEST_CASE("repair: 1C condition IncludesTag (Frame Increment Pointer lists Time Slot Vector)") {
+    auto nm = [](std::uint16_t element) {
+        Dataset ds = repair_samples::base_sc("1.2.826.0.1.3680043.10.1408.1.90", 8, 8, 8, 2);
+        (void)ds.set_string(tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.20");  // NM Image
+        (void)ds.set_string(0x00080060, VR::CS, "NM");
+        const std::uint8_t at[4] = {0x54, 0x00, static_cast<std::uint8_t>(element & 0xFF),
+                                    static_cast<std::uint8_t>(element >> 8)};
+        (void)ds.set_bytes(0x00280009, VR::AT, Bytes::copy_of(at, sizeof at));
+        return repair_samples::part10(ds);
+    };
+    CHECK(finding_at(findings_of(nm(0x0070)), "missing-type1", 0x00540070));   // Time Slot Vector
+    CHECK(!finding_at(findings_of(nm(0x0010)), "missing-type1", 0x00540070));  // Energy Window Vector
+}
+
+TEST_CASE("repair: 2C structured rules (Laterality of a paired body part, Patient Orientation)") {
+    Dataset knee = repair_samples::base_sc();
+    (void)knee.set_string(0x00180015, VR::CS, "KNEE");
+    knee.remove(0x00200020);
+    knee.remove(0x00200060);
+    const auto f = findings_of(repair_samples::part10(knee));
+    CHECK(finding_at(f, "missing-type2", 0x00200060));  // paired structure, no laterality anywhere
+    CHECK(finding_at(f, "missing-type2", 0x00200020));  // no Image Orientation / Position: required
+    Dataset with = knee;
+    (void)with.set_string(0x00200062, VR::CS, "L");
+    (void)with.set_string(0x00200037, VR::DS, "1\\0\\0\\0\\1\\0");
+    (void)with.set_string(0x00200032, VR::DS, "0\\0\\0");
+    const auto g = findings_of(repair_samples::part10(with));
+    CHECK(!finding_at(g, "missing-type2", 0x00200060));
+    CHECK(!finding_at(g, "missing-type2", 0x00200020));
+    Dataset chest = knee;
+    (void)chest.set_string(0x00180015, VR::CS, "CHEST");  // not a paired structure
+    CHECK(!finding_at(findings_of(repair_samples::part10(chest)), "missing-type2", 0x00200060));
+}
+
+TEST_CASE("repair: conditions that are prose stay 'not evaluated' (Info, never an error)") {
+    const auto f = findings_of(repair_samples::part10(repair_samples::base_sc()));
+    for (const Finding& x : f)
+        if (x.code == "condition-not-evaluated") CHECK(x.severity == Severity::Info);
+    CHECK(errors(f) == 0);
+    CHECK(iod_table_stats().conditions > 500);
 }

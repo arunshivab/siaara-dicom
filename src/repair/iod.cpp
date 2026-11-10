@@ -17,6 +17,7 @@ struct AttrRow {
     std::int16_t cond;
     std::int16_t enum_list;
     std::uint8_t overrides;
+    std::uint8_t strict;
 };
 struct AttrTable {
     std::string_view id;
@@ -41,10 +42,17 @@ struct SopIod {
     std::string_view name;
     std::int16_t iod;
 };
-struct Condition {
+struct CondTermRow {
     CondOp op;
     Tag tag;
     Tag mask;
+    std::uint8_t value_index;
+    std::uint8_t scope;
+    std::uint32_t first;
+    std::uint32_t count;
+};
+struct ConditionRow {
+    std::uint8_t any;
     std::uint32_t first;
     std::uint32_t count;
 };
@@ -73,9 +81,16 @@ struct Cache {
     std::map<std::string, std::unique_ptr<IodReq>, std::less<>> iods;
     Cache() {
         conditions.reserve(kCondCount);
-        for (const auto& c : kConditions)
-            conditions.push_back({c.op, c.tag, c.mask,
-                                  std::span<const std::string_view>(kStrings + c.first, c.count)});
+        for (const ConditionRow& c : kConditions) {
+            repair::Condition cond;
+            cond.any = c.any != 0;
+            for (std::uint32_t i = 0; i < c.count; ++i) {
+                const CondTermRow& t = kCondTerms[c.first + i];
+                cond.terms.push_back({t.op, t.tag, t.mask, t.value_index, t.scope,
+                                      std::span<const std::string_view>(kStrings + t.first, t.count)});
+            }
+            conditions.push_back(std::move(cond));
+        }
     }
 };
 
@@ -125,6 +140,7 @@ ReqNode node_of(const FlatRow& fr, Cache& c) {
     n.mask = r.mask;
     n.type = static_cast<AttrType>(r.type);
     n.overrides = r.overrides != 0;
+    n.absent_unless_required = r.strict != 0;
     if (r.cond >= 0 && static_cast<std::size_t>(r.cond) < c.conditions.size()) n.condition = &c.conditions[static_cast<std::size_t>(r.cond)];
     if (r.enum_list >= 0) {
         const EnumList& e = kEnumLists[r.enum_list];
@@ -147,10 +163,12 @@ ReqNode* merge_into(std::vector<ReqNode>& list, ReqNode n) {
                 x.guards.clear();
                 x.guard_unevaluated = true;
             }
+            const bool strict = x.absent_unless_required && n.absent_unless_required && x.condition == n.condition;
             if (static_cast<int>(n.type) < static_cast<int>(x.type)) {
                 x.type = n.type;
                 x.condition = n.condition;
             }
+            x.absent_unless_required = strict;
             if (x.enumerated.empty()) x.enumerated = n.enumerated;
             return &x;
         }

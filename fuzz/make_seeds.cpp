@@ -605,7 +605,9 @@ void seeds_dimse() {
     cs.push_back(rsp);
     Command err = make_response(cs[1], 0xA700);
     err.error_comment = "out of resources";
-    err.offending_elements = {0x00100010};
+    // push_back, not assignment from a one-element initializer list: GCC 13 -O2 with ASan reports a
+    // false -Warray-bounds in the inlined copy of the list (testing 10b P3).
+    err.offending_elements.push_back(0x00100010);
     cs.push_back(err);
     int i = 0;
     for (const Command& c : cs) {

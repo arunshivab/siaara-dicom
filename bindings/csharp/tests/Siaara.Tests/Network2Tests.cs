@@ -47,6 +47,62 @@ internal static class Network2Tests
 
     internal static void Register()
     {
+        Case("network2: testing 10b - per-file outcomes (UID sent, lossy), commitment of them, incomplete input refused", () =>
+        {
+            string dir = NewTempDir("n2t10b");
+            using DicomStore store = DicomStore.Open(Path.Combine(dir, "store"));
+            using StorageScp scp = StorageScp.Start(Options("T10B"), new ScpServiceOptions
+            {
+                Storage = true,
+                Commitment = true,
+                CommitmentReportMode = CommitmentReportMode.Same,
+                TransferSyntaxes = new[] { DicomTransferSyntaxes.JPEGBaseline8Bit },
+            }, store);
+            string good = Path.Combine(dir, "rgb.dcm");
+            using (DicomFile f = Builders.Rgb(8, 8))
+            {
+                f.Save(good);
+            }
+            byte[] all = File.ReadAllBytes(good);
+            string truncated = Path.Combine(dir, "truncated.dcm");
+            File.WriteAllBytes(truncated, all.AsSpan(0, all.Length - 30).ToArray());
+
+            (DimseResult r, IReadOnlyList<StoreOutcome> files) =
+                Dimse.StoreFilesWithOutcomes(Peer(scp.Port, "T10B", lossy: true), new[] { good, truncated });
+            CheckEq(r.Outcome, SiaaraErrorCode.Rejected);
+            CheckEq(r.Completed, 1);
+            CheckEq(r.Failed, 1);
+            CheckEq(files.Count, 2);
+            Check(files[0].Sent && files[0].Lossy && files[0].UidChanged);
+            CheckEq(files[0].OriginalSopInstanceUid, "2.25.900");
+            Check(files[0].SopInstanceUid != "2.25.900");
+            CheckEq(files[0].TransferSyntaxUid, DicomTransferSyntaxes.JPEGBaseline8Bit);
+            CheckEq(files[1].Error, SiaaraErrorCode.Rejected);
+            Check(files[1].IncompleteInput && !files[1].Sent);
+            CheckEq(files[1].DimseStatus, 0xFFFF);
+
+            CommitmentResult cr = Dimse.Commit(Peer(scp.Port, "T10B"), new[] { (files[0].SopClassUid, files[0].SopInstanceUid) });
+            Check(cr.Result.IsSuccess);
+            CheckEq(cr.Result.Completed, 1);
+
+            var keep = new DimsePeer
+            {
+                Host = "127.0.0.1", Port = scp.Port, CallingAeTitle = "N2_SCU", CalledAeTitle = "T10B",
+                AllowLossyTranscode = true, KeepUidOnLossy = true, AllowIncomplete = true,
+            };
+            (DimseResult r2, IReadOnlyList<StoreOutcome> files2) = Dimse.StoreFilesWithOutcomes(keep, new[] { good });
+            Check(r2.IsSuccess);
+            Check(files2[0].Lossy && !files2[0].UidChanged);
+            CheckEq(files2[0].SopInstanceUid, "2.25.900");
+            using (DicomFile mem = Builders.Rgb(4, 4))
+            {
+                (DimseResult r3, StoreOutcome one) = Dimse.StoreWithOutcome(Peer(scp.Port, "T10B", lossy: true), mem);
+                Check(r3.IsSuccess);
+                Check(one.UidChanged);
+                CheckEq(one.OriginalSopInstanceUid, "2.25.900");
+            }
+        });
+
         Case("network2: Q/R from the store - synchronous Find, per-match callback, Move, Get with options, events", () =>
         {
             string dir = NewTempDir("n2qr");

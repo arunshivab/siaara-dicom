@@ -45,6 +45,8 @@ public enum DicomReadLoss
     InputTruncated = 2,
     /// <summary>Header-only read (StopBeforePixelData): Pixel Data and what follows were not read.</summary>
     HeaderOnly = 4,
+    /// <summary>Lenient reading recovered damaged input by a heuristic (warning code READ_RECOVERED): the data set is an interpretation.</summary>
+    Recovered = 8,
 }
 
 /// <summary>Code of a file parse warning (siaara_file_warning_code).</summary>
@@ -56,6 +58,8 @@ public enum DicomFileWarningCode
     ParseIncomplete = 1,
     /// <summary>The input ended early (INPUT_TRUNCATED).</summary>
     InputTruncated = 2,
+    /// <summary>Damaged input was recovered by a heuristic (READ_RECOVERED).</summary>
+    ReadRecovered = 3,
 }
 
 /// <summary>Whether a read was complete (siaara_read_report).</summary>

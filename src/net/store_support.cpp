@@ -60,6 +60,32 @@ std::vector<const NegotiatedContext*> store_contexts(const Association& a, std::
     return out;
 }
 
+std::vector<std::string> transcode_targets(const codec::TranscodeParams& p, bool lossy) {
+    static constexpr std::string_view kCompressed[] = {
+        "1.2.840.10008.1.2.5",    "1.2.840.10008.1.2.4.57", "1.2.840.10008.1.2.4.70",  "1.2.840.10008.1.2.4.80",
+        "1.2.840.10008.1.2.4.90", "1.2.840.10008.1.2.4.201", "1.2.840.10008.1.2.4.50", "1.2.840.10008.1.2.4.51",
+        "1.2.840.10008.1.2.4.81", "1.2.840.10008.1.2.4.91", "1.2.840.10008.1.2.4.203"};
+    std::vector<std::string> out;
+    if (lossy && !p.allow_lossy) return out;
+    for (std::string_view t : kCompressed)
+        if (codec::can_encode(t) && codec::encoding_is_lossy(t, p) == lossy) out.emplace_back(t);
+    return out;
+}
+
+Status check_sendable(const DicomFile& file, bool allow_incomplete) {
+    if (file.complete() || allow_incomplete) return Status::ok();
+    const char* why = (file.read_loss & DicomFile::kReadInputTruncated) ? "the input was truncated"
+                      : (file.read_loss & DicomFile::kReadBytesSkipped) ? "input bytes were skipped"
+                      : (file.read_loss & DicomFile::kReadRecovered)
+                          ? "damaged input was recovered by a heuristic, see the read warnings"
+                          : "it was read header-only";
+    return Status(Errc::Rejected,
+                  std::string(kIncompleteInput) + ": not sending a data set that was not read completely (" + why +
+                      "; first at offset " + std::to_string(file.read_loss_offset) +
+                      "): the peer would store less than the file holds; allow incomplete input to send it anyway",
+                  file.read_loss_offset);
+}
+
 Status encode_for_transfer_syntax(const DicomFile& file, std::string_view ts, const codec::TranscodeParams& p,
                                   std::vector<std::uint8_t>& body, codec::TranscodeReport* report) {
     body.clear();
