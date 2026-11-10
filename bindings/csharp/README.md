@@ -32,7 +32,14 @@ cmake --build build-rel -j1 --target siaara siaara_csharp_struct_layout
 dotnet run -c Release --project bindings/csharp/tests/Siaara.Tests -- --layout-exe build-rel/tests/siaara_csharp_struct_layout
 dotnet publish bindings/csharp/samples/Siaara.AotSample -c Release -r linux-x64 -p:PublishAot=true
 dotnet pack bindings/csharp/src/Siaara -c Release      # -> bindings/csharp/artifacts/packages
+python3 tools/release/check_nupkg.py bindings/csharp/artifacts/packages/Siaara.<version>.nupkg --version <version> \
+        --consumer-test /tmp/nupkg-consumer             # offline consumer: restore, build, run
 ```
+
+The package (`Siaara`): version from the `project(siaara VERSION ...)` line of the top-level
+`CMakeLists.txt` (never set one here), licence file and `PACKAGE_README.md` inside, XML
+documentation, embedded symbols, no dependencies. The release workflow collects the native
+libraries of every platform into it; see `docs/RELEASING.md` ("The NuGet package").
 
 MSBuild properties: `SiaaraNativeBuildDir` (default `<repo>/build-rel`), `SiaaraNativeLibrary`
 (explicit file), `SiaaraNativeArtifactsDir` (pack: `<dir>/<rid>/<library>` for linux-x64,

@@ -115,7 +115,8 @@ How the native libraries of seven separate build jobs get into one package:
    macOS uploads the universal library under both `osx-x64` and `osx-arm64` - the tested file,
    not a thinned copy; linux-x86 has no RID because .NET has no 32-bit x86 Linux runtime).
 2. The `nuget` job (`needs: build`) downloads all `native-*` artifacts into one folder, builds
-   the managed assemblies once with the SDK pinned by `global.json`, and runs
+   the managed assemblies once with the SDK pinned by `global.json` (`setup-dotnet` with
+   `global-json-file`), and runs
    `dotnet pack bindings/csharp/src/Siaara -p:SiaaraNativeArtifactsDir=<folder>
    -p:ContinuousIntegrationBuild=true`. The project packs `<folder>/<rid>/<library>` under
    `runtimes/<rid>/native/`.
@@ -125,7 +126,9 @@ How the native libraries of seven separate build jobs get into one package:
 4. `check_nupkg.py --consumer-test` copies `examples/csharp/QuickStart` to a temporary folder
    with a `nuget.config` whose only source is a folder holding the new package, and restores,
    builds and runs it with a fresh package cache and a dead proxy. It fails when anything other
-   than the Siaara package lands in the package cache. (linux-x64 only: the job runs there.)
+   than the Siaara package lands in the package cache. (linux-x64 only: the job runs there. The
+   other runtimes' libraries are the files their own platform jobs tested; that the package
+   loads them on Windows and macOS is a manual check of RELEASE_CHECKLIST.md.)
 
 Properties of the package: id `Siaara`; authors and company Sthraas Intelligence Pvt Ltd; licence
 = the repository's `LICENSE` file inside the package (`PackageLicenseFile`; there is no SPDX
@@ -134,12 +137,19 @@ readme; XML documentation; deterministic build with build paths mapped out
 (`ContinuousIntegrationBuild`); debug symbols **embedded** in the assemblies (no `.snupkg`, no
 symbol server needed); `Siaara.Interop.dll` is inside the package, not a package of its own.
 
-No package dependencies, and nothing fetched: a framework-dependent library targets the .NET
-reference assemblies that are part of the SDK. The .NET *runtime packs* (ILLink, ILCompiler,
-runtime packs for a RID) are needed only by a consumer that publishes self-contained, trimmed or
-NativeAOT; they are fetched by that consumer's SDK on the release machine / CI and are never
-vendored in this repository. The offline pack and consumer test above prove the package itself
-needs none of them.
+**SDK packs: who needs what.** (Owner's rule: .NET SDK packs such as ILLink and ILCompiler are
+fetched only on the release machine / CI, never vendored.)
+
+- *Consuming* the package needs none of them. A framework-dependent application that references
+  `Siaara` restores from a folder holding the one `.nupkg`; the consumer test proves it with a
+  fresh package cache and no network: afterwards the cache holds `siaara` and nothing else.
+- *Building* the package needs one: the managed projects are marked `IsTrimmable` and
+  `IsAotCompatible`, which turns on the SDK's trim / AOT analyzers, and the SDK takes those from
+  its pack `Microsoft.NET.ILLink.Tasks`, fetched from nuget.org at restore. So the `Pack` step
+  of the release job is online and the job fails when anything else is fetched. The pack is not
+  a dependency of the package (the nuspec lists none) and not vendored.
+- A consumer that publishes self-contained, trimmed or NativeAOT fetches the runtime packs /
+  ILCompiler with its own SDK; that is the consumer's build, not this package.
 
 Local pack with only this machine's native library (what CI's `csharp` job does):
 

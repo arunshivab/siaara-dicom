@@ -7,8 +7,18 @@
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
     <PackageId>Siaara</PackageId>
-    <Description>SIAARA DICOM Toolkit: C# bindings (internal package; native libraries in runtimes/&lt;rid&gt;/native).</Description>
+    <Title>SIAARA DICOM Toolkit</Title>
+    <Description>SIAARA DICOM Toolkit for .NET: Part 10 files, pixel data and codecs, character sets, DIMSE services (SCU and SCP), DICOMweb, local store, de-identification. Managed bindings over the native library, which is in this package under runtimes/&lt;rid&gt;/native. No package dependencies.</Description>
+    <PackageTags>dicom;medical-imaging;pacs;dicomweb</PackageTags>
     <PackageOutputPath>$(MSBuildThisFileDirectory)../../artifacts/packages</PackageOutputPath>
+    <!-- Proprietary: the licence is the LICENSE file of the repository, shipped in the package.
+         There is no SPDX expression for it, so PackageLicenseExpression is not used. -->
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- Symbols are embedded in the assemblies (portable PDB inside Siaara.dll and
+         Siaara.Interop.dll): no .snupkg and no symbol server are needed. -->
+    <DebugType>embedded</DebugType>
     <IncludeSymbols>false</IncludeSymbols>
     <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);SiaaraPackInterop</TargetsForTfmSpecificBuildOutput>
   </PropertyGroup>
@@ -40,13 +50,14 @@
   </PropertyGroup>
   <Target Name="SiaaraPackNativeArtifacts" Condition="'$(SiaaraNativeArtifactsDir)' != ''">
     <ItemGroup>
-      <_SiaaraNativeArtifact Include="$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara*.*">
+      <_SiaaraNativeArtifact Include="$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara.dll;$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara.so;$(SiaaraNativeArtifactsDir)/%(SiaaraPackRid.Identity)/*siaara.dylib">
         <Rid>%(SiaaraPackRid.Identity)</Rid>
       </_SiaaraNativeArtifact>
       <TfmSpecificPackageFile Include="@(_SiaaraNativeArtifact)" PackagePath="runtimes/%(_SiaaraNativeArtifact.Rid)/native/%(_SiaaraNativeArtifact.Filename)%(_SiaaraNativeArtifact.Extension)" />
     </ItemGroup>
   </Target>
   <ItemGroup>
-    <None Include="../../README.md" Pack="true" PackagePath="/" Visible="false" Condition="Exists('../../README.md')" />
+    <None Include="../../PACKAGE_README.md" Pack="true" PackagePath="README.md" Visible="false" />
+    <None Include="$(SiaaraRepoRoot)LICENSE" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 </Project>

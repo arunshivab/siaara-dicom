@@ -435,7 +435,10 @@ folder (unless the file existed before).
 
 ## 8. DICOM Conformance Statement: networking section outline (PS3.2)
 
-Fill the bracketed parts for the product that embeds the toolkit; the toolkit's facts are given.
+The toolkit's own Conformance Statement is [CONFORMANCE.md](CONFORMANCE.md): its tables of SOP
+classes, transfer syntaxes, Query/Retrieve keys, character sets and default limits are generated
+from the code and may be copied into a product's statement. The outline below is the skeleton of
+that product statement: fill the bracketed parts for the product that embeds the toolkit.
 
 1. **Conformance Statement Overview**: table of SOP classes with User / Provider columns (from
    the table at the top of this guide, restricted to what the product enables).
@@ -457,7 +460,7 @@ Fill the bracketed parts for the product that embeds the toolkit; the toolkit's 
         default 8, per peer 4; initiator: one per operation, several in parallel); Asynchronous
         nature (Asynchronous Operations Window accepted up to 16 outstanding, performed in order);
         Implementation Identifying Information (Implementation Class UID
-        2.25.208936390756097257212108686309372694101, Version Name SIAARA_010, or the product's own).
+        2.25.208936390756097257212108686309372694101, Version Name `SIAARA_` + the version digits, as CONFORMANCE.md section 1 states for the release).
       - Association Initiation Policy, per activity (C-STORE, C-FIND, C-MOVE, C-GET, MPPS, Storage
         Commitment N-ACTION, report N-EVENT-REPORT on a new association, C-MOVE sub-associations):
         description and sequencing, proposed presentation contexts, SOP specific conformance
