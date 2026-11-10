@@ -50,6 +50,9 @@ constexpr std::uint32_t kHasPixelSpacing   = 1u << 7;
 constexpr std::uint32_t kHasSliceThickness = 1u << 8;
 constexpr std::uint32_t kReferenced        = 1u << 9;   // store: file indexed in place, not copied
 constexpr std::uint32_t kPixelOffsetKnown  = 1u << 10;  // pixel_data_offset is a file offset
+// store: the instance arrived incomplete (truncated, bytes skipped, recovered) and was kept exactly
+// as received - by IncompletePolicy::AcceptAsReceived or released from quarantine (R-116).
+constexpr std::uint32_t kIncompleteRead    = 1u << 11;
 
 enum class Level : std::int32_t { Patient = 0, Study = 1, Series = 2, Instance = 3 };
 

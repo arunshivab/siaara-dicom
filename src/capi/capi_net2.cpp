@@ -21,6 +21,7 @@
 #include <thread>
 #include <tuple>
 #include <initializer_list>
+#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -116,7 +117,12 @@ struct ScpServices {
     std::map<std::int32_t, std::set<std::string>> acl;  // SIAARA_SVC_* -> allowed calling AEs
     std::map<std::string, net::MoveDestination> ae_table;
     StoreQrOptions qr;
-    std::uint32_t max_worklist = 10000, max_mpps = 10000, max_commit = 10000;
+    std::uint32_t max_worklist = 10000, max_commit = 10000;
+    net::ServiceStateLimits mpps_limits, ups_limits;
+    std::string state_folder;  // empty: MPPS / UPS state in memory only
+    // R-130: the worklist callback runs on a helper thread with an inactivity deadline.
+    int worklist_timeout_ms = 30000;
+    std::shared_ptr<std::atomic<int>> worklist_hung = std::make_shared<std::atomic<int>>(0);
     siaara_worklist_callback worklist_cb = nullptr;
     void* worklist_user = nullptr;
     mutable std::mutex wl_mu;
@@ -126,7 +132,14 @@ struct ScpServices {
     // Storage Commitment SCU role: reports awaited by siaara_dimse_commit_ex, by Transaction UID.
     std::mutex cr_mu;
     std::condition_variable cr_cv;
-    std::map<std::string, std::optional<net::CommitmentResult>> pending;
+    // R-118: a report counts only when it comes from the AE the request went to and lists
+    // nothing that was not requested.
+    struct PendingCommit {
+        std::string expected_ae;
+        std::set<std::pair<std::string, std::string>> items;  // (SOP class, SOP instance)
+        std::optional<net::CommitmentResult> result;
+    };
+    std::map<std::string, PendingCommit> pending;
 
     bool allowed(std::int32_t svc, const std::string& calling) const {
         const auto it = acl.find(svc);
@@ -202,18 +215,99 @@ void shielded_void(F&& f) noexcept {
     }
 }
 
-// The emit() passed to a siaara_worklist_callback.
-struct WorklistEmit {
-    const std::function<bool(const Dataset&)>* offer;
+// R-130: the application's worklist callback runs on a helper thread, so a callback that hangs
+// cannot hold the association thread (and with it siaara_scp_stop) for ever. The association
+// thread waits for it; when the callback neither returns nor calls emit() for
+// worklist_timeout_ms, or the SCP is stopping, the call is abandoned: the C-FIND ends with
+// 0x0110, emit() tells the callback to stop, and the helper thread ends whenever the callback
+// returns. At most kMaxHungWorklistCalls abandoned calls may still be running; further queries
+// are then answered 0x0110 without calling the callback.
+constexpr int kMaxHungWorklistCalls = 4;
+
+struct WorklistCall {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false, abandoned = false;
+    std::uint32_t result = 0;
+    const std::function<bool(const Dataset&)>* offer = nullptr;  // valid until done or abandoned
+    Dataset identifier;
+    std::string calling;
+    std::chrono::steady_clock::time_point last_activity;
 };
+
 int32_t SIAARA_CALL worklist_emit_fn(void* c, const siaara_dataset* item) {
     if (!c || !item) return 1;
+    auto* call = static_cast<WorklistCall*>(c);
     try {
-        return (*static_cast<WorklistEmit*>(c)->offer)(*reinterpret_cast<const Dataset*>(item)) ? 0 : 1;
+        // Held while the item is matched and sent: the waiting thread abandons the call only
+        // between items, so `offer` (which lives on its stack) is never used after it left.
+        const std::lock_guard<std::mutex> l(call->mu);
+        if (call->abandoned || !call->offer) return 1;
+        const bool go_on = (*call->offer)(*reinterpret_cast<const Dataset*>(item));
+        call->last_activity = std::chrono::steady_clock::now();
+        return go_on ? 0 : 1;
     } catch (...) {
         capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
         return 1;
     }
+}
+
+std::uint16_t run_worklist_callback(siaara_scp& scp, ScpServices& sv, const net::QueryRequest& q,
+                                    const std::function<bool(const Dataset&)>& offer) {
+    if (sv.worklist_hung->load() >= kMaxHungWorklistCalls) {
+        capi::log(SIAARA_LOG_ERROR, false, "SCP: worklist callbacks that never returned are still running; query refused");
+        return net::dimse_status::ProcessingFailure;
+    }
+    auto call = std::make_shared<WorklistCall>();
+    call->offer = &offer;
+    call->identifier = q.identifier;
+    call->calling = q.calling_ae;
+    call->last_activity = std::chrono::steady_clock::now();
+    const siaara_worklist_callback cb = sv.worklist_cb;
+    void* const user = sv.worklist_user;
+    const std::shared_ptr<std::atomic<int>> hung = sv.worklist_hung;
+    std::thread helper([call, cb, user, hung] {
+        std::uint32_t r = net::dimse_status::ProcessingFailure;
+        try {
+            r = cb(user, call->calling.c_str(), ds_out(&call->identifier), worklist_emit_fn, call.get());
+        } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
+        }
+        bool was_abandoned = false;
+        {
+            const std::lock_guard<std::mutex> l(call->mu);
+            call->done = true;
+            call->result = r;
+            was_abandoned = call->abandoned;
+        }
+        if (was_abandoned) hung->fetch_sub(1);
+        call->cv.notify_all();
+    });
+    const auto timeout = std::chrono::milliseconds(sv.worklist_timeout_ms);
+    bool abandoned = false;
+    std::uint32_t result = 0;
+    {
+        std::unique_lock<std::mutex> l(call->mu);
+        while (!call->done) {
+            (void)call->cv.wait_for(l, std::chrono::milliseconds(100));
+            if (call->done) break;
+            if (scp.stop_requested.load() || std::chrono::steady_clock::now() - call->last_activity >= timeout) {
+                call->abandoned = abandoned = true;
+                hung->fetch_add(1);
+                break;
+            }
+        }
+        call->offer = nullptr;
+        result = call->result;
+    }
+    if (abandoned) {
+        helper.detach();
+        capi::log(SIAARA_LOG_ERROR, false,
+                  "SCP: the worklist callback did not return in time; the query was ended with 0x0110");
+        return net::dimse_status::ProcessingFailure;
+    }
+    helper.join();
+    return static_cast<std::uint16_t>(result);
 }
 
 // ---- the handlers
@@ -223,6 +317,9 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
     net::ScpHandlers base;
     capi::dimse::storage_handlers(raw, base);
     hd.log = base.log;
+    hd.on_store_refused = base.on_store_refused;        // R-116: incomplete data refused
+    hd.on_store_quarantine = base.on_store_quarantine;  // R-116: incomplete data kept outside the archive
+    hd.on_store_keep_rejected = base.on_store_keep_rejected;
     hd.on_echo = [s, echo = base.on_echo](const std::string& calling) -> std::uint16_t {
         return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             if (!s->allowed(SIAARA_SVC_VERIFICATION, calling)) {
@@ -307,12 +404,8 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
                     return true;
                 };
                 if (s->worklist_cb) {
-                    std::function<bool(const Dataset&)> fo = offer;
-                    WorklistEmit ctx{&fo};
-                    const std::string calling = q.calling_ae;
-                    const std::uint32_t r =
-                        s->worklist_cb(s->worklist_user, calling.c_str(), ds_out(&q.identifier), worklist_emit_fn, &ctx);
-                    if (status == kSuccess && r != 0) status = static_cast<std::uint16_t>(r);
+                    const std::uint16_t r = run_worklist_callback(*raw, *s, q, offer);
+                    if (status == kSuccess && r != 0) status = r;
                 } else {
                     const auto items = s->worklist_items();
                     for (const Dataset& item : *items)
@@ -371,12 +464,12 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
         });
     };
     if (sv.mpps) {
-        sv.mpps_store = std::make_shared<net::MppsStore>();
-        ss.mpps = sv.mpps_store;
+        ss.mpps = sv.mpps_store;  // created (and loaded from the state folder) by siaara_scp_start_ex
         ss.on_mpps_create = [raw, s](const std::string& calling, const std::string& uid, const Dataset& ds) -> std::uint16_t {
           return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             raw->mpps.fetch_add(1, std::memory_order_relaxed);
-            std::uint16_t status = s->mpps_store->size() >= s->max_mpps ? kOutOfResources : s->mpps_store->create(uid, ds);
+            // The store bounds itself: IN PROGRESS instances, finished ones kept, bytes (R-109, R-119).
+            const std::uint16_t status = s->mpps_store->create(uid, ds, trim_ae(calling));
             siaara_scp::Event ev = base_event(SIAARA_SCP_MPPS_CREATE, status, calling,
                                               std::string(net::sop::ModalityPerformedProcedureStep), "");
             ev.inst = uid;
@@ -389,7 +482,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
         ss.on_mpps_set = [raw, s](const std::string& calling, const std::string& uid, const Dataset& ds) -> std::uint16_t {
           return shielded(net::dimse_status::ProcessingFailure, [&]() -> std::uint16_t {
             raw->mpps.fetch_add(1, std::memory_order_relaxed);
-            const std::uint16_t status = s->mpps_store->set(uid, ds);
+            const std::uint16_t status = s->mpps_store->set(uid, ds, trim_ae(calling));
             siaara_scp::Event ev = base_event(SIAARA_SCP_MPPS_SET, status, calling,
                                               std::string(net::sop::ModalityPerformedProcedureStep), "");
             ev.inst = uid;
@@ -414,8 +507,12 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
                         continue;
                     }
                     auto rec = raw->store->store->instance(ref.sop_instance);
+                    // A quarantined copy is not in the archive: never "committed" (R-116).
                     if (!rec) r.failed.push_back({ref, kNoSuchObjectInstance});
                     else if ((*rec)[st::Str::SopClassUid] != ref.sop_class) r.failed.push_back({ref, kClassInstanceConflict});
+                    // Kept although incomplete (flagged): committed only when kCommitFlaggedIncomplete.
+                    else if (!siaara::kCommitFlaggedIncomplete && ((*rec).flags & st::kIncompleteRead) != 0)
+                        r.failed.push_back({ref, net::dimse_status::ProcessingFailure});
                     else r.committed.push_back(ref);
                 }
             } catch (...) {
@@ -451,7 +548,29 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
             {
                 const std::lock_guard<std::mutex> l(s->cr_mu);
                 const auto it = s->pending.find(r.transaction_uid);
-                if (it != s->pending.end()) it->second = r;
+                if (it != s->pending.end()) {
+                    // R-118: only the AE the request went to may report on it, and only on what
+                    // was requested.
+                    if (trim_ae(calling) != it->second.expected_ae) {
+                        capi::log(SIAARA_LOG_WARNING, false,
+                                  "SCP: storage commitment report from " + calling + " ignored: the request went to " +
+                                      it->second.expected_ae);
+                        refused(*s, calling, std::string(net::sop::StorageCommitmentPushModel), 0x0100, "");
+                        return kNotAuthorized;
+                    }
+                    bool foreign = false;
+                    for (const net::SopRef& x : r.committed) foreign = foreign || !it->second.items.count({x.sop_class, x.sop_instance});
+                    for (const net::CommitmentFailure& x : r.failed)
+                        foreign = foreign || !it->second.items.count({x.ref.sop_class, x.ref.sop_instance});
+                    if (foreign) {
+                        capi::log(SIAARA_LOG_WARNING, false,
+                                  "SCP: storage commitment report from " + calling +
+                                      " ignored: it lists instances that were not in the request");
+                        refused(*s, calling, std::string(net::sop::StorageCommitmentPushModel), 0x0100, "");
+                        return net::dimse_status::InvalidAttributeValue;
+                    }
+                    it->second.result = r;
+                }
             }
             s->cr_cv.notify_all();
             siaara_scp::Event ev = base_event(SIAARA_SCP_COMMIT_REPORT, r.event_type(), calling,
@@ -466,8 +585,7 @@ void install_handlers(siaara_scp* raw, ScpServices& sv, net::ScpHandlers& hd, ne
           });
         };
     if (sv.ups) {
-        sv.ups_provider = std::make_shared<net::UpsProvider>();
-        ss.ups = sv.ups_provider;
+        ss.ups = sv.ups_provider;  // created by siaara_scp_start_ex
         ss.on_ups_served = [raw](const std::string& calling, const net::Command& rq, std::uint16_t status) {
             shielded_void([&] {
                 siaara_scp::Event ev = base_event(SIAARA_SCP_UPS, status, calling, rq.sop_class(), "");
@@ -598,7 +716,7 @@ siaara_status read_services(const siaara_scp_services* o, const net::ScpConfig& 
     if (o->max_find_results) sv.qr.max_find_results = o->max_find_results;
     if (o->max_retrieve_instances) sv.qr.max_retrieve_instances = std::min<std::uint32_t>(o->max_retrieve_instances, 65535u);
     if (o->max_worklist_items) sv.max_worklist = o->max_worklist_items;
-    if (o->max_mpps_instances) sv.max_mpps = o->max_mpps_instances;
+    if (o->max_mpps_instances) sv.mpps_limits.max_items = o->max_mpps_instances;
     if (o->max_commitment_items) sv.max_commit = o->max_commitment_items;
     sv.worklist_cb = o->worklist_cb;
     sv.worklist_user = o->worklist_user;
@@ -670,8 +788,68 @@ siaara_status read_services(const siaara_scp_services* o, const net::ScpConfig& 
             set.insert(trim_ae(a.calling_aes[k]));
         }
     }
+    // ---- security review 4 additions
+    const auto has = [&](std::size_t end) { return o->struct_size >= end; };
+    if (has(offsetof(siaara_scp_services, max_service_dataset_bytes) + sizeof(uint32_t)) && o->max_service_dataset_bytes)
+        cfg.limits.max_service_dataset_size = o->max_service_dataset_bytes;
+    if (has(offsetof(siaara_scp_services, max_ups_items) + sizeof(uint32_t)) && o->max_ups_items)
+        sv.ups_limits.max_items = o->max_ups_items;
+    if (has(offsetof(siaara_scp_services, max_state_bytes) + sizeof(uint64_t)) && o->max_state_bytes)
+        sv.mpps_limits.max_bytes = sv.ups_limits.max_bytes = o->max_state_bytes;
+    if (has(offsetof(siaara_scp_services, max_finished_instances) + sizeof(uint32_t)) && o->max_finished_instances)
+        sv.mpps_limits.max_finished = sv.ups_limits.max_finished = o->max_finished_instances;
+    if (has(offsetof(siaara_scp_services, max_ups_subscribers) + sizeof(uint32_t)) && o->max_ups_subscribers)
+        sv.ups_limits.max_subscribers_per_item = o->max_ups_subscribers;
+    if (has(offsetof(siaara_scp_services, state_folder) + sizeof(void*)) && o->state_folder) {
+        if (!o->state_folder[0]) return fail(Errc::InvalidArgument, "state_folder is empty");
+        sv.state_folder = o->state_folder;
+    }
+    if (has(offsetof(siaara_scp_services, bind_updates_to_creator) + sizeof(int32_t))) {
+        bool bind = false;
+        if (siaara_status s = flag(o->bind_updates_to_creator, "bind_updates_to_creator", bind); s != SIAARA_OK) return s;
+        sv.mpps_limits.bind_to_creator = sv.ups_limits.bind_to_creator = bind;
+    }
+    if (has(offsetof(siaara_scp_services, worklist_timeout_ms) + sizeof(int32_t))) {
+        if (o->worklist_timeout_ms < 0) return fail(Errc::InvalidArgument, "worklist_timeout_ms must not be negative");
+        if (o->worklist_timeout_ms) sv.worklist_timeout_ms = o->worklist_timeout_ms;
+    }
+    if (has(offsetof(siaara_scp_services, move_acl_count) + sizeof(uint32_t))) {
+        if (o->move_acl_count && !o->move_acls) return fail(Errc::InvalidArgument, "move_acls is NULL");
+        if (o->move_acl_count > 4096) return fail(Errc::LimitExceeded, "at most 4096 move_acls entries");
+        for (uint32_t i = 0; i < o->move_acl_count; ++i) {
+            const siaara_move_acl& a = o->move_acls[i];
+            if (a.struct_size < sizeof(siaara_move_acl)) return fail(Errc::InvalidArgument, "move_acls entry: struct_size");
+            if (!a.calling_ae || (a.count && !a.destination_aes))
+                return fail(Errc::InvalidArgument, "move_acls entry: calling_ae and destination_aes");
+            std::set<std::string>& set = cfg.move_destinations_by_caller[trim_ae(a.calling_ae)];
+            for (uint32_t k = 0; k < a.count; ++k) {
+                if (!a.destination_aes[k]) return fail(Errc::InvalidArgument, "move_acls entry: destination AE is NULL");
+                set.insert(trim_ae(a.destination_aes[k]));
+            }
+        }
+    }
     build_policy(sv, classes, ts, cfg);
     return SIAARA_OK;
+}
+
+// R-129: with no allow-list a service that touches patient data is open to every accepted peer.
+void warn_open_services(const ScpServices& sv, const net::ScpConfig& cfg) {
+    const std::pair<std::int32_t, bool> phi[] = {
+        {SIAARA_SVC_STORAGE, sv.storage}, {SIAARA_SVC_FIND, sv.find},       {SIAARA_SVC_MOVE, sv.move},
+        {SIAARA_SVC_GET, sv.get},         {SIAARA_SVC_WORKLIST, sv.worklist}, {SIAARA_SVC_MPPS, sv.mpps},
+        {SIAARA_SVC_COMMITMENT, sv.commitment}, {SIAARA_SVC_UPS, sv.ups}};
+    static const char* const names[] = {"Storage", "C-FIND", "C-MOVE", "C-GET", "Worklist", "MPPS", "Storage Commitment",
+                                        "UPS"};
+    std::string open;
+    for (std::size_t i = 0; i < std::size(phi); ++i)
+        if (phi[i].second && sv.acl.find(phi[i].first) == sv.acl.end()) open += std::string(open.empty() ? "" : ", ") + names[i];
+    if (!open.empty())
+        capi::log(SIAARA_LOG_WARNING, false,
+                  std::string("SCP: no allow-list (siaara_scp_services.acls) for: ") + open + "; " +
+                      (cfg.allowed_calling_aes.empty() ? "open to ANY calling AE" : "open to every allowed calling AE"));
+    if (sv.move && cfg.move_destinations_by_caller.empty() && !sv.ae_table.empty())
+        capi::log(SIAARA_LOG_WARNING, false,
+                  "SCP: no move_acls: a peer allowed C-MOVE may send any study to any ae_table entry");
 }
 
 }  // namespace
@@ -690,14 +868,32 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start_ex(const siaara_scp_option
         if (siaara_status s = capi::dimse::scp_config(options, cfg); s != SIAARA_OK) return s;
         auto sv = std::make_shared<ScpServices>();
         if (siaara_status s = read_services(services, cfg, *sv, cfg); s != SIAARA_OK) return s;
+        // The MPPS and UPS models, bounded (R-109, R-119), persistent when a state folder is given.
+        if (sv->mpps) {
+            sv->mpps_store = std::make_shared<net::MppsStore>(sv->mpps_limits);
+            if (!sv->state_folder.empty())
+                if (Status s = sv->mpps_store->set_state_folder(capi::dimse::join_path(sv->state_folder, "mpps")); !s)
+                    return fail(s.code, "state_folder (MPPS): " + s.message);
+            if (sv->mpps_store->skipped_files())
+                capi::log(SIAARA_LOG_WARNING, false,
+                          "SCP: " + std::to_string(sv->mpps_store->skipped_files()) + " MPPS state files could not be loaded");
+        }
+        if (sv->ups) {
+            sv->ups_provider = std::make_shared<net::UpsProvider>(sv->ups_limits);
+            if (!sv->state_folder.empty())
+                if (Status s = sv->ups_provider->set_state_folder(capi::dimse::join_path(sv->state_folder, "ups")); !s)
+                    return fail(s.code, "state_folder (UPS): " + s.message);
+            if (sv->ups_provider->skipped_files())
+                capi::log(SIAARA_LOG_WARNING, false,
+                          "SCP: " + std::to_string(sv->ups_provider->skipped_files()) + " UPS state files could not be loaded");
+        }
+        warn_open_services(*sv, cfg);
         auto h = std::make_unique<siaara_scp>();
-        h->store = store;
+        h->attach_store(store);
         h->policy = options->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
         h->cb = cb;
         h->user = user;
-        if (options->struct_size >= offsetof(siaara_scp_options, event_queue_limit) + sizeof(uint32_t) &&
-            options->event_queue_limit)
-            h->max_queued = options->event_queue_limit;
+        capi::dimse::scp_handle_options(options, *h);
         sv->scp = h.get();
         h->services = sv;
         h->start_dispatcher();
@@ -976,7 +1172,7 @@ siaara_status n_call(const siaara_dimse_peer* peer, siaara_cancel* cancel, const
         role = r;
     }
     scu.add_context(call.abstract_syntax, net::native_transfer_syntaxes(), role);
-    if (siaara_status s = d::connect(scu, cancel, c); s != SIAARA_OK) return s;
+    if (siaara_status s = d::connect(scu, cancel, c, result); s != SIAARA_OK) return s;
     siaara_status out = SIAARA_OK;
     bool aborted = false;
     {
@@ -1151,18 +1347,20 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit_ex(const siaara_dimse_p
         if (rs) {
             const std::lock_guard<std::mutex> l(rs->cr_mu);
             if (rs->pending.count(txn)) return fail(Errc::InvalidArgument, "transaction_uid is already awaited");
-            rs->pending[txn] = std::nullopt;
+            ScpServices::PendingCommit& pc = rs->pending[txn];
+            pc.expected_ae = trim_ae(c.called_ae);  // R-118: the commitment SCP the request goes to
+            for (const net::SopRef& x : items) pc.items.insert({x.sop_class, x.sop_instance});
         }
         const auto taken = [&]() -> std::optional<net::CommitmentResult> {
             if (!rs) return std::nullopt;
             const std::lock_guard<std::mutex> l(rs->cr_mu);
             const auto it = rs->pending.find(txn);
-            return it == rs->pending.end() ? std::nullopt : it->second;
+            return it == rs->pending.end() ? std::nullopt : it->second.result;
         };
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
         net::Scu scu(c);
         scu.add_context(std::string(net::sop::StorageCommitmentPushModel), net::native_transfer_syntaxes());
-        if (siaara_status s = d::connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = d::connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         std::optional<net::CommitmentResult> report;
         siaara_status out = SIAARA_OK;
         bool aborted = false, gone = false;
@@ -1207,8 +1405,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit_ex(const siaara_dimse_p
             while (!report) {
                 if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
                 const auto it = rs->pending.find(txn);
-                if (it != rs->pending.end() && it->second) {
-                    report = it->second;
+                if (it != rs->pending.end() && it->second.result) {
+                    report = it->second.result;
                     break;
                 }
                 if (std::chrono::steady_clock::now() >= deadline) break;

@@ -41,6 +41,8 @@ public enum SiaaraErrorCode
     Cancelled = 14,
     /// <summary>The output buffer is too small.</summary>
     BufferTooSmall = 15,
+    /// <summary>The listening port is already in use (starting an SCP or the DICOMweb server).</summary>
+    AddressInUse = 16,
     /// <summary>Internal error.</summary>
     Internal = 99,
 }
@@ -83,6 +85,10 @@ public sealed class SiaaraException : Exception
 
     /// <summary>The message of the failed call (siaara_last_error_message), possibly empty.</summary>
     public string NativeMessage { get; }
+
+    /// <summary>DIMSE SCU calls: at which step the call failed to get its association - connection refused,
+    /// connect timeout, TLS failure, no answer to the association request ... (None otherwise).</summary>
+    public Network.ConnectFailure ConnectFailure { get; init; }
 
     private static string Format(SiaaraErrorCode code, string message) =>
         string.IsNullOrEmpty(message) ? code.ToString() : code + ": " + message;

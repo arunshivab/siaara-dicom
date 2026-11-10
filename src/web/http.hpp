@@ -41,6 +41,12 @@ struct Limits {
     // Minimum average body rate (bytes/s) over each body_rate_window_ms (408); 0: none.
     std::uint32_t min_body_rate = 1024;
     int body_rate_window_ms = 30000;
+    // Writing a whole message (R-120): overall deadline (Errc::Timeout; 0: none) and the minimum
+    // average rate (bytes/s) the peer must take over each send_rate_window_ms (0: none). A peer
+    // that reads a byte every few seconds no longer holds a worker for hours.
+    int send_timeout_ms = 10 * 60 * 1000;
+    std::uint32_t min_send_rate = 1024;
+    int send_rate_window_ms = 30000;
 };
 
 // Server-wide budget for request bodies held in memory at once (WEB-01). Bodies are charged as
@@ -83,12 +89,20 @@ struct Request {
     std::string body;
 };
 
+// Writes one piece of a streamed response body.
+using BodyWriter = std::function<Status(std::string_view piece)>;
+
 struct Response {
     int status = 200;
     std::string reason;        // empty: the standard phrase
     int version_minor = 1;
     Headers headers;
     std::string body;
+    // Server side, optional: produces the body piece by piece instead of `body` (R-110), so a
+    // large response is never held in memory. Sent with chunked transfer coding (the connection
+    // is closed after it for an HTTP/1.0 client). When it fails part way the connection is closed
+    // without the final chunk, so the client sees an incomplete response.
+    std::function<Status(const BodyWriter& write)> stream;
     void set(std::string_view name, std::string value);
 };
 
@@ -170,6 +184,9 @@ public:
     Status write_request(const Request& rq);
     // Adds Content-Length (and Connection: close when `close`). Omits the body for HEAD.
     Status write_response(const Response& rs, bool head, bool close);
+    // As write_response for a response with `stream` set; `http10`: the client cannot take
+    // chunked coding, so the body is delimited by closing the connection.
+    Status write_streamed_response(const Response& rs, bool head, bool close, bool http10);
     Status write_raw(std::string_view data);
 
     net::Transport& transport() noexcept { return *t_; }
@@ -201,6 +218,13 @@ private:
     std::string budget_peer_;
     std::uint64_t reserved_ = 0;
     BodySink* sink_ = nullptr;
+    // Message writing (R-120): overall deadline and minimum-rate window; 0 while no message is written.
+    bool sending_ = false;
+    std::int64_t send_deadline_ms_ = 0;     // 0: none
+    std::int64_t send_blocked_ms_ = 0;      // time spent inside writes in the current rate window
+    std::uint64_t send_window_bytes_ = 0;   // bytes the peer took in it
+    void begin_send();
+    void end_send() noexcept;
     Status flush_sink(std::string& out, bool all);
 
     Status fill(int timeout_ms);

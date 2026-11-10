@@ -51,7 +51,7 @@ internal interface IProgressSink : ICallbackSink
 internal readonly record struct ScpEventData(int Kind, int DimseStatus, int Outcome, string CallingAe, string SopClassUid,
     string SopInstanceUid, string PeerAddress, bool UidMismatch, string CommandSopClassUid, string CommandSopInstanceUid,
     string OriginalSopInstanceUid, string TransactionUid, string DestinationAe, nint Dataset, int Completed, int Failed,
-    int Warning, int CommandField);
+    int Warning, int CommandField, ulong AssociationId = 0, uint ReadLoss = 0);
 
 /// <summary>Target of siaara_scp_callback.</summary>
 internal interface IScpSink : ICallbackSink
@@ -300,14 +300,16 @@ internal static unsafe class Callbacks
             {
                 static string S(nint p) => p == 0 ? string.Empty : Marshal.PtrToStringUTF8(p) ?? string.Empty;
                 // Fields after peer_address exist only when struct_size covers them (older libraries).
-                bool full = e->struct_size >= (uint)sizeof(siaara_scp_event);
+                // v2 ends with command_field; association_id and read_loss came later.
+                bool full = e->struct_size >= (ulong)((byte*)&e->command_field - (byte*)e) + sizeof(uint);
+                bool v3 = e->struct_size >= (ulong)((byte*)&e->read_loss - (byte*)e) + sizeof(uint);
                 var d = new ScpEventData(e->kind, (int)e->dimse_status, e->outcome, S(e->calling_ae), S(e->sop_class_uid),
                     S(e->sop_instance_uid), S(e->peer_address),
                     full && e->uid_mismatch != 0, full ? S(e->command_sop_class_uid) : string.Empty,
                     full ? S(e->command_sop_instance_uid) : string.Empty, full ? S(e->original_sop_instance_uid) : string.Empty,
                     full ? S(e->transaction_uid) : string.Empty, full ? S(e->destination_ae) : string.Empty,
                     full ? e->dataset : 0, full ? (int)e->completed : 0, full ? (int)e->failed : 0, full ? (int)e->warning : 0,
-                    full ? (int)e->command_field : 0);
+                    full ? (int)e->command_field : 0, v3 ? e->association_id : 0UL, v3 ? e->read_loss : 0u);
                 Sink<IScpSink>(user)?.OnEvent(in d);
             }
         }

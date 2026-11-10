@@ -1,0 +1,12 @@
+b
+--b
+Content-Type: application/dicom
+
+--bx
+--b-
+
+--b
+
+
+--b--
+tail

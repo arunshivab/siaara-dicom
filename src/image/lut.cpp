@@ -106,9 +106,18 @@ Status read_windows(const Dataset& src, VoiSet& out, bool lenient) {
         }
     }
     const std::size_t n = std::min(nc, nw);
-    for (std::size_t i = 0; i < n; ++i) {
-        auto c = src.get_double(tags::WindowCenter, i);
-        auto w = src.get_double(tags::WindowWidth, i);
+    // One pass over each list (R-111): the per-index getters scan the element from its start for
+    // every value. Only when a list holds something that is not a number are the values fetched
+    // one by one, and then at most kPerValueFallback of them.
+    constexpr std::size_t kPerValueFallback = 1024;
+    const std::optional<std::vector<double>> centers = src.get_doubles(tags::WindowCenter);
+    const std::optional<std::vector<double>> widths = src.get_doubles(tags::WindowWidth);
+    const bool one_pass = centers && widths && centers->size() >= n && widths->size() >= n;
+    std::vector<std::string_view> explanations;
+    if (const auto raw = src.get_raw_string(tags::WindowCenterWidthExplanation)) explanations = split_all_values(*raw, n);
+    for (std::size_t i = 0; i < n && (one_pass || i < kPerValueFallback); ++i) {
+        const std::optional<double> c = one_pass ? std::optional<double>((*centers)[i]) : src.get_double(tags::WindowCenter, i);
+        const std::optional<double> w = one_pass ? std::optional<double>((*widths)[i]) : src.get_double(tags::WindowWidth, i);
         if (!c || !w || !window_valid(*c, *w, fn)) {
             if (!lenient) return Status(Errc::Malformed, "voi: invalid window " + std::to_string(i), 0, tags::WindowWidth);
             continue;
@@ -117,7 +126,7 @@ Status read_windows(const Dataset& src, VoiSet& out, bool lenient) {
         vw.center = *c;
         vw.width = *w;
         vw.function = fn;
-        if (auto ex = src.get_string(tags::WindowCenterWidthExplanation, i)) vw.explanation = *ex;
+        if (i < explanations.size()) vw.explanation = std::string(trim_value(explanations[i], VR::LO));
         out.windows.push_back(std::move(vw));
     }
     return Status::ok();

@@ -19,6 +19,12 @@ namespace siaara::net {
 
 namespace {
 
+std::string trimmed_ae(std::string s) {
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+    return s;
+}
+
 bool is_native(std::string_view ts_uid) {
     const TransferSyntaxInfo* t = find_transfer_syntax(ts_uid);
     return t && !t->encapsulated;
@@ -116,6 +122,8 @@ Status ScpServer::start() {
     }
     stopping_.store(false);
     running_.store(true);
+    // R-117: event reports that need a new association go through one sender thread.
+    if (h_.services) h_.services->sender = std::make_shared<EventSender>(*h_.services, cfg_, h_.log);
     workers_.reserve(cfg_.max_associations);
     for (std::size_t i = 0; i < cfg_.max_associations; ++i) workers_.emplace_back([this] { worker_loop(); });
     reject_thread_ = std::thread([this] { reject_loop(); });
@@ -134,11 +142,15 @@ void ScpServer::stop() {
     }
     cv_.notify_all();
     reject_cv_.notify_all();
+    // The sender's outbound association is aborted and its thread joined first: stop() never
+    // waits for a peer that does not answer an event report (R-117).
+    if (h_.services && h_.services->sender) h_.services->sender->stop();
     if (accept_thread_.joinable()) accept_thread_.join();
     if (reject_thread_.joinable()) reject_thread_.join();
     for (std::thread& t : workers_)
         if (t.joinable()) t.join();
     workers_.clear();
+    if (h_.services) h_.services->sender.reset();  // no association thread is left to use it
     {
         std::lock_guard<std::mutex> l(mu_);
         for (auto& t : queue_) t->close();
@@ -360,6 +372,7 @@ void ScpServer::serve(std::unique_ptr<Transport> t) {
     log("association accepted from " + rq.calling_ae + " at " + peer);
 
     Ctx c{a};
+    const AssociationIdScope id_scope(a.id());  // handlers and events of this thread name the association
     const bool limited_life = cfg_.max_association_lifetime_ms > 0;
     const Deadline end_of_life = deadline_after(limited_life ? cfg_.max_association_lifetime_ms : 0);
     std::uint64_t operations = 0;
@@ -456,6 +469,7 @@ Status ScpServer::do_echo(Ctx& c, const Message& m) {
 Status ScpServer::do_store(Ctx& c, const Message& m) {
     const NegotiatedContext* pc = c.a.context(m.context_id);
     std::uint16_t st = dimse_status::Success;
+    std::string error_comment;
     if (!pc || !pc->requestor_scu || pc->abstract_syntax != m.command.affected_sop_class_uid || !h_.on_store) {
         st = dimse_status::SopClassNotSupported;
     } else {
@@ -470,15 +484,20 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
         rq.move_originator_message_id = m.command.move_originator_message_id;
         rq.raw = m.data;
         rq.spool = m.spool;
-        Result<Dataset> ds = m.discarded ? Result<Dataset>(Status(Errc::LimitExceeded, "discarded"))
-                                         : decode_message_dataset(m);
+        // R-116: the read keeps its loss bits and warnings.
+        Result<DicomFile> ds = m.discarded ? Result<DicomFile>(Status(Errc::LimitExceeded, "discarded"))
+                               : m.has_data ? read_dataset_report(m.data, m.transfer_syntax, network_read_options())
+                                            : Result<DicomFile>(DicomFile{});
         if (m.discarded) {
             st = dimse_status::OutOfResources;  // R-074: spool disk quota or free-space floor
             log("C-STORE: data set not kept: spool disk quota or free-space floor reached (0xA700)");
         } else if (!ds) {
             st = dimse_status::CannotUnderstand;
         } else {
-            rq.dataset = std::move(ds.value());
+            rq.dataset = std::move(ds->dataset);
+            rq.read_loss = ds->read_loss;
+            rq.read_loss_offset = ds->read_loss_offset;
+            if (!ds->warnings.empty()) rq.read_warning = ds->warnings.front();
             std::string note;
             st = check_store_uids(rq, cfg_.strict_store_uids, note);
             // UIDs stay out of this log (they identify patient data); StoreRequest carries both sets.
@@ -487,8 +506,45 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                         ? "C-STORE: command UIDs differ from the data set's; accepted under the data set's UIDs"
                         : "C-STORE: command UIDs differ from the data set's; refused (0xA900)");
         }
-        if (ds && st == dimse_status::Success) {
-            if (!cfg_.preferred_store_ts.empty() && rq.transfer_syntax != cfg_.preferred_store_ts) {
+        const auto kept_answer = [this]() -> std::uint16_t {
+            switch (cfg_.quarantine_response) {
+                case QuarantineResponse::Failure: return cfg_.incomplete_failure_status;
+                case QuarantineResponse::Success: return dimse_status::Success;
+                default: return cfg_.incomplete_warning_status;
+            }
+        };
+        IncompletePolicy policy = cfg_.incomplete_policy;
+        if (const auto by = cfg_.incomplete_policy_by_caller.find(trimmed_ae(rq.calling_ae));
+            by != cfg_.incomplete_policy_by_caller.end())
+            policy = by->second;
+        if (policy == IncompletePolicy::Quarantine && !h_.on_store_quarantine) policy = IncompletePolicy::Refuse;
+        if (ds && st == dimse_status::Success && rq.read_loss != 0 && policy == IncompletePolicy::Quarantine) {
+            // Kept verbatim outside the archive; the sender learns that it is not a normal store.
+            const std::uint16_t answer = kept_answer();
+            const std::uint16_t kept = h_.on_store_quarantine(rq, answer);
+            st = kept == dimse_status::Success ? answer : kept;
+            error_comment = kept == dimse_status::Success ? "data set incomplete: quarantined" : "data set incomplete";
+            log(std::string("C-STORE: incomplete data set ") +
+                (kept == dimse_status::Success ? "quarantined" : "not quarantined (quarantine full or failed)") + " (" +
+                (rq.read_warning.empty() ? std::string("read loss") : rq.read_warning) + ")");
+        } else if (ds && st == dimse_status::Success && rq.read_loss != 0 &&
+                   (policy == IncompletePolicy::Refuse || policy == IncompletePolicy::RefuseKeepCopy)) {
+            // The data set arrived truncated or damaged: storing it would keep less than the
+            // sender holds while answering Success.
+            st = cfg_.incomplete_failure_status;
+            if (policy == IncompletePolicy::RefuseKeepCopy && h_.on_store_keep_rejected) h_.on_store_keep_rejected(rq);
+            error_comment = "data set incomplete";
+            const std::string why = std::string(kIncompleteInput) + ": the received data set was not read completely (" +
+                                    (rq.read_warning.empty() ? std::string("read loss") : rq.read_warning) +
+                                    "; first at offset " + std::to_string(rq.read_loss_offset) + "); refused";
+            log("C-STORE: " + why);
+            if (h_.on_store_refused) h_.on_store_refused(rq, st, why);
+        } else if (ds && st == dimse_status::Success) {
+            if (rq.read_loss != 0) {
+                // Accepted as received: the bytes are kept verbatim, never re-encoded from the parse.
+                log("C-STORE: incomplete data set accepted as received (" +
+                    (rq.read_warning.empty() ? std::string("read loss") : rq.read_warning) + "); not converted");
+            } else if (!cfg_.preferred_store_ts.empty() && rq.transfer_syntax != cfg_.preferred_store_ts) {
                 std::string history_note;
                 if (Status cs = convert_received(rq, cfg_.preferred_store_ts, cfg_.transcode_params,
                                                  cfg_.spool ? &*cfg_.spool : nullptr, &history_note); !cs)
@@ -496,9 +552,16 @@ Status ScpServer::do_store(Ctx& c, const Message& m) {
                 else if (!history_note.empty()) log("C-STORE conversion: " + history_note);
             }
             st = h_.on_store(rq);
+            // Accepted although incomplete: stored verbatim and flagged; the sender is told.
+            if (rq.read_loss != 0 && st == dimse_status::Success) {
+                st = kept_answer();
+                error_comment = "data set incomplete: stored as received";
+            }
         }
     }
-    return send_dimse(c.a, m.context_id, make_response(m.command, st));
+    Command rsp = make_response(m.command, st);
+    rsp.error_comment = error_comment;
+    return send_dimse(c.a, m.context_id, rsp);
 }
 
 bool ScpServer::cancel_requested(Ctx& c, std::uint16_t mid) {
@@ -583,7 +646,13 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
 
     std::optional<MoveDestination> dest;
     if (!is_get) {
-        if (h_.resolve_move_destination) dest = h_.resolve_move_destination(q.move_destination);
+        // R-129: a calling AE with a destination list may only name those.
+        bool allowed_dest = true;
+        if (const auto it = cfg_.move_destinations_by_caller.find(trimmed_ae(q.calling_ae));
+            it != cfg_.move_destinations_by_caller.end())
+            allowed_dest = it->second.count(trimmed_ae(q.move_destination)) != 0;
+        if (!allowed_dest) log("C-MOVE from " + q.calling_ae + ": destination " + q.move_destination + " is not in its list");
+        if (allowed_dest && h_.resolve_move_destination) dest = h_.resolve_move_destination(q.move_destination);
         if (!dest) {
             if (h_.on_retrieve_done) h_.on_retrieve_done(q, is_get, dimse_status::MoveDestinationUnknown, 0, 0, 0);
             return send_dimse(c.a, pcid, make_response(m.command, dimse_status::MoveDestinationUnknown));
@@ -640,6 +709,12 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         sc.allow_incomplete = cfg_.allow_incomplete;
         sub = std::make_unique<Scu>(sc);
         std::vector<std::pair<std::string, std::string>> seen;
+        std::vector<std::string> native_offered;  // SOP classes with a native-syntax context
+        for (const Loaded& l : loaded) {
+            if (l.ok && is_native(l.ts) &&
+                std::find(native_offered.begin(), native_offered.end(), l.sop_class) == native_offered.end())
+                native_offered.push_back(l.sop_class);
+        }
         for (const Loaded& l : loaded) {
             if (!l.ok) continue;
             const std::pair<std::string, std::string> key{l.sop_class, l.ts};
@@ -651,6 +726,15 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
                 for (const std::string& n : native_transfer_syntaxes())
                     if (n != l.ts) ts.push_back(n);
             sub->add_context(l.sop_class, std::move(ts));
+            // T3.1: a compressed instance is also offered in the native transfer syntaxes (Implicit
+            // VR Little Endian is the default transfer syntax every AE supports, PS3.5 10.1), once
+            // per SOP class, so a destination that accepts only uncompressed data gets it decoded.
+            if (!is_native(l.ts) &&
+                std::find(native_offered.begin(), native_offered.end(), l.sop_class) == native_offered.end() &&
+                sub->proposals().size() < 128) {
+                native_offered.push_back(l.sop_class);
+                sub->add_context(l.sop_class, native_transfer_syntaxes());
+            }
             // The compressed syntaxes the transcoder can write (lossy only when allowed), so a
             // destination that accepts only those still receives the instance (testing 10b P2).
             for (bool lossy : {false, true}) {

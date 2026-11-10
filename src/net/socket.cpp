@@ -171,7 +171,13 @@ public:
             const int e = last_error();
             if (r < 0 && interrupted(e)) continue;
             if (r < 0 && would_block(e)) {
-                const int w = wait_one(to_handle(fd), POLLOUT, timeout_ms, &shut_);
+                int wait_ms = timeout_ms;
+                if (has_write_deadline_) {
+                    const int until_deadline = remaining_ms(write_deadline_);
+                    if (until_deadline == 0) return Status(Errc::Timeout, "write deadline passed");
+                    wait_ms = std::min(clamp_timeout(wait_ms), until_deadline);
+                }
+                const int w = wait_one(to_handle(fd), POLLOUT, wait_ms, &shut_);
                 if (w < 0) return Status(Errc::NetworkError, error_text("poll", last_error()));
                 if (w == 0) return Status(Errc::Timeout, "write timed out");
                 continue;
@@ -179,6 +185,11 @@ public:
             return Status(Errc::NetworkError, error_text("send", e));
         }
         return Status::ok();
+    }
+
+    void set_write_deadline(const std::chrono::steady_clock::time_point* deadline) noexcept override {
+        has_write_deadline_ = deadline != nullptr;
+        if (deadline) write_deadline_ = *deadline;
     }
 
     Result<bool> wait_readable(int timeout_ms) override {
@@ -229,10 +240,22 @@ public:
 private:
     std::atomic<std::intptr_t> fd_;
     std::atomic<bool> shut_{false};
+    bool has_write_deadline_ = false;  // writer thread only
+    Deadline write_deadline_{};
 };
 
 // Connects one candidate address with a deadline. Returns the connected handle or kInvalid.
-std::intptr_t connect_one(const addrinfo* ai, int timeout_ms, Status& err) {
+bool refused_error(int e) {
+#if defined(_WIN32)
+    return e == WSAECONNREFUSED;
+#else
+    return e == ECONNREFUSED;
+#endif
+}
+
+std::intptr_t connect_one(const addrinfo* ai, int timeout_ms, Status& err, const std::atomic<bool>* cancel,
+                          ConnectError& why) {
+    why = ConnectError::Other;
 #if defined(_WIN32)
     const Handle h = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
     if (h == INVALID_SOCKET) {
@@ -257,25 +280,46 @@ std::intptr_t connect_one(const addrinfo* ai, int timeout_ms, Status& err) {
         const int e = last_error();
         if (!would_block(e) && !interrupted(e)) {
             close_handle(h);
+            if (refused_error(e)) why = ConnectError::Refused;
             err = Status(Errc::NetworkError, error_text("connect", e));
             return kInvalid;
         }
 #if defined(_WIN32)
-        // select() reports failed non-blocking connects reliably on every Windows version.
-        fd_set wset{}, eset{};
-        wset.fd_count = 1;
-        wset.fd_array[0] = h;
-        eset.fd_count = 1;
-        eset.fd_array[0] = h;
-        timeval tv{};
-        tv.tv_sec = clamp_timeout(timeout_ms) / 1000;
-        tv.tv_usec = (clamp_timeout(timeout_ms) % 1000) * 1000;
-        const int w = ::select(0, nullptr, &wset, &eset, &tv);
+        // select() reports failed non-blocking connects reliably on every Windows version. It is
+        // called in slices of at most 50 ms so that `cancel` is noticed.
+        int w = 0;
+        {
+            using clock = std::chrono::steady_clock;
+            const auto deadline = clock::now() + std::chrono::milliseconds(clamp_timeout(timeout_ms));
+            for (;;) {
+                if (cancel && cancel->load()) break;
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count();
+                if (left <= 0) break;
+                const long slice = cancel && left > 50 ? 50L : static_cast<long>(left > 0x7FFFFFFF ? 0x7FFFFFFF : left);
+                fd_set wset{}, eset{};
+                wset.fd_count = 1;
+                wset.fd_array[0] = h;
+                eset.fd_count = 1;
+                eset.fd_array[0] = h;
+                timeval tv{};
+                tv.tv_sec = slice / 1000;
+                tv.tv_usec = (slice % 1000) * 1000;
+                w = ::select(0, nullptr, &wset, &eset, &tv);
+                if (w != 0) break;
+            }
+        }
 #else
-        const int w = wait_one(h, POLLOUT, timeout_ms);
+        const int w = wait_one(h, POLLOUT, timeout_ms, cancel);
 #endif
+        if (cancel && cancel->load()) {
+            close_handle(h);
+            why = ConnectError::Cancelled;
+            err = Status(Errc::Cancelled, "connect cancelled");
+            return kInvalid;
+        }
         if (w == 0) {
             close_handle(h);
+            why = ConnectError::Timeout;
             err = Status(Errc::Timeout, "connect timed out");
             return kInvalid;
         }
@@ -288,6 +332,7 @@ std::intptr_t connect_one(const addrinfo* ai, int timeout_ms, Status& err) {
         socklen_t len = static_cast<socklen_t>(sizeof so_error);
         if (::getsockopt(h, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so_error), &len) != 0 || so_error != 0) {
             close_handle(h);
+            if (refused_error(so_error)) why = ConnectError::Refused;
             err = Status(Errc::NetworkError, error_text("connect", so_error));
             return kInvalid;
         }
@@ -339,8 +384,20 @@ Status read_exact_until(Transport& t, std::uint8_t* buf, std::size_t n, Deadline
 }
 
 Result<std::unique_ptr<Transport>> tcp_connect(const std::string& host, std::uint16_t port, int timeout_ms) {
+    return tcp_connect(host, port, timeout_ms, nullptr, nullptr);
+}
+
+Result<std::unique_ptr<Transport>> tcp_connect(const std::string& host, std::uint16_t port, int timeout_ms,
+                                               const std::atomic<bool>* cancel, ConnectError* why) {
+    ConnectError local = ConnectError::None;
+    ConnectError& reason = why ? *why : local;
+    reason = ConnectError::Other;
     if (Status s = socket_library_init(); !s) return s;
     if (host.empty()) return Status(Errc::InvalidArgument, "empty host");
+    if (cancel && cancel->load()) {
+        reason = ConnectError::Cancelled;
+        return Status(Errc::Cancelled, "connect cancelled");
+    }
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -348,7 +405,10 @@ Result<std::unique_ptr<Transport>> tcp_connect(const std::string& host, std::uin
     addrinfo* list = nullptr;
     const std::string service = std::to_string(port);
     const int g = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &list);
-    if (g != 0 || list == nullptr) return Status(Errc::NetworkError, "cannot resolve host");
+    if (g != 0 || list == nullptr) {
+        reason = ConnectError::Resolve;
+        return Status(Errc::NetworkError, "cannot resolve host");
+    }
     using clock = std::chrono::steady_clock;
     const auto deadline = clock::now() + std::chrono::milliseconds(clamp_timeout(timeout_ms));
     Status err(Errc::NetworkError, "no usable address");
@@ -356,13 +416,16 @@ Result<std::unique_ptr<Transport>> tcp_connect(const std::string& host, std::uin
     for (addrinfo* ai = list; ai != nullptr && fd == kInvalid; ai = ai->ai_next) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count();
         if (left <= 0) {
+            reason = ConnectError::Timeout;
             err = Status(Errc::Timeout, "connect timed out");
             break;
         }
-        fd = connect_one(ai, static_cast<int>(left > 0x7FFFFFFF ? 0x7FFFFFFF : left), err);
+        fd = connect_one(ai, static_cast<int>(left > 0x7FFFFFFF ? 0x7FFFFFFF : left), err, cancel, reason);
+        if (fd == kInvalid && reason == ConnectError::Cancelled) break;
     }
     ::freeaddrinfo(list);
     if (fd == kInvalid) return err;
+    reason = ConnectError::None;
     return std::unique_ptr<Transport>(new TcpTransport(to_handle(fd)));
 }
 
@@ -390,6 +453,7 @@ Status TcpListener::listen(const std::string& bind_address, std::uint16_t port, 
     const char* candidates[2] = {"::", "0.0.0.0"};
     const int ncand = bind_address.empty() ? 2 : 1;
     Status err(Errc::NetworkError, "cannot listen");
+    bool in_use = false;  // a candidate address failed because the port is taken
     for (int c = 0; c < ncand; ++c) {
         const char* addr = bind_address.empty() ? candidates[c] : bind_address.c_str();
         addrinfo* list = nullptr;
@@ -415,7 +479,16 @@ Status TcpListener::listen(const std::string& bind_address, std::uint16_t port, 
             }
             if (::bind(h, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) != 0 ||
                 ::listen(h, backlog) != 0) {
-                err = Status(Errc::NetworkError, error_text("bind/listen", last_error()));
+                const int e = last_error();
+#if defined(_WIN32)
+                // With SO_EXCLUSIVEADDRUSE a port held by another socket gives WSAEADDRINUSE, or
+                // WSAEACCES when that socket belongs to another user.
+                const bool taken = e == WSAEADDRINUSE || e == WSAEACCES;
+#else
+                const bool taken = e == EADDRINUSE;
+#endif
+                if (taken) in_use = true;
+                err = Status(Errc::NetworkError, error_text("bind/listen", e));
                 close_handle(h);
                 continue;
             }
@@ -438,6 +511,8 @@ Status TcpListener::listen(const std::string& bind_address, std::uint16_t port, 
         }
         ::freeaddrinfo(list);
     }
+    // C6: a taken port is reported as such, with the port, so a caller can tell the user.
+    if (in_use) return Status(Errc::AddressInUse, "the port is in use: " + std::to_string(port));
     return err;
 }
 

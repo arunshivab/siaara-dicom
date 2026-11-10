@@ -10,6 +10,7 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -43,13 +44,10 @@ constexpr Tag kScheduledPhysician = 0x00400006;
 constexpr Tag kSpsDescription = 0x00400007;
 constexpr Tag kSpsId = 0x00400009;
 constexpr Tag kSpsSequence = 0x00400100;
-constexpr Tag kPpsStatus = 0x00400252;
 constexpr Tag kRequestedProcedureId = 0x00401001;
-constexpr Tag kInputReadinessState = 0x00404041;
 constexpr Tag kProcedureStepState = 0x00741000;
 constexpr Tag kDeletionLock = 0x00741230;
 constexpr Tag kReceivingAe = 0x00741234;
-constexpr Tag kRequestingAe = 0x00741236;
 constexpr Tag kImageDisplayFormat = 0x20100010;
 constexpr Tag kReferencedFilmSessionSequence = 0x20100500;
 constexpr Tag kReferencedImageBoxSequence = 0x20100510;
@@ -239,16 +237,11 @@ Result<Scu::NResponse> call_on(Association& a, std::uint8_t pcid, Command rq, co
     }
 }
 
-struct EventToSend {
-    std::string sop_class;
-    std::string instance;
-    std::uint16_t event_type = 1;
-    Dataset info;
-};
-
-// Opens an association to `ae` (as resolved by the service set) and sends the events.
-Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg, const std::string& ae,
-                                      const std::vector<EventToSend>& events) {
+// Opens an association to `ae` (as resolved by the service set) and sends the events. `current`
+// (may be null) is told the Scu while it is in use, so a stopping sender can interrupt it.
+Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg, const Timeouts& timeouts,
+                                      const std::string& ae, const std::vector<EventToSend>& events,
+                                      const std::function<bool(Scu*)>& current = {}) {
     if (events.empty()) return Status::ok();
     std::optional<MoveDestination> dest = s.resolve_ae ? s.resolve_ae(ae) : std::nullopt;
     if (!dest) return Status(Errc::NotFound, "no address for AE " + ae);
@@ -257,13 +250,13 @@ Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg,
     sc.called_ae = dest->ae_title.empty() ? ae : dest->ae_title;
     sc.host = dest->host;
     sc.port = dest->port;
-    sc.timeouts = cfg.timeouts;
+    sc.timeouts = timeouts;
     sc.limits = cfg.limits;
     sc.tls = cfg.move_tls;  // as for C-MOVE sub-associations
     if (dest->tls) sc.tls.enabled = *dest->tls;
     Scu scu(sc);
     std::set<std::string> classes;
-    for (const EventToSend& e : events) classes.insert(e.sop_class);
+    for (const EventToSend& e : events) classes.insert(e.abstract_syntax);
     for (const std::string& cls : classes) {
         RoleSelection role;
         role.scu_role = false;
@@ -271,11 +264,24 @@ Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg,
         scu.add_context(cls, native_transfer_syntaxes(),
                         s.propose_role_reversal ? std::optional<RoleSelection>(role) : std::nullopt);
     }
+    struct Current {
+        const std::function<bool(Scu*)>& fn;
+        ~Current() {
+            if (fn) (void)fn(nullptr);
+        }
+    } guard{current};
+    if (current && !current(&scu)) return Status(Errc::Cancelled, "stopping");
     if (Status st = scu.connect(); !st) return st;
     Status result = Status::ok();
     for (const EventToSend& e : events) {
-        Result<Scu::NResponse> r = scu.n_request(make_n_event_report_rq(0, e.sop_class, e.instance, e.event_type, true),
-                                                 &e.info);
+        Association* a = scu.association();
+        const NegotiatedContext* pc = a ? a->find_context(e.abstract_syntax) : nullptr;
+        if (!pc) {
+            result = Status(Errc::Unsupported, "event SOP class not accepted");
+            continue;
+        }
+        Result<Scu::NResponse> r =
+            call_on(*a, pc->id, make_n_event_report_rq(0, e.sop_class, e.instance, e.event_type, true), &e.info, nullptr);
         if (!r) {
             result = r.take_error();
             break;
@@ -288,7 +294,27 @@ Status send_events_on_new_association(const ServiceSet& s, const ScpConfig& cfg,
     return result;
 }
 
-bool is_ups_class(std::string_view cls) {
+// Hands event reports to the set's sender (R-117); without one they are sent at once on this thread.
+// `done` (may be empty) receives the outcome: on the sender thread, or here when there is no sender
+// or the queue is full.
+void deliver_events(const ServiceSet& s, const ServiceContext& c, const std::string& ae,
+                    std::vector<EventToSend> events, std::function<void(const Status&)> done) {
+    if (!s.sender) {
+        const Status st = send_events_on_new_association(s, c.cfg, s.event_timeouts, ae, events);
+        if (done) done(st);
+        return;
+    }
+    EventSender::Job job;
+    job.ae = ae;
+    job.events = std::move(events);
+    job.done = done;
+    if (!s.sender->post(std::move(job))) {
+        if (c.log) c.log("event report to " + ae + " dropped: the event sender queue is full or stopping");
+        if (done) done(Status(Errc::LimitExceeded, "event sender queue full"));
+    }
+}
+
+bool is_ups_abstract(std::string_view cls) {
     return cls == sop::UpsPush || cls == sop::UpsPull || cls == sop::UpsWatch || cls == sop::UpsQuery;
 }
 
@@ -337,31 +363,40 @@ ServiceOutcome do_commitment_action(ServiceSet& s, ServiceContext& c, const Mess
         }
     }
     if (!delivered && s.commitment_report != CommitmentReportMode::SameAssociation) {
-        EventToSend e{std::string(sop::StorageCommitmentPushModel), std::string(sop::StorageCommitmentPushModelInstance),
-                      result.event_type(), info};
-        if (Status st = send_events_on_new_association(s, c.cfg, req->calling_ae, {e}); !st) {
-            if (c.log) c.log("storage commitment report to " + req->calling_ae + " failed: " + st.message);
-        } else {
-            delivered = true;
-        }
+        // On a new association: through the sender, so this association's thread is not held (R-117).
+        EventToSend e{std::string(sop::StorageCommitmentPushModel), std::string(sop::StorageCommitmentPushModel),
+                      std::string(sop::StorageCommitmentPushModelInstance), result.event_type(), info};
+        const auto log = c.log;
+        const auto on_done = s.on_commitment_done;
+        const CommitmentRequest request = *req;
+        const std::uint64_t association = c.a.id();
+        deliver_events(s, c, req->calling_ae, {std::move(e)}, [log, on_done, request, result, association](const Status& st) {
+            // Runs on the sender thread: what it reports still belongs to the requestor's association.
+            const AssociationIdScope id_scope(association);
+            if (!st && log) log("storage commitment report to " + request.calling_ae + " failed: " + st.message);
+            if (on_done) on_done(request, result, static_cast<bool>(st));
+        });
+        return ServiceOutcome::Handled;
     }
     if (!delivered && c.log) c.log("storage commitment report not delivered");
     if (s.on_commitment_done) s.on_commitment_done(*req, result, delivered);
     return ServiceOutcome::Handled;
 }
 
-ServiceOutcome do_ups(ServiceSet& s, ServiceContext& c, const Message& m) {
+ServiceOutcome do_ups(ServiceSet& s, ServiceContext& c, const Message& m, std::string_view negotiated) {
     UpsProvider& ups = *s.ups;
     const Command& rq = m.command;
+    const std::string& calling = c.a.calling_ae();
     Result<Dataset> ds = decode_message_dataset(m);
     if (!ds) return reply(c, m, make_response(rq, dimse_status::ProcessingFailure));
     ServiceOutcome out = ServiceOutcome::Handled;
     switch (rq.command_field) {
         case cmd::NCreateRq: {
-            if (rq.affected_sop_class_uid != sop::UpsPush)
+            // Workitems are created through the UPS Push SOP Class only (PS3.4 CC.2.5).
+            if (rq.affected_sop_class_uid != sop::UpsPush || negotiated != sop::UpsPush)
                 return reply(c, m, make_response(rq, dimse_status::UnrecognizedOperation));
             std::string uid = rq.affected_sop_instance_uid.empty() ? make_uid() : rq.affected_sop_instance_uid;
-            Command rsp = make_response(rq, ups.create(uid, *ds));
+            Command rsp = make_response(rq, ups.create(uid, *ds, calling));
             rsp.affected_sop_instance_uid = uid;
             out = reply(c, m, rsp);
             break;
@@ -373,14 +408,14 @@ ServiceOutcome do_ups(ServiceSet& s, ServiceContext& c, const Message& m) {
             break;
         }
         case cmd::NSetRq:
-            out = reply(c, m, make_response(rq, ups.set(rq.requested_sop_instance_uid, *ds)));
+            out = reply(c, m, make_response(rq, ups.set(rq.requested_sop_instance_uid, *ds, calling)));
             break;
         case cmd::NActionRq: {
             const std::string& uid = rq.requested_sop_instance_uid;
             std::uint16_t st = kNoSuchActionType;
             switch (rq.action_type_id.value_or(0)) {
                 case 1:
-                    st = ups.change_state(uid, str_of(*ds, kProcedureStepState), str_of(*ds, kTransactionUid));
+                    st = ups.change_state(uid, str_of(*ds, kProcedureStepState), str_of(*ds, kTransactionUid), calling);
                     break;
                 case 2: st = ups.request_cancel(uid, c.a.calling_ae(), *ds); break;
                 case 3: {
@@ -403,23 +438,31 @@ ServiceOutcome do_ups(ServiceSet& s, ServiceContext& c, const Message& m) {
             MatchOptions mo;
             mo.fuzzy_person_names = f.fuzzy_person_names;
             mo.combined_datetime = f.combined_datetime;
-            for (const Dataset& match : ups.find(*ds, mo)) {
+            bool more = false;
+            for (const Dataset& match : ups.find(*ds, mo, s.max_ups_find_results, &more)) {
                 if (Status st = send_dimse(c.a, m.context_id, make_response(rq, dimse_status::Pending, true), &match); !st)
                     return ServiceOutcome::Failed;
             }
-            out = reply(c, m, make_response(rq, dimse_status::Success));
+            out = reply(c, m, make_response(rq, more ? dimse_status::OutOfResources : dimse_status::Success));
             break;
         }
         default: return ServiceOutcome::NotHandled;
     }
     if (out != ServiceOutcome::Handled) return out;
-    // Deliver the event reports the operation produced, one association per receiving AE.
+    // Deliver the event reports the operation produced, one association per receiving AE, through
+    // the sender. The context is negotiated for UPS Event; the Affected SOP Class UID of the
+    // N-EVENT-REPORT is that of UPS Push (PS3.4 CC.2.4.3).
     std::map<std::string, std::vector<EventToSend>> by_ae;
     for (auto& [ae, ev] : ups.take_events())
-        by_ae[ae].push_back({std::string(sop::UpsEvent), ev.ups_uid, ev.event_type, std::move(ev.info)});
-    for (const auto& [ae, list] : by_ae)
-        if (Status st = send_events_on_new_association(s, c.cfg, ae, list); !st && c.log)
-            c.log("UPS event report to " + ae + " failed: " + st.message);
+        by_ae[ae].push_back({std::string(sop::UpsEvent), std::string(sop::UpsPush), ev.ups_uid, ev.event_type,
+                             std::move(ev.info)});
+    for (auto& [ae, list] : by_ae) {
+        const auto log = c.log;
+        const std::string to = ae;
+        deliver_events(s, c, ae, std::move(list), [log, to](const Status& st) {
+            if (!st && log) log("UPS event report to " + to + " failed: " + st.message);
+        });
+    }
     return out;
 }
 
@@ -448,6 +491,9 @@ std::string make_uid() {
 
 bool context_covers(std::string_view abstract_syntax, std::string_view sop_class) noexcept {
     if (abstract_syntax == sop_class) return true;
+    // T3.2 (PS3.4 CC.2): on a context negotiated for any UPS SOP class the DIMSE-N commands name
+    // the UPS Push SOP Class.
+    if (sop_class == sop::UpsPush && (is_ups_abstract(abstract_syntax) || abstract_syntax == sop::UpsEvent)) return true;
     const bool gray = abstract_syntax == sop::BasicGrayscalePrintManagementMeta;
     const bool color = abstract_syntax == sop::BasicColorPrintManagementMeta;
     if (!gray && !color) return false;
@@ -741,238 +787,31 @@ Result<Scu::NResponse> send_instance_availability(Scu& scu, const Dataset& notif
     return scu.n_request(make_n_create_rq(0, sop::InstanceAvailabilityNotification, instance_uid, true), &notification);
 }
 
-std::uint16_t MppsStore::create(const std::string& uid, const Dataset& attributes) {
-    if (uid.empty()) return dimse_status::MissingAttribute;
-    if (attributes.get_string(kPpsStatus).value_or("") != "IN PROGRESS") return dimse_status::InvalidAttributeValue;
-    std::lock_guard<std::mutex> l(mu_);
-    if (items_.count(uid)) return dimse_status::DuplicateSopInstance;
-    items_[uid] = attributes;
-    return dimse_status::Success;
-}
-
-std::uint16_t MppsStore::set(const std::string& uid, const Dataset& modifications) {
-    std::lock_guard<std::mutex> l(mu_);
-    auto it = items_.find(uid);
-    if (it == items_.end()) return dimse_status::NoSuchSopInstance;
-    // PS3.4 F.7.2.2.2: once COMPLETED or DISCONTINUED the instance may no longer be updated.
-    if (it->second.get_string(kPpsStatus).value_or("") != "IN PROGRESS") return dimse_status::ProcessingFailure;
-    if (auto st = modifications.get_string(kPpsStatus))
-        if (*st != "IN PROGRESS" && *st != "COMPLETED" && *st != "DISCONTINUED") return dimse_status::InvalidAttributeValue;
-    for (const Element& e : modifications.elements()) it->second.put(e);
-    return dimse_status::Success;
-}
-
-std::optional<Dataset> MppsStore::get(const std::string& uid) const {
-    std::lock_guard<std::mutex> l(mu_);
-    auto it = items_.find(uid);
-    if (it == items_.end()) return std::nullopt;
-    return it->second;
-}
-
-std::size_t MppsStore::size() const {
-    std::lock_guard<std::mutex> l(mu_);
-    return items_.size();
-}
-
-// ===================================================================== UPS provider
-
-std::set<std::string> UpsProvider::watchers(const Item& it) const { return it.subscribers; }
-
-void UpsProvider::queue_state_report(const std::string& uid, const Item& it, const std::set<std::string>& to) {
-    for (const std::string& ae : to) {
-        UpsEventReport ev;
-        ev.ups_uid = uid;
-        ev.event_type = 1;
-        (void)ev.info.set_string(kProcedureStepState, VR::CS, it.state);
-        (void)ev.info.set_string(kInputReadinessState, VR::CS, it.ds.get_string(kInputReadinessState).value_or("READY"));
-        events_.emplace_back(ae, std::move(ev));
-    }
-}
-
-std::uint16_t UpsProvider::create(const std::string& uid, const Dataset& attributes) {
-    if (uid.empty()) return dimse_status::MissingAttribute;
-    const std::optional<std::string> st = attributes.get_string(kProcedureStepState);
-    if (!st || *st != ups_state::Scheduled) return dimse_status::UpsCreateStateNotScheduled;
-    std::lock_guard<std::mutex> l(mu_);
-    if (items_.count(uid)) return dimse_status::DuplicateSopInstance;
-    Item it;
-    it.ds = attributes;
-    (void)it.ds.remove(kTransactionUid);
-    (void)it.ds.set_string(tags::SOPClassUID, VR::UI, sop::UpsPush);
-    (void)it.ds.set_string(tags::SOPInstanceUID, VR::UI, uid);
-    it.state = std::string(ups_state::Scheduled);
-    for (const std::string& ae : global_) it.subscribers.insert(ae);
-    queue_state_report(uid, it, it.subscribers);
-    items_.emplace(uid, std::move(it));
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::set(const std::string& uid, const Dataset& modifications) {
-    std::lock_guard<std::mutex> l(mu_);
-    auto f = items_.find(uid);
-    if (f == items_.end()) return dimse_status::UpsNoSuchInstance;
-    Item& it = f->second;
-    if (it.state == ups_state::Completed || it.state == ups_state::Canceled) return dimse_status::UpsMayNoLongerBeUpdated;
-    if (it.state == ups_state::InProgress && str_of(modifications, kTransactionUid) != it.transaction_uid)
-        return dimse_status::UpsWrongTransactionUid;
-    for (const Element& e : modifications.elements()) {
-        if (e.tag == kTransactionUid || e.tag == kProcedureStepState || e.tag == tags::SOPInstanceUID ||
-            e.tag == tags::SOPClassUID)
-            continue;
-        it.ds.put(e);
-    }
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::get(const std::string& uid, const std::optional<std::vector<Tag>>& attributes,
-                               Dataset& out) const {
-    std::lock_guard<std::mutex> l(mu_);
-    auto f = items_.find(uid);
-    if (f == items_.end()) return dimse_status::UpsNoSuchInstance;
-    Dataset all = f->second.ds;
-    (void)all.set_string(kProcedureStepState, VR::CS, f->second.state);
-    out = Dataset{};
-    if (!attributes || attributes->empty()) {
-        out = std::move(all);
-    } else {
-        for (Tag t : *attributes)
-            if (const Element* e = all.find(t)) out.put(*e);
-    }
-    (void)out.remove(kTransactionUid);  // never returned (PS3.4 CC.2.7)
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::change_state(const std::string& uid, std::string_view state,
-                                        const std::string& transaction_uid) {
-    std::lock_guard<std::mutex> l(mu_);
-    auto f = items_.find(uid);
-    if (f == items_.end()) return dimse_status::UpsNoSuchInstance;
-    Item& it = f->second;
-    const std::string& cur = it.state;
-    if (state == ups_state::Scheduled) return dimse_status::UpsScheduledOnlyByCreate;
-    if (state == ups_state::InProgress) {
-        if (cur == ups_state::InProgress) return dimse_status::UpsAlreadyInProgress;
-        if (cur != ups_state::Scheduled) return dimse_status::UpsMayNoLongerBeUpdated;
-        if (transaction_uid.empty()) return dimse_status::UpsWrongTransactionUid;
-        it.transaction_uid = transaction_uid;
-    } else if (state == ups_state::Completed || state == ups_state::Canceled) {
-        if (cur == state) return state == ups_state::Completed ? dimse_status::UpsAlreadyCompleted : dimse_status::UpsAlreadyCanceled;
-        if (cur == ups_state::Scheduled) return dimse_status::UpsNotInProgress;
-        if (cur != ups_state::InProgress) return dimse_status::UpsMayNoLongerBeUpdated;
-        if (transaction_uid != it.transaction_uid) return dimse_status::UpsWrongTransactionUid;
-    } else {
-        return dimse_status::InvalidAttributeValue;
-    }
-    it.state = std::string(state);
-    (void)it.ds.set_string(kProcedureStepState, VR::CS, it.state);
-    queue_state_report(uid, it, watchers(it));
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::request_cancel(const std::string& uid, const std::string& requesting_ae, const Dataset& info) {
-    std::lock_guard<std::mutex> l(mu_);
-    auto f = items_.find(uid);
-    if (f == items_.end()) return dimse_status::UpsNoSuchInstance;
-    Item& it = f->second;
-    if (it.state == ups_state::Completed) return dimse_status::UpsCancelAlreadyCompleted;
-    if (it.state == ups_state::Canceled) return dimse_status::UpsAlreadyCanceled;
-    if (it.state == ups_state::Scheduled) {
-        it.state = std::string(ups_state::Canceled);
-        (void)it.ds.set_string(kProcedureStepState, VR::CS, it.state);
-        queue_state_report(uid, it, watchers(it));
-        return dimse_status::Success;
-    }
-    if (performer_accepts_cancel && !performer_accepts_cancel(uid)) return dimse_status::UpsPerformerChoosesNotToCancel;
-    for (const std::string& ae : watchers(it)) {
-        UpsEventReport ev;
-        ev.ups_uid = uid;
-        ev.event_type = 2;
-        ev.info = info;
-        (void)ev.info.set_string(kRequestingAe, VR::AE, requesting_ae);
-        events_.emplace_back(ae, std::move(ev));
-    }
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::subscribe(const std::string& uid, const std::string& ae, bool deletion_lock) {
-    (void)deletion_lock;  // all instances are kept until the provider is destroyed, so the lock always holds
-    std::lock_guard<std::mutex> l(mu_);
-    if (uid == sop::UpsGlobalSubscriptionInstance || uid == sop::UpsFilteredGlobalSubscriptionInstance) {
-        global_.insert(ae);
-        suspended_.erase(ae);
-        for (auto& [id, it] : items_) {
-            it.subscribers.insert(ae);
-            queue_state_report(id, it, {ae});
-        }
-        return dimse_status::Success;
-    }
-    auto f = items_.find(uid);
-    if (f == items_.end()) return dimse_status::UpsNoSuchInstance;
-    f->second.subscribers.insert(ae);
-    queue_state_report(uid, f->second, {ae});
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::unsubscribe(const std::string& uid, const std::string& ae) {
-    std::lock_guard<std::mutex> l(mu_);
-    if (uid == sop::UpsGlobalSubscriptionInstance || uid == sop::UpsFilteredGlobalSubscriptionInstance) {
-        global_.erase(ae);
-        for (auto& [id, it] : items_) it.subscribers.erase(ae);
-        return dimse_status::Success;
-    }
-    auto f = items_.find(uid);
-    if (f == items_.end()) return dimse_status::UpsNoSuchInstance;
-    f->second.subscribers.erase(ae);
-    return dimse_status::Success;
-}
-
-std::uint16_t UpsProvider::suspend_global(const std::string& ae) {
-    std::lock_guard<std::mutex> l(mu_);
-    global_.erase(ae);
-    suspended_.insert(ae);
-    return dimse_status::Success;
-}
-
-std::vector<Dataset> UpsProvider::find(const Dataset& identifier, const MatchOptions& opt) const {
-    std::lock_guard<std::mutex> l(mu_);
-    std::vector<Dataset> out;
-    for (const auto& [id, it] : items_) {
-        Dataset cand = it.ds;
-        (void)cand.set_string(kProcedureStepState, VR::CS, it.state);
-        (void)cand.remove(kTransactionUid);
-        if (query_matches(identifier, cand, opt)) out.push_back(query_response(identifier, cand));
-    }
-    return out;
-}
-
-std::optional<std::string> UpsProvider::state(const std::string& uid) const {
-    std::lock_guard<std::mutex> l(mu_);
-    auto f = items_.find(uid);
-    if (f == items_.end()) return std::nullopt;
-    return f->second.state;
-}
-
-std::vector<std::pair<std::string, UpsEventReport>> UpsProvider::take_events() {
-    std::lock_guard<std::mutex> l(mu_);
-    std::vector<std::pair<std::string, UpsEventReport>> out;
-    out.swap(events_);
-    return out;
-}
-
 // ---- UPS SCU helpers
+
+namespace {
+// A DIMSE-N request on the context negotiated for `negotiated`; the command names UPS Push.
+Result<Scu::NResponse> ups_call(Scu& scu, std::string_view negotiated, Command rq, const Dataset* ds) {
+    Association* a = scu.association();
+    if (!a || !a->established()) return Status(Errc::InvalidArgument, "not connected");
+    const NegotiatedContext* pc = a->find_context(negotiated);
+    if (!pc) return Status(Errc::Unsupported, "SOP class not accepted");
+    return call_on(*a, pc->id, std::move(rq), ds, nullptr);
+}
+}  // namespace
 
 Result<Scu::NResponse> ups_create(Scu& scu, std::string uid, const Dataset& attributes) {
     if (uid.empty()) uid = make_uid();
-    return scu.n_request(make_n_create_rq(0, sop::UpsPush, uid, true), &attributes);
+    return ups_call(scu, sop::UpsPush, make_n_create_rq(0, sop::UpsPush, uid, true), &attributes);
 }
 
 Result<Scu::NResponse> ups_get(Scu& scu, std::string_view sop_class, const std::string& uid,
                                const std::vector<Tag>& attributes) {
-    return scu.n_request(make_n_get_rq(0, sop_class, uid, attributes));
+    return ups_call(scu, sop_class, make_n_get_rq(0, sop::UpsPush, uid, attributes), nullptr);
 }
 
 Result<Scu::NResponse> ups_set(Scu& scu, const std::string& uid, const Dataset& modifications) {
-    return scu.n_request(make_n_set_rq(0, sop::UpsPull, uid), &modifications);
+    return ups_call(scu, sop::UpsPull, make_n_set_rq(0, sop::UpsPush, uid), &modifications);
 }
 
 Result<Scu::NResponse> ups_change_state(Scu& scu, const std::string& uid, std::string_view state,
@@ -980,12 +819,13 @@ Result<Scu::NResponse> ups_change_state(Scu& scu, const std::string& uid, std::s
     Dataset ds;
     (void)ds.set_string(kProcedureStepState, VR::CS, state);
     (void)ds.set_string(kTransactionUid, VR::UI, transaction_uid);
-    return scu.n_request(make_n_action_rq(0, sop::UpsPull, uid, 1, true), &ds);
+    return ups_call(scu, sop::UpsPull, make_n_action_rq(0, sop::UpsPush, uid, 1, true), &ds);
 }
 
 Result<Scu::NResponse> ups_request_cancel(Scu& scu, std::string_view sop_class, const std::string& uid,
                                           const Dataset& info) {
-    return scu.n_request(make_n_action_rq(0, sop_class, uid, 2, !info.empty()), info.empty() ? nullptr : &info);
+    return ups_call(scu, sop_class, make_n_action_rq(0, sop::UpsPush, uid, 2, !info.empty()),
+                    info.empty() ? nullptr : &info);
 }
 
 Result<Scu::NResponse> ups_subscribe(Scu& scu, const std::string& uid, const std::string& receiving_ae,
@@ -993,13 +833,13 @@ Result<Scu::NResponse> ups_subscribe(Scu& scu, const std::string& uid, const std
     Dataset ds;
     (void)ds.set_string(kReceivingAe, VR::AE, receiving_ae);
     (void)ds.set_string(kDeletionLock, VR::CS, deletion_lock ? "TRUE" : "FALSE");
-    return scu.n_request(make_n_action_rq(0, sop::UpsWatch, uid, 3, true), &ds);
+    return ups_call(scu, sop::UpsWatch, make_n_action_rq(0, sop::UpsPush, uid, 3, true), &ds);
 }
 
 Result<Scu::NResponse> ups_unsubscribe(Scu& scu, const std::string& uid, const std::string& receiving_ae) {
     Dataset ds;
     (void)ds.set_string(kReceivingAe, VR::AE, receiving_ae);
-    return scu.n_request(make_n_action_rq(0, sop::UpsWatch, uid, 4, true), &ds);
+    return ups_call(scu, sop::UpsWatch, make_n_action_rq(0, sop::UpsPush, uid, 4, true), &ds);
 }
 
 Result<FindResult> ups_find(Scu& scu, std::string_view sop_class, const Dataset& identifier,
@@ -1206,7 +1046,14 @@ ServiceOutcome dispatch_service(ServiceSet& s, ServiceContext& c, const Message&
     const Command& rq = m.command;
     const std::string& cls = rq.sop_class();
     const NegotiatedContext* pc = c.a.context(m.context_id);
-    if (!pc || !context_covers(pc->abstract_syntax, cls)) return ServiceOutcome::NotHandled;
+    if (!pc) return ServiceOutcome::NotHandled;
+    // T3.2 (PS3.4 CC.2): on an association negotiated for any UPS SOP class the DIMSE-N commands
+    // name the UPS Push SOP Class; the negotiated UID is accepted as well.
+    const std::string& negotiated = pc->abstract_syntax;
+    const bool ups_request = s.ups && is_ups_abstract(negotiated) && (cls == negotiated || cls == sop::UpsPush);
+    const bool ups_event = negotiated == sop::UpsEvent && (cls == sop::UpsEvent || cls == sop::UpsPush) &&
+                           s.on_ups_event && rq.command_field == cmd::NEventReportRq;
+    if (!ups_request && !ups_event && !context_covers(negotiated, cls)) return ServiceOutcome::NotHandled;
 
     // Requests this set serves pass the admission check first (allow-lists, limits).
     if (s.admit) {
@@ -1218,13 +1065,26 @@ ServiceOutcome dispatch_service(ServiceSet& s, ServiceContext& c, const Message&
              (rq.command_field == cmd::NCreateRq || rq.command_field == cmd::NSetRq)) ||
             (cls == sop::InstanceAvailabilityNotification && s.on_instance_availability &&
              rq.command_field == cmd::NCreateRq) ||
-            (s.ups && is_ups_class(cls)) ||
-            (cls == sop::UpsEvent && s.on_ups_event && rq.command_field == cmd::NEventReportRq);
+            ups_request || ups_event;
         if (mine)
             if (const std::uint16_t st = s.admit(c.a.calling_ae(), rq); st != dimse_status::Success)
                 return reply(c, m, make_response(rq, st));
     }
 
+    if (ups_request) {
+        const ServiceOutcome o = do_ups(s, c, m, negotiated);
+        if (o == ServiceOutcome::Handled && s.on_ups_served) s.on_ups_served(c.a.calling_ae(), rq, c.last_status);
+        return o;
+    }
+    if (ups_event) {
+        Result<Dataset> ds = decode_message_dataset(m);
+        if (!ds) return reply(c, m, make_response(rq, dimse_status::ProcessingFailure));
+        UpsEventReport ev;
+        ev.ups_uid = rq.affected_sop_instance_uid;
+        ev.event_type = rq.event_type_id.value_or(0);
+        ev.info = std::move(ds.value());
+        return reply(c, m, make_response(rq, s.on_ups_event(c.a.calling_ae(), ev)));
+    }
     if (cls == sop::StorageCommitmentPushModel) {
         if (rq.command_field == cmd::NActionRq && s.on_commitment) return do_commitment_action(s, c, m);
         if (rq.command_field == cmd::NEventReportRq && s.on_commitment_report) {
@@ -1243,9 +1103,10 @@ ServiceOutcome dispatch_service(ServiceSet& s, ServiceContext& c, const Message&
         std::string uid = rq.sop_instance();
         if (create && uid.empty()) uid = make_uid();
         std::uint16_t st = dimse_status::ProcessingFailure;
-        if (create) st = s.on_mpps_create ? s.on_mpps_create(c.a.calling_ae(), uid, *ds)
-                                          : (s.mpps ? s.mpps->create(uid, *ds) : st);
-        else st = s.on_mpps_set ? s.on_mpps_set(c.a.calling_ae(), uid, *ds) : (s.mpps ? s.mpps->set(uid, *ds) : st);
+        const std::string& calling = c.a.calling_ae();
+        if (create) st = s.on_mpps_create ? s.on_mpps_create(calling, uid, *ds)
+                                          : (s.mpps ? s.mpps->create(uid, *ds, calling) : st);
+        else st = s.on_mpps_set ? s.on_mpps_set(calling, uid, *ds) : (s.mpps ? s.mpps->set(uid, *ds, calling) : st);
         Command rsp = make_response(rq, st);
         rsp.affected_sop_instance_uid = uid;
         return reply(c, m, rsp);
@@ -1258,21 +1119,69 @@ ServiceOutcome dispatch_service(ServiceSet& s, ServiceContext& c, const Message&
         rsp.affected_sop_instance_uid = uid;
         return reply(c, m, rsp);
     }
-    if (s.ups && is_ups_class(cls)) {
-        const ServiceOutcome o = do_ups(s, c, m);
-        if (o == ServiceOutcome::Handled && s.on_ups_served) s.on_ups_served(c.a.calling_ae(), rq, c.last_status);
-        return o;
-    }
-    if (cls == sop::UpsEvent && s.on_ups_event && rq.command_field == cmd::NEventReportRq) {
-        Result<Dataset> ds = decode_message_dataset(m);
-        if (!ds) return reply(c, m, make_response(rq, dimse_status::ProcessingFailure));
-        UpsEventReport ev;
-        ev.ups_uid = rq.affected_sop_instance_uid;
-        ev.event_type = rq.event_type_id.value_or(0);
-        ev.info = std::move(ds.value());
-        return reply(c, m, make_response(rq, s.on_ups_event(c.a.calling_ae(), ev)));
-    }
     return ServiceOutcome::NotHandled;
+}
+
+// ===================================================================== event sender (R-117)
+
+EventSender::EventSender(const ServiceSet& set, const ScpConfig& cfg, std::function<void(const std::string&)> log)
+    : set_(set), cfg_(cfg), log_(std::move(log)) {
+    thread_ = std::thread([this] { run(); });
+}
+
+EventSender::~EventSender() { stop(); }
+
+bool EventSender::post(Job job) {
+    {
+        const std::lock_guard<std::mutex> l(mu_);
+        if (stopping_ || queue_.size() >= set_.max_queued_event_jobs) return false;
+        queue_.push_back(std::move(job));
+    }
+    cv_.notify_one();
+    return true;
+}
+
+std::size_t EventSender::queued() const {
+    const std::lock_guard<std::mutex> l(mu_);
+    return queue_.size();
+}
+
+void EventSender::stop() {
+    {
+        const std::lock_guard<std::mutex> l(mu_);
+        stopping_ = true;
+        if (current_) current_->interrupt();  // the outbound association ends at once
+    }
+    cv_.notify_all();
+    if (thread_.joinable()) thread_.join();
+}
+
+void EventSender::run() {
+    for (;;) {
+        Job job;
+        {
+            std::unique_lock<std::mutex> l(mu_);
+            cv_.wait(l, [&] { return stopping_ || !queue_.empty(); });
+            if (stopping_) return;  // what is still queued is dropped: the server is going away
+            job = std::move(queue_.front());
+            queue_.pop_front();
+        }
+        Status st = Status::ok();
+        try {
+            st = send_events_on_new_association(set_, cfg_, set_.event_timeouts, job.ae, job.events, [this](Scu* scu) {
+                const std::lock_guard<std::mutex> l(mu_);
+                current_ = scu;
+                return !(scu && stopping_);
+            });
+        } catch (...) {
+            st = Status(Errc::Internal, "event report failed");
+        }
+        try {
+            if (job.done) job.done(st);
+        } catch (...) {
+            // a callback must not end the sender
+        }
+    }
 }
 
 }  // namespace siaara::net

@@ -1,0 +1,11 @@
+Sbnd
+preamble
+--bnd
+
+
+--bnd
+A: b
+
+y
+--bnd--
+epilogue

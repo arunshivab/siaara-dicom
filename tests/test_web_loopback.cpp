@@ -528,6 +528,7 @@ TEST_CASE("web/loopback C API") {
     auto studies = datasets_from_json(std::string_view(res.data(), needed));
     REQUIRE(studies.is_ok());
     REQUIRE(studies->size() == 1);
+    res.resize(1u << 16);  // instance results are longer (each carries its Retrieve URL, T-P3-1)
     CHECK(siaara_web_qido(wc, SIAARA_QIDO_INSTANCES, kStudyA, kSeries1, nullptr, 0, res.data(), res.size(), &needed) == SIAARA_OK);
     CHECK(siaara_web_qido(wc, SIAARA_QIDO_STUDIES, kStudyA, nullptr, nullptr, 0, res.data(), res.size(), &needed) ==
           SIAARA_ERR_INVALID_ARGUMENT);

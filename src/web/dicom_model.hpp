@@ -81,7 +81,11 @@ struct ModelReadOptions {
 
 namespace detail {
 
-enum class Charset : std::uint8_t { Utf8, Latin1, Other };
+// Ascii: the default repertoire (no Specific Character Set, ISO_IR 6): a byte outside it is not
+// text of the declared character set and is written as U+FFFD - never as a guessed character
+// (as charset::get_utf8 and the path API do; the raw bytes stay available through the raw
+// accessors).
+enum class Charset : std::uint8_t { Utf8, Latin1, Other, Ascii };
 
 Charset charset_of(const Dataset& ds, Charset inherited, std::string& name_out);
 bool vr_is_charset_text(VR vr) noexcept;
