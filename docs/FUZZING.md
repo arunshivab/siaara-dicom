@@ -28,6 +28,7 @@ Without libFuzzer (GCC, MSVC, or Clang without the runtime) `fuzz_<target>` is a
 | `dimse` | DIMSE command decoder | encode(decode(x)) is stable |
 | `http` | HTTP/1.1 requests (pipelined, chunked) or a response; media type / Accept / target / URL helpers | |
 | `multipart` | multipart/related parser (`<boundary>\n<body>`) | part bodies lie inside the input |
+| `multipart_stream` | incremental multipart parser used by the streaming retrieve (`<split seed byte><boundary>\n<body>`) | any split of the body gives the same parts as one piece; whatever the whole-body parser accepts is accepted with the same parts |
 | `json`, `xml` | JSON and XML parsers | JSON: write(parse(x)) is stable and valid UTF-8 |
 | `dicom_json`, `dicom_xml` | DICOM JSON and Native XML model readers | accepted documents written back read again |
 | `dicomdir` | DICOMDIR reader (written to a scratch file) | record depth within the limit |
