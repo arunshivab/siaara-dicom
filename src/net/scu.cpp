@@ -7,6 +7,8 @@
 #include <string>
 #include <cstdint>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
@@ -89,7 +91,46 @@ Status encode_received_part10(const StoreRequest& rq, std::vector<std::uint8_t>&
     return Status::ok();
 }
 
-Scu::Scu(ScuConfig cfg) : cfg_(std::move(cfg)) {}
+// Transports interrupt() may shut down: registered while they exist, under the gate's mutex, so a
+// shutdown never touches a transport that is being closed or destroyed.
+struct Scu::Gate {
+    std::mutex mu;
+    std::vector<Transport*> open;
+    std::atomic<bool> cancelled{false};
+};
+
+Scu::Scu(ScuConfig cfg) : cfg_(std::move(cfg)), gate_(std::make_shared<Gate>()) {}
+
+namespace {
+
+// Forwards to `inner` and keeps it registered with the gate for as long as it is open.
+class GatedTransport final : public Transport {
+public:
+    GatedTransport(std::unique_ptr<Transport> inner, std::shared_ptr<Scu::Gate> gate);
+    ~GatedTransport() override { detach(); }
+    Result<std::size_t> read_some(std::uint8_t* buf, std::size_t n, int timeout_ms) override {
+        return inner_->read_some(buf, n, timeout_ms);
+    }
+    Status write_all(const std::uint8_t* data, std::size_t n, int timeout_ms) override {
+        return inner_->write_all(data, n, timeout_ms);
+    }
+    Result<bool> wait_readable(int timeout_ms) override { return inner_->wait_readable(timeout_ms); }
+    void shutdown() noexcept override { inner_->shutdown(); }
+    void shutdown_send() noexcept override { inner_->shutdown_send(); }
+    void close() noexcept override {
+        detach();
+        inner_->close();
+    }
+    bool is_open() const noexcept override { return inner_->is_open(); }
+    std::string peer_address() const override { return inner_->peer_address(); }
+
+private:
+    void detach() noexcept;
+    std::unique_ptr<Transport> inner_;
+    std::shared_ptr<Scu::Gate> gate_;
+};
+
+}  // namespace
 
 Scu::~Scu() {
     if (assoc_ && assoc_->established()) assoc_->abort();
@@ -140,29 +181,115 @@ Status Scu::add_contexts_for_files(const std::vector<std::string>& paths) {
     return Status::ok();
 }
 
+namespace {
+
+GatedTransport::GatedTransport(std::unique_ptr<Transport> inner, std::shared_ptr<Scu::Gate> gate)
+    : inner_(std::move(inner)), gate_(std::move(gate)) {
+    const std::lock_guard<std::mutex> l(gate_->mu);
+    gate_->open.push_back(inner_.get());
+    if (gate_->cancelled.load()) inner_->shutdown();
+}
+
+void GatedTransport::detach() noexcept {
+    const std::lock_guard<std::mutex> l(gate_->mu);
+    const auto it = std::find(gate_->open.begin(), gate_->open.end(), inner_.get());
+    if (it != gate_->open.end()) gate_->open.erase(it);
+}
+
+ConnectFailure failure_of(ConnectError e) noexcept {
+    switch (e) {
+        case ConnectError::None: return ConnectFailure::None;
+        case ConnectError::Resolve: return ConnectFailure::Resolve;
+        case ConnectError::Refused: return ConnectFailure::Refused;
+        case ConnectError::Timeout: return ConnectFailure::ConnectTimeout;
+        case ConnectError::Cancelled: return ConnectFailure::Cancelled;
+        default: return ConnectFailure::Other;
+    }
+}
+
+}  // namespace
+
+void Scu::interrupt() noexcept {
+    gate_->cancelled.store(true);
+    const std::lock_guard<std::mutex> l(gate_->mu);
+    for (Transport* t : gate_->open) t->shutdown();
+}
+
+bool Scu::interrupted() const noexcept { return gate_->cancelled.load(); }
+
 Status Scu::connect(AssociateRj* rj) {
+    failure_ = ConnectFailure::None;
+    const auto cancelled = [this]() -> Status {
+        failure_ = ConnectFailure::Cancelled;
+        return Status(Errc::Cancelled, "cancelled");
+    };
+    if (gate_->cancelled.load()) return cancelled();
+    ConnectError why = ConnectError::None;
     if (cfg_.tls.enabled) {
+#if defined(__APPLE__)
+        // Network.framework owns the TCP connection: the TLS connect itself cannot be interrupted
+        // (it is bounded by the connect and handshake timeouts); the negotiation after it can.
         Result<std::unique_ptr<TlsTransport>> s = tls_connect(cfg_.tls, cfg_.host, cfg_.port, cfg_.timeouts.connect_ms);
-        if (!s) return s.take_error();
+#else
+        Result<std::shared_ptr<TlsContext>> ctx = TlsContext::create(cfg_.tls, TlsContext::Role::Client);
+        if (!ctx) {
+            failure_ = ConnectFailure::Tls;
+            return ctx.take_error();
+        }
+        Result<std::unique_ptr<Transport>> tcp =
+            tcp_connect(cfg_.host, cfg_.port, cfg_.timeouts.connect_ms, &gate_->cancelled, &why);
+        if (!tcp) {
+            failure_ = failure_of(why);
+            return tcp.take_error();
+        }
+        Result<std::unique_ptr<TlsTransport>> s = ctx.value()->wrap_client(
+            std::unique_ptr<Transport>(new GatedTransport(std::move(tcp.value()), gate_)), cfg_.host);
+#endif
+        if (gate_->cancelled.load()) return cancelled();
+        if (!s) {
+            failure_ = ConnectFailure::Tls;
+            return s.take_error();
+        }
         return connect_over(std::unique_ptr<Transport>(std::move(s).value()), rj);
     }
-    Result<std::unique_ptr<Transport>> t = tcp_connect(cfg_.host, cfg_.port, cfg_.timeouts.connect_ms);
-    if (!t) return t.take_error();
+    Result<std::unique_ptr<Transport>> t =
+        tcp_connect(cfg_.host, cfg_.port, cfg_.timeouts.connect_ms, &gate_->cancelled, &why);
+    if (!t) {
+        failure_ = failure_of(why);
+        return t.take_error();
+    }
     return connect_over(std::move(t.value()), rj);
 }
 
 Status Scu::connect_over(std::unique_ptr<Transport> t, AssociateRj* rj) {
+    failure_ = ConnectFailure::None;
     if (assoc_ && assoc_->established()) return Status(Errc::InvalidArgument, "already connected");
     if (proposals_.empty()) add_verification();
     AssociateRq rq;
     rq.called_ae = cfg_.called_ae;
     rq.calling_ae = cfg_.calling_ae;
-    if (Status s = build_proposals(proposals_, rq); !s) return s;
+    if (Status s = build_proposals(proposals_, rq); !s) {
+        failure_ = ConnectFailure::Other;
+        return s;
+    }
     rq.user.identity_rq = cfg_.identity;
     rq.user.async_window = cfg_.async_window;
     rq.user.extended = cfg_.extended_negotiation;
+    // The transport stays registered with the gate for the life of the association, so
+    // interrupt() also wakes the wait for the A-ASSOCIATE response and later service calls.
+    if (t) t = std::unique_ptr<Transport>(new GatedTransport(std::move(t), gate_));
     Result<std::unique_ptr<Association>> a = Association::request_over(std::move(t), rq, cfg_.timeouts, cfg_.limits, rj);
-    if (!a) return a.take_error();
+    if (!a) {
+        if (gate_->cancelled.load()) {
+            failure_ = ConnectFailure::Cancelled;
+            return Status(Errc::Cancelled, "cancelled");
+        }
+        failure_ = a.error().code == Errc::Rejected  ? ConnectFailure::Rejected
+                   : a.error().code == Errc::Timeout ? ConnectFailure::AcseTimeout
+                   : a.error().code == Errc::NetworkError ? ConnectFailure::Closed
+                                                          : ConnectFailure::Other;
+        return a.take_error();
+    }
     assoc_ = std::move(a.value());
     return Status::ok();
 }
@@ -320,17 +447,25 @@ Status Scu::handle_get_store(const Message& m, const std::function<std::uint16_t
         rq.move_originator_message_id = m.command.move_originator_message_id;
         rq.raw = m.data;
         rq.spool = m.spool;
-        Result<Dataset> ds = m.discarded ? Result<Dataset>(Status(Errc::LimitExceeded, "discarded"))
-                                         : decode_message_dataset(m);
+        Result<DicomFile> ds = m.discarded ? Result<DicomFile>(Status(Errc::LimitExceeded, "discarded"))
+                               : m.has_data ? read_dataset_report(m.data, m.transfer_syntax)
+                                            : Result<DicomFile>(DicomFile{});
         if (m.discarded) {
             st = dimse_status::OutOfResources;  // R-074: spool disk quota or free-space floor
         } else if (!ds) {
             st = dimse_status::CannotUnderstand;
         } else {
-            rq.dataset = std::move(ds.value());
+            rq.dataset = std::move(ds->dataset);
+            rq.read_loss = ds->read_loss;
+            rq.read_loss_offset = ds->read_loss_offset;
+            if (!ds->warnings.empty()) rq.read_warning = ds->warnings.front();
             std::string note;
             st = check_store_uids(rq, cfg_.strict_store_uids, note);
-            if (st == dimse_status::Success) st = on_instance ? on_instance(rq) : dimse_status::Success;
+            // R-116: an incomplete data set is refused, or handed on flagged and as received.
+            if (st == dimse_status::Success && rq.read_loss != 0 && cfg_.incomplete_policy == IncompletePolicy::Refuse)
+                st = dimse_status::CannotUnderstand;
+            else if (st == dimse_status::Success)
+                st = on_instance ? on_instance(rq) : dimse_status::Success;
         }
     }
     return send_dimse(*assoc_, m.context_id, make_response(m.command, st));

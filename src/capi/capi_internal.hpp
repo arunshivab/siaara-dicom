@@ -163,7 +163,39 @@ struct siaara_web_client {
 struct siaara_store {
     std::unique_ptr<siaara::store::Store> store;
     siaara::capi::LiveHandle live_{};
+    // R-150: servers that use the store (siaara_scp_start(_ex), siaara_web_server_start) attach
+    // to it. siaara_store_free while one is attached does not free the store under the server's
+    // threads: the free is deferred until the last server is freed.
+    std::mutex attach_mu;
+    int attached = 0;           // under attach_mu
+    bool free_pending = false;  // under attach_mu
 };
+
+namespace siaara::capi {
+inline void store_attach(siaara_store* s) {
+    if (!s) return;
+    const std::lock_guard<std::mutex> l(s->attach_mu);
+    ++s->attached;
+}
+// Called when a server is freed; performs a deferred siaara_store_free.
+inline void store_detach(siaara_store* s) noexcept {
+    if (!s) return;
+    bool free_now = false;
+    {
+        const std::lock_guard<std::mutex> l(s->attach_mu);
+        if (s->attached > 0) --s->attached;
+        free_now = s->attached == 0 && s->free_pending;
+    }
+    if (free_now) delete s;
+}
+// siaara_store_free: true when the store may be deleted now; false when the free was deferred.
+inline bool store_free_now(siaara_store* s) noexcept {
+    const std::lock_guard<std::mutex> l(s->attach_mu);
+    if (s->attached == 0) return true;
+    s->free_pending = true;
+    return false;
+}
+}  // namespace siaara::capi
 
 struct siaara_volume {
     std::shared_ptr<const siaara::volume::Volume> vol;

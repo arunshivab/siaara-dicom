@@ -1,7 +1,9 @@
 // SIAARA DICOM Toolkit - C API, DICOMweb: the origin server over a local store
 // (siaara_web_server_*), client limits and the streaming WADO-RS retrieve
 // (include/siaara/siaara.h, "networking: full service set").
+#include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <new>
 #include <string>
@@ -13,6 +15,9 @@
 #include "capi/store_services.hpp"
 #include "core/io.hpp"
 #include "core/reader.hpp"
+#include "core/writer.hpp"
+#include "net/store_support.hpp"
+#include "store/common.hpp"
 #include "web/client.hpp"
 #include "web/http.hpp"
 #include "web/server.hpp"
@@ -58,6 +63,15 @@ struct siaara_web_server {
     siaara_web_authorize_callback authorize = nullptr;
     void* authorize_user = nullptr;
     capi::LiveHandle live_{};
+    // R-150: the store stays alive until the server is freed (a siaara_store_free in between is deferred).
+    void attach_store(siaara_store* s) {
+        store = s;
+        capi::store_attach(s);
+    }
+    ~siaara_web_server() {
+        server.stop();
+        capi::store_detach(store);
+    }
 };
 
 extern "C" {
@@ -67,8 +81,11 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_se
     return guarded([&]() -> siaara_status {
         if (!out) return fail(Errc::InvalidArgument, "out must not be NULL");
         *out = nullptr;
-        if (!o || o->struct_size < sizeof(siaara_web_server_options))
+        // The first version of the options ended with max_body_bytes; later fields are read when
+        // struct_size covers them.
+        if (!o || o->struct_size < offsetof(siaara_web_server_options, max_body_bytes) + sizeof(uint64_t))
             return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        const auto has = [&](std::size_t end) { return o->struct_size >= end; };
         if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
         if (o->port > 65535) return fail(Errc::InvalidArgument, "port must be 0..65535");
         for (int32_t v : {o->require_client_certificate, o->allow_insecure_remote, o->read_only})
@@ -94,8 +111,20 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_server_start(const siaara_web_se
         if (o->public_base_url) cfg.public_base_url = o->public_base_url;
         if (o->cors_allow_origin) cfg.cors_allow_origin = o->cors_allow_origin;
         if (o->max_qido_results) cfg.max_qido_results = o->max_qido_results;
+        if (has(offsetof(siaara_web_server_options, max_response_bytes) + sizeof(uint64_t)) && o->max_response_bytes)
+            cfg.max_response_bytes = o->max_response_bytes;
+        if (has(offsetof(siaara_web_server_options, response_timeout_ms) + sizeof(int32_t))) {
+            if (o->response_timeout_ms < -1) return fail(Errc::InvalidArgument, "response_timeout_ms: -1, 0 or a time");
+            if (o->response_timeout_ms == -1) cfg.http.limits.send_timeout_ms = 0;
+            else if (o->response_timeout_ms) cfg.http.limits.send_timeout_ms = o->response_timeout_ms;
+        }
+        if (has(offsetof(siaara_web_server_options, min_response_rate) + sizeof(uint32_t)) && o->min_response_rate)
+            cfg.http.limits.min_send_rate = o->min_response_rate;
+        if (has(offsetof(siaara_web_server_options, incomplete_policy) + sizeof(int32_t)))
+            if (siaara_status ps = capi::incomplete_policy(o->incomplete_policy, cfg.incomplete_policy); ps != SIAARA_OK)
+                return ps;
         auto h = std::make_unique<siaara_web_server>();
-        h->store = store;
+        h->attach_store(store);
         h->authorize = o->authorize;
         h->authorize_user = o->authorize_user;
         if (o->authorize) {
@@ -155,33 +184,48 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_client_set_limits(siaara_web_cli
     });
 }
 
-SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_client* client, const char* study_uid,
-                                                                 const char* series_uid, const char* instance_uid,
-                                                                 const char* const* transfer_syntaxes, uint32_t ts_count,
-                                                                 siaara_store* store, int32_t policy, const char* folder,
-                                                                 siaara_web_progress_callback cb, void* user,
-                                                                 uint32_t* stored, uint32_t* failed) {
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_client* client, const char* study_uid,
+                                                                    const char* series_uid, const char* instance_uid,
+                                                                    const siaara_web_retrieve_options* options,
+                                                                    siaara_web_progress_callback cb, void* user,
+                                                                    siaara_web_retrieve_report* report) {
     return guarded([&]() -> siaara_status {
-        if (stored) *stored = 0;
-        if (failed) *failed = 0;
+        if (report) {
+            if (report->struct_size < sizeof(siaara_web_retrieve_report))
+                return fail(Errc::InvalidArgument, "report must be set up with struct_size");
+            const uint32_t size = report->struct_size;
+            std::memset(report, 0, sizeof *report);
+            report->struct_size = size;
+        }
         if (!client || !client->client) return fail(Errc::InvalidArgument, "client must not be NULL");
-        if (!store && !folder) return fail(Errc::InvalidArgument, "store or folder is required");
-        if (policy != SIAARA_DUP_KEEP && policy != SIAARA_DUP_REPLACE) return fail(Errc::InvalidArgument, "unknown policy");
+        if (!options || options->struct_size < sizeof(siaara_web_retrieve_options))
+            return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        siaara_store* const store = options->store;
+        if (!store && !options->folder) return fail(Errc::InvalidArgument, "store or folder is required");
+        if (options->duplicate_policy != SIAARA_DUP_KEEP && options->duplicate_policy != SIAARA_DUP_REPLACE)
+            return fail(Errc::InvalidArgument, "unknown policy");
+        if (options->allow_other_uids != 0 && options->allow_other_uids != 1)
+            return fail(Errc::InvalidArgument, "allow_other_uids must be 0 or 1");
+        siaara::IncompletePolicy incomplete = siaara::kDefaultIncompletePolicy;
+        if (siaara_status ps = capi::incomplete_policy(options->incomplete_policy, incomplete); ps != SIAARA_OK) return ps;
         std::string study, series, instance;
         if (!study_uid || !uid_arg(study_uid, study) || !uid_arg(series_uid, series) || !uid_arg(instance_uid, instance))
             return fail(Errc::InvalidArgument, "invalid UID");
         if (!instance.empty() && series.empty()) return fail(Errc::InvalidArgument, "instance_uid needs series_uid");
-        if (ts_count && !transfer_syntaxes) return fail(Errc::InvalidArgument, "transfer_syntaxes is NULL");
+        if (options->transfer_syntax_count && !options->transfer_syntaxes)
+            return fail(Errc::InvalidArgument, "transfer_syntaxes is NULL");
         std::vector<std::string> ts;
-        for (uint32_t i = 0; i < ts_count; ++i) {
-            if (!transfer_syntaxes[i]) return fail(Errc::InvalidArgument, "transfer_syntaxes entry is NULL");
-            ts.emplace_back(transfer_syntaxes[i]);
+        for (uint32_t i = 0; i < options->transfer_syntax_count; ++i) {
+            if (!options->transfer_syntaxes[i]) return fail(Errc::InvalidArgument, "transfer_syntaxes entry is NULL");
+            ts.emplace_back(options->transfer_syntaxes[i]);
         }
         siaara_cancel* token = client->cancel.token();
         if (token && token->is_set()) return fail(Errc::Cancelled, "cancelled");
-        const auto pol = policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
-        const std::string dir = folder ? folder : "";
-        uint32_t ok_parts = 0, bad_parts = 0;
+        const auto pol = options->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace
+                                                                         : st::DuplicatePolicy::Keep;
+        const std::string dir = options->folder ? options->folder : "";
+        const bool strict_uids = options->allow_other_uids == 0;
+        siaara_web_retrieve_report rep{};
         std::uint64_t seen_bytes = 0, seen_total = 0;
         bool stopped = false;
         Status first = Status::ok();
@@ -190,34 +234,75 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_clie
             Status s = Status::ok();
             if (!mt || !mt->is("application", "dicom")) s = Status(Errc::Malformed, "response part is not application/dicom");
             siaara::Bytes bytes;
-            if (s) bytes = siaara::Bytes::copy_of(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
+            bool loss = false, raw = false;
+            std::string uid;
+            if (s) {
+                bytes = siaara::Bytes::copy_of(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
+                // The whole part is read: only that shows whether it is complete (R-116).
+                auto f = siaara::read_part10(bytes);
+                if (!f) {
+                    s = f.error();
+                } else {
+                    loss = !f->complete();
+                    raw = !f->had_preamble;
+                    uid = f->dataset.get_string(siaara::tags::SOPInstanceUID).value_or("");
+                    // R-152: the part must be what was asked for.
+                    const auto is = [&](siaara::Tag t, const std::string& want) {
+                        return want.empty() || f->dataset.get_string(t).value_or("") == want;
+                    };
+                    if (strict_uids && !(is(siaara::tags::StudyInstanceUID, study) && is(siaara::tags::SeriesInstanceUID, series) &&
+                                         is(siaara::tags::SOPInstanceUID, instance))) {
+                        ++rep.uid_mismatch;
+                        s = Status(Errc::Rejected, "response part is not from the requested study / series / instance");
+                    } else if (loss && (incomplete == siaara::IncompletePolicy::Refuse || raw)) {
+                        // Never stored rewritten; refused unless it can be kept exactly as received.
+                        ++rep.incomplete_refused;
+                        s = Status(Errc::Rejected,
+                                   std::string(siaara::net::kIncompleteInput) + ": the response part was not read completely" +
+                                       (f->warnings.empty() ? std::string() : " (" + f->warnings.front() + ")"));
+                    } else if (raw) {
+                        // A complete data set without a preamble: kept as a new Part 10 file.
+                        std::vector<std::uint8_t> out;
+                        if (Status w = siaara::write_part10(*f, out); !w) s = w;
+                        else bytes = capi::dimse::bytes_of(std::move(out));
+                    }
+                }
+            }
+            std::string path;
+            bool created = false;
             if (s && !dir.empty()) {
-                siaara::ReadOptions ro;
-                ro.stop_before_pixel_data = true;
-                auto f = siaara::read_part10(bytes, ro);
-                std::string uid;
-                if (!f) s = f.error();
-                else uid = f->dataset.get_string(siaara::tags::SOPInstanceUID).value_or("");
-                if (s && !capi::dimse::uid_filename_ok(uid)) s = Status(Errc::Malformed, "SOP Instance UID unusable as a file name");
+                if (!capi::dimse::uid_filename_ok(uid)) s = Status(Errc::Malformed, "SOP Instance UID unusable as a file name");
                 if (s) {
+                    path = capi::dimse::join_path(dir, uid + ".dcm");
+                    std::error_code ec;
+                    const bool existed = std::filesystem::exists(st::u8path(path), ec);
                     const auto mode = pol == st::DuplicatePolicy::Keep ? siaara::io::WriteMode::NoReplace
                                                                        : siaara::io::WriteMode::Replace;
-                    Status w = siaara::io::write_file_atomic(capi::dimse::join_path(dir, uid + ".dcm"), bytes.data(),
-                                                             bytes.size(), mode);
+                    Status w = siaara::io::write_file_atomic(path, bytes.data(), bytes.size(), mode);
                     if (!w && w.code != Errc::Rejected) s = w;  // Rejected: kept the existing file (KEEP)
+                    created = static_cast<bool>(w) && !existed;
                 }
             }
             if (s && store) {
                 auto r = store->store->add_buffer(bytes, pol);
-                if (!r) s = r.error();
+                if (!r) {
+                    s = r.error();
+                    // R-152: a part the store refused leaves no file behind.
+                    if (created) {
+                        std::error_code ec;
+                        std::filesystem::remove(st::u8path(path), ec);
+                    }
+                }
             }
             if (s) {
-                ++ok_parts;
+                ++rep.stored;
+                if (loss) ++rep.incomplete_accepted;
+                else if (raw) ++rep.rewritten;
             } else {
-                if (bad_parts == 0) first = s;
-                ++bad_parts;
+                if (rep.failed == 0) first = s;
+                ++rep.failed;
             }
-            if (cb && cb(user, ok_parts + bad_parts, seen_bytes, seen_total) != 0) {
+            if (cb && cb(user, rep.stored + rep.failed, seen_bytes, seen_total) != 0) {
                 stopped = true;
                 return Status(Errc::Cancelled, "stopped by the callback");
             }
@@ -230,15 +315,53 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_clie
         };
         const std::uint64_t max_part = client->max_part_bytes ? client->max_part_bytes : client->client->limits().max_body;
         Status s = client->client->retrieve_stream(study, series, instance, ts, max_part, keep, progress);
-        if (stored) *stored = ok_parts;
-        if (failed) *failed = bad_parts;
+        if (report) {
+            const uint32_t size = report->struct_size;
+            *report = rep;
+            report->struct_size = size;
+        }
+        if (rep.incomplete_accepted)
+            capi::log(SIAARA_LOG_WARNING, false,
+                      "WADO-RS retrieve: " + std::to_string(rep.incomplete_accepted) +
+                          " incomplete parts were stored exactly as received");
+        if (rep.rewritten)
+            capi::log(SIAARA_LOG_WARNING, false,
+                      "WADO-RS retrieve: " + std::to_string(rep.rewritten) +
+                          " parts had no Part 10 preamble and were stored as new Part 10 files");
         if (stopped || (token && token->is_set())) return fail(Errc::Cancelled, "cancelled");
         if (!s) {
             if (s.code == Errc::NotFound) return fail(Errc::NotFound, s.message);
             return fail(s);
         }
-        if (bad_parts) return fail(first.code, std::to_string(bad_parts) + " parts were not kept; first: " + first.message);
+        if (rep.failed)
+            return fail(first.code, std::to_string(rep.failed) + " parts were not kept; first: " + first.message);
         return ok();
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_client* client, const char* study_uid,
+                                                                 const char* series_uid, const char* instance_uid,
+                                                                 const char* const* transfer_syntaxes, uint32_t ts_count,
+                                                                 siaara_store* store, int32_t policy, const char* folder,
+                                                                 siaara_web_progress_callback cb, void* user,
+                                                                 uint32_t* stored, uint32_t* failed) {
+    return guarded([&]() -> siaara_status {
+        if (stored) *stored = 0;
+        if (failed) *failed = 0;
+        siaara_web_retrieve_options o{};
+        o.struct_size = sizeof o;
+        o.duplicate_policy = policy;
+        o.store = store;
+        o.folder = folder;
+        o.transfer_syntaxes = transfer_syntaxes;
+        o.transfer_syntax_count = ts_count;
+        siaara_web_retrieve_report rep{};
+        rep.struct_size = sizeof rep;
+        const siaara_status s =
+            siaara_web_wado_retrieve_to_ex(client, study_uid, series_uid, instance_uid, &o, cb, user, &rep);
+        if (stored) *stored = rep.stored;
+        if (failed) *failed = rep.failed;
+        return s;
     });
 }
 

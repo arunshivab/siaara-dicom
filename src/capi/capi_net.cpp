@@ -84,14 +84,58 @@ std::string hex4(unsigned v) {
     return s;
 }
 
+// The first version of siaara_dimse_result ended with `current`; the fields after it are written
+// only when struct_size covers them.
+constexpr std::size_t kResultV1Size = offsetof(siaara_dimse_result, current) + sizeof(uint32_t);
+
 void result_init(siaara_dimse_result* r) {
     if (!r) return;
     const uint32_t size = r->struct_size;
-    std::memset(r, 0, sizeof(siaara_dimse_result));
+    std::memset(r, 0, std::min<std::size_t>(size, sizeof(siaara_dimse_result)));
     r->struct_size = size;
 }
 
-bool result_ok(const siaara_dimse_result* r) { return !r || r->struct_size >= sizeof(siaara_dimse_result); }
+bool result_ok(const siaara_dimse_result* r) { return !r || r->struct_size >= kResultV1Size; }
+
+// C5: where the association attempt failed, and the A-ASSOCIATE-RJ fields.
+void result_connect_failure(siaara_dimse_result* r, net::ConnectFailure f, const net::AssociateRj* rj) {
+    if (!r || r->struct_size < offsetof(siaara_dimse_result, reject_reason) + sizeof(uint32_t)) return;
+    int32_t code = SIAARA_CONNECT_OTHER;
+    switch (f) {
+        case net::ConnectFailure::None: code = SIAARA_CONNECT_OK; break;
+        case net::ConnectFailure::Resolve: code = SIAARA_CONNECT_RESOLVE; break;
+        case net::ConnectFailure::Refused: code = SIAARA_CONNECT_REFUSED; break;
+        case net::ConnectFailure::ConnectTimeout: code = SIAARA_CONNECT_TIMEOUT; break;
+        case net::ConnectFailure::Tls: code = SIAARA_CONNECT_TLS; break;
+        case net::ConnectFailure::Rejected: code = SIAARA_CONNECT_REJECTED; break;
+        case net::ConnectFailure::AcseTimeout: code = SIAARA_CONNECT_ACSE_TIMEOUT; break;
+        case net::ConnectFailure::Closed: code = SIAARA_CONNECT_CLOSED; break;
+        case net::ConnectFailure::Cancelled: code = SIAARA_CONNECT_CANCELLED; break;
+        default: break;
+    }
+    r->connect_failure = code;
+    if (rj && f == net::ConnectFailure::Rejected) {
+        r->reject_result = rj->result;
+        r->reject_source = rj->source;
+        r->reject_reason = rj->reason;
+    }
+}
+
+// PS3.8 9.3.4: what an A-ASSOCIATE-RJ says, in words.
+std::string reject_text(const net::AssociateRj& rj) {
+    const char* why = "no reason given";
+    if (rj.source == 1) {
+        if (rj.reason == 2) why = "application context name not supported";
+        else if (rj.reason == 3) why = "calling AE title not recognized";
+        else if (rj.reason == 7) why = "called AE title not recognized";
+    } else if (rj.source == 2) {
+        if (rj.reason == 2) why = "protocol version not supported";
+    } else if (rj.source == 3) {
+        if (rj.reason == 1) why = "temporary congestion";
+        else if (rj.reason == 2) why = "local limit exceeded";
+    }
+    return why;
+}
 
 // A retrieve that ended without the peer's final response (cancel token: the association was
 // interrupted). The result keeps the counts known so far (the last pending response, and for
@@ -184,21 +228,44 @@ siaara_status peer_config(const siaara_dimse_peer* p, net::ScuConfig& c) {
     return SIAARA_OK;
 }
 
-// Connects; maps an association rejection to a readable message.
-siaara_status connect(net::Scu& scu, siaara_cancel* cancel, const net::ScuConfig& c) {
-    if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+// Connects; maps an association rejection to a readable message. The cancel token ends the TCP
+// connect, the TLS handshake and the wait for the A-ASSOCIATE response at once (C1). `result`
+// (may be null) receives where the attempt failed and the A-ASSOCIATE-RJ fields (C5).
+siaara_status connect(net::Scu& scu, siaara_cancel* cancel, const net::ScuConfig& c, siaara_dimse_result* result) {
+    if (cancel && cancel->is_set()) {
+        result_connect_failure(result, net::ConnectFailure::Cancelled, nullptr);
+        return fail(Errc::Cancelled, "cancelled");
+    }
     net::AssociateRj rj;
-    Status s = scu.connect(&rj);
-    if (cancel && cancel->is_set()) return fail(Errc::Cancelled, "cancelled");
+    Status s = Status::ok();
+    {
+        const capi::CancelScope scope(cancel, [&scu]() { scu.interrupt(); });
+        s = scu.connect(&rj);
+    }
+    if (cancel && cancel->is_set()) {
+        if (scu.connected()) scu.abort();
+        result_connect_failure(result, net::ConnectFailure::Cancelled, nullptr);
+        return fail(Errc::Cancelled, "cancelled");
+    }
     if (!s) {
+        result_connect_failure(result, scu.connect_failure(), &rj);
         if (s.code == Errc::Rejected) {
-            const std::string m = "association rejected by " + c.called_ae + " (result " + std::to_string(rj.result) +
-                                  ", source " + std::to_string(rj.source) + ", reason " + std::to_string(rj.reason) + ")";
+            const std::string m = "association rejected by " + c.called_ae + ": " + reject_text(rj) + " (result " +
+                                  std::to_string(rj.result) + ", source " + std::to_string(rj.source) + ", reason " +
+                                  std::to_string(rj.reason) + ")";
             capi::log(SIAARA_LOG_WARNING, false, m);
             return fail(Errc::Rejected, m);
         }
         capi::log(SIAARA_LOG_WARNING, false, "association to " + c.called_ae + " at " + c.host + ": " + s.message);
-        return fail(s);
+        const char* step = "";
+        switch (scu.connect_failure()) {
+            case net::ConnectFailure::Refused: step = "connection refused: "; break;
+            case net::ConnectFailure::ConnectTimeout: step = "connection timed out: "; break;
+            case net::ConnectFailure::Tls: step = "TLS failure: "; break;
+            case net::ConnectFailure::AcseTimeout: step = "no answer to the association request: "; break;
+            default: break;
+        }
+        return fail(s.code, step + s.message);
     }
     capi::log(SIAARA_LOG_DEBUG, false, "association established: " + c.calling_ae + " -> " + c.called_ae + " at " + c.host);
     return SIAARA_OK;
@@ -213,11 +280,9 @@ void finish(net::Scu& scu, bool aborted) {
     if (Status s = scu.release(); !s) scu.abort();
 }
 
-// Interrupts the association of `scu` (only registered while connected; see CancelScope use).
+// Interrupts whatever `scu` is doing (connect, or a blocked service call).
 std::function<void()> interrupter(net::Scu& scu) {
-    return [&scu]() {
-        if (net::Association* a = scu.association()) a->interrupt();
-    };
+    return [&scu]() { scu.interrupt(); };
 }
 
 // Error of a failed service call: cancellation wins.
@@ -395,6 +460,7 @@ void siaara_scp::dispatch_loop() {
             if (queue.empty()) return;
             ev = std::move(queue.front());
             queue.pop_front();
+            queued_bytes -= std::min(queued_bytes, ev.bytes);
         }
         space_cv.notify_one();
         siaara_scp_event e{};
@@ -417,6 +483,8 @@ void siaara_scp::dispatch_loop() {
         e.failed = ev.failed;
         e.warning = ev.warning;
         e.command_field = ev.command_field;
+        e.association_id = ev.association_id;
+        e.read_loss = ev.read_loss;
         try {
             cb(user, &e);
         } catch (...) {
@@ -428,15 +496,23 @@ void siaara_scp::dispatch_loop() {
 void siaara_scp::post(Event ev) {
     if (!cb) return;
     try {
+        if (ev.association_id == 0) ev.association_id = net::current_association_id();
+        // R-109: the data sets queued events hold are bounded in bytes as well as in number. One
+        // event larger than the whole budget is still delivered when the queue is empty.
+        ev.bytes = ev.dataset ? net::approximate_size(*ev.dataset) : 0;
         bool dropped_now = false;
         {
             std::unique_lock<std::mutex> l(q_mu);
+            const auto full = [&] {
+                return queue.size() >= max_queued || (!queue.empty() && queued_bytes + ev.bytes > max_queued_bytes);
+            };
             // R-094: never wait unbounded; once stopping, never wait at all.
-            if (!stopping && queue.size() >= max_queued)
-                (void)space_cv.wait_for(l, kMaxWait, [&] { return closing || stopping || queue.size() < max_queued; });
-            if (closing || queue.size() >= max_queued) {
+            if (!stopping && full())
+                (void)space_cv.wait_for(l, kMaxWait, [&] { return closing || stopping || !full(); });
+            if (closing || full()) {
                 dropped_now = true;
             } else {
+                queued_bytes += ev.bytes;
                 queue.push_back(std::move(ev));
             }
         }
@@ -473,6 +549,7 @@ void siaara_scp::event(int32_t kind, std::uint16_t status, int32_t outcome, cons
             ev.cmd_inst = rq->command_sop_instance_uid;
         }
         if (rq) ev.original_inst = rq->original_sop_instance_uid;
+        if (rq) ev.read_loss = capi::read_loss_bits(rq->read_loss);
         post(std::move(ev));
     } catch (...) {
         siaara::capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
@@ -547,7 +624,18 @@ siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg) {
     if (has(offsetof(siaara_scp_options, spool_min_free_disk_bytes) + sizeof(uint64_t)) && o->spool_min_free_disk_bytes)
         spool.min_free_disk_bytes = o->spool_min_free_disk_bytes;
     cfg.spool = spool;
+    if (has(offsetof(siaara_scp_options, incomplete_policy) + sizeof(int32_t)))
+        if (siaara_status ps = capi::incomplete_policy(o->incomplete_policy, cfg.incomplete_policy); ps != SIAARA_OK) return ps;
     return SIAARA_OK;
+}
+
+// siaara_scp_options fields of the handle itself (event queue limits).
+void scp_handle_options(const siaara_scp_options* o, siaara_scp& h) {
+    const auto has = [&](std::size_t end) { return o->struct_size >= end; };
+    if (has(offsetof(siaara_scp_options, event_queue_limit) + sizeof(uint32_t)) && o->event_queue_limit)
+        h.max_queued = o->event_queue_limit;
+    if (has(offsetof(siaara_scp_options, event_queue_max_bytes) + sizeof(uint64_t)) && o->event_queue_max_bytes)
+        h.max_queued_bytes = o->event_queue_max_bytes;
 }
 
 void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
@@ -565,6 +653,9 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
             if (s == net::dimse_status::Success) {
                 raw->stored.fetch_add(1, std::memory_order_relaxed);
                 raw->bytes.fetch_add(rq.raw.size(), std::memory_order_relaxed);
+                if (rq.read_loss != 0)
+                    capi::log(SIAARA_LOG_WARNING, false,
+                              "Storage SCP: an incomplete data set was stored exactly as received (" + rq.read_warning + ")");
                 if (rq.uid_mismatch)
                     capi::log(SIAARA_LOG_WARNING, true, "Storage SCP: instance " + rq.sop_instance_uid +
                                                             " stored under its data set's UIDs; the C-STORE command said " +
@@ -582,6 +673,17 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd) {
             capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
             raw->failures.fetch_add(1, std::memory_order_relaxed);
             return net::dimse_status::OutOfResources;
+          }
+        };
+        // R-116: an incomplete data set refused before anything was stored.
+        hd.on_store_refused = [raw](const net::StoreRequest& rq, std::uint16_t status, const std::string& why) noexcept {
+          try {
+            raw->failures.fetch_add(1, std::memory_order_relaxed);
+            capi::log(SIAARA_LOG_WARNING, false, "Storage SCP: " + why);
+            raw->event(SIAARA_SCP_STORE_FAILED, status, 0, rq.calling_ae, rq.sop_class_uid, rq.sop_instance_uid,
+                       rq.peer_address, &rq);
+          } catch (...) {
+            capi::swallowed_exceptions().fetch_add(1, std::memory_order_relaxed);
           }
         };
         hd.log = capi::log_sink(SIAARA_LOG_INFO);
@@ -667,7 +769,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_echo(const siaara_dimse_peer* 
         if (siaara_status s = peer_config(peer, c); s != SIAARA_OK) return s;
         net::Scu scu(c);
         scu.add_verification();
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         siaara_status out = SIAARA_OK;
         bool aborted = false;
         {
@@ -715,7 +817,7 @@ siaara_status find_impl(const siaara_dimse_peer* peer, int32_t model,
         }
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         if (qo && scu.association()) qo->accepted_flags = accepted_qr_flags(*scu.association(), cls, true);
         siaara_status out = SIAARA_OK;
         bool aborted = false, stopped = false, limited = false;
@@ -785,7 +887,7 @@ siaara_status move_impl(const siaara_dimse_peer* peer, int32_t model,
             c.extended_negotiation.push_back(net::retrieve_extended_negotiation(cls, true));
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         if (qo && scu.association()) qo->accepted_flags = accepted_qr_flags(*scu.association(), cls, false);
         siaara_status out = SIAARA_OK;
         bool aborted = false, stopped = false;
@@ -866,6 +968,9 @@ siaara_status get_impl(const siaara_dimse_peer* peer, int32_t model,
         if (!options->native_only) ts.insert(ts.end(), compressed_syntaxes().begin(), compressed_syntaxes().end());
         if (options->struct_size >= offsetof(siaara_get_options, strict_store_uids) + sizeof(int32_t))
             c.strict_store_uids = options->strict_store_uids != 0;
+        if (options->struct_size >= offsetof(siaara_get_options, incomplete_policy) + sizeof(int32_t))
+            if (siaara_status ps = capi::incomplete_policy(options->incomplete_policy, c.incomplete_policy); ps != SIAARA_OK)
+                return ps;
         if (qo && qo->struct_size < sizeof(siaara_qr_options))
             return fail(Errc::InvalidArgument, "options must be set up with struct_size");
         if (qo) qo->accepted_flags = 0;
@@ -874,7 +979,7 @@ siaara_status get_impl(const siaara_dimse_peer* peer, int32_t model,
         net::Scu scu(c);
         scu.add_context(std::string(cls), net::native_transfer_syntaxes());
         for (const std::string& k : classes) scu.add_get_storage(k, ts);
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         if (qo && scu.association()) qo->accepted_flags = accepted_qr_flags(*scu.association(), cls, false);
         const st::DuplicatePolicy policy =
             options->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
@@ -1086,7 +1191,7 @@ siaara_status store_files_impl(const siaara_dimse_peer* peer, const char* const*
         }
         net::Scu scu(c);
         if (siaara_status s = propose_store(scu, class_ts, c.transcode_params.allow_lossy); s != SIAARA_OK) return s;
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         siaara_dimse_result prog{};
         prog.struct_size = sizeof prog;
         prog.remaining = count;
@@ -1197,7 +1302,7 @@ siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file,
         if (siaara_status s = propose_store(scu, {{cls, file->file.transfer_syntax}}, c.transcode_params.allow_lossy);
             s != SIAARA_OK)
             return s;
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         siaara_status out = SIAARA_OK;
         bool aborted = false;
         {
@@ -1255,7 +1360,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dimse_commit(const siaara_dimse_peer
         if (siaara_status s = peer_config(peer, c); s != SIAARA_OK) return s;
         net::Scu scu(c);
         scu.add_context(std::string(net::sop::StorageCommitmentPushModel), net::native_transfer_syntaxes());
-        if (siaara_status s = connect(scu, cancel, c); s != SIAARA_OK) return s;
+        if (siaara_status s = connect(scu, cancel, c, result); s != SIAARA_OK) return s;
         siaara_status out = SIAARA_OK;
         bool aborted = false;
         {
@@ -1322,14 +1427,12 @@ SIAARA_API siaara_status SIAARA_CALL siaara_scp_start(const siaara_scp_options* 
         if (!store) return fail(Errc::InvalidArgument, "store must not be NULL");
         net::ScpConfig cfg;
         if (siaara_status s = scp_config(o, cfg); s != SIAARA_OK) return s;
-        const auto has = [&](std::size_t end) { return o->struct_size >= end; };
         auto h = std::make_unique<siaara_scp>();
-        h->store = store;
+        h->attach_store(store);
         h->policy = o->duplicate_policy == SIAARA_DUP_REPLACE ? st::DuplicatePolicy::Replace : st::DuplicatePolicy::Keep;
         h->cb = cb;
         h->user = user;
-        if (has(offsetof(siaara_scp_options, event_queue_limit) + sizeof(uint32_t)) && o->event_queue_limit)
-            h->max_queued = o->event_queue_limit;
+        scp_handle_options(o, *h);
         h->start_dispatcher();
         net::ScpHandlers hd;
         storage_handlers(h.get(), hd);

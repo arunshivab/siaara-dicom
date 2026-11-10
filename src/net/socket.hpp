@@ -49,6 +49,11 @@ public:
     virtual Result<bool> wait_readable(int timeout_ms) = 0;
     // Shuts down both directions; may be called from another thread to wake a blocked reader.
     virtual void shutdown() noexcept = 0;
+    // An absolute deadline for the writes that follow (nullptr: none): write_all then fails with
+    // Errc::Timeout once it has passed, however often the peer takes a few bytes, instead of
+    // waiting `timeout_ms` anew for each piece (R-120). Set and used by the writing thread only.
+    // Default: not supported (write_all keeps its per-wait timeout).
+    virtual void set_write_deadline(const std::chrono::steady_clock::time_point* deadline) noexcept { (void)deadline; }
     // Ends the sending direction only (TCP FIN after queued data), so a peer that is still
     // sending sees the end of the response before the handle is released. Default: no-op.
     virtual void shutdown_send() noexcept {}
@@ -76,6 +81,20 @@ Status read_exact_until(Transport& t, std::uint8_t* buf, std::size_t n, Deadline
 // Name resolution uses the OS resolver, which has no portable timeout.
 Result<std::unique_ptr<Transport>> tcp_connect(const std::string& host, std::uint16_t port,
                                                int timeout_ms);
+// Why a connection attempt failed (for callers that report it; the Status carries the text).
+enum class ConnectError : std::uint8_t {
+    None,
+    Resolve,    // the host name did not resolve
+    Refused,    // the peer refused the connection (nothing listens on the port)
+    Timeout,    // no answer within the timeout
+    Cancelled,  // `cancel` was set
+    Other,      // unreachable network, local failure ...
+};
+// Same; `cancel` (may be null) is polled while waiting, so setting it from another thread ends
+// the attempt within about 50 ms with Errc::Cancelled. `why` (may be null) receives the reason
+// of a failure.
+Result<std::unique_ptr<Transport>> tcp_connect(const std::string& host, std::uint16_t port, int timeout_ms,
+                                               const std::atomic<bool>* cancel, ConnectError* why = nullptr);
 
 class TcpListener {
 public:

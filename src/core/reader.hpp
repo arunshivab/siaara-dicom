@@ -34,6 +34,12 @@ Result<DicomFile> read_part10(const Bytes& data, const ReadOptions& opt = {});
 Result<Dataset> read_dataset(const Bytes& data, std::string_view transfer_syntax_uid,
                              const ReadOptions& opt = {});
 
+// As read_dataset, keeping what the parse reports (R-116): the returned DicomFile has the data
+// set, `transfer_syntax`, the lenient-mode warnings and the read-loss bits (read_loss,
+// read_loss_offset, bytes_not_read); its meta group is empty.
+Result<DicomFile> read_dataset_report(const Bytes& data, std::string_view transfer_syntax_uid,
+                                      const ReadOptions& opt = {});
+
 // Convenience: memory-maps and parses a file.
 Result<DicomFile> read_file(const std::string& utf8_path, const ReadOptions& opt = {});
 

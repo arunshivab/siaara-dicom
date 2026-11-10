@@ -86,6 +86,14 @@ struct StoreOptions {
     // files 0600; an owner-only DACL on Windows). Otherwise the POSIX file mode (folders get the
     // matching search bits too; Windows: inherited permissions).
     std::uint32_t file_mode = 0;
+    // R-135: a store made before R-092 (or copied with other permissions) may have index and data
+    // folders that group or others can enter. On open (POSIX) they are compared with what
+    // file_mode asks for: true (default) removes the extra group / other bits when this user owns
+    // the folder; otherwise - and when that fails - the store only says so. Either way
+    // Store::open_notes() reports it ("STORE_PERMISSIONS_TIGHTENED: ..." /
+    // "STORE_PERMISSIONS_WIDE: ..."). Windows: not checked (the DACL is inherited or owner-only
+    // as created).
+    bool tighten_permissions = true;
 };
 
 enum class DuplicatePolicy { Keep, Replace };
@@ -154,6 +162,8 @@ class Store {
 public:
     static Result<std::unique_ptr<Store>> open(const std::string& utf8_root, const StoreOptions& opt = {});
     ~Store();
+    // What open() found worth telling the operator (fixed codes, folder roles and modes only).
+    const std::vector<std::string>& open_notes() const noexcept;
     Store(const Store&) = delete;
     Store& operator=(const Store&) = delete;
 

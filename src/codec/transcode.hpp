@@ -96,6 +96,11 @@ struct TranscodeReport {
     // MethodFilled / Misaligned: "LOSSY_METHOD_FILLED: ..." / "LOSSY_HISTORY_MISALIGNED: ..." with
     // the value counts found, what was written and why. Empty otherwise.
     std::string lossy_history_note;
+    // The lossy transcode made a new derived image from a source without Image Type (0008,0008):
+    // the new image got Image Type DERIVED\SECONDARY (T-P3-11); derivation_note says so
+    // ("IMAGE_TYPE_ADDED: ..."; empty otherwise).
+    bool image_type_added = false;
+    std::string derivation_note;
 };
 
 // Transfer syntaxes the transcoder can write / read pixel data in.

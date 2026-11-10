@@ -63,6 +63,8 @@ enum {
     SIAARA_ERR_REJECTED = 13,
     SIAARA_ERR_CANCELLED = 14,
     SIAARA_ERR_BUFFER_TOO_SMALL = 15,
+    SIAARA_ERR_ADDRESS_IN_USE = 16, /* siaara_scp_start(_ex) / siaara_web_server_start: the port is taken;
+                                       the message names the port */
     SIAARA_ERR_INTERNAL = 99
 };
 
@@ -539,7 +541,12 @@ typedef struct siaara_store_options {
      * (e.g. 0640); folders get it plus the matching search bits, and on Windows the folders and
      * files inherit the parent folder's permissions. */
     uint32_t file_mode;
-    uint32_t reserved0;            /* set to 0 */
+    /* An existing store whose index or data folder is open to group / others beyond file_mode (made
+     * by an older version, or copied): 0 (default): on POSIX the extra permission bits are removed
+     * when this user owns the folder; 1: left as they are. Either way a warning is logged
+     * (STORE_PERMISSIONS_TIGHTENED / STORE_PERMISSIONS_WIDE). Not checked on Windows. (This field
+     * was reserved0, set to 0.) */
+    uint32_t keep_permissions;
 } siaara_store_options;
 
 enum { SIAARA_DUP_KEEP = 0, SIAARA_DUP_REPLACE = 1 };
@@ -1753,7 +1760,30 @@ typedef struct siaara_dimse_result {
     uint32_t remaining;              /* as reported by the peer (C-MOVE / C-GET), or files left */
     uint32_t matches;                /* C-FIND responses */
     uint32_t current;                /* progress callbacks: index of the item just handled */
+    /* Written only when struct_size covers them: why no association was established (all 0 otherwise). */
+    int32_t connect_failure;         /* SIAARA_CONNECT_* */
+    uint32_t reject_result;          /* A-ASSOCIATE-RJ (PS3.8 9.3.4): 1 rejected-permanent, 2 rejected-transient */
+    uint32_t reject_source;          /* 1 service-user, 2 service-provider (ACSE), 3 service-provider (presentation) */
+    uint32_t reject_reason;          /* with source 1: 1 no reason given, 2 application context name not
+                                        supported, 3 calling AE title not recognized, 7 called AE title not
+                                        recognized; source 2: 1 no reason, 2 protocol version not supported;
+                                        source 3: 1 temporary congestion, 2 local limit exceeded */
 } siaara_dimse_result;
+
+/* siaara_dimse_result.connect_failure: at which step an SCU call failed to get its association.
+ * The return value stays SIAARA_ERR_NETWORK / _TIMEOUT / _REJECTED / _CANCELLED as before. */
+enum {
+    SIAARA_CONNECT_OK = 0,           /* the association was established (or the call failed earlier / later) */
+    SIAARA_CONNECT_RESOLVE = 1,      /* the host name did not resolve */
+    SIAARA_CONNECT_REFUSED = 2,      /* connection refused: nothing listens on that port */
+    SIAARA_CONNECT_TIMEOUT = 3,      /* no TCP connection within connect_timeout_ms */
+    SIAARA_CONNECT_TLS = 4,          /* TLS setup or handshake failed (certificate, protocol, no TLS on the peer) */
+    SIAARA_CONNECT_REJECTED = 5,     /* A-ASSOCIATE-RJ: see reject_result / reject_source / reject_reason */
+    SIAARA_CONNECT_ACSE_TIMEOUT = 6, /* connected, but no answer to the association request in acse_timeout_ms */
+    SIAARA_CONNECT_CLOSED = 7,       /* the peer closed or aborted during the negotiation */
+    SIAARA_CONNECT_CANCELLED = 8,    /* the cancel token was set while connecting */
+    SIAARA_CONNECT_OTHER = 99        /* unreachable network, local failure ... (see siaara_last_error) */
+};
 
 /* Progress during C-MOVE / C-GET (every pending response) and C-STORE of several files (every
  * file). Called on the calling thread. Return 0 to continue, non-zero to cancel (C-CANCEL for
@@ -1798,6 +1828,8 @@ typedef struct siaara_get_options {
     int32_t strict_store_uids;       /* 0/1: refuse (0xA900) an instance whose C-STORE command UIDs differ from
                                         (0008,0016)/(0008,0018) of its data set; 0: keep it under the data set's
                                         UIDs and log a warning */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for received instances (default: refuse with 0xC000;
+                                        the sub-operation then counts as failed at the SCP) */
 } siaara_get_options;
 
 /* C-GET; the instances arrive on the same association. options->store or ->folder is required. */
@@ -1867,7 +1899,24 @@ typedef struct siaara_scp_options {
     uint64_t spool_min_free_disk_bytes; /* free space the spool leaves; 0 = default (64 MiB). Below: 0xA700 */
     uint32_t event_queue_limit;      /* events queued for the callback; 0 = 1024 (see siaara_scp_callback) */
     uint32_t reserved1;              /* set to 0 */
+    uint64_t event_queue_max_bytes;  /* data sets held by queued events, approximate; 0 = 64 MiB. Events that
+                                        do not fit are dropped by the same policy as a full queue (R-109) */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_*: a received C-STORE data set that could not be read
+                                        completely (truncated, bytes skipped, recovered by a heuristic) */
+    uint32_t reserved2;              /* set to 0 */
 } siaara_scp_options;
+
+/* What a receiver does with a data set whose read was not complete (siaara_read_report loss bits):
+ * the Storage SCP (siaara_scp_options), C-GET (siaara_get_options), the STOW-RS server
+ * (siaara_web_server_options) and siaara_web_wado_retrieve_to_ex share this one policy.
+ * REFUSE: nothing is stored - C-STORE status 0xC000 (and SIAARA_SCP_STORE_FAILED with read_loss),
+ *   STOW-RS Failure Reason 0xC000, a retrieved part counted as failed.
+ * ACCEPT_AS_RECEIVED: the bytes are stored exactly as they arrived - never transcoded
+ *   (store_transfer_syntax is skipped) and never rewritten - and flagged: SIAARA_SCP_STORED with
+ *   read_loss != 0, STOW-RS Warning Reason 0xB006, the retrieve report.
+ * A part without a Part 10 preamble that is incomplete is refused under both: storing it would
+ * need a rewrite. SIAARA_INCOMPLETE_DEFAULT (0) is REFUSE. */
+enum { SIAARA_INCOMPLETE_DEFAULT = 0, SIAARA_INCOMPLETE_REFUSE = 1, SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED = 2 };
 
 enum { SIAARA_SCP_STORED = 0, SIAARA_SCP_STORE_FAILED = 1, SIAARA_SCP_ECHO = 2 };
 
@@ -1896,6 +1945,14 @@ typedef struct siaara_scp_event {
     uint32_t failed;
     uint32_t warning;
     uint32_t command_field;          /* DIMSE command field of the request (0x0020 C-FIND, 0x0140 N-CREATE ...) */
+    /* Present when struct_size covers them. */
+    uint64_t association_id;         /* the association the event belongs to: unique among the associations of
+                                        this process run (never 0 for a request; 0 when not tied to one) */
+    uint32_t read_loss;              /* SIAARA_READ_* loss bits of the received data set. SIAARA_SCP_STORED with
+                                        a value != 0: stored exactly as received under
+                                        SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED. SIAARA_SCP_STORE_FAILED with a
+                                        value != 0: refused because it was incomplete */
+    uint32_t reserved0;
 } siaara_scp_event;
 
 /* Called after each event, in order, from one dispatcher thread of the SCP (never concurrently
@@ -2575,7 +2632,37 @@ typedef struct siaara_scp_services {
                                         siaara_file_read_report) is refused: that sub-operation fails and is
                                         logged, the peer never gets less than the file holds. 1: send what was
                                         read (as siaara_dimse_peer.allow_incomplete) */
+    /* ---- appended (security review 4); read only when struct_size includes them */
+    uint32_t max_service_dataset_bytes; /* largest N-service data set or Q/R identifier accepted, enforced while
+                                        it arrives; 0 = 4 MiB. Larger: the association is aborted (R-109) */
+    uint32_t max_ups_items;          /* UPS workitems not yet COMPLETED / CANCELED; 0 = 10000; more: 0xA700 */
+    uint64_t max_state_bytes;        /* data sets held by the MPPS and by the UPS model, each; 0 = 256 MiB.
+                                        Finished instances are evicted oldest first to make room; then 0xA700 */
+    uint32_t max_finished_instances; /* COMPLETED / DISCONTINUED MPPS instances and final UPS workitems kept;
+                                        0 = 10000; the oldest are evicted first (R-119). max_mpps_instances
+                                        counts only IN PROGRESS instances */
+    uint32_t max_ups_subscribers;    /* receiving AEs per workitem; 0 = 16; more: 0xA700 (R-117) */
+    const char* state_folder;        /* NULL: MPPS instances and UPS workitems live in memory only. Else a folder
+                                        (created owner-only) where each is kept in an owner-only file, written
+                                        atomically, and reloaded by the next siaara_scp_start_ex */
+    int32_t bind_updates_to_creator; /* 0 (default) / 1: MPPS N-SET and N-SET of a SCHEDULED UPS only from the
+                                        AE that created the instance; others get 0x0124 (R-131) */
+    int32_t worklist_timeout_ms;     /* worklist_cb must return within this; 0 = 30000. Past it the C-FIND ends
+                                        with 0x0110 and the association goes on (the callback keeps running on
+                                        a helper thread; a second query waits for it) (R-130) */
+    const struct siaara_move_acl* move_acls; /* C-MOVE destinations per calling AE (R-129); NULL: any ae_table entry */
+    uint32_t move_acl_count;
+    uint32_t reserved0;              /* set to 0 */
 } siaara_scp_services;
+
+/* The destinations one calling AE may name in C-MOVE. A calling AE without an entry may name any
+ * ae_table entry; a destination outside the list is answered 0xA801. */
+typedef struct siaara_move_acl {
+    uint32_t struct_size;            /* sizeof(siaara_move_acl) */
+    uint32_t count;                  /* 0: this AE may not move anywhere */
+    const char* calling_ae;
+    const char* const* destination_aes;
+} siaara_move_acl;
 
 /* Starts an SCP with the services enabled in `services` on one port (Verification always), with
  * every limit and check of siaara_scp_start (allowed peers, per-peer limits, lifetime, spool,
@@ -2828,6 +2915,15 @@ typedef struct siaara_web_server_options {
     uint32_t max_connections;        /* 0 = 32 */
     uint32_t max_qido_results;       /* 0 = 10000 */
     uint64_t max_body_bytes;         /* STOW-RS request body; 0 = 256 MiB */
+    /* ---- appended (security review 4); read only when struct_size includes them */
+    uint64_t max_response_bytes;     /* a retrieve whose stored instances are larger in total is answered 413
+                                        before anything is read; 0 = 1 GiB */
+    int32_t response_timeout_ms;     /* the whole response must be written within this; 0 = 10 minutes, -1 = no
+                                        limit (R-120) */
+    uint32_t min_response_rate;      /* bytes per second a client must read, averaged over 30 s windows;
+                                        0 = 1024. Slower: the connection is closed */
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_* for STOW-RS parts */
+    uint32_t reserved0;              /* set to 0 */
 } siaara_web_server_options;
 
 /* Starts the server; store must outlive it. Caller owns *out: free with siaara_web_server_free
@@ -2866,6 +2962,44 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to(siaara_web_clie
                                                                  siaara_store* store, int32_t policy, const char* folder,
                                                                  siaara_web_progress_callback cb, void* user,
                                                                  uint32_t* stored, uint32_t* failed);
+
+typedef struct siaara_web_retrieve_options {
+    uint32_t struct_size;            /* sizeof(siaara_web_retrieve_options) */
+    int32_t duplicate_policy;        /* SIAARA_DUP_* for the store and the folder */
+    siaara_store* store;             /* parts are added here (may be NULL when folder is set) */
+    const char* folder;              /* and / or written here as <SOP Instance UID>.dcm, owner-only (may be NULL) */
+    const char* const* transfer_syntaxes; /* as for siaara_web_wado_retrieve; NULL: the default */
+    uint32_t transfer_syntax_count;
+    int32_t incomplete_policy;       /* SIAARA_INCOMPLETE_*: a part that cannot be read completely */
+    int32_t allow_other_uids;        /* 0 (default): a part whose Study / Series / SOP Instance UID is not the
+                                        one requested is not kept (counted in uid_mismatch and failed).
+                                        1: keep whatever the server sends */
+    uint32_t reserved0;              /* set to 0 */
+} siaara_web_retrieve_options;
+
+typedef struct siaara_web_retrieve_report {
+    uint32_t struct_size;            /* set to sizeof(siaara_web_retrieve_report) */
+    uint32_t stored;                 /* parts kept */
+    uint32_t failed;                 /* parts not kept (including the two counts below) */
+    uint32_t incomplete_refused;     /* not kept: the part could not be read completely (REFUSE, or a part
+                                        without a Part 10 preamble, which could only be stored rewritten) */
+    uint32_t uid_mismatch;           /* not kept: not the requested study / series / instance */
+    uint32_t incomplete_accepted;    /* kept exactly as received although the read was not complete */
+    uint32_t rewritten;              /* kept, but the part had no Part 10 preamble: it was written as a new
+                                        Part 10 file (file meta added, the data set re-encoded as read) */
+    uint32_t reserved0;
+} siaara_web_retrieve_report;
+
+/* As siaara_web_wado_retrieve_to, with the receive policy and a report (may be NULL). A part is
+ * checked first, then written to the folder, then added to the store; when the store refuses it
+ * the file just written is removed again (unless it already existed and was kept), so a failed
+ * part leaves nothing behind (R-152). siaara_web_wado_retrieve_to is this call with the default
+ * options (incomplete parts refused, UIDs checked). */
+SIAARA_API siaara_status SIAARA_CALL siaara_web_wado_retrieve_to_ex(siaara_web_client* client, const char* study_uid,
+                                                                    const char* series_uid, const char* instance_uid,
+                                                                    const siaara_web_retrieve_options* options,
+                                                                    siaara_web_progress_callback cb, void* user,
+                                                                    siaara_web_retrieve_report* report);
 
 
 typedef struct siaara_web_stow_options {

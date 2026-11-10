@@ -19,6 +19,7 @@
 
 #include "capi/capi_internal.hpp"
 #include "core/dataset.hpp"
+#include "core/incomplete_policy.hpp"
 #include "net/scp.hpp"
 #include "net/scu.hpp"
 #include "store/store.hpp"
@@ -35,7 +36,8 @@ const std::vector<std::string>& compressed_syntaxes();
 bool ae_ok(const std::string& ae);
 siaara_status peer_config(const siaara_dimse_peer* p, net::ScuConfig& c);
 // Connects; maps an association rejection to a readable message.
-siaara_status connect(net::Scu& scu, siaara_cancel* cancel, const net::ScuConfig& c);
+siaara_status connect(net::Scu& scu, siaara_cancel* cancel, const net::ScuConfig& c,
+                      siaara_dimse_result* result = nullptr);
 void finish(net::Scu& scu, bool aborted);
 std::function<void()> interrupter(net::Scu& scu);
 siaara_status op_error(const Status& s, const CancelScope& scope);
@@ -71,6 +73,8 @@ siaara_status store_impl(const siaara_dimse_peer* peer, const siaara_file* file,
                          siaara_store_outcome* outcome = nullptr);
 // siaara_scp_options -> ScpConfig (validated).
 siaara_status scp_config(const siaara_scp_options* o, net::ScpConfig& cfg);
+// The siaara_scp_options fields that belong to the handle (event queue limits).
+void scp_handle_options(const siaara_scp_options* o, siaara_scp& h);
 // The Verification and Storage handlers of siaara_scp_start (events, counters, the store).
 void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd);
 
@@ -78,7 +82,24 @@ void storage_handlers(siaara_scp* raw, net::ScpHandlers& hd);
 
 namespace siaara::capi {
 struct ScpServices;  // capi_net2.cpp: the services of siaara_scp_start_ex
+
+// SIAARA_INCOMPLETE_* -> IncompletePolicy (SIAARA_INCOMPLETE_DEFAULT: kDefaultIncompletePolicy).
+inline siaara_status incomplete_policy(std::int32_t v, IncompletePolicy& out) {
+    switch (v) {
+        case SIAARA_INCOMPLETE_DEFAULT: out = kDefaultIncompletePolicy; return SIAARA_OK;
+        case SIAARA_INCOMPLETE_REFUSE: out = IncompletePolicy::Refuse; return SIAARA_OK;
+        case SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED: out = IncompletePolicy::AcceptAsReceived; return SIAARA_OK;
+        default: return set_error(Errc::InvalidArgument, "unknown incomplete_policy");
+    }
 }
+// DicomFile::ReadLoss bits -> SIAARA_READ_* bits.
+inline std::uint32_t read_loss_bits(std::uint32_t loss) noexcept {
+    return (loss & DicomFile::kReadBytesSkipped ? static_cast<std::uint32_t>(SIAARA_READ_BYTES_SKIPPED) : 0u) |
+           (loss & DicomFile::kReadInputTruncated ? static_cast<std::uint32_t>(SIAARA_READ_INPUT_TRUNCATED) : 0u) |
+           (loss & DicomFile::kReadHeaderOnly ? static_cast<std::uint32_t>(SIAARA_READ_HEADER_ONLY) : 0u) |
+           (loss & DicomFile::kReadRecovered ? static_cast<std::uint32_t>(SIAARA_READ_RECOVERED) : 0u);
+}
+}  // namespace siaara::capi
 
 // ---------------------------------------------------------------- the SCP handle
 // Events go through a bounded queue to one dispatcher thread, which calls the user's callback
@@ -98,8 +119,13 @@ struct siaara_scp {
         std::optional<siaara::Dataset> dataset;
         std::uint32_t completed = 0, failed = 0, warning = 0;
         std::uint32_t command_field = 0;
+        // round 4 (siaara_scp_event fields after command_field)
+        std::uint64_t association_id = 0;  // 0: taken from the posting thread's association
+        std::uint32_t read_loss = 0;       // SIAARA_READ_* bits
+        std::uint64_t bytes = 0;           // of `dataset`, charged to the queue's byte budget
     };
     static constexpr std::size_t kDefaultMaxQueued = 1024;
+    static constexpr std::uint64_t kDefaultMaxQueuedBytes = 64ull << 20;
     static constexpr std::chrono::milliseconds kMaxWait{1000};
 
     std::unique_ptr<siaara::net::ScpServer> server;
@@ -108,6 +134,8 @@ struct siaara_scp {
     siaara_scp_callback cb = nullptr;
     void* user = nullptr;
     std::size_t max_queued = kDefaultMaxQueued;
+    std::uint64_t max_queued_bytes = kDefaultMaxQueuedBytes;  // R-109
+    std::uint64_t queued_bytes = 0;     // under q_mu
     std::mutex q_mu;
     std::condition_variable q_cv;       // events queued / dispatcher stopping
     std::condition_variable space_cv;   // room in the queue / stopping
@@ -118,6 +146,7 @@ struct siaara_scp {
     std::atomic<std::uint64_t> stored{0}, failures{0}, echoes{0}, bytes{0};
     std::atomic<std::uint64_t> dropped{0};
     std::atomic<bool> drop_logged{false};
+    std::atomic<bool> stop_requested{false};  // set by begin_stop(): waits on application callbacks end (R-130)
     // Counters of the round-2 services (siaara_scp_stats fields after events_dropped).
     std::atomic<std::uint64_t> finds{0}, retrieves{0}, sub_operations{0}, mpps{0}, commitments{0}, refused{0};
     std::shared_ptr<siaara::capi::ScpServices> services;
@@ -133,6 +162,7 @@ struct siaara_scp {
     // association blocked on a full queue (a callback that does not return) cannot keep
     // ScpServer::stop() from joining its thread.
     void begin_stop() {
+        stop_requested.store(true);
         {
             const std::lock_guard<std::mutex> l(q_mu);
             stopping = true;
@@ -155,6 +185,12 @@ struct siaara_scp {
         q_cv.notify_all();
         space_cv.notify_all();
         if (dispatcher.joinable()) dispatcher.join();
+        siaara::capi::store_detach(store);  // R-150: may perform a deferred siaara_store_free
+    }
+    // R-150: the store stays alive until this SCP is freed.
+    void attach_store(siaara_store* s) {
+        store = s;
+        siaara::capi::store_attach(s);
     }
 
     void dispatch_loop();

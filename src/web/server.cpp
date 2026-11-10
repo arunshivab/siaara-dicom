@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/io.hpp"
 #include "core/reader.hpp"
 #include "core/transfer_syntax.hpp"
 #include "core/writer.hpp"
@@ -305,6 +306,26 @@ private:
         if (q.limit && *q.limit < count) count = *q.limit;
         bool cut = false;
         if (count > cfg_.max_qido_results) { count = cfg_.max_qido_results; cut = true; }
+        // T-P3-1: Retrieve URL (0008,1190) of each result at its level (PS3.18 10.6.3.3), built
+        // from the public base URL, or from the request's Host header when none is configured.
+        if (!base_url_.empty() && base_url_.find("://") != std::string::npos)
+            for (std::size_t i = 0; i < count; ++i) {
+                Dataset& d = results[off + i];
+                const std::string st_uid = !study.empty() ? study : trimmed(d, tags::StudyInstanceUID);
+                const std::string se_uid = !series.empty() ? series : trimmed(d, tags::SeriesInstanceUID);
+                const std::string in_uid = trimmed(d, tags::SOPInstanceUID);
+                if (!is_uid(st_uid)) continue;
+                std::string url = base_url_ + "/studies/" + st_uid;
+                if (level != QueryLevel::Study) {
+                    if (!is_uid(se_uid)) continue;
+                    url += "/series/" + se_uid;
+                }
+                if (level == QueryLevel::Instance) {
+                    if (!is_uid(in_uid)) continue;
+                    url += "/instances/" + in_uid;
+                }
+                (void)d.set_string(webtags::RetrieveURL, VR::UR, url);
+            }
         std::vector<const Dataset*> page;
         page.reserve(count);
         for (std::size_t i = 0; i < count; ++i) page.push_back(&results[off + i]);
@@ -336,7 +357,33 @@ private:
     }
 
     // ---- WADO-RS (PS3.18 10.4)
+    // The instances under the key from the store's index: nothing is read (R-110).
+    bool locate(const InstanceKey& key, std::vector<StoredInstance>& out) {
+        Status st = store_.locate(key, out);
+        if (st.code == Errc::NotFound || (st && out.empty())) { fail(rs_, 404, "not found"); return false; }
+        if (!st) { fail(rs_, 500, "retrieve failed"); return false; }
+        return true;
+    }
+
+    static Result<Bytes> open_instance(const Store& store, const StoredInstance& inst) {
+        if (store.open) return store.open(inst);
+        return io::map_file(inst.path, false);  // mapped: pixel data is paged in only when used
+    }
+
+    // The Part 10 streams under the key, for the routes that work on one instance (frames, bulk
+    // data, WADO-URI). With Store::locate they are memory-mapped, not read.
     bool load(const InstanceKey& key, std::vector<Bytes>& out) {
+        if (store_.locate) {
+            std::vector<StoredInstance> list;
+            if (!locate(key, list)) return false;
+            if (list.size() > 64) { fail(rs_, 413, "response too large"); return false; }
+            for (const StoredInstance& inst : list) {
+                auto b = open_instance(store_, inst);
+                if (!b) { fail(rs_, 500, "retrieve failed"); return false; }
+                out.push_back(std::move(b.value()));
+            }
+            return true;
+        }
         if (!store_.retrieve) { fail(rs_, 501, "retrieve is not supported"); return false; }
         Status st = store_.retrieve(key, out);
         if (st.code == Errc::NotFound || (st && out.empty())) { fail(rs_, 404, "not found"); return false; }
@@ -344,10 +391,69 @@ private:
         return true;
     }
 
+    // Can an instance stored in `stored` be sent for the Accept candidate `want`? (As
+    // convert_instance decides, from the indexed transfer syntax alone.)
+    static bool servable(const std::string& stored, const std::string& want) {
+        if (stored.empty()) return true;  // not indexed: found out when the instance is opened
+        if (want == "*" || want == stored || (want.empty() && stored == ts::ExplicitVRLittleEndian)) return true;
+        const std::string target = want.empty() ? std::string(ts::ExplicitVRLittleEndian) : want;
+        const auto* to = find_transfer_syntax(target);
+        const auto* from = find_transfer_syntax(stored);
+        return to && from && !to->encapsulated && to->codec != Codec::Unknown;
+    }
+
+    // R-110: the sizes come from the index, 413 is answered before any file is opened, and the
+    // multipart reply is written part by part - one instance is open at a time.
+    void retrieve_streamed(const InstanceKey& key, const std::vector<std::string>& candidates) {
+        std::vector<StoredInstance> list;
+        if (!locate(key, list)) return;
+        std::uint64_t stored_total = 0;
+        for (const StoredInstance& inst : list) {
+            if (inst.size > cfg_.max_response_bytes - std::min(stored_total, cfg_.max_response_bytes))
+                return fail(rs_, 413, "response too large");
+            stored_total += inst.size;
+        }
+        const std::string* chosen = nullptr;
+        for (const auto& want : candidates) {
+            bool all = true;
+            for (const StoredInstance& inst : list) all = all && servable(inst.transfer_syntax, want);
+            if (all) { chosen = &want; break; }
+        }
+        if (!chosen) return fail(rs_, 406, "requested transfer syntax not available");
+        const std::string boundary = multipart::make_boundary();
+        rs_.status = 200;
+        rs_.set("Content-Type", "multipart/related; type=" + http::quote_if_needed(media::Dicom) +
+                                    "; boundary=" + http::quote_if_needed(boundary));
+        const Store* store = &store_;  // the server's own, alive while it serves
+        const std::uint64_t max_bytes = cfg_.max_response_bytes;
+        rs_.stream = [store, list = std::move(list), want = *chosen, boundary, max_bytes](const http::BodyWriter& write) -> Status {
+            std::uint64_t total = 0;
+            for (const StoredInstance& inst : list) {
+                Result<Bytes> raw = open_instance(*store, inst);
+                if (!raw) return raw.take_error();
+                std::string ts_out;
+                Result<Bytes> conv = convert_instance(*raw, want, ts_out);
+                if (!conv) return conv.take_error();
+                total += conv->size();
+                if (total > max_bytes) return Status(Errc::LimitExceeded, "response too large");
+                if (Status s = write("--" + boundary + "\r\nContent-Type: " + std::string(media::Dicom) +
+                                     "; transfer-syntax=" + ts_out + "\r\n\r\n"); !s)
+                    return s;
+                const std::string_view body = conv->as_chars();
+                constexpr std::size_t kPiece = 1u << 20;
+                for (std::size_t off = 0; off < body.size(); off += kPiece)
+                    if (Status s = write(body.substr(off, kPiece)); !s) return s;
+                if (Status s = write("\r\n"); !s) return s;
+            }
+            return write("--" + boundary + "--\r\n");
+        };
+    }
+
     void retrieve(const InstanceKey& key) {
         std::vector<std::string> candidates;
         if (!instance_candidates(rq_, candidates))
             return fail(rs_, 406, "acceptable media type: multipart/related; type=\"application/dicom\"");
+        if (store_.locate) return retrieve_streamed(key, candidates);
         std::vector<Bytes> raw;
         if (!load(key, raw)) return;
         // R-052: the reply is built in memory, so it is capped like the frames response.
@@ -385,21 +491,34 @@ private:
     void metadata(const InstanceKey& key) {
         const MetaFormat fmt = metadata_format(rq_);
         if (fmt == MetaFormat::None) return fail(rs_, 406, "acceptable media types: application/dicom+json, multipart/related; type=\"application/dicom+xml\"");
+        // R-110: metadata never needs the pixel data in memory. With Store::locate the instances
+        // are handled one at a time: each file is memory-mapped and parsed in place (values are
+        // views into the mapping, so pixel data is not read), encoded, and released.
+        std::vector<StoredInstance> list;
         std::vector<Bytes> raw;
-        if (!load(key, raw)) return;
-        std::vector<DicomFile> files;
-        files.reserve(raw.size());
-        for (const auto& r : raw) {
-            auto f = read_part10(r);
-            if (!f) return fail(rs_, 500, "stored instance cannot be read");
-            files.push_back(std::move(f).value());
+        if (store_.locate) {
+            if (!locate(key, list)) return;
+        } else {
+            if (!load(key, raw)) return;
         }
+        const std::size_t count = store_.locate ? list.size() : raw.size();
         std::string json;
         multipart::Writer w;
         std::uint64_t xml_total = 0;
         if (fmt == MetaFormat::Json) json.push_back('[');
-        for (std::size_t i = 0; i < files.size(); ++i) {
-            const std::string url = instance_url(files[i].dataset);
+        for (std::size_t i = 0; i < count; ++i) {
+            Bytes bytes;
+            if (store_.locate) {
+                auto b = open_instance(store_, list[i]);
+                if (!b) return fail(rs_, 500, "retrieve failed");
+                bytes = std::move(b.value());
+            } else {
+                bytes = raw[i];
+            }
+            auto parsed = read_part10(bytes);
+            if (!parsed) return fail(rs_, 500, "stored instance cannot be read");
+            const DicomFile& file = parsed.value();
+            const std::string url = instance_url(file.dataset);
             ModelWriteOptions opt;
             const std::uint64_t threshold = cfg_.bulk_data_threshold;
             opt.bulk_data_uri = [&url, threshold](const Element& e, const ElementPath& path) -> std::optional<std::string> {
@@ -412,11 +531,11 @@ private:
             };
             if (fmt == MetaFormat::Json) {
                 if (i) json.push_back(',');
-                if (Status st = dataset_to_json(files[i].dataset, json, opt); !st) return fail(rs_, 500, "cannot encode metadata");
+                if (Status st = dataset_to_json(file.dataset, json, opt); !st) return fail(rs_, 500, "cannot encode metadata");
                 if (json.size() > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
             } else {
                 std::string x;
-                if (Status st = dataset_to_xml(files[i].dataset, x, opt); !st) return fail(rs_, 500, "cannot encode metadata");
+                if (Status st = dataset_to_xml(file.dataset, x, opt); !st) return fail(rs_, 500, "cannot encode metadata");
                 xml_total += x.size();
                 if (xml_total > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
                 w.add(media::DicomXml, x);
@@ -615,13 +734,14 @@ private:
         Dataset response;
         std::string common_study;
         bool one_study = true;
+        bool any_warning = false;
         Element failed, stored;
         failed.tag = webtags::FailedSOPSequence;
         failed.vr = VR::SQ;
         stored.tag = webtags::ReferencedSOPSequence;
         stored.vr = VR::SQ;
         for (const auto& p : parts.value()) {
-            std::uint16_t reason = 0;
+            std::uint16_t reason = 0, warn = 0;
             std::string cls, inst, st_uid, se_uid;
             const std::string* pct = p.content_type();
             if (pct) {
@@ -640,7 +760,19 @@ private:
                     se_uid = trimmed(f->dataset, tags::SeriesInstanceUID);
                     if (!is_uid(cls) || !is_uid(inst) || !is_uid(st_uid) || !is_uid(se_uid)) reason = failure::CannotUnderstand;
                     else if (!study.empty() && st_uid != study) reason = failure::ProcessingFailure;
-                    else reason = store_.store(f.value(), bytes);
+                    // R-116: a part that was not read completely is refused, or stored exactly as
+                    // received and flagged - never rewritten (a part without a preamble could only
+                    // be stored rewritten, so that one is refused under both policies).
+                    else if (!f->complete() &&
+                             (cfg_.incomplete_policy == IncompletePolicy::Refuse || !f->had_preamble))
+                        reason = failure::CannotUnderstand;
+                    else {
+                        reason = store_.store(f.value(), bytes);
+                        if (!reason && !f->complete()) warn = warning::ElementsDiscarded;
+                        // A complete data set without a Part 10 preamble is stored as a new
+                        // Part 10 file (file meta added): say so.
+                        else if (!reason && !f->had_preamble) warn = warning::CoercionOfDataElements;
+                    }
                 }
             }
             Dataset item;
@@ -654,6 +786,10 @@ private:
                 else if (common_study != st_uid) one_study = false;
                 (void)item.set_string(webtags::RetrieveURL, VR::UR,
                                       base_url_ + "/studies/" + st_uid + "/series/" + se_uid + "/instances/" + inst);
+                if (warn) {
+                    (void)item.set_uint16(webtags::WarningReason, warn);
+                    any_warning = true;
+                }
                 stored.items.push_back(std::move(item));
             }
         }
@@ -664,7 +800,8 @@ private:
         const bool any_stored = !stored.items.empty();
         if (any_failed) response.put(std::move(failed));
         if (any_stored) response.put(std::move(stored));
-        rs_.status = !any_failed ? 200 : any_stored ? 202 : 409;
+        // PS3.18 10.5.3: 202 when some instances failed or were stored with warnings.
+        rs_.status = any_failed ? (any_stored ? 202 : 409) : any_warning ? 202 : 200;
         const MetaFormat fmt = metadata_format(rq_);
         if (fmt == MetaFormat::Xml) {
             std::string x;

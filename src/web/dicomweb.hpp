@@ -43,6 +43,13 @@ constexpr std::uint16_t CannotUnderstand = 0xC000;
 constexpr std::uint16_t TransferSyntaxNotSupported = 0xC122;
 }  // namespace failure
 
+// Warning Reason (0008,1196) values of a STOW-RS response (PS3.18 table I.2-1).
+namespace warning {
+constexpr std::uint16_t CoercionOfDataElements = 0xB000;
+constexpr std::uint16_t ElementsDiscarded = 0xB006;
+constexpr std::uint16_t DataSetDoesNotMatchSopClass = 0xB007;
+}  // namespace warning
+
 // Media type of the bulk data of a transfer syntax (PS3.18 table 8.7.3-5), "application/octet-stream"
 // for native and unknown syntaxes.
 std::string_view media_type_for_transfer_syntax(std::string_view ts_uid) noexcept;

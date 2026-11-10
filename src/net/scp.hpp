@@ -19,6 +19,7 @@
 
 #include "codec/transcode.hpp"
 #include "core/dataset.hpp"
+#include "core/incomplete_policy.hpp"
 #include "core/status.hpp"
 #include "net/association.hpp"
 #include "net/dimse.hpp"
@@ -64,6 +65,10 @@ struct ScpHandlers {
     std::function<std::uint16_t(const std::string& calling_ae)> on_echo;
     // Receives each stored instance; returns the C-STORE status.
     std::function<std::uint16_t(const StoreRequest&)> on_store;
+    // A C-STORE the server refused before on_store (R-116: incomplete data set under
+    // IncompletePolicy::Refuse): the request (data set as far as it was read), the status answered
+    // and why (a fixed code and offsets; no patient data).
+    std::function<void(const StoreRequest&, std::uint16_t status, const std::string& why)> on_store_refused;
     // Yields matches through `emit` (which returns false once the SCU cancelled or the
     // association failed); returns the final status (Success, or a failure code).
     std::function<std::uint16_t(const QueryRequest&, const std::function<bool(const Dataset&)>& emit)> on_find;
@@ -138,6 +143,15 @@ struct ScpConfig {
         p.allow_lossy = false;
         return p;
     }();
+    // A received C-STORE data set whose read was not complete - truncated, bytes skipped or
+    // recovered by a heuristic (R-116). Refuse: status 0xC000, nothing reaches on_store
+    // (on_store_refused is told). AcceptAsReceived: on_store gets it with StoreRequest::read_loss
+    // set and the bytes exactly as received; it is never converted to preferred_store_ts.
+    IncompletePolicy incomplete_policy = kDefaultIncompletePolicy;
+    // C-MOVE: the destinations a calling AE may name (R-129). A calling AE without an entry may
+    // name any destination resolve_move_destination knows; others get 0xA801 (Move Destination
+    // unknown) for a destination outside their list.
+    std::map<std::string, std::set<std::string>> move_destinations_by_caller;
     // C-GET / C-MOVE sub-operations for files whose read was not complete (truncated input,
     // skipped bytes): refused (the sub-operation fails, logged) unless set (check_sendable).
     bool allow_incomplete = false;

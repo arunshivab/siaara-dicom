@@ -903,6 +903,16 @@ Result<Dataset> read_dataset(const Bytes& data, std::string_view transfer_syntax
     return std::move(f.dataset);
 }
 
+// R-116 (sec4b): read_dataset with the read-loss bits and warnings kept.
+Result<DicomFile> read_dataset_report(const Bytes& data, std::string_view transfer_syntax_uid,
+                                      const ReadOptions& opt) {
+    DicomFile f;
+    if (Status s = parse_body(data, 0, transfer_syntax_uid, opt, f); !s) return s;
+    f.transfer_syntax = std::string(transfer_syntax_uid);
+    flag_incomplete(f);
+    return f;
+}
+
 Result<DicomFile> read_file(const std::string& utf8_path, const ReadOptions& opt) {
     auto bytes = io::map_file(utf8_path, !opt.stop_before_pixel_data);
     if (!bytes) return bytes.take_error();

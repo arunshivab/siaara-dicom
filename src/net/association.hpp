@@ -85,6 +85,9 @@ struct Timeouts {
     int write_ms = 60000;     // waiting for send-buffer space
 };
 
+// Default of AssociationLimits::max_service_dataset_size (4 MiB).
+inline constexpr std::uint64_t kDefaultMaxServiceDatasetSize = 4ull << 20;
+
 struct AssociationLimits {
     PduLimits pdu;
     std::uint32_t max_receive_pdu = 65536;            // advertised maximum length (clamped to pdu.max_pdu_length)
@@ -92,6 +95,11 @@ struct AssociationLimits {
     // Reassembled data set held in memory (NET-04). With a spool configured, data sets above the
     // spool threshold go to disk instead and are bounded by SpoolConfig::max_size.
     std::uint64_t max_dataset_size = 256ull << 20;
+    // Data sets of every message other than C-STORE-RQ: N-service data sets (MPPS, UPS, Storage
+    // Commitment, print ...), C-FIND / C-MOVE / C-GET identifiers and their responses (R-109).
+    // They are small by nature; the limit is enforced while the fragments arrive (before
+    // reassembly) and such data sets are never spooled. Over it: A-ABORT, Errc::LimitExceeded.
+    std::uint64_t max_service_dataset_size = kDefaultMaxServiceDatasetSize;
     // P-DATA-TF PDUs longer than the maximum length we advertised (max_receive_pdu) violate
     // PS3.8 D.1. true: abort the association. false (lenient): accept them up to
     // pdu.max_pdu_length and count them (Association::oversized_pdus()).
@@ -229,6 +237,9 @@ public:
     std::optional<Abort> peer_abort() const noexcept { return peer_abort_; }
     // P-DATA-TF PDUs received that were longer than our advertised maximum length (lenient mode).
     std::uint64_t oversized_pdus() const noexcept { return oversized_pdus_; }
+    // A number unique among the associations of this process run (1, 2, ...), for telling the
+    // events of concurrent associations apart.
+    std::uint64_t id() const noexcept { return id_; }
 
 private:
     Association(std::unique_ptr<Transport> t, bool requestor, const Timeouts& to, const AssociationLimits& lim);
@@ -254,6 +265,22 @@ private:
     std::atomic<bool> interrupted_{false};
     std::uint8_t pending_abort_reason_ = abort_reason::UnexpectedPdu;
     std::uint64_t oversized_pdus_ = 0;
+    std::uint64_t id_ = 0;
+};
+
+// The id of the association whose request the calling thread is serving (ScpServer sets it for
+// its handlers), or 0.
+std::uint64_t current_association_id() noexcept;
+// Sets it for a scope (ScpServer per association; an event sender for a deferred report).
+class AssociationIdScope {
+public:
+    explicit AssociationIdScope(std::uint64_t id) noexcept;
+    ~AssociationIdScope();
+    AssociationIdScope(const AssociationIdScope&) = delete;
+    AssociationIdScope& operator=(const AssociationIdScope&) = delete;
+
+private:
+    std::uint64_t previous_;
 };
 
 }  // namespace siaara::net

@@ -947,9 +947,71 @@ Status append_headers(std::string& out, const Headers& h) {
     return Status::ok();
 }
 
+void Connection::begin_send() {
+    sending_ = true;
+    send_deadline_ms_ = lim_.send_timeout_ms > 0 ? now_ms() + lim_.send_timeout_ms : 0;
+    send_blocked_ms_ = 0;
+    send_window_bytes_ = 0;
+}
+
+void Connection::end_send() noexcept {
+    sending_ = false;
+    send_deadline_ms_ = 0;
+    if (t_) t_->set_write_deadline(nullptr);
+}
+
+// While a message is written (begin_send .. end_send) every write honours the whole-message
+// deadline and the minimum rate (R-120). The rate is measured over the time spent waiting in
+// writes: once send_rate_window_ms of it has passed without the peer taking min_send_rate x
+// window bytes, the message is abandoned. A window restarts as soon as that many bytes went
+// out, and data is handed to the transport in pieces no larger than that amount, so a piece that
+// does not go out within one window always means the rate was missed. The transport gets the
+// absolute deadline (Transport::set_write_deadline), so a peer taking a few bytes now and then
+// cannot stretch a write beyond it.
 Status Connection::write_raw(std::string_view data) {
     if (!t_) return Status(Errc::NetworkError, "connection closed");
-    return t_->write_all(reinterpret_cast<const std::uint8_t*>(data.data()), data.size(), lim_.write_timeout_ms);
+    const auto* p = reinterpret_cast<const std::uint8_t*>(data.data());
+    if (!sending_) return t_->write_all(p, data.size(), lim_.write_timeout_ms);
+    const std::int64_t window = lim_.send_rate_window_ms;
+    const std::uint64_t need = lim_.min_send_rate > 0 && window > 0
+                                   ? static_cast<std::uint64_t>(lim_.min_send_rate) * static_cast<std::uint64_t>(window) / 1000u
+                                   : 0;
+    const std::size_t slice_max = need ? static_cast<std::size_t>(std::min<std::uint64_t>(need, 64u * 1024u)) : 64u * 1024u;
+    std::size_t done = 0;
+    while (done < data.size()) {
+        const std::int64_t now = now_ms();
+        if (send_deadline_ms_ && now >= send_deadline_ms_) return Status(Errc::Timeout, "response timed out");
+        std::int64_t budget = lim_.write_timeout_ms > 0 ? lim_.write_timeout_ms : 1;
+        const bool bounded = send_deadline_ms_ != 0 || need != 0;
+        if (send_deadline_ms_) budget = std::min(budget, send_deadline_ms_ - now);
+        if (need) budget = std::min(budget, std::max<std::int64_t>(1, window - send_blocked_ms_));
+        if (bounded) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget);
+            t_->set_write_deadline(&deadline);
+        }
+        const std::size_t n = std::min(slice_max, data.size() - done);
+        Status st = t_->write_all(p + done, n, static_cast<int>(budget));
+        const std::int64_t after = now_ms();
+        send_blocked_ms_ += after - now;
+        if (!st) {
+            if (st.code != Errc::Timeout) return st;
+            // After a partial write the stream position is unknown: the message cannot go on.
+            return Status(Errc::Timeout, send_deadline_ms_ && after >= send_deadline_ms_
+                                             ? "response timed out"
+                                             : "response read too slowly by the peer");
+        }
+        done += n;
+        send_window_bytes_ += n;
+        if (need) {
+            if (send_window_bytes_ >= need) {
+                send_blocked_ms_ = 0;
+                send_window_bytes_ = 0;
+            } else if (send_blocked_ms_ >= window) {
+                return Status(Errc::Timeout, "response read too slowly by the peer");
+            }
+        }
+    }
+    return Status::ok();
 }
 
 Status Connection::write_request(const Request& rq) {
@@ -970,6 +1032,17 @@ Status Connection::write_request(const Request& rq) {
     return write_raw(rq.body);
 }
 
+namespace {
+// Clears the send deadline when a message has been written (or failed).
+struct SendScope {
+    explicit SendScope(std::function<void()> end) : end_(std::move(end)) {}
+    ~SendScope() { end_(); }
+    SendScope(const SendScope&) = delete;
+    SendScope& operator=(const SendScope&) = delete;
+    std::function<void()> end_;
+};
+}  // namespace
+
 Status Connection::write_response(const Response& rs, bool head, bool close_after) {
     if (rs.status < 100 || rs.status > 599) return Status(Errc::InvalidArgument, "invalid status code");
     std::string reason = rs.reason.empty() ? std::string(reason_phrase(rs.status)) : rs.reason;
@@ -982,6 +1055,8 @@ Status Connection::write_response(const Response& rs, bool head, bool close_afte
         out += "Content-Length: " + std::to_string(rs.body.size()) + "\r\n";
     if (close_after) out += "Connection: close\r\n";
     out += "\r\n";
+    begin_send();
+    const SendScope scope([this] { end_send(); });
     if (head || no_body) return write_raw(out);
     if (rs.body.size() < 65536) {
         out += rs.body;
@@ -989,6 +1064,48 @@ Status Connection::write_response(const Response& rs, bool head, bool close_afte
     }
     if (Status st = write_raw(out); !st) return st;
     return write_raw(rs.body);
+}
+
+Status Connection::write_streamed_response(const Response& rs, bool head, bool close_after, bool http10) {
+    if (rs.status < 100 || rs.status > 599) return Status(Errc::InvalidArgument, "invalid status code");
+    if (!rs.stream) return write_response(rs, head, close_after);
+    std::string reason = rs.reason.empty() ? std::string(reason_phrase(rs.status)) : rs.reason;
+    for (char& c : reason)
+        if (c == '\r' || c == '\n' || c == '\0') c = ' ';
+    std::string out = "HTTP/1.1 " + std::to_string(rs.status) + " " + reason + "\r\n";
+    if (Status st = append_headers(out, rs.headers); !st) return st;
+    const bool chunked = !http10;
+    if (chunked) out += "Transfer-Encoding: chunked\r\n";
+    if (close_after || http10) out += "Connection: close\r\n";
+    out += "\r\n";
+    begin_send();
+    const SendScope scope([this] { end_send(); });
+    if (Status st = write_raw(out); !st) return st;
+    if (head) return Status::ok();
+    Status failed = Status::ok();
+    const BodyWriter writer = [&](std::string_view piece) -> Status {
+        if (!failed) return failed;
+        if (piece.empty()) return Status::ok();
+        if (chunked) {
+            // chunk-size in hex (RFC 9112 7.1)
+            char size_line[20];
+            std::size_t k = sizeof size_line;
+            size_line[--k] = '\n';
+            size_line[--k] = '\r';
+            for (std::size_t v = piece.size(); v != 0; v >>= 4) size_line[--k] = "0123456789abcdef"[v & 0xFu];
+            failed = write_raw(std::string_view(size_line + k, sizeof size_line - k));
+            if (failed) failed = write_raw(piece);
+            if (failed) failed = write_raw("\r\n");
+        } else {
+            failed = write_raw(piece);
+        }
+        return failed;
+    };
+    Status produced = rs.stream(writer);
+    if (!failed) return failed;
+    if (!produced) return produced;  // the caller closes: no final chunk, the client sees the cut
+    if (chunked) return write_raw("0\r\n\r\n");
+    return Status::ok();
 }
 
 bool wants_close(const Headers& h, int version_minor) noexcept {
@@ -1311,11 +1428,18 @@ void Server::serve(Connection& c, const std::string& peer) {
         const bool close_after = wants_close(rq->headers, rq->version_minor) || wants_close(rs.headers, 1) ||
                                  n + 1 >= cfg_.max_requests_per_connection || stopping_.load();
         const std::string method = rq->method;
+        const int rq_minor = rq->version_minor;
         rq = Status(Errc::Cancelled, "");  // the request body is no longer held...
         c.release_body_budget();           // ...nor charged to the server's budget
-        if (Status st = c.write_response(rs, iequals(method, "HEAD"), close_after); !st) break;
+        const bool http10 = rq_minor == 0;
+        Status st = rs.stream ? c.write_streamed_response(rs, iequals(method, "HEAD"), close_after, http10)
+                              : c.write_response(rs, iequals(method, "HEAD"), close_after);
+        if (!st) {
+            if (cfg_.log) cfg_.log("http: " + peer + " " + method + ": response not completed: " + st.message);
+            break;
+        }
         if (cfg_.log) cfg_.log("http: " + peer + " " + method + " -> " + std::to_string(rs.status));
-        if (close_after) break;
+        if (close_after || (rs.stream && http10)) break;
     }
 }
 
