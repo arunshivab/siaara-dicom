@@ -204,5 +204,34 @@ internal static class GroupingTests
             DicomGroupingIssue missing = two.Result.Issues.Single(i => i.Kind == DicomGroupingIssueKind.ListedMissing);
             CheckEq(string.Join(",", missing.ListedBy), "0,1");
         });
+
+        Case("grouping: series order in a study, as added (default) or by Series Number", () =>
+        {
+            byte[] Series(string uid, string? number)
+            {
+                using DicomFile f = Builders.Ct(2, 2, new short[] { 1, 2, 3, 4 }, uid + ".1", uid, "2.25.300");
+                if (number is null)
+                {
+                    f.Dataset.Remove(DicomTags.SeriesNumber);
+                }
+                else
+                {
+                    f.Dataset.SetString(DicomTags.SeriesNumber, number);
+                }
+                return Bytes(f, uid + ".dcm");
+            }
+            var data = new[] { Series("2.25.31", "5"), Series("2.25.32", null), Series("2.25.33", "1"), Series("2.25.34", "x") };
+            using var asAdded = new DicomStudyGrouping();
+            using var byNumber = new DicomStudyGrouping(new DicomGroupingOptions { SeriesOrder = DicomGroupingSeriesOrder.SeriesNumber });
+            for (int i = 0; i < data.Length; i++)
+            {
+                asAdded.Add("f" + i, data[i]);
+                byNumber.Add("f" + i, data[i]);
+            }
+            CheckEq(string.Join(",", asAdded.Result.Studies[0].Series.Select(x => x.SeriesUid.Stored)), "2.25.31,2.25.32,2.25.33,2.25.34");
+            CheckEq(string.Join(",", byNumber.Result.Studies[0].Series.Select(x => x.SeriesUid.Stored)), "2.25.33,2.25.31,2.25.32,2.25.34");
+            CheckEq(DicomGroupingOptions.Recommended.SeriesOrder, DicomGroupingSeriesOrder.AsAdded);
+            Throws<ArgumentException>(() => new DicomStudyGrouping(new DicomGroupingOptions { SeriesOrder = (DicomGroupingSeriesOrder)7 }).Dispose());
+        });
     }
 }

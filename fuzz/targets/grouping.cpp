@@ -45,6 +45,7 @@ SIAARA_FUZZ_TARGET(grouping) {
     o.position_fallback = pick >> 7;
     o.tie_break = (pick / 7) % 3;
     o.uid_validation = (pick >> 4) & 1;
+    o.series_order = (pick >> 1) & 1;
     if (pick & 64) {  // small budgets, so they are reached
         o.max_files = 3;
         o.max_result_bytes = 600;

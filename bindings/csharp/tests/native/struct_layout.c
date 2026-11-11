@@ -993,6 +993,8 @@ int main(void) {
     printf("F siaara_grouping_options tie_break %u\n", (unsigned)offsetof(siaara_grouping_options, tie_break));
     printf("F siaara_grouping_options uid_validation %u\n", (unsigned)offsetof(siaara_grouping_options, uid_validation));
     printf("F siaara_grouping_options max_dicomdirs %u\n", (unsigned)offsetof(siaara_grouping_options, max_dicomdirs));
+    printf("F siaara_grouping_options series_order %u\n", (unsigned)offsetof(siaara_grouping_options, series_order));
+    printf("F siaara_grouping_options reserved2 %u\n", (unsigned)offsetof(siaara_grouping_options, reserved2));
     printf("S siaara_grouping_summary %u\n", (unsigned)sizeof(siaara_grouping_summary));
     printf("F siaara_grouping_summary struct_size %u\n", (unsigned)offsetof(siaara_grouping_summary, struct_size));
     printf("F siaara_grouping_summary budget_reached %u\n", (unsigned)offsetof(siaara_grouping_summary, budget_reached));

@@ -503,6 +503,8 @@ internal static class C
     public const int SIAARA_GROUP_TIE_ACQUISITION_TIME = 2;
     public const int SIAARA_GROUP_UID_STRICT = 0;
     public const int SIAARA_GROUP_UID_LENIENT = 1;
+    public const int SIAARA_GROUP_SERIES_ORDER_AS_ADDED = 0;
+    public const int SIAARA_GROUP_SERIES_ORDER_SERIES_NUMBER = 1;
     public const int SIAARA_GLEVEL_PATIENT = 0;
     public const int SIAARA_GLEVEL_STUDY = 1;
     public const int SIAARA_GLEVEL_SERIES = 2;
@@ -2065,6 +2067,8 @@ internal struct siaara_grouping_options
     public int tie_break;
     public int uid_validation;
     public uint max_dicomdirs;
+    public int series_order;
+    public uint reserved2;
 }
 
 /// <summary>siaara_grouping_summary (blittable, C layout).</summary>

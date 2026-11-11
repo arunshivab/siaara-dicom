@@ -552,6 +552,10 @@ What it does:
   was used. Equal keys (a time series, diffusion, a test bolus) are ordered by `TieBreak`:
   Instance Number (default), as added, or Acquisition Time (else Content Time); then always as
   added. By Instance Number or as added are orders of their own (`Order`).
+- **Order of the series in a study** (`SeriesOrder`, `series_order`): as their first file was
+  added (`AsAdded`, the default), or by Series Number ascending (`SeriesNumber`); series without
+  a Series Number, or with one that is not a valid IS, come after the numbered ones as added, and
+  ties keep the added order. The values themselves are not changed.
 - **Text**: every value comes exactly as stored (decoded from its character set, padding
   removed) and next to it a display-safe copy: controls and line separators become a space,
   bidirectional overrides, zero-width and other format characters are removed, bytes that are

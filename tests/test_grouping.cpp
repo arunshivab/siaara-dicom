@@ -2,6 +2,7 @@
 // duplicates, ungrouped files, inconsistencies, caps and budgets, DICOMDIR File IDs against names.
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -564,7 +565,7 @@ TEST_CASE("grouping: options and argument checks; getters before the result") {
     o.orientation_tolerance = std::numeric_limits<double>::quiet_NaN();
     CHECK_EQ(siaara_grouping_create(&o, &g), SIAARA_ERR_INVALID_ARGUMENT);
     o = grouping_synth::options();
-    o.struct_size = sizeof o - 8;
+    o.struct_size = sizeof o - 16;  // smaller than the first published struct (128 bytes)
     CHECK_EQ(siaara_grouping_create(&o, &g), SIAARA_ERR_INVALID_ARGUMENT);
     CHECK_EQ(siaara_grouping_create(nullptr, nullptr), SIAARA_ERR_INVALID_ARGUMENT);
     REQUIRE(siaara_grouping_create(nullptr, &g) == SIAARA_OK);
@@ -870,4 +871,71 @@ TEST_CASE("grouping: several DICOMDIRs - records accumulate, a File ID listed tw
     o.max_dicomdirs = SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT + 1;
     siaara_grouping* bad = nullptr;
     CHECK_EQ(siaara_grouping_create(&o, &bad), SIAARA_ERR_INVALID_ARGUMENT);
+}
+
+TEST_CASE("grouping: series order in a study - as added (default) or by Series Number; unnumbered and invalid IS after, ties as added") {
+    // Series added in this order, with these Series Number values (as stored).
+    const std::vector<std::pair<std::string, const char*>> added = {
+        {"1.2.12.1", "7"},  {"1.2.12.2", nullptr}, {"1.2.12.3", "2"}, {"1.2.12.4", "1.5"},
+        {"1.2.12.5", "-3"}, {"1.2.12.6", "2"},     {"1.2.12.7", "1234567890123"}, {"1.2.12.8", " 10 "},
+    };
+    std::vector<std::vector<std::uint8_t>> files;
+    for (const auto& [uid, number] : added) {
+        Ct c;
+        c.study = "1.2.12";
+        c.series = uid;
+        c.sop = uid + ".1";
+        DicomFile f = ct_file(c);
+        if (number) (void)f.dataset.set_string(0x00200011, VR::IS, number);
+        else (void)f.dataset.remove(0x00200011);
+        files.push_back(grouping_synth::bytes_of(f));
+    }
+    auto series_uids = [](const Grouping& g) {
+        std::vector<std::string> v;
+        for (uint32_t k = 0; k < g.study(0).series_count; ++k) v.push_back(g.stored(SIAARA_GLEVEL_SERIES, k, SIAARA_GFIELD_SERIES_UID));
+        return v;
+    };
+    {
+        Grouping g;  // default: as added
+        for (std::size_t i = 0; i < files.size(); ++i) CHECK_EQ(g.add("f" + std::to_string(i), files[i]), SIAARA_OK);
+        (void)g.result();
+        std::vector<std::string> want;
+        for (const auto& a : added) want.push_back(a.first);
+        CHECK(series_uids(g) == want);
+    }
+    {
+        siaara_grouping_options o = grouping_synth::options();
+        o.series_order = SIAARA_GROUP_SERIES_ORDER_SERIES_NUMBER;
+        Grouping g(&o);
+        for (std::size_t i = 0; i < files.size(); ++i) CHECK_EQ(g.add("f" + std::to_string(i), files[i]), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        // -3, 2 (series 3), 2 (series 6, tie: added order), 7, 10; then unnumbered / invalid as added
+        CHECK(series_uids(g) == (std::vector<std::string>{"1.2.12.5", "1.2.12.3", "1.2.12.6", "1.2.12.1", "1.2.12.8",
+                                                          "1.2.12.2", "1.2.12.4", "1.2.12.7"}));
+        // every instance points at its series; first_instance runs in series order
+        uint32_t next = 0;
+        for (uint32_t k = 0; k < s.series; ++k) {
+            const siaara_grouped_series e = g.series(k);
+            CHECK_EQ(e.first_instance, next);
+            next += e.instance_count;
+            CHECK_EQ(g.instance(e.first_instance).series, static_cast<int32_t>(k));
+        }
+    }
+    {  // the options struct without series_order (128 bytes) is accepted: the default applies
+        siaara_grouping_options o = grouping_synth::options();
+        o.struct_size = static_cast<uint32_t>(offsetof(siaara_grouping_options, series_order));
+        o.series_order = SIAARA_GROUP_SERIES_ORDER_SERIES_NUMBER;  // past struct_size: not read
+        Grouping g(&o);
+        REQUIRE(g.create_status() == SIAARA_OK);
+        for (std::size_t i = 0; i < files.size(); ++i) CHECK_EQ(g.add("f" + std::to_string(i), files[i]), SIAARA_OK);
+        (void)g.result();
+        CHECK(series_uids(g).front() == "1.2.12.1");
+        o.struct_size = static_cast<uint32_t>(offsetof(siaara_grouping_options, series_order)) - 8;
+        siaara_grouping* bad = nullptr;
+        CHECK_EQ(siaara_grouping_create(&o, &bad), SIAARA_ERR_INVALID_ARGUMENT);
+        o = grouping_synth::options();
+        o.series_order = 2;
+        CHECK_EQ(siaara_grouping_create(&o, &bad), SIAARA_ERR_INVALID_ARGUMENT);
+        CHECK(bad == nullptr);
+    }
 }

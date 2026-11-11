@@ -1,5 +1,6 @@
 // SIAARA DICOM Toolkit - C API: the grouping of files that arrived together (store/grouping.hpp).
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <new>
 #include <string>
@@ -34,7 +35,7 @@ siaara_status guarded(F&& f) noexcept {
     }
 }
 
-static_assert(sizeof(siaara_grouping_options) == 128, "siaara_grouping_options layout");
+static_assert(sizeof(siaara_grouping_options) == 136, "siaara_grouping_options layout");
 static_assert(sizeof(siaara_grouping_summary) == 160, "siaara_grouping_summary layout");
 static_assert(sizeof(siaara_grouped_series) == 48, "siaara_grouped_series layout");
 static_assert(sizeof(siaara_grouped_instance) == 160, "siaara_grouped_instance layout");
@@ -82,7 +83,10 @@ bool switch_value(int32_t v, bool def, bool& ok_out) {
 siaara::Status to_grouping_options(const siaara_grouping_options* in, st::GroupingOptions& o) {
     if (!in) return siaara::Status::ok();
     siaara_grouping_options c;
-    if (!capi::sized_options(in, sizeof(siaara_grouping_options), c))
+    // R-081: the struct before series_order was appended (128 bytes) is accepted too.
+    constexpr std::size_t kFirstSize = offsetof(siaara_grouping_options, series_order);
+    static_assert(kFirstSize == 128, "the first published siaara_grouping_options");
+    if (!capi::sized_options(in, kFirstSize, c))
         return siaara::Status(Errc::InvalidArgument, "options must be set up with struct_size");
     auto set = [](auto& field, auto v) {
         if (v) field = v;
@@ -127,6 +131,9 @@ siaara::Status to_grouping_options(const siaara_grouping_options* in, st::Groupi
     if (c.max_dicomdirs > SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT)
         return siaara::Status(Errc::InvalidArgument, "max_dicomdirs: at most SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT");
     set(o.max_dicomdirs, c.max_dicomdirs);
+    if (c.series_order != SIAARA_GROUP_SERIES_ORDER_AS_ADDED && c.series_order != SIAARA_GROUP_SERIES_ORDER_SERIES_NUMBER)
+        return siaara::Status(Errc::InvalidArgument, "series_order: SIAARA_GROUP_SERIES_ORDER_*");
+    o.series_order = static_cast<st::GroupSeriesOrder>(c.series_order);
     return siaara::Status::ok();
 }
 

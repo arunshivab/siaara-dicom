@@ -3475,6 +3475,10 @@ enum {
     SIAARA_GROUP_UID_STRICT = 0,            /* the default: PS3.5 9.1 */
     SIAARA_GROUP_UID_LENIENT = 1            /* digits and dots, 1 to 64 */
 };
+enum {
+    SIAARA_GROUP_SERIES_ORDER_AS_ADDED = 0,      /* the default: the order their first file was added in */
+    SIAARA_GROUP_SERIES_ORDER_SERIES_NUMBER = 1  /* by Series Number ascending; see series_order */
+};
 #define SIAARA_GROUPING_DEFAULT_MAX_DICOMDIRS 4u
 #define SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT 32u  /* the most max_dicomdirs may be (dicomdir_mask has 32 bits) */
 
@@ -3510,6 +3514,14 @@ typedef struct siaara_grouping_options {
     uint32_t max_dicomdirs;          /* most siaara_grouping_add_dicomdir calls read (0 = default 4, at most
                                         SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT); later ones are refused
                                         (SIAARA_GISSUE_DICOMDIR_SKIPPED, SIAARA_GLIMIT_MAX_DICOMDIRS) */
+    /* Appended; read only when struct_size covers it (the struct without it, 128 bytes, is still
+     * accepted: the default then applies). */
+    int32_t series_order;            /* SIAARA_GROUP_SERIES_ORDER_*, the order of the series inside each
+                                        study. SERIES_NUMBER: by Series Number (0020,0011) of each series'
+                                        first file, ascending; series without one, or with one that is not
+                                        a valid IS, after the numbered ones in the order they were added;
+                                        ties in the order they were added (stable). Values are not changed. */
+    uint32_t reserved2;              /* set to 0 */
 } siaara_grouping_options;
 /* The budgets: once max_files, max_total_bytes, max_total_inflated or max_result_bytes is
  * reached, every later file is skipped for it (SIAARA_GSKIP_TOTAL_BUDGET with the limit). Names
@@ -3578,7 +3590,7 @@ typedef struct siaara_grouping_summary {
 SIAARA_API siaara_status SIAARA_CALL siaara_grouping_result(siaara_grouping* grouping, siaara_grouping_summary* summary);
 
 /* Levels of the result. Patients, studies, series, instances and issues are numbered from 0 in
- * result order: studies patient by patient, series study by study, instances series by series
+ * result order: studies patient by patient, series study by study (in series_order), instances series by series
  * (each series in its order), then the ungrouped instances in the order they were added. */
 enum {
     SIAARA_GLEVEL_PATIENT = 0,

@@ -30,6 +30,17 @@ public enum DicomDuplicatePolicy
     KeepFirst = C.SIAARA_GROUP_DUPLICATES_KEEP_FIRST,
 }
 
+/// <summary>The order of the series inside each study.</summary>
+public enum DicomGroupingSeriesOrder
+{
+    /// <summary>The order their first file was added in. The default.</summary>
+    AsAdded = C.SIAARA_GROUP_SERIES_ORDER_AS_ADDED,
+    /// <summary>By Series Number of each series' first file, ascending. Series without a Series Number, or with one
+    /// that is not a valid IS, come after the numbered ones in the order they were added; ties keep the order they
+    /// were added in. Values are not changed.</summary>
+    SeriesNumber = C.SIAARA_GROUP_SERIES_ORDER_SERIES_NUMBER,
+}
+
 /// <summary>What orders a series (order Position) in which some instances have no usable position.</summary>
 public enum DicomPositionFallback
 {
@@ -131,6 +142,8 @@ public sealed record DicomGroupingOptions
     /// <summary>Most <see cref="DicomStudyGrouping.AddDicomdir"/> calls read; later ones are refused (an issue).
     /// 1 to <see cref="MaxDicomdirsLimit"/>. Default 4.</summary>
     public int MaxDicomdirs { get; init; } = DefaultMaxDicomdirs;
+    /// <summary>The order of the series inside each study. Default <see cref="DicomGroupingSeriesOrder.AsAdded"/>.</summary>
+    public DicomGroupingSeriesOrder SeriesOrder { get; init; } = DicomGroupingSeriesOrder.AsAdded;
 
     /// <summary>Default of <see cref="MaxFiles"/>.</summary>
     public const int DefaultMaxFiles = (int)C.SIAARA_GROUPING_DEFAULT_MAX_FILES;
@@ -192,9 +205,10 @@ public sealed record DicomGroupingOptions
         {
             throw new ArgumentException("Unknown duplicate policy.", nameof(Duplicates));
         }
-        if (!Enum.IsDefined(PositionFallback) || !Enum.IsDefined(TieBreak) || !Enum.IsDefined(UidValidation))
+        if (!Enum.IsDefined(PositionFallback) || !Enum.IsDefined(TieBreak) || !Enum.IsDefined(UidValidation) ||
+            !Enum.IsDefined(SeriesOrder))
         {
-            throw new ArgumentException("Unknown position fallback, tie-break or UID validation.");
+            throw new ArgumentException("Unknown position fallback, tie-break, UID validation or series order.");
         }
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDicomdirs);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(MaxDicomdirs, MaxDicomdirsLimit);
@@ -227,6 +241,7 @@ public sealed record DicomGroupingOptions
             tie_break = (int)TieBreak,
             uid_validation = (int)UidValidation,
             max_dicomdirs = (uint)MaxDicomdirs,
+            series_order = (int)SeriesOrder,
         };
     }
 }

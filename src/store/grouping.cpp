@@ -88,6 +88,23 @@ std::optional<std::array<double, 3>> normal_of(const std::array<double, 6>& o) {
     return std::array<double, 3>{n[0] / len, n[1] / len, n[2] / len};
 }
 
+// A valid IS value (PS3.5 6.2): one value, leading and trailing spaces allowed, then an optional
+// sign and 1 or more digits, at most 12 characters, within -2^31 .. 2^31 - 1. Binary VRs (a file
+// that stores the number otherwise) count as valid when the number is in range.
+bool valid_is(const Element& e, std::int64_t v) noexcept {
+    if (v < INT32_MIN || v > INT32_MAX) return false;
+    if (e.vr != VR::IS) return !vr_is_string(e.vr);
+    std::string_view s = e.value.as_chars();
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.remove_suffix(1);
+    while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
+    if (s.empty() || s.size() > 12) return false;
+    std::size_t i = s.front() == '+' || s.front() == '-' ? 1 : 0;
+    if (i == s.size()) return false;
+    for (; i < s.size(); ++i)
+        if (s[i] < '0' || s[i] > '9') return false;
+    return true;
+}
+
 bool same_text(const GroupText& a, const GroupText& b) noexcept { return a.status == b.status && a.stored == b.stored; }
 
 // A TM value (HH, HHMM, HHMMSS, HHMMSS.F to .FFFFFF; the ACR-NEMA form HH:MM:SS too) as seconds
@@ -318,10 +335,11 @@ void Grouping::add_file(std::string_view name, const std::uint8_t* data, std::si
         const Element* e = value_element(ds, tag);
         return e && e->value.size() <= opt_.max_value_bytes ? e : nullptr;
     };
-    if (numeric(gt::SeriesNumber))
+    if (const Element* e = numeric(gt::SeriesNumber))
         if (auto v = ds.get_int(gt::SeriesNumber)) {
             in.series_number = *v;
             in.flags |= kGiSeriesNumber;
+            in.series_number_is = valid_is(*e, *v);
         }
     if (numeric(gt::InstanceNumber))
         if (auto v = ds.get_int(gt::InstanceNumber)) {
@@ -614,6 +632,20 @@ void Grouping::build() {
             gp.first_study = static_cast<std::uint32_t>(studies.size());
             gp.study_count = static_cast<std::uint32_t>(patient_studies[p].size());
             for (std::uint32_t s : patient_studies[p]) {
+                if (opt_.series_order == GroupSeriesOrder::SeriesNumber) {
+                    // Numbered series by Series Number (of each series' first file), the rest after
+                    // them; stable, so ties and the unnumbered ones keep the order they were added in.
+                    auto numbered = [&](std::uint32_t k) {
+                        const GroupedInstance& in = instances_[series_[k].first_instance_ref];
+                        return (in.flags & kGiSeriesNumber) && in.series_number_is;
+                    };
+                    std::stable_sort(study_series[s].begin(), study_series[s].end(), [&](std::uint32_t x, std::uint32_t y) {
+                        const bool nx = numbered(x), ny = numbered(y);
+                        if (nx != ny) return nx;
+                        return nx && instances_[series_[x].first_instance_ref].series_number <
+                                         instances_[series_[y].first_instance_ref].series_number;
+                    });
+                }
                 study_new[s] = static_cast<std::uint32_t>(studies.size());
                 GroupedStudy gs = studies_[s];
                 gs.first_series = static_cast<std::uint32_t>(series.size());

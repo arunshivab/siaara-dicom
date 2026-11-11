@@ -87,6 +87,13 @@ enum class UidValidation : std::int32_t {
                   // empty component, no leading zero unless the component is "0"
     Lenient = 1,  // 1 to 64 characters, digits and dots only
 };
+// The order of the series inside each study.
+enum class GroupSeriesOrder : std::int32_t {
+    AsAdded = 0,       // the order their first file was added in
+    SeriesNumber = 1,  // by Series Number ascending (of each series' first file); series without one, or
+                       // with one that is not a valid IS, after them as added; ties as added
+};
+inline constexpr GroupSeriesOrder kGroupingDefaultSeriesOrder = GroupSeriesOrder::AsAdded;
 inline constexpr PositionFallback kGroupingDefaultPositionFallback = PositionFallback::PerSeries;
 inline constexpr TieBreak kGroupingDefaultTieBreak = TieBreak::InstanceNumber;
 inline constexpr UidValidation kGroupingDefaultUidValidation = UidValidation::Strict;
@@ -115,6 +122,7 @@ struct GroupingOptions {
     TieBreak tie_break = kGroupingDefaultTieBreak;
     UidValidation uid_validation = kGroupingDefaultUidValidation;
     std::uint32_t max_dicomdirs = kGroupingDefaultMaxDicomdirs;  // more add_dicomdir calls are refused
+    GroupSeriesOrder series_order = kGroupingDefaultSeriesOrder;
 };
 
 enum class TextStatus : std::int32_t {
@@ -173,6 +181,7 @@ struct GroupedInstance {
     double slice_location = 0;
     double position = 0;              // along the series normal (kGiPositionUsable)
     double acquisition_time = 0;      // seconds since midnight (kGiAcquisitionTime)
+    bool series_number_is = false;    // Series Number is a valid IS (PS3.5 6.2: [+-]digits, 1..12 characters, 32-bit)
     std::int32_t duplicate_of = -1;   // the first file with this SOP Instance UID (Grouping::duplicate_of)
     std::array<GroupText, kTextFieldCount> text;  // Name and Subject are not used here (see GroupFile)
 };

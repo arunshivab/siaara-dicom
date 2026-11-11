@@ -29,10 +29,11 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   DICOMDIR): `DicomStudyGrouping` in C#, `siaara_grouping_*` in C. Patient / study / series,
   each series ordered along the slice normal (or by Instance Number, or as added), duplicates,
   ungrouped files and inconsistencies reported, and the DICOMDIR's File IDs set against the
-  members' names. From bytes in memory, read with the preview's untrusted limits and held to
-  budgets for the grouping as a whole; every value returned as stored with a display-safe copy
-  next to it; Patient's Name and ID only when asked for. It shows what the files claim, not
-  proof: run it in the preview's worker process.
+  members' names; the series of a study as added or by Series Number. From bytes in memory,
+  read with the preview's untrusted limits and held to budgets for the grouping as a whole;
+  every value returned as stored with a display-safe copy next to it; Patient's Name and ID
+  only when asked for. It shows what the files claim, not proof: run it in the preview's worker
+  process.
 - A DICOMDIR can be read from bytes (`siaara_dicomdir_read_memory`, `Dicomdir.Read(ReadOnlySpan<byte>,
   ...)`): never touches the disk, File IDs as text (well formed or rejected), record and size
   limits on by default. The path reader keeps its behaviour; the same limits are options there

@@ -1231,6 +1231,8 @@ internal static class StructLayouts
             r.Add("F siaara_grouping_options tie_break " + Offset(ref s, ref s.tie_break).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_options uid_validation " + Offset(ref s, ref s.uid_validation).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_options max_dicomdirs " + Offset(ref s, ref s.max_dicomdirs).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_options series_order " + Offset(ref s, ref s.series_order).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_options reserved2 " + Offset(ref s, ref s.reserved2).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_grouping_summary);
