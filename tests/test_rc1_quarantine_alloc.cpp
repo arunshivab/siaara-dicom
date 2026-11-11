@@ -4,8 +4,10 @@
 // listed), R-167 (one release at a time; the stored SOP Instance UID is returned).
 // Round 6, R-190: a COMPLETE spooled data set that is accepted is streamed into the store and the
 // folder as well (the same heap bound on the accepted path).
+// R-196: temporary files an interrupted write left in the area are removed when it is read.
 // Uses the allocation guard (alloc_guard.hpp), so this file is left out of TSan builds.
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -610,5 +612,48 @@ TEST_CASE("rc2 R-190: an accepted spooled data set is streamed into the folder, 
     REQUIRE(net::encode_received_meta(rq, meta));
     CHECK(file_is((folder / (sop + ".dcm")).string(), meta, raw));
     CHECK_EQ(files_in(folder), 1u);  // the instance, no temporary file
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("rc2 R-196: stale temporary files of an interrupted quarantine write are removed when the area is read") {
+    const auto dir = fresh_dir("stale");
+    const std::filesystem::path area = dir / "quarantine";
+    std::error_code ec;
+    std::filesystem::create_directories(area, ec);
+    const auto touch = [&](const char* name, int minutes_old) {
+        const std::filesystem::path p = area / name;
+        std::ofstream(p, std::ios::binary) << "half an instance";
+        std::filesystem::last_write_time(p, std::filesystem::file_time_type::clock::now() - std::chrono::minutes(minutes_old), ec);
+        return p;
+    };
+    const std::vector<std::uint8_t> a = small_part10("2.25.196001");
+    CHECK_EQ(store::QuarantineLimits{}.stale_temp_after_minutes, store::kDefaultQuarantineStaleTempMinutes);
+    CHECK_EQ(store::kDefaultQuarantineStaleTempMinutes, 60);
+    {
+        // The option off: nothing is touched.
+        const auto old_file = touch(".siaara-tmp-0123456789abcdef.part", 600);
+        store::QuarantineLimits lim;
+        lim.stale_temp_after_minutes = 0;
+        store::Quarantine q(dir.string(), lim);
+        CHECK_EQ(q.items(), 0u);
+        CHECK(std::filesystem::exists(old_file));
+    }
+    const auto old_file = area / ".siaara-tmp-0123456789abcdef.part";
+    const auto fresh = touch(".siaara-tmp-fedcba9876543210.part", 5);       // could be a write in progress
+    const auto other = touch("notes.part", 600);                             // not ours
+    const auto other2 = touch(".siaara-tmp-keep.txt", 600);                  // not ours either
+    std::vector<std::string> notes;
+    store::QuarantineLimits lim;
+    lim.note = [&](const std::string& m) { notes.push_back(m); };
+    store::Quarantine q(dir.string(), lim);
+    REQUIRE(q.add(Bytes::copy_of(a.data(), a.size()), rec_of("AE_A")));
+    CHECK_EQ(q.items(), 1u);
+    CHECK_EQ(q.total_bytes(), a.size());  // temporary files never counted
+    CHECK(!std::filesystem::exists(old_file));
+    CHECK(std::filesystem::exists(fresh));
+    CHECK(std::filesystem::exists(other));
+    CHECK(std::filesystem::exists(other2));
+    REQUIRE(notes.size() == 1);
+    CHECK(notes[0].find("QUARANTINE_STALE_TEMP_REMOVED: 1 ") == 0);
     std::filesystem::remove_all(dir, ec);
 }

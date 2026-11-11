@@ -134,9 +134,22 @@ Status Quarantine::load_locked() const {
     recs_.clear();
     bytes_ = 0;
     std::vector<std::string> bins;  // ids of every "<id>.bin" seen
+    std::vector<fs::path> stale;    // R-196: temporary files a crash left behind
+    const auto stale_before = fs::file_time_type::clock::now() - std::chrono::minutes(std::max(lim_.stale_temp_after_minutes, 0));
     std::error_code ec;
     for (fs::directory_iterator it(u8path(dir_), ec), end; !ec && it != end; it.increment(ec)) {
         const std::string name = to_utf8(it->path().filename());
+        if (lim_.stale_temp_after_minutes > 0 && name.size() > 17 && name.rfind(".siaara-tmp-", 0) == 0 &&
+            name.compare(name.size() - 5, 5, ".part") == 0) {
+            // Only a regular file of that name, never through a link, and only when it is old: a
+            // file another process is writing right now is recent.
+            std::error_code se;
+            if (!it->is_symlink(se) && !se && it->is_regular_file(se) && !se) {
+                const auto t = it->last_write_time(se);
+                if (!se && t <= stale_before) stale.push_back(it->path());
+            }
+            continue;
+        }
         if (name.size() != 68 || !id_ok(std::string_view(name).substr(0, 64))) continue;
         std::error_code fe;
         if (name.compare(64, 4, ".bin") == 0) {
@@ -176,6 +189,18 @@ Status Quarantine::load_locked() const {
         ++orphans;
     }
     loaded_ = true;
+    std::size_t swept = 0;
+    for (const fs::path& p : stale) {
+        std::error_code re;
+        if (fs::remove(p, re) && !re) ++swept;
+    }
+    if (swept != 0 && lim_.note) {
+        try {
+            lim_.note("QUARANTINE_STALE_TEMP_REMOVED: " + std::to_string(swept) +
+                      " unfinished temporary file(s) left by an interrupted write were removed from the area");
+        } catch (...) {  // NOLINT(bugprone-empty-catch): a note sink must never fail a load
+        }
+    }
     if (orphans != 0 && lim_.note) {
         try {
             lim_.note("QUARANTINE_RECORD_MISSING: " + std::to_string(orphans) +

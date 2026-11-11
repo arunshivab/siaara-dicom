@@ -37,6 +37,7 @@ inline constexpr std::uint64_t kDefaultQuarantineMaxBytes = 4ull << 30;
 inline constexpr bool kDefaultQuarantineEvictOldest = false;
 inline constexpr std::uint32_t kDefaultQuarantineSenderSharePercent = 0;       // no share limit
 inline constexpr std::uint64_t kDefaultQuarantineMinFreeDiskBytes = 64ull << 20;
+inline constexpr int kDefaultQuarantineStaleTempMinutes = 60;
 
 struct QuarantineLimits {
     std::size_t max_items = kDefaultQuarantineMaxItems;
@@ -53,6 +54,12 @@ struct QuarantineLimits {
     // Free space the area leaves on the volume: an item that would go below it is refused
     // (Errc::LimitExceeded) before anything is written. 0 = no floor.
     std::uint64_t min_free_disk_bytes = kDefaultQuarantineMinFreeDiskBytes;
+    // R-196: an item is streamed to a temporary file (".siaara-tmp-<random>.part") and renamed
+    // when every byte is written; a crash in between leaves that file behind. It never became an
+    // item (its sender was not answered "kept") and it is counted by no cap. Such files not
+    // modified for this many minutes are removed when the area is first read in a process, as the
+    // spool removes its own leftovers; the note sink is told how many. 0 = never.
+    int stale_temp_after_minutes = kDefaultQuarantineStaleTempMinutes;
     // Receives one-line notes (no patient data): a ".bin" file found without its record.
     std::function<void(const std::string&)> note;
 };
