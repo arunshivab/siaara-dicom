@@ -1227,6 +1227,10 @@ internal static class StructLayouts
             r.Add("F siaara_grouping_options match_by_trailing_components " + Offset(ref s, ref s.match_by_trailing_components).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_options reserved1 " + Offset(ref s, ref s.reserved1).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_options orientation_tolerance " + Offset(ref s, ref s.orientation_tolerance).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_options position_fallback " + Offset(ref s, ref s.position_fallback).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_options tie_break " + Offset(ref s, ref s.tie_break).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_options uid_validation " + Offset(ref s, ref s.uid_validation).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_options max_dicomdirs " + Offset(ref s, ref s.max_dicomdirs).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_grouping_summary);
@@ -1248,6 +1252,7 @@ internal static class StructLayouts
             r.Add("F siaara_grouping_summary listed_missing " + Offset(ref s, ref s.listed_missing).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_summary present_unlisted " + Offset(ref s, ref s.present_unlisted).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_summary ambiguous " + Offset(ref s, ref s.ambiguous).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_summary unsafe_names " + Offset(ref s, ref s.unsafe_names).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_summary total_bytes " + Offset(ref s, ref s.total_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_summary total_inflated " + Offset(ref s, ref s.total_inflated).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_summary result_bytes " + Offset(ref s, ref s.result_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1259,6 +1264,8 @@ internal static class StructLayouts
             r.Add("F siaara_grouped_patient first_study " + Offset(ref s, ref s.first_study).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_patient study_count " + Offset(ref s, ref s.study_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_patient instance_count " + Offset(ref s, ref s.instance_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouped_patient flags " + Offset(ref s, ref s.flags).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouped_patient reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_grouped_study);
@@ -1278,7 +1285,7 @@ internal static class StructLayouts
             r.Add("F siaara_grouped_series first_instance " + Offset(ref s, ref s.first_instance).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_series instance_count " + Offset(ref s, ref s.instance_count).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_series has_normal " + Offset(ref s, ref s.has_normal).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            r.Add("F siaara_grouped_series reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouped_series order_rule " + Offset(ref s, ref s.order_rule).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_series normal " + Offset(ref s, ref s.normal).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
@@ -1301,6 +1308,7 @@ internal static class StructLayouts
             r.Add("F siaara_grouped_instance image_orientation " + Offset(ref s, ref s.image_orientation).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_instance slice_location " + Offset(ref s, ref s.slice_location).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouped_instance position " + Offset(ref s, ref s.position).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouped_instance acquisition_time " + Offset(ref s, ref s.acquisition_time).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_grouping_issue);
@@ -1317,6 +1325,8 @@ internal static class StructLayouts
             r.Add("F siaara_grouping_issue series " + Offset(ref s, ref s.series).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_issue dicomdir " + Offset(ref s, ref s.dicomdir).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_grouping_issue record " + Offset(ref s, ref s.record).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_issue dicomdir_mask " + Offset(ref s, ref s.dicomdir_mask).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_grouping_issue reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_grouping_text);

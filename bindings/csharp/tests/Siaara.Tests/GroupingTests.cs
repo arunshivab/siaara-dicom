@@ -61,11 +61,11 @@ internal static class GroupingTests
             CheckEq(r.Patients[0].PatientId.Status, DicomGroupedTextStatus.NotRequested);
             CheckEq(s.Instances[0].PatientName.Stored, null);
             CheckEq(r.Issues.Count, 3);
-            Check(r.Issues.Take(2).All(i => i.Kind == DicomGroupingIssueKind.Skipped));
-            // the cut file is DICOM: what could be read is kept, flagged incomplete, and has no UIDs to group by
-            CheckEq(r.Issues[2].Kind, DicomGroupingIssueKind.Ungrouped);
-            CheckEq(r.Issues[2].MissingUid, DicomGroupingMissingUid.Both);
-            Check(r.Ungrouped.Single().ReadLoss != 0);
+            Check(r.Issues.All(i => i.Kind == DicomGroupingIssueKind.Skipped));
+            // the cut file is a Part 10 header with nothing readable after it: skipped, not ungrouped
+            CheckEq(r.Issues[2].SkipReason, DicomGroupingSkipReason.Unreadable);
+            CheckEq(r.Ungrouped.Count, 0);
+            CheckEq(s.OrderRule, DicomSeriesOrderRule.Position);
             CheckEq(r.Issues[0].Name.Stored, "readme.txt");
             CheckEq(r.Issues[0].SkipReason, DicomGroupingSkipReason.NotDicom);
             // the name exactly as given (even the lone surrogate); the display copy without the override
@@ -132,6 +132,12 @@ internal static class GroupingTests
             Throws<ArgumentOutOfRangeException>(() => new DicomStudyGrouping(new DicomGroupingOptions { OrientationTolerance = 0 }).Dispose());
             Throws<ArgumentOutOfRangeException>(() => new DicomStudyGrouping(new DicomGroupingOptions { OrientationTolerance = double.NaN }).Dispose());
             Throws<ArgumentException>(() => new DicomStudyGrouping(new DicomGroupingOptions { Order = (DicomGroupingOrder)9 }).Dispose());
+            Throws<ArgumentException>(() => new DicomStudyGrouping(new DicomGroupingOptions { TieBreak = (DicomTieBreak)9 }).Dispose());
+            Throws<ArgumentOutOfRangeException>(() => new DicomStudyGrouping(new DicomGroupingOptions { MaxDicomdirs = 0 }).Dispose());
+            Throws<ArgumentOutOfRangeException>(() => new DicomStudyGrouping(new DicomGroupingOptions { MaxDicomdirs = 33 }).Dispose());
+            CheckEq(DicomGroupingOptions.Recommended.PositionFallback, DicomPositionFallback.PerSeries);
+            CheckEq(DicomGroupingOptions.Recommended.UidValidation, DicomUidValidation.Strict);
+            CheckEq(DicomGroupingOptions.DefaultMaxDicomdirs, 4);
             CheckEq(DicomGroupingOptions.DefaultMaxTotalBytes, 2L << 30);
             CheckEq(DicomGroupingOptions.DefaultMaxTextBytes, 1024);
             using var g = new DicomStudyGrouping(new DicomGroupingOptions { MaxFiles = 2 });
@@ -148,6 +154,55 @@ internal static class GroupingTests
             g.Dispose();
             Throws<ObjectDisposedException>(() => g.Add("x", ReadOnlySpan<byte>.Empty));
             Throws<ObjectDisposedException>(() => _ = g.Result);
+        });
+
+        Case("grouping: per-series fallback, unsafe names, no Patient ID per study, a File ID listed by two DICOMDIRs", () =>
+        {
+            using var g = new DicomStudyGrouping();
+            g.Add("a", Slice("2.25.71", "2.25.70", 3, 10));
+            using (DicomFile f = Builders.Ct(2, 2, new short[] { 1, 2, 3, 4 }, "2.25.72", "2.25.70", "2.25.300"))
+            {
+                f.Dataset.SetString(DicomTags.InstanceNumber, "1");
+                g.Add("../b", Bytes(f, "nopos.dcm"));  // no position: the series goes by Instance Number
+            }
+            DicomGroupingResult r = g.Result;
+            CheckEq(r.Series[0].OrderRule, DicomSeriesOrderRule.InstanceNumber);
+            CheckEq(r.Series[0].Instances[0].Name.Stored, "../b");
+            Check(r.Series[0].Instances[0].HasUnsafeName);
+            CheckEq(r.UnsafeNames, 1L);
+            CheckEq(r.Issues.Single().Kind, DicomGroupingIssueKind.UnsafeName);
+
+            using var p = new DicomStudyGrouping(new DicomGroupingOptions { PositionFallback = DicomPositionFallback.PerInstance });
+            p.Add("a", Slice("2.25.71", "2.25.70", 3, 10));
+            using (DicomFile f = Builders.Ct(2, 2, new short[] { 1, 2, 3, 4 }, "2.25.72", "2.25.70", "2.25.300"))
+            {
+                f.Dataset.SetString(DicomTags.InstanceNumber, "1");
+                p.Add("b", Bytes(f, "nopos2.dcm"));
+            }
+            CheckEq(p.Result.Series[0].OrderRule, DicomSeriesOrderRule.Mixed);
+            CheckEq(p.Result.Series[0].Instances[0].Name.Stored, "a");
+
+            using var n = new DicomStudyGrouping();
+            foreach (string study in new[] { "2.25.81", "2.25.82" })
+            {
+                using DicomFile f = Builders.Ct(2, 2, new short[] { 1, 2, 3, 4 }, study + ".1", study + ".2", study);
+                f.Dataset.Remove(DicomTags.PatientID);
+                n.Add(study, Bytes(f, study + ".dcm"));
+            }
+            CheckEq(n.Result.Patients.Count, 2);
+            Check(n.Result.Patients.All(x => x.NoPatientId));
+
+            string src = NewTempDir("g2src");
+            string pth = Path.Combine(src, "i.dcm");
+            File.WriteAllBytes(pth, Slice("2.25.91", "2.25.92", 1, 0));
+            string root = NewTempDir("g2media");
+            Dicomdir.Write(root, new[] { pth });
+            byte[] dd = File.ReadAllBytes(Path.Combine(root, "DICOMDIR"));
+            using var two = new DicomStudyGrouping();
+            two.AddDicomdir(dd);
+            two.AddDicomdir(dd);
+            DicomGroupingIssue missing = two.Result.Issues.Single(i => i.Kind == DicomGroupingIssueKind.ListedMissing);
+            CheckEq(string.Join(",", missing.ListedBy), "0,1");
         });
     }
 }

@@ -23,7 +23,8 @@ constexpr Tag SopClassUid = 0x00080016, SopInstanceUid = 0x00080018, StudyDate =
               SeriesDescription = 0x0008103E, PatientName = 0x00100010, PatientId = 0x00100020,
               StudyUid = 0x0020000D, SeriesUid = 0x0020000E, SeriesNumber = 0x00200011,
               InstanceNumber = 0x00200013, ImagePosition = 0x00200032, ImageOrientation = 0x00200037,
-              SliceLocation = 0x00201041, NumberOfFrames = 0x00280008, Rows = 0x00280010, Columns = 0x00280011;
+              SliceLocation = 0x00201041, NumberOfFrames = 0x00280008, Rows = 0x00280010, Columns = 0x00280011,
+              IssuerOfPatientId = 0x00100021, AcquisitionTime = 0x00080032, ContentTime = 0x00080033;
 }  // namespace gt
 
 constexpr std::size_t idx(TextField f) noexcept { return static_cast<std::size_t>(f); }
@@ -89,13 +90,69 @@ std::optional<std::array<double, 3>> normal_of(const std::array<double, 6>& o) {
 
 bool same_text(const GroupText& a, const GroupText& b) noexcept { return a.status == b.status && a.stored == b.stored; }
 
+// A TM value (HH, HHMM, HHMMSS, HHMMSS.F to .FFFFFF; the ACR-NEMA form HH:MM:SS too) as seconds
+// since midnight; padding and a second value are ignored. nullopt when it is not a time.
+std::optional<double> parse_time(std::string_view v) {
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\0')) v.remove_suffix(1);
+    while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
+    if (const auto bs = v.find('\\'); bs != std::string_view::npos) v = v.substr(0, bs);
+    std::string digits;
+    std::size_t i = 0;
+    for (; i < v.size() && v[i] != '.'; ++i) {
+        if (v[i] == ':') continue;
+        if (v[i] < '0' || v[i] > '9') return std::nullopt;
+        digits.push_back(v[i]);
+    }
+    if (digits.empty() || digits.size() % 2 != 0 || digits.size() > 6) return std::nullopt;
+    auto two = [&](std::size_t at) { return at + 2 <= digits.size() ? (digits[at] - '0') * 10 + (digits[at + 1] - '0') : 0; };
+    const int hh = two(0), mm = two(2), ss = two(4);
+    if (hh > 23 || mm > 59 || ss > 60) return std::nullopt;
+    double frac = 0;
+    if (i < v.size()) {
+        if (digits.size() != 6 || i + 1 >= v.size() || v.size() - i - 1 > 6) return std::nullopt;
+        long micro = 0;
+        int places = 0;
+        for (std::size_t k = i + 1; k < v.size(); ++k, ++places) {
+            if (v[k] < '0' || v[k] > '9') return std::nullopt;
+            micro = micro * 10 + (v[k] - '0');
+        }
+        for (; places < 6; ++places) micro *= 10;
+        frac = static_cast<double>(micro) / 1e6;
+    }
+    return hh * 3600.0 + mm * 60.0 + ss + frac;
+}
+
 }  // namespace
 
-bool grouping_uid_valid(std::string_view uid) noexcept {
+bool grouping_uid_valid(std::string_view uid, UidValidation rule) noexcept {
     if (uid.empty() || uid.size() > 64) return false;
     for (char c : uid)
         if (c != '.' && (c < '0' || c > '9')) return false;
+    if (rule == UidValidation::Lenient) return true;
+    // PS3.5 9.1: components of digits separated by single dots; no empty component; no leading
+    // zero unless the component is "0".
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= uid.size(); ++i) {
+        if (i < uid.size() && uid[i] != '.') continue;
+        const std::size_t n = i - start;
+        if (n == 0 || (n > 1 && uid[start] == '0')) return false;
+        start = i + 1;
+    }
     return true;
+}
+
+bool grouping_name_unsafe(std::string_view name) noexcept {
+    if (name.empty()) return false;
+    if (name.front() == '/' || name.front() == '\\') return true;  // absolute (or UNC)
+    if (name.size() >= 2 && name[1] == ':' && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')))
+        return true;  // a drive letter
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= name.size(); ++i) {
+        if (i < name.size() && name[i] != '/' && name[i] != '\\') continue;
+        if (name.substr(start, i - start) == "..") return true;
+        start = i + 1;
+    }
+    return false;
 }
 
 Grouping::Grouping(const GroupingOptions& opt) : opt_(opt) {}
@@ -189,6 +246,10 @@ void Grouping::add_file(std::string_view name, const std::uint8_t* data, std::si
     }
     summary_.total_inflated += file->inflated_size;
     const Dataset& ds = file->dataset;
+    // A Part 10 header and nothing after it (or nothing that could be read): skipped, not ungrouped.
+    if (ds.empty())
+        return skip(f, SkipReason::Unreadable, Limit::None,
+                    (file->read_loss & DicomFile::kReadInputTruncated) ? Errc::Truncated : Errc::Malformed);
 
     GroupedInstance in;
     in.file = file_index;
@@ -210,7 +271,7 @@ void Grouping::add_file(std::string_view name, const std::uint8_t* data, std::si
             return;
         }
         keep_text(t, *v, cost);
-        t.status = is_uid_field(field) && !grouping_uid_valid(t.stored) ? TextStatus::NotAUid : TextStatus::Ok;
+        t.status = is_uid_field(field) && !grouping_uid_valid(t.stored, opt_.uid_validation) ? TextStatus::NotAUid : TextStatus::Ok;
     };
     take_text(TextField::SopClassUid, gt::SopClassUid);
     take_text(TextField::SopInstanceUid, gt::SopInstanceUid);
@@ -219,23 +280,36 @@ void Grouping::add_file(std::string_view name, const std::uint8_t* data, std::si
     take_text(TextField::Modality, gt::Modality);
     take_text(TextField::StudyDate, gt::StudyDate);
     take_text(TextField::SeriesDescription, gt::SeriesDescription);
-    // Patient ID always (patients are told apart by it, and studies are checked against it); it
-    // is returned only with include_patient_fields.
-    take_text(TextField::PatientId, gt::PatientId);
+    // The patient key: Patient ID plus Issuer of Patient ID, both exactly as stored (the bytes).
+    // Files without a Patient ID (absent, empty, or longer than max_value_bytes and so not
+    // comparable) form one "no Patient ID" patient per study, never merged across studies. The
+    // key is kept internally; it is returned only as the fields below, with include_patient_fields.
     std::string patient_key;
     {
-        GroupText& id = in.text[idx(TextField::PatientId)];
-        // The status is part of the key: an absent ID and a too-long ID are different patients.
-        patient_key.push_back(static_cast<char>('0' + static_cast<int>(id.status)));
-        patient_key += id.stored;
+        auto raw = [&](Tag tag) -> std::optional<std::string_view> {
+            const Element* e = value_element(ds, tag);
+            if (!e || e->value.size() > opt_.max_value_bytes) return std::nullopt;
+            const std::string_view v = e->value.as_chars();
+            if (v.find_first_not_of(std::string_view(" \0", 2)) == std::string_view::npos) return std::nullopt;
+            return v;
+        };
+        const auto pid = raw(gt::PatientId);
+        if (pid) {
+            const auto issuer = raw(gt::IssuerOfPatientId);
+            patient_key = "I" + std::to_string(pid->size()) + ":" + std::string(*pid) + "|" +
+                          (issuer ? "1" + std::string(*issuer) : std::string("0"));
+        } else {
+            const GroupText& study = in.text[idx(TextField::StudyUid)];
+            patient_key = "N" + std::to_string(static_cast<int>(study.status)) + study.stored;
+        }
         cost += patient_key.size();  // kept (internally) whether or not it is returned
         if (opt_.include_patient_fields) {
+            take_text(TextField::PatientId, gt::PatientId);
             take_text(TextField::PatientName, gt::PatientName);
+            take_text(TextField::IssuerOfPatientId, gt::IssuerOfPatientId);
         } else {
-            cost -= id.stored.size() + id.display.size();
-            id = GroupText{};
-            id.status = TextStatus::NotRequested;
-            in.text[idx(TextField::PatientName)].status = TextStatus::NotRequested;
+            for (TextField t : {TextField::PatientId, TextField::PatientName, TextField::IssuerOfPatientId})
+                in.text[idx(t)].status = TextStatus::NotRequested;
         }
     }
 
@@ -284,6 +358,15 @@ void Grouping::add_file(std::string_view name, const std::uint8_t* data, std::si
     else in.image_orientation = {};
     if (doubles(gt::SliceLocation, &in.slice_location, 1)) in.flags |= kGiSliceLocation;
     else in.slice_location = 0;
+    for (Tag t : {gt::AcquisitionTime, gt::ContentTime}) {
+        const Element* e = numeric(t);
+        if (!e) continue;
+        if (auto v = parse_time(e->value.as_chars())) {
+            in.acquisition_time = *v;
+            in.flags |= kGiAcquisitionTime;
+        }
+        break;  // Content Time only when there is no Acquisition Time
+    }
 
     if (summary_.result_bytes + cost > opt_.max_result_bytes) {
         budget(Limit::ResultBytes);
@@ -320,6 +403,7 @@ void Grouping::add_dicomdir(const std::uint8_t* data, std::size_t size) {
         d.limit = l;
         d.status = s;
     };
+    if (dd >= opt_.max_dicomdirs) return fail(SkipReason::TotalBudget, Limit::MaxDicomdirs, Errc::LimitExceeded);
     if (summary_.budget_reached != Limit::None) return fail(SkipReason::TotalBudget, summary_.budget_reached, Errc::Ok);
     if (size > opt_.max_file_bytes) return fail(SkipReason::FileLimit, Limit::FileBytes, Errc::LimitExceeded);
     if (summary_.total_bytes + size > opt_.max_total_bytes) {
@@ -373,7 +457,6 @@ void Grouping::build() {
     order_.clear();
     issues_.clear();
     for (auto& f : files_) f.dicomdir_matches.clear();
-    for (auto& e : entries_) e.matched_files.clear();
     GroupingSummary& sum = summary_;
     sum.instances = instances_.size();
     sum.ungrouped = sum.inconsistencies = sum.listed_missing = sum.present_unlisted = sum.ambiguous = 0;
@@ -386,7 +469,7 @@ void Grouping::build() {
     for (std::uint32_t i = 0; i < instances_.size(); ++i) {
         GroupedInstance& in = instances_[i];
         in.series = -1;
-        in.flags &= ~(kGiUngrouped | kGiPositionUsable | kGiInDicomdir);
+        in.flags &= ~(kGiUngrouped | kGiPositionUsable | kGiInDicomdir | kGiUnsafeName);
         const bool study_ok = in.text[idx(TextField::StudyUid)].status == TextStatus::Ok;
         const bool series_ok = in.text[idx(TextField::SeriesUid)].status == TextStatus::Ok;
         if (!study_ok || !series_ok) {
@@ -399,6 +482,7 @@ void Grouping::build() {
         if (pnew) {
             GroupedPatient p;
             p.first_instance_ref = i;
+            p.no_patient_id = !pkey.empty() && pkey.front() == 'N';
             patients_.push_back(p);
             patient_studies.emplace_back();
         }
@@ -458,34 +542,66 @@ void Grouping::build() {
             in.position = pos;
             in.flags |= kGiPositionUsable;
         }
-        std::vector<std::pair<double, std::uint32_t>> by_pos, by_slice;
-        std::vector<std::pair<std::int64_t, std::uint32_t>> by_number;
-        std::vector<std::uint32_t> added;
+        auto has_slice = [](const GroupedInstance& in) { return (in.flags & kGiSliceLocation) && std::isfinite(in.slice_location); };
+        auto has_number = [](const GroupedInstance& in) { return (in.flags & kGiInstanceNumber) != 0; };
+        bool all_pos = true, all_slice = true, all_number = true;
+        for (std::uint32_t i : m) {
+            const GroupedInstance& in = instances_[i];
+            all_pos = all_pos && (in.flags & kGiPositionUsable);
+            all_slice = all_slice && has_slice(in);
+            all_number = all_number && has_number(in);
+        }
+        // PerSeries: one rule for the whole series when any position is unusable.
+        const bool per_series = opt_.order == GroupOrder::Position && opt_.position_fallback == PositionFallback::PerSeries && !all_pos;
+        const SortKey series_key = all_slice ? SortKey::SliceLocation : all_number ? SortKey::InstanceNumber : SortKey::Added;
+        std::array<std::vector<std::uint32_t>, 4> tiers;
         for (std::uint32_t i : m) {
             GroupedInstance& in = instances_[i];
-            if (opt_.order == GroupOrder::Position && (in.flags & kGiPositionUsable)) {
-                in.sort_key = SortKey::Position;
-                by_pos.emplace_back(in.position, i);
-            } else if (opt_.order == GroupOrder::Position && (in.flags & kGiSliceLocation) && std::isfinite(in.slice_location)) {
-                in.sort_key = SortKey::SliceLocation;
-                by_slice.emplace_back(in.slice_location, i);
-            } else if (opt_.order != GroupOrder::AsAdded && (in.flags & kGiInstanceNumber)) {
-                in.sort_key = SortKey::InstanceNumber;
-                by_number.emplace_back(in.instance_number, i);
-            } else {
-                in.sort_key = SortKey::Added;
-                added.push_back(i);
-            }
+            const bool usable = (in.flags & kGiPositionUsable) != 0;
+            if (opt_.order == GroupOrder::AsAdded) in.sort_key = SortKey::Added;
+            else if (opt_.order == GroupOrder::InstanceNumber) in.sort_key = has_number(in) ? SortKey::InstanceNumber : SortKey::Added;
+            else if (per_series) in.sort_key = series_key;
+            else in.sort_key = usable ? SortKey::Position : has_slice(in) ? SortKey::SliceLocation
+                                                         : has_number(in) ? SortKey::InstanceNumber : SortKey::Added;
+            tiers[static_cast<std::size_t>(in.sort_key)].push_back(i);
         }
-        auto first_less = [](const auto& a, const auto& b) { return a.first < b.first; };
-        std::stable_sort(by_pos.begin(), by_pos.end(), first_less);
-        std::stable_sort(by_slice.begin(), by_slice.end(), first_less);
-        std::stable_sort(by_number.begin(), by_number.end(), first_less);
+        // Ties: tie_break, then the order the files were added in (stable sorts). Only finite
+        // doubles and integers are compared.
+        auto tie_less = [&](const GroupedInstance& a, const GroupedInstance& b) {
+            if (opt_.tie_break == TieBreak::InstanceNumber) {
+                if (has_number(a) != has_number(b)) return has_number(a);
+                return has_number(a) && a.instance_number < b.instance_number;
+            }
+            if (opt_.tie_break == TieBreak::AcquisitionTime) {
+                const bool ta = (a.flags & kGiAcquisitionTime) != 0, tb = (b.flags & kGiAcquisitionTime) != 0;
+                if (ta != tb) return ta;
+                return ta && a.acquisition_time < b.acquisition_time;
+            }
+            return false;
+        };
+        auto sort_tier = [&](std::vector<std::uint32_t>& t, auto key) {
+            std::stable_sort(t.begin(), t.end(), [&](std::uint32_t x, std::uint32_t y) {
+                const GroupedInstance& a = instances_[x];
+                const GroupedInstance& b = instances_[y];
+                const auto ka = key(a), kb = key(b);
+                if (ka < kb) return true;
+                if (kb < ka) return false;
+                return tie_less(a, b);
+            });
+        };
+        sort_tier(tiers[0], [](const GroupedInstance& in) { return in.position; });
+        sort_tier(tiers[1], [](const GroupedInstance& in) { return in.slice_location; });
+        sort_tier(tiers[2], [](const GroupedInstance& in) { return in.instance_number; });
         m.clear();
-        for (const auto& v : by_pos) m.push_back(v.second);
-        for (const auto& v : by_slice) m.push_back(v.second);
-        for (const auto& v : by_number) m.push_back(v.second);
-        for (std::uint32_t i : added) m.push_back(i);
+        std::size_t used = 0;
+        for (std::size_t t = 0; t < tiers.size(); ++t) {
+            if (!tiers[t].empty()) {
+                ++used;
+                e.order = static_cast<SeriesOrder>(t);
+            }
+            m.insert(m.end(), tiers[t].begin(), tiers[t].end());
+        }
+        if (used > 1) e.order = SeriesOrder::Mixed;
     }
 
     // ---- flatten: studies and series are numbered patient by patient, study by study.
@@ -634,31 +750,64 @@ void Grouping::build() {
         }
     }
 
-    // ---- DICOMDIR File IDs against the caller's names
+    // ---- names that are unsafe as paths: reported, never matched to a File ID
+    sum.unsafe_names = 0;
+    for (std::uint32_t fi = 0; fi < files_.size(); ++fi) {
+        File& f = files_[fi];
+        f.unsafe_name = f.name.status == TextStatus::Ok && grouping_name_unsafe(f.name.stored);
+        if (!f.unsafe_name) continue;
+        GroupingIssue& g = f.instance >= 0 ? instance_issue(IssueKind::UnsafeName, static_cast<std::uint32_t>(f.instance))
+                                           : issue(IssueKind::UnsafeName);
+        g.file = static_cast<std::int32_t>(fi);
+        g.name = &f.name;
+        if (f.instance >= 0) instances_[static_cast<std::size_t>(f.instance)].flags |= kGiUnsafeName;
+        ++sum.unsafe_names;
+    }
+
+    // ---- DICOMDIR File IDs against the caller's names. A File ID listed more than once (by two
+    // DICOMDIRs, or twice by one) is one entry with all its sources (dicomdir_mask).
     bool any_dicomdir = false;
     for (const auto& d : dicomdirs_)
         if (d.skip == SkipReason::None) any_dicomdir = true;
     if (any_dicomdir) {
         const bool fold_case = opt_.match_case_insensitive;
-        std::unordered_multimap<std::string, std::uint32_t> by_key;
+        struct Listed {
+            std::uint32_t first = 0;   // entries_ index of its first listing
+            std::uint32_t mask = 0;
+            bool matchable = false;
+            std::vector<std::uint32_t> matched_files;
+        };
+        std::vector<Listed> listed;
+        std::unordered_map<std::string, std::uint32_t> listed_at;
+        std::unordered_map<std::string, std::uint32_t> by_key;  // matchable File IDs
         std::vector<std::size_t> lengths;
         for (std::uint32_t k = 0; k < entries_.size(); ++k) {
             const DicomdirEntry& e = entries_[k];
-            if (e.file_status != Errc::Ok || e.file_id.status != TextStatus::Ok) continue;
-            by_key.emplace(fold(e.file_id.stored, fold_case), k);  // well formed: no '\' or '.' inside
-            if (std::find(lengths.begin(), lengths.end(), e.components) == lengths.end()) lengths.push_back(e.components);
+            const bool matchable = e.file_status == Errc::Ok && e.file_id.status == TextStatus::Ok;
+            const std::string key = matchable ? "M" + fold(e.file_id.stored, fold_case)  // well formed: no '\' or '.' inside
+                                              : "R" + std::to_string(static_cast<int>(e.file_id.status)) + e.file_id.stored;
+            auto [it, fresh] = listed_at.try_emplace(key, static_cast<std::uint32_t>(listed.size()));
+            if (fresh) {
+                Listed l;
+                l.first = k;
+                l.matchable = matchable;
+                listed.push_back(l);
+                if (matchable) {
+                    by_key.emplace(key.substr(1), it->second);
+                    if (std::find(lengths.begin(), lengths.end(), e.components) == lengths.end()) lengths.push_back(e.components);
+                }
+            }
+            if (e.dicomdir < 32) listed[it->second].mask |= 1u << e.dicomdir;
         }
         for (std::uint32_t fi = 0; fi < files_.size(); ++fi) {
             File& f = files_[fi];
-            if (f.name.status != TextStatus::Ok) continue;
+            if (f.name.status != TextStatus::Ok || f.unsafe_name) continue;
             const auto parts = name_components(f.name.stored);
             auto match = [&](const std::string& key, std::size_t want) {
-                auto range = by_key.equal_range(key);
-                for (auto it = range.first; it != range.second; ++it) {
-                    if (entries_[it->second].components != want) continue;
-                    entries_[it->second].matched_files.push_back(fi);
-                    f.dicomdir_matches.push_back(it->second);
-                }
+                auto it = by_key.find(key);
+                if (it == by_key.end() || entries_[listed[it->second].first].components != want) return;
+                listed[it->second].matched_files.push_back(fi);
+                f.dicomdir_matches.push_back(it->second);
             };
             if (opt_.match_by_trailing_components) {
                 for (std::size_t n : lengths)
@@ -669,20 +818,21 @@ void Grouping::build() {
             if (!f.dicomdir_matches.empty() && f.instance >= 0)
                 instances_[static_cast<std::size_t>(f.instance)].flags |= kGiInDicomdir;
         }
-        for (std::uint32_t k = 0; k < entries_.size(); ++k) {
-            const DicomdirEntry& e = entries_[k];
-            if (!e.matched_files.empty()) continue;
+        for (const Listed& l : listed) {
+            if (!l.matched_files.empty()) continue;
+            const DicomdirEntry& e = entries_[l.first];
             GroupingIssue& g = issue(IssueKind::ListedMissing);
             g.dicomdir = static_cast<std::int32_t>(e.dicomdir);
             g.record = static_cast<std::int32_t>(e.record);
+            g.dicomdir_mask = l.mask;
             g.status = e.file_status;
             g.subject = &e.file_id;
             ++sum.listed_missing;
         }
-        for (std::uint32_t k = 0; k < entries_.size(); ++k) {
-            const DicomdirEntry& e = entries_[k];
-            if (e.matched_files.size() < 2) continue;
-            for (std::uint32_t fi : e.matched_files) {
+        for (const Listed& l : listed) {
+            if (l.matched_files.size() < 2) continue;
+            const DicomdirEntry& e = entries_[l.first];
+            for (std::uint32_t fi : l.matched_files) {
                 const File& f = files_[fi];
                 GroupingIssue& g = f.instance >= 0 ? instance_issue(IssueKind::AmbiguousMatch, static_cast<std::uint32_t>(f.instance))
                                                    : issue(IssueKind::AmbiguousMatch);
@@ -690,6 +840,7 @@ void Grouping::build() {
                 g.name = &f.name;
                 g.dicomdir = static_cast<std::int32_t>(e.dicomdir);
                 g.record = static_cast<std::int32_t>(e.record);
+                g.dicomdir_mask = l.mask;
                 g.subject = &e.file_id;
                 ++sum.ambiguous;
             }

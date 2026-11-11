@@ -31,7 +31,7 @@ struct Template {
 
 Template make_template() {
     store_synth::Spec s;
-    s.sop_uid = "1.2.826.0.1.8.00000";
+    s.sop_uid = "1.2.826.0.1.8.100000";  // a counter of 6 digits that never starts with 0 (a strict UID)
     s.series_desc = "Axial 2.5 mm";
     const std::vector<std::uint8_t> b = grouping_synth::bytes_of(store_synth::make_file(s));
     Template t;
@@ -39,16 +39,16 @@ Template make_template() {
     const std::string needle = s.sop_uid;
     for (std::size_t i = 0; i + needle.size() <= b.size(); ++i)
         if (std::memcmp(b.data() + i, needle.data(), needle.size()) == 0) {
-            t.counter_at = i + needle.size() - 5;
+            t.counter_at = i + needle.size() - 6;
             break;
         }
     return t;
 }
 
 void set_counter(Template& t, unsigned n) {
-    char d[6];
-    std::snprintf(d, sizeof d, "%05u", n % 100000u);
-    std::memcpy(t.bytes.data() + t.counter_at, d, 5);
+    char d[7];
+    std::snprintf(d, sizeof d, "1%05u", n % 100000u);
+    std::memcpy(t.bytes.data() + t.counter_at, d, 6);
 }
 
 }  // namespace

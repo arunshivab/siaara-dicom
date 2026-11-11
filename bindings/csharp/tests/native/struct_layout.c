@@ -989,6 +989,10 @@ int main(void) {
     printf("F siaara_grouping_options match_by_trailing_components %u\n", (unsigned)offsetof(siaara_grouping_options, match_by_trailing_components));
     printf("F siaara_grouping_options reserved1 %u\n", (unsigned)offsetof(siaara_grouping_options, reserved1));
     printf("F siaara_grouping_options orientation_tolerance %u\n", (unsigned)offsetof(siaara_grouping_options, orientation_tolerance));
+    printf("F siaara_grouping_options position_fallback %u\n", (unsigned)offsetof(siaara_grouping_options, position_fallback));
+    printf("F siaara_grouping_options tie_break %u\n", (unsigned)offsetof(siaara_grouping_options, tie_break));
+    printf("F siaara_grouping_options uid_validation %u\n", (unsigned)offsetof(siaara_grouping_options, uid_validation));
+    printf("F siaara_grouping_options max_dicomdirs %u\n", (unsigned)offsetof(siaara_grouping_options, max_dicomdirs));
     printf("S siaara_grouping_summary %u\n", (unsigned)sizeof(siaara_grouping_summary));
     printf("F siaara_grouping_summary struct_size %u\n", (unsigned)offsetof(siaara_grouping_summary, struct_size));
     printf("F siaara_grouping_summary budget_reached %u\n", (unsigned)offsetof(siaara_grouping_summary, budget_reached));
@@ -1007,6 +1011,7 @@ int main(void) {
     printf("F siaara_grouping_summary listed_missing %u\n", (unsigned)offsetof(siaara_grouping_summary, listed_missing));
     printf("F siaara_grouping_summary present_unlisted %u\n", (unsigned)offsetof(siaara_grouping_summary, present_unlisted));
     printf("F siaara_grouping_summary ambiguous %u\n", (unsigned)offsetof(siaara_grouping_summary, ambiguous));
+    printf("F siaara_grouping_summary unsafe_names %u\n", (unsigned)offsetof(siaara_grouping_summary, unsafe_names));
     printf("F siaara_grouping_summary total_bytes %u\n", (unsigned)offsetof(siaara_grouping_summary, total_bytes));
     printf("F siaara_grouping_summary total_inflated %u\n", (unsigned)offsetof(siaara_grouping_summary, total_inflated));
     printf("F siaara_grouping_summary result_bytes %u\n", (unsigned)offsetof(siaara_grouping_summary, result_bytes));
@@ -1015,6 +1020,8 @@ int main(void) {
     printf("F siaara_grouped_patient first_study %u\n", (unsigned)offsetof(siaara_grouped_patient, first_study));
     printf("F siaara_grouped_patient study_count %u\n", (unsigned)offsetof(siaara_grouped_patient, study_count));
     printf("F siaara_grouped_patient instance_count %u\n", (unsigned)offsetof(siaara_grouped_patient, instance_count));
+    printf("F siaara_grouped_patient flags %u\n", (unsigned)offsetof(siaara_grouped_patient, flags));
+    printf("F siaara_grouped_patient reserved0 %u\n", (unsigned)offsetof(siaara_grouped_patient, reserved0));
     printf("S siaara_grouped_study %u\n", (unsigned)sizeof(siaara_grouped_study));
     printf("F siaara_grouped_study struct_size %u\n", (unsigned)offsetof(siaara_grouped_study, struct_size));
     printf("F siaara_grouped_study patient %u\n", (unsigned)offsetof(siaara_grouped_study, patient));
@@ -1028,7 +1035,7 @@ int main(void) {
     printf("F siaara_grouped_series first_instance %u\n", (unsigned)offsetof(siaara_grouped_series, first_instance));
     printf("F siaara_grouped_series instance_count %u\n", (unsigned)offsetof(siaara_grouped_series, instance_count));
     printf("F siaara_grouped_series has_normal %u\n", (unsigned)offsetof(siaara_grouped_series, has_normal));
-    printf("F siaara_grouped_series reserved0 %u\n", (unsigned)offsetof(siaara_grouped_series, reserved0));
+    printf("F siaara_grouped_series order_rule %u\n", (unsigned)offsetof(siaara_grouped_series, order_rule));
     printf("F siaara_grouped_series normal %u\n", (unsigned)offsetof(siaara_grouped_series, normal));
     printf("S siaara_grouped_instance %u\n", (unsigned)sizeof(siaara_grouped_instance));
     printf("F siaara_grouped_instance struct_size %u\n", (unsigned)offsetof(siaara_grouped_instance, struct_size));
@@ -1048,6 +1055,7 @@ int main(void) {
     printf("F siaara_grouped_instance image_orientation %u\n", (unsigned)offsetof(siaara_grouped_instance, image_orientation));
     printf("F siaara_grouped_instance slice_location %u\n", (unsigned)offsetof(siaara_grouped_instance, slice_location));
     printf("F siaara_grouped_instance position %u\n", (unsigned)offsetof(siaara_grouped_instance, position));
+    printf("F siaara_grouped_instance acquisition_time %u\n", (unsigned)offsetof(siaara_grouped_instance, acquisition_time));
     printf("S siaara_grouping_issue %u\n", (unsigned)sizeof(siaara_grouping_issue));
     printf("F siaara_grouping_issue struct_size %u\n", (unsigned)offsetof(siaara_grouping_issue, struct_size));
     printf("F siaara_grouping_issue kind %u\n", (unsigned)offsetof(siaara_grouping_issue, kind));
@@ -1061,6 +1069,8 @@ int main(void) {
     printf("F siaara_grouping_issue series %u\n", (unsigned)offsetof(siaara_grouping_issue, series));
     printf("F siaara_grouping_issue dicomdir %u\n", (unsigned)offsetof(siaara_grouping_issue, dicomdir));
     printf("F siaara_grouping_issue record %u\n", (unsigned)offsetof(siaara_grouping_issue, record));
+    printf("F siaara_grouping_issue dicomdir_mask %u\n", (unsigned)offsetof(siaara_grouping_issue, dicomdir_mask));
+    printf("F siaara_grouping_issue reserved0 %u\n", (unsigned)offsetof(siaara_grouping_issue, reserved0));
     printf("S siaara_grouping_text %u\n", (unsigned)sizeof(siaara_grouping_text));
     printf("F siaara_grouping_text struct_size %u\n", (unsigned)offsetof(siaara_grouping_text, struct_size));
     printf("F siaara_grouping_text status %u\n", (unsigned)offsetof(siaara_grouping_text, status));

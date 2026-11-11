@@ -37,6 +37,8 @@ internal static class C
     public const uint SIAARA_GROUPING_DEFAULT_MAX_ELEMENTS = 200000u;
     public const uint SIAARA_GROUPING_DEFAULT_MAX_INFLATED_SIZE = 134217728u;
     public const uint SIAARA_GROUPING_DEFAULT_MAX_VALUE_BYTES = 65536u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_DICOMDIRS = 4u;
+    public const uint SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT = 32u;
     public const int SIAARA_OK = 0;
     public const int SIAARA_ERR_INVALID_ARGUMENT = 1;
     public const int SIAARA_ERR_IO = 2;
@@ -494,11 +496,24 @@ internal static class C
     public const int SIAARA_GROUP_SWITCH_DEFAULT = 0;
     public const int SIAARA_GROUP_SWITCH_ON = 1;
     public const int SIAARA_GROUP_SWITCH_OFF = 2;
+    public const int SIAARA_GROUP_FALLBACK_PER_SERIES = 0;
+    public const int SIAARA_GROUP_FALLBACK_PER_INSTANCE = 1;
+    public const int SIAARA_GROUP_TIE_INSTANCE_NUMBER = 0;
+    public const int SIAARA_GROUP_TIE_AS_ADDED = 1;
+    public const int SIAARA_GROUP_TIE_ACQUISITION_TIME = 2;
+    public const int SIAARA_GROUP_UID_STRICT = 0;
+    public const int SIAARA_GROUP_UID_LENIENT = 1;
     public const int SIAARA_GLEVEL_PATIENT = 0;
     public const int SIAARA_GLEVEL_STUDY = 1;
     public const int SIAARA_GLEVEL_SERIES = 2;
     public const int SIAARA_GLEVEL_INSTANCE = 3;
     public const int SIAARA_GLEVEL_ISSUE = 4;
+    public const int SIAARA_GPATIENT_NO_PATIENT_ID = 1 << 0;
+    public const int SIAARA_GSERIES_ORDER_POSITION = 0;
+    public const int SIAARA_GSERIES_ORDER_SLICE_LOCATION = 1;
+    public const int SIAARA_GSERIES_ORDER_INSTANCE_NUMBER = 2;
+    public const int SIAARA_GSERIES_ORDER_ADDED = 3;
+    public const int SIAARA_GSERIES_ORDER_MIXED = 4;
     public const int SIAARA_GINST_SERIES_NUMBER = 1 << 0;
     public const int SIAARA_GINST_INSTANCE_NUMBER = 1 << 1;
     public const int SIAARA_GINST_POSITION = 1 << 2;
@@ -511,6 +526,8 @@ internal static class C
     public const int SIAARA_GINST_DUPLICATE = 1 << 9;
     public const int SIAARA_GINST_UNGROUPED = 1 << 10;
     public const int SIAARA_GINST_IN_DICOMDIR = 1 << 11;
+    public const int SIAARA_GINST_ACQUISITION_TIME = 1 << 12;
+    public const int SIAARA_GINST_UNSAFE_NAME = 1 << 13;
     public const int SIAARA_GSORT_POSITION = 0;
     public const int SIAARA_GSORT_SLICE_LOCATION = 1;
     public const int SIAARA_GSORT_INSTANCE_NUMBER = 2;
@@ -525,6 +542,7 @@ internal static class C
     public const int SIAARA_GISSUE_LISTED_MISSING = 7;
     public const int SIAARA_GISSUE_PRESENT_UNLISTED = 8;
     public const int SIAARA_GISSUE_AMBIGUOUS_MATCH = 9;
+    public const int SIAARA_GISSUE_UNSAFE_NAME = 10;
     public const int SIAARA_GSKIP_NOT_DICOM = 1;
     public const int SIAARA_GSKIP_UNREADABLE = 2;
     public const int SIAARA_GSKIP_FILE_LIMIT = 3;
@@ -538,6 +556,7 @@ internal static class C
     public const int SIAARA_GLIMIT_READ_LIMITS = 6;
     public const int SIAARA_GLIMIT_INFLATED_SIZE = 7;
     public const int SIAARA_GLIMIT_DICOMDIR_RECORDS = 8;
+    public const int SIAARA_GLIMIT_MAX_DICOMDIRS = 9;
     public const int SIAARA_GUNGROUPED_STUDY_UID = 1;
     public const int SIAARA_GUNGROUPED_SERIES_UID = 2;
     public const int SIAARA_GUNGROUPED_BOTH = 3;
@@ -552,6 +571,7 @@ internal static class C
     public const int SIAARA_GFIELD_PATIENT_NAME = 8;
     public const int SIAARA_GFIELD_PATIENT_ID = 9;
     public const int SIAARA_GFIELD_SUBJECT = 10;
+    public const int SIAARA_GFIELD_ISSUER_OF_PATIENT_ID = 11;
     public const int SIAARA_GTEXT_ABSENT = 0;
     public const int SIAARA_GTEXT_OK = 1;
     public const int SIAARA_GTEXT_TOO_LONG = 2;
@@ -2041,6 +2061,10 @@ internal struct siaara_grouping_options
     public int match_by_trailing_components;
     public uint reserved1;
     public double orientation_tolerance;
+    public int position_fallback;
+    public int tie_break;
+    public int uid_validation;
+    public uint max_dicomdirs;
 }
 
 /// <summary>siaara_grouping_summary (blittable, C layout).</summary>
@@ -2064,6 +2088,7 @@ internal struct siaara_grouping_summary
     public ulong listed_missing;
     public ulong present_unlisted;
     public ulong ambiguous;
+    public ulong unsafe_names;
     public ulong total_bytes;
     public ulong total_inflated;
     public ulong result_bytes;
@@ -2077,6 +2102,8 @@ internal struct siaara_grouped_patient
     public uint first_study;
     public uint study_count;
     public uint instance_count;
+    public uint flags;
+    public uint reserved0;
 }
 
 /// <summary>siaara_grouped_study (blittable, C layout).</summary>
@@ -2100,7 +2127,7 @@ internal struct siaara_grouped_series
     public uint first_instance;
     public uint instance_count;
     public int has_normal;
-    public uint reserved0;
+    public int order_rule;
     public FixedArray3OfDouble normal;
 }
 
@@ -2125,6 +2152,7 @@ internal struct siaara_grouped_instance
     public FixedArray6OfDouble image_orientation;
     public double slice_location;
     public double position;
+    public double acquisition_time;
 }
 
 /// <summary>siaara_grouping_issue (blittable, C layout).</summary>
@@ -2143,6 +2171,8 @@ internal struct siaara_grouping_issue
     public int series;
     public int dicomdir;
     public int record;
+    public uint dicomdir_mask;
+    public uint reserved0;
 }
 
 /// <summary>siaara_grouping_text (blittable, C layout).</summary>

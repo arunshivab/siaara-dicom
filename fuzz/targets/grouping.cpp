@@ -42,6 +42,9 @@ SIAARA_FUZZ_TARGET(grouping) {
     o.match_case_insensitive = (pick & 8) ? SIAARA_GROUP_SWITCH_OFF : SIAARA_GROUP_SWITCH_DEFAULT;
     o.match_by_trailing_components = (pick & 16) ? SIAARA_GROUP_SWITCH_OFF : SIAARA_GROUP_SWITCH_DEFAULT;
     o.include_patient_fields = (pick >> 5) & 1;
+    o.position_fallback = pick >> 7;
+    o.tie_break = (pick / 7) % 3;
+    o.uid_validation = (pick >> 4) & 1;
     if (pick & 64) {  // small budgets, so they are reached
         o.max_files = 3;
         o.max_result_bytes = 600;
@@ -94,7 +97,8 @@ SIAARA_FUZZ_TARGET(grouping) {
     }
     FUZZ_REQUIRE(in_series + s.ungrouped == s.instances);
     for (uint32_t i = 0; i < s.instances; ++i)
-        for (int32_t f = SIAARA_GFIELD_NAME; f < SIAARA_GFIELD_SUBJECT; ++f) check_text(g, SIAARA_GLEVEL_INSTANCE, i, f);
+        for (int32_t f = SIAARA_GFIELD_NAME; f <= SIAARA_GFIELD_ISSUER_OF_PATIENT_ID; ++f)
+            if (f != SIAARA_GFIELD_SUBJECT) check_text(g, SIAARA_GLEVEL_INSTANCE, i, f);
     for (uint32_t i = 0; i < s.patients; ++i) check_text(g, SIAARA_GLEVEL_PATIENT, i, SIAARA_GFIELD_PATIENT_ID);
     for (uint32_t i = 0; i < s.studies; ++i) check_text(g, SIAARA_GLEVEL_STUDY, i, SIAARA_GFIELD_STUDY_UID);
     for (uint32_t i = 0; i < s.issues; ++i) {

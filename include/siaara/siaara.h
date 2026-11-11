@@ -3381,13 +3381,23 @@ SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, 
  * other text max_text_bytes, any stored value max_value_bytes) is NOT kept: its status is
  * SIAARA_GTEXT_TOO_LONG; it is never cut and passed on as if whole. A UID is used for grouping
  * only when it is a valid UID (1 to 64 characters, digits and dots only); other UID values are
- * kept with status SIAARA_GTEXT_NOT_A_UID. The caller's file name is kept as given (never
- * changed) with a display-safe copy; a name longer than max_text_bytes is not kept (and cannot
- * match a DICOMDIR File ID).
+ * kept with status SIAARA_GTEXT_NOT_A_UID. How strict "valid" is: uid_validation
+ * (SIAARA_GROUP_UID_STRICT, the default: PS3.5 9.1 - 1 to 64 characters, components of digits
+ * separated by single dots, no empty component, no leading zero unless the component is "0";
+ * SIAARA_GROUP_UID_LENIENT: 1 to 64 digits and dots). The caller's file name is kept as given
+ * (never changed) with a display-safe copy; a name longer than max_text_bytes is not kept (and
+ * cannot match a DICOMDIR File ID).
  *
- * Grouping: patients are told apart by Patient ID (the stored text, compared exactly; files
- * without one form one patient), studies by Study Instance UID within a patient, series by Series
- * Instance UID within a study. Patients, studies and series come in the order their first file
+ * Skipped or ungrouped: a Part 10 file that cannot be read, or holds nothing after its header
+ * ("DICM" and nothing else), is skipped (SIAARA_GSKIP_UNREADABLE). Ungrouped is only for readable
+ * DICOM without a valid Study or Series UID.
+ *
+ * Grouping: patients are told apart by Patient ID plus Issuer of Patient ID, both exactly as
+ * stored (byte comparison); files without a Patient ID (absent, empty, or longer than
+ * max_value_bytes) form one "no Patient ID" patient per study (SIAARA_GPATIENT_NO_PATIENT_ID),
+ * never merged across studies. Without include_patient_fields the key is used internally only:
+ * a patient is an index, its text fields are SIAARA_GTEXT_NOT_REQUESTED. Studies by Study
+ * Instance UID within a patient, series by Series Instance UID within a study. Patients, studies and series come in the order their first file
  * was added. A Study UID seen under more than one Patient ID gives one study under each patient
  * and an issue SIAARA_GISSUE_STUDY_PATIENT_CONFLICT for each (they are not merged); this check
  * is made even when the patient fields are not returned. A file without a valid Study or Series
@@ -3398,12 +3408,22 @@ SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, 
  *     Position (Patient), normal), normal = row x column of the series' reference Image
  *     Orientation (Patient) (that of its first file, as added, with a usable orientation). A file
  *     whose position is missing, not finite, or whose orientation differs from the reference by
- *     more than orientation_tolerance in any direction cosine comes after the positioned files,
- *     ordered by Slice Location; then files with neither, by Instance Number; then the rest as
- *     added. siaara_grouped_instance.sort_key says which placed each file.
+ *     more than orientation_tolerance in any direction cosine has no usable position. What then
+ *     happens is position_fallback:
+ *       SIAARA_GROUP_FALLBACK_PER_SERIES (default): if any file of the series lacks a usable
+ *         position, the whole series is ordered by one rule: Slice Location when every file has
+ *         one, else Instance Number when every file has one, else as added.
+ *       SIAARA_GROUP_FALLBACK_PER_INSTANCE: the positioned files by position, then the others by
+ *         Slice Location, then by Instance Number, then as added.
+ *     siaara_grouped_instance.sort_key says which key placed each file, and
+ *     siaara_grouped_series.order_rule the rule of the whole series (SIAARA_GSERIES_ORDER_*).
  *   SIAARA_GROUP_ORDER_INSTANCE_NUMBER: by Instance Number, files without one after, as added.
  *   SIAARA_GROUP_ORDER_AS_ADDED.
- * Every sort is stable (equal keys keep the order the files were added in).
+ * Equal keys (a time series, diffusion, a test bolus at one position) are ordered by tie_break:
+ * SIAARA_GROUP_TIE_INSTANCE_NUMBER (default: files with an Instance Number first, by it),
+ * SIAARA_GROUP_TIE_AS_ADDED, or SIAARA_GROUP_TIE_ACQUISITION_TIME (Acquisition Time (0008,0032),
+ * else Content Time (0008,0033); files with one first); then always as added (every sort is
+ * stable).
  *
  * Threads: one thread at a time per siaara_grouping object (different objects may be used on
  * different threads at once).
@@ -3442,6 +3462,21 @@ enum {
 };
 /* A switch whose default is on: 0 takes the default. */
 enum { SIAARA_GROUP_SWITCH_DEFAULT = 0, SIAARA_GROUP_SWITCH_ON = 1, SIAARA_GROUP_SWITCH_OFF = 2 };
+enum {
+    SIAARA_GROUP_FALLBACK_PER_SERIES = 0,   /* the default */
+    SIAARA_GROUP_FALLBACK_PER_INSTANCE = 1
+};
+enum {
+    SIAARA_GROUP_TIE_INSTANCE_NUMBER = 0,   /* the default */
+    SIAARA_GROUP_TIE_AS_ADDED = 1,
+    SIAARA_GROUP_TIE_ACQUISITION_TIME = 2
+};
+enum {
+    SIAARA_GROUP_UID_STRICT = 0,            /* the default: PS3.5 9.1 */
+    SIAARA_GROUP_UID_LENIENT = 1            /* digits and dots, 1 to 64 */
+};
+#define SIAARA_GROUPING_DEFAULT_MAX_DICOMDIRS 4u
+#define SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT 32u  /* the most max_dicomdirs may be (dicomdir_mask has 32 bits) */
 
 typedef struct siaara_grouping_options {
     uint32_t struct_size;            /* set to sizeof(siaara_grouping_options) */
@@ -3469,6 +3504,12 @@ typedef struct siaara_grouping_options {
                                         folder is ignored); off: by the whole name */
     uint32_t reserved1;              /* set to 0 */
     double orientation_tolerance;    /* 0 = default (1e-4); negative or not finite is an argument error */
+    int32_t position_fallback;       /* SIAARA_GROUP_FALLBACK_* (order POSITION only) */
+    int32_t tie_break;               /* SIAARA_GROUP_TIE_* */
+    int32_t uid_validation;          /* SIAARA_GROUP_UID_* */
+    uint32_t max_dicomdirs;          /* most siaara_grouping_add_dicomdir calls read (0 = default 4, at most
+                                        SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT); later ones are refused
+                                        (SIAARA_GISSUE_DICOMDIR_SKIPPED, SIAARA_GLIMIT_MAX_DICOMDIRS) */
 } siaara_grouping_options;
 /* The budgets: once max_files, max_total_bytes, max_total_inflated or max_result_bytes is
  * reached, every later file is skipped for it (SIAARA_GSKIP_TOTAL_BUDGET with the limit). Names
@@ -3481,7 +3522,12 @@ typedef struct siaara_grouping_options {
  * letters are compared ASCII-only case-folded (match_case_insensitive), and a File ID of N
  * components matches the last N components of the name (match_by_trailing_components; off: the
  * whole name). Only well-formed File IDs of records in use are matched; a name that matches a File
- * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH). */
+ * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH). A name
+ * with a ".." component, an absolute name (a leading '/' or '\') and a name with a drive letter
+ * ("C:") is never matched, and is reported (SIAARA_GISSUE_UNSAFE_NAME, whether or not a DICOMDIR
+ * was added). Several DICOMDIRs may be added (at most max_dicomdirs): their records accumulate,
+ * and a File ID listed more than once is one entry whose issues name every source
+ * (siaara_grouping_issue.dicomdir_mask). */
 
 /* Creates a grouping. options may be NULL (every default). A limit of 0 takes its default; an
  * unknown order / duplicates / switch value, or a bad tolerance, is SIAARA_ERR_INVALID_ARGUMENT.
@@ -3496,7 +3542,7 @@ SIAARA_API void SIAARA_CALL siaara_grouping_free(siaara_grouping* grouping) SIAA
  * name / data with a non-zero length. */
 SIAARA_API siaara_status SIAARA_CALL siaara_grouping_add_file(siaara_grouping* grouping, const char* name,
                                                               size_t name_len, const uint8_t* data, size_t size);
-/* A DICOMDIR (optional; more than one may be added), read as siaara_dicomdir_read_memory does,
+/* A DICOMDIR (optional; up to max_dicomdirs may be added), read as siaara_dicomdir_read_memory does,
  * with max_bytes = max_file_bytes and the default max_records. Its File IDs are set against the
  * names of the files (see above). Pass it here, not to siaara_grouping_add_file. Returns
  * SIAARA_OK whenever it was recorded; one that cannot be read is an issue
@@ -3522,6 +3568,7 @@ typedef struct siaara_grouping_summary {
     uint64_t listed_missing;
     uint64_t present_unlisted;
     uint64_t ambiguous;
+    uint64_t unsafe_names;
     uint64_t total_bytes;
     uint64_t total_inflated;
     uint64_t result_bytes;
@@ -3541,11 +3588,14 @@ enum {
     SIAARA_GLEVEL_ISSUE = 4
 };
 
+enum { SIAARA_GPATIENT_NO_PATIENT_ID = 1 << 0 }; /* the files of one study that have no Patient ID */
 typedef struct siaara_grouped_patient {
     uint32_t struct_size;            /* set to sizeof(siaara_grouped_patient) */
     uint32_t first_study;            /* its studies: first_study .. first_study + study_count - 1 */
     uint32_t study_count;
     uint32_t instance_count;
+    uint32_t flags;                  /* SIAARA_GPATIENT_* */
+    uint32_t reserved0;
 } siaara_grouped_patient;
 typedef struct siaara_grouped_study {
     uint32_t struct_size;            /* set to sizeof(siaara_grouped_study) */
@@ -3561,9 +3611,18 @@ typedef struct siaara_grouped_series {
     uint32_t first_instance;         /* its instances, in order: first_instance .. + instance_count - 1 */
     uint32_t instance_count;
     int32_t has_normal;              /* 1: normal is the unit slice normal of the reference orientation */
-    uint32_t reserved0;
+    int32_t order_rule;              /* SIAARA_GSERIES_ORDER_*: the rule the series was ordered by */
     double normal[3];
 } siaara_grouped_series;
+/* siaara_grouped_series.order_rule: one key for every instance (the SIAARA_GSORT_* values), or MIXED
+ * (position_fallback PER_INSTANCE, or instances without an Instance Number). */
+enum {
+    SIAARA_GSERIES_ORDER_POSITION = 0,
+    SIAARA_GSERIES_ORDER_SLICE_LOCATION = 1,
+    SIAARA_GSERIES_ORDER_INSTANCE_NUMBER = 2,
+    SIAARA_GSERIES_ORDER_ADDED = 3,
+    SIAARA_GSERIES_ORDER_MIXED = 4
+};
 
 /* siaara_grouped_instance.flags */
 enum {
@@ -3579,7 +3638,9 @@ enum {
     SIAARA_GINST_POSITION_USABLE = 1 << 8,  /* position (along the series normal) is set and usable */
     SIAARA_GINST_DUPLICATE = 1 << 9,        /* an earlier file has its SOP Instance UID (duplicate_of) */
     SIAARA_GINST_UNGROUPED = 1 << 10,       /* no valid Study or Series UID: series is -1 */
-    SIAARA_GINST_IN_DICOMDIR = 1 << 11      /* its name matched a DICOMDIR File ID */
+    SIAARA_GINST_IN_DICOMDIR = 1 << 11,     /* its name matched a DICOMDIR File ID */
+    SIAARA_GINST_ACQUISITION_TIME = 1 << 12,/* acquisition_time is set */
+    SIAARA_GINST_UNSAFE_NAME = 1 << 13      /* its name has "..", is absolute or has a drive letter */
 };
 /* siaara_grouped_instance.sort_key: what placed the instance in its series. */
 enum {
@@ -3606,6 +3667,8 @@ typedef struct siaara_grouped_instance {
     double image_orientation[6];     /* Image Orientation (Patient) (0020,0037) */
     double slice_location;           /* Slice Location (0020,1041) */
     double position;                 /* dot(image_position, series normal), SIAARA_GINST_POSITION_USABLE */
+    double acquisition_time;         /* seconds since midnight: Acquisition Time, else Content Time
+                                        (SIAARA_GINST_ACQUISITION_TIME) */
 } siaara_grouped_instance;
 
 /* siaara_grouping_issue.kind */
@@ -3622,7 +3685,8 @@ enum {
                                                   SIAARA_ERR_REJECTED when the File ID is not well formed */
     SIAARA_GISSUE_PRESENT_UNLISTED = 8,        /* instance whose name matches no DICOMDIR File ID (only when a
                                                   DICOMDIR was read) */
-    SIAARA_GISSUE_AMBIGUOUS_MATCH = 9          /* a File ID that two or more names match: one issue per name */
+    SIAARA_GISSUE_AMBIGUOUS_MATCH = 9,         /* a File ID that two or more names match: one issue per name */
+    SIAARA_GISSUE_UNSAFE_NAME = 10             /* a name with "..", absolute, or with a drive letter: never matched */
 };
 enum {
     SIAARA_GSKIP_NOT_DICOM = 1,      /* not a DICOM Part 10 file (no preamble and "DICM") */
@@ -3639,7 +3703,8 @@ enum {
     SIAARA_GLIMIT_RESULT_BYTES = 5,
     SIAARA_GLIMIT_READ_LIMITS = 6,       /* max_depth or max_elements of one file */
     SIAARA_GLIMIT_INFLATED_SIZE = 7,     /* max_inflated_size of one file */
-    SIAARA_GLIMIT_DICOMDIR_RECORDS = 8   /* a DICOMDIR's max_records */
+    SIAARA_GLIMIT_DICOMDIR_RECORDS = 8,  /* a DICOMDIR's max_records */
+    SIAARA_GLIMIT_MAX_DICOMDIRS = 9      /* more DICOMDIRs than max_dicomdirs */
 };
 enum { SIAARA_GUNGROUPED_STUDY_UID = 1, SIAARA_GUNGROUPED_SERIES_UID = 2, SIAARA_GUNGROUPED_BOTH = 3 };
 typedef struct siaara_grouping_issue {
@@ -3654,12 +3719,15 @@ typedef struct siaara_grouping_issue {
     int32_t study;                   /* -1 when none */
     int32_t series;                  /* -1 when none */
     int32_t dicomdir;                /* the siaara_grouping_add_dicomdir call, -1 when none */
-    int32_t record;                  /* the DICOMDIR record's index, -1 when none */
+    int32_t record;                  /* the DICOMDIR record's index, -1 when none (the first listing) */
+    uint32_t dicomdir_mask;          /* listed-missing, ambiguous: every DICOMDIR that lists the File ID (bit i:
+                                        add_dicomdir call i) */
+    uint32_t reserved0;
 } siaara_grouping_issue;
 
 /* Text fields (siaara_grouping_text_get): which exist at which level.
- *   PATIENT:  PATIENT_ID, PATIENT_NAME (of the patient's first file; NOT_REQUESTED without
- *             include_patient_fields)
+ *   PATIENT:  PATIENT_ID, PATIENT_NAME, ISSUER_OF_PATIENT_ID (of the patient's first file;
+ *             NOT_REQUESTED without include_patient_fields)
  *   STUDY:    STUDY_UID, STUDY_DATE (of the study's first file)
  *   SERIES:   SERIES_UID, MODALITY, SERIES_DESCRIPTION (of the series' first file)
  *   INSTANCE: all but SUBJECT (NAME: the caller's name of its file)
@@ -3676,7 +3744,8 @@ enum {
     SIAARA_GFIELD_SERIES_DESCRIPTION = 7,
     SIAARA_GFIELD_PATIENT_NAME = 8,
     SIAARA_GFIELD_PATIENT_ID = 9,
-    SIAARA_GFIELD_SUBJECT = 10
+    SIAARA_GFIELD_SUBJECT = 10,
+    SIAARA_GFIELD_ISSUER_OF_PATIENT_ID = 11
 };
 /* siaara_grouping_text.status */
 enum {

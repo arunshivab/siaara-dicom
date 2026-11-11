@@ -34,12 +34,23 @@ siaara_status guarded(F&& f) noexcept {
     }
 }
 
-static_assert(sizeof(siaara_grouping_options) == 112, "siaara_grouping_options layout");
-static_assert(sizeof(siaara_grouping_summary) == 152, "siaara_grouping_summary layout");
+static_assert(sizeof(siaara_grouping_options) == 128, "siaara_grouping_options layout");
+static_assert(sizeof(siaara_grouping_summary) == 160, "siaara_grouping_summary layout");
 static_assert(sizeof(siaara_grouped_series) == 48, "siaara_grouped_series layout");
-static_assert(sizeof(siaara_grouped_instance) == 152, "siaara_grouped_instance layout");
-static_assert(sizeof(siaara_grouping_issue) == 48, "siaara_grouping_issue layout");
-static_assert(static_cast<int>(st::TextField::Subject) == SIAARA_GFIELD_SUBJECT, "text fields");
+static_assert(sizeof(siaara_grouped_instance) == 160, "siaara_grouped_instance layout");
+static_assert(sizeof(siaara_grouping_issue) == 56, "siaara_grouping_issue layout");
+static_assert(sizeof(siaara_grouped_patient) == 24, "siaara_grouped_patient layout");
+static_assert(static_cast<int>(st::TextField::Subject) == SIAARA_GFIELD_SUBJECT &&
+                  static_cast<int>(st::TextField::IssuerOfPatientId) == SIAARA_GFIELD_ISSUER_OF_PATIENT_ID,
+              "text fields");
+static_assert(static_cast<int>(st::SeriesOrder::Mixed) == SIAARA_GSERIES_ORDER_MIXED, "series order rules");
+static_assert(static_cast<int>(st::IssueKind::UnsafeName) == SIAARA_GISSUE_UNSAFE_NAME, "issue kinds");
+static_assert(static_cast<int>(st::Limit::MaxDicomdirs) == SIAARA_GLIMIT_MAX_DICOMDIRS, "limits");
+static_assert(st::kGiUnsafeName == SIAARA_GINST_UNSAFE_NAME && st::kGiAcquisitionTime == SIAARA_GINST_ACQUISITION_TIME,
+              "instance flags");
+static_assert(st::kGroupingDefaultMaxDicomdirs == SIAARA_GROUPING_DEFAULT_MAX_DICOMDIRS &&
+                  st::kGroupingMaxDicomdirsLimit == SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT,
+              "dicomdir defaults");
 static_assert(static_cast<int>(st::TextStatus::NotKept) == SIAARA_GTEXT_NOT_KEPT, "text status");
 static_assert(static_cast<int>(st::IssueKind::AmbiguousMatch) == SIAARA_GISSUE_AMBIGUOUS_MATCH, "issue kinds");
 static_assert(static_cast<int>(st::Limit::DicomdirRecords) == SIAARA_GLIMIT_DICOMDIR_RECORDS, "limits");
@@ -104,6 +115,18 @@ siaara::Status to_grouping_options(const siaara_grouping_options* in, st::Groupi
     if (!std::isfinite(c.orientation_tolerance) || c.orientation_tolerance < 0)
         return siaara::Status(Errc::InvalidArgument, "orientation_tolerance must be finite and not negative");
     if (c.orientation_tolerance > 0) o.orientation_tolerance = c.orientation_tolerance;
+    if (c.position_fallback != SIAARA_GROUP_FALLBACK_PER_SERIES && c.position_fallback != SIAARA_GROUP_FALLBACK_PER_INSTANCE)
+        return siaara::Status(Errc::InvalidArgument, "position_fallback: SIAARA_GROUP_FALLBACK_*");
+    o.position_fallback = static_cast<st::PositionFallback>(c.position_fallback);
+    if (c.tie_break < SIAARA_GROUP_TIE_INSTANCE_NUMBER || c.tie_break > SIAARA_GROUP_TIE_ACQUISITION_TIME)
+        return siaara::Status(Errc::InvalidArgument, "tie_break: SIAARA_GROUP_TIE_*");
+    o.tie_break = static_cast<st::TieBreak>(c.tie_break);
+    if (c.uid_validation != SIAARA_GROUP_UID_STRICT && c.uid_validation != SIAARA_GROUP_UID_LENIENT)
+        return siaara::Status(Errc::InvalidArgument, "uid_validation: SIAARA_GROUP_UID_*");
+    o.uid_validation = static_cast<st::UidValidation>(c.uid_validation);
+    if (c.max_dicomdirs > SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT)
+        return siaara::Status(Errc::InvalidArgument, "max_dicomdirs: at most SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT");
+    set(o.max_dicomdirs, c.max_dicomdirs);
     return siaara::Status::ok();
 }
 
@@ -198,6 +221,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_result(siaara_grouping* gro
             o.listed_missing = s.listed_missing;
             o.present_unlisted = s.present_unlisted;
             o.ambiguous = s.ambiguous;
+            o.unsafe_names = s.unsafe_names;
             o.total_bytes = s.total_bytes;
             o.total_inflated = s.total_inflated;
             o.result_bytes = s.result_bytes;
@@ -217,6 +241,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_patient(const siaara_groupi
         o.first_study = v[index].first_study;
         o.study_count = v[index].study_count;
         o.instance_count = v[index].instance_count;
+        o.flags = v[index].no_patient_id ? static_cast<uint32_t>(SIAARA_GPATIENT_NO_PATIENT_ID) : 0u;
         if (!sized_out(o, out)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         return ok();
     });
@@ -249,6 +274,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_series(const siaara_groupin
         o.first_instance = v[index].first_instance;
         o.instance_count = v[index].instance_count;
         o.has_normal = v[index].has_normal ? 1 : 0;
+        o.order_rule = static_cast<int32_t>(v[index].order);
         for (std::size_t i = 0; i < 3; ++i) o.normal[i] = v[index].normal[i];
         if (!sized_out(o, out)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         return ok();
@@ -278,6 +304,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_instance(const siaara_group
         for (std::size_t i = 0; i < 6; ++i) o.image_orientation[i] = in.image_orientation[i];
         o.slice_location = in.slice_location;
         o.position = in.position;
+        o.acquisition_time = in.acquisition_time;
         if (!sized_out(o, out)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         return ok();
     });
@@ -302,6 +329,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_issue_get(const siaara_grou
         o.series = i.series;
         o.dicomdir = i.dicomdir;
         o.record = i.record;
+        o.dicomdir_mask = i.dicomdir_mask;
         if (!sized_out(o, out)) return fail(Errc::InvalidArgument, "out must be set up with struct_size");
         return ok();
     });
@@ -314,7 +342,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_text_get(const siaara_group
         if (siaara_status s = need_result(grouping); s != SIAARA_OK) return s;
         if (!out || out->struct_size < sizeof(siaara_grouping_text))
             return fail(Errc::InvalidArgument, "out must be set up with struct_size");
-        if (field < SIAARA_GFIELD_NAME || field > SIAARA_GFIELD_SUBJECT)
+        if (field < SIAARA_GFIELD_NAME || field > SIAARA_GFIELD_ISSUER_OF_PATIENT_ID)
             return fail(Errc::InvalidArgument, "field: SIAARA_GFIELD_*");
         const st::Grouping& g = grouping->g;
         const auto f = static_cast<st::TextField>(field);
@@ -331,7 +359,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_grouping_text_get(const siaara_group
         switch (level) {
             case SIAARA_GLEVEL_PATIENT:
                 if (index >= g.patients().size()) return fail(Errc::InvalidArgument, "patient index out of range");
-                if (!in_level({SIAARA_GFIELD_PATIENT_ID, SIAARA_GFIELD_PATIENT_NAME}))
+                if (!in_level({SIAARA_GFIELD_PATIENT_ID, SIAARA_GFIELD_PATIENT_NAME, SIAARA_GFIELD_ISSUER_OF_PATIENT_ID}))
                     return fail(Errc::InvalidArgument, "field not available for a patient");
                 t = internal_text(g.patients()[index].first_instance_ref);
                 break;

@@ -30,6 +30,54 @@ public enum DicomDuplicatePolicy
     KeepFirst = C.SIAARA_GROUP_DUPLICATES_KEEP_FIRST,
 }
 
+/// <summary>What orders a series (order Position) in which some instances have no usable position.</summary>
+public enum DicomPositionFallback
+{
+    /// <summary>The whole series by one rule: Slice Location when every instance has one, else Instance Number when
+    /// every instance has one, else as added. The default: the order of a series is one consistent rule.</summary>
+    PerSeries = C.SIAARA_GROUP_FALLBACK_PER_SERIES,
+    /// <summary>The positioned instances by position, the others after them by Slice Location, then Instance
+    /// Number, then as added.</summary>
+    PerInstance = C.SIAARA_GROUP_FALLBACK_PER_INSTANCE,
+}
+
+/// <summary>How instances with equal sort keys are ordered (a time series, diffusion, a test bolus at one
+/// position). Always followed by the order the files were added in.</summary>
+public enum DicomTieBreak
+{
+    /// <summary>Instances with an Instance Number first, by it. The default.</summary>
+    InstanceNumber = C.SIAARA_GROUP_TIE_INSTANCE_NUMBER,
+    /// <summary>The order the files were added in.</summary>
+    AsAdded = C.SIAARA_GROUP_TIE_AS_ADDED,
+    /// <summary>Acquisition Time, else Content Time; instances with one first.</summary>
+    AcquisitionTime = C.SIAARA_GROUP_TIE_ACQUISITION_TIME,
+}
+
+/// <summary>How strict a "valid UID" (one that groups) is.</summary>
+public enum DicomUidValidation
+{
+    /// <summary>PS3.5 9.1: 1 to 64 characters, components of digits separated by single dots, no empty component,
+    /// no leading zero unless the component is "0". The default.</summary>
+    Strict = C.SIAARA_GROUP_UID_STRICT,
+    /// <summary>1 to 64 digits and dots.</summary>
+    Lenient = C.SIAARA_GROUP_UID_LENIENT,
+}
+
+/// <summary>The rule a series was ordered by.</summary>
+public enum DicomSeriesOrderRule
+{
+    /// <summary>Every instance by its position along the normal.</summary>
+    Position = C.SIAARA_GSERIES_ORDER_POSITION,
+    /// <summary>Every instance by Slice Location.</summary>
+    SliceLocation = C.SIAARA_GSERIES_ORDER_SLICE_LOCATION,
+    /// <summary>Every instance by Instance Number.</summary>
+    InstanceNumber = C.SIAARA_GSERIES_ORDER_INSTANCE_NUMBER,
+    /// <summary>Every instance as added.</summary>
+    Added = C.SIAARA_GSERIES_ORDER_ADDED,
+    /// <summary>Tiers: each instance's <see cref="DicomGroupedInstance.SortKey"/> says which key placed it.</summary>
+    Mixed = C.SIAARA_GSERIES_ORDER_MIXED,
+}
+
 /// <summary>Options of a <see cref="DicomStudyGrouping"/>: the budgets of the grouping as a whole, the per-file read
 /// limits of the attachment preview, and how the result is formed. The defaults are the recommended values for
 /// untrusted input. A limit that is zero or negative is an error (<see cref="ArgumentOutOfRangeException"/>): to the
@@ -73,6 +121,16 @@ public sealed record DicomGroupingOptions
     /// <summary>Largest difference of any direction cosine of Image Orientation (Patient) from the series' reference
     /// orientation for which a file's position along the normal is still used. Default 1e-4.</summary>
     public double OrientationTolerance { get; init; } = DefaultOrientationTolerance;
+    /// <summary>Order Position, some positions unusable. Default <see cref="DicomPositionFallback.PerSeries"/>.</summary>
+    public DicomPositionFallback PositionFallback { get; init; } = DicomPositionFallback.PerSeries;
+    /// <summary>Equal sort keys. Default <see cref="DicomTieBreak.InstanceNumber"/>, then as added.</summary>
+    public DicomTieBreak TieBreak { get; init; } = DicomTieBreak.InstanceNumber;
+    /// <summary>Which UIDs group. Default <see cref="DicomUidValidation.Strict"/>. An invalid Study / Series UID makes
+    /// the instance ungrouped; the stored value is still returned untouched.</summary>
+    public DicomUidValidation UidValidation { get; init; } = DicomUidValidation.Strict;
+    /// <summary>Most <see cref="DicomStudyGrouping.AddDicomdir"/> calls read; later ones are refused (an issue).
+    /// 1 to <see cref="MaxDicomdirsLimit"/>. Default 4.</summary>
+    public int MaxDicomdirs { get; init; } = DefaultMaxDicomdirs;
 
     /// <summary>Default of <see cref="MaxFiles"/>.</summary>
     public const int DefaultMaxFiles = (int)C.SIAARA_GROUPING_DEFAULT_MAX_FILES;
@@ -98,6 +156,10 @@ public sealed record DicomGroupingOptions
     public const long DefaultMaxValueBytes = C.SIAARA_GROUPING_DEFAULT_MAX_VALUE_BYTES;
     /// <summary>Default of <see cref="OrientationTolerance"/>.</summary>
     public const double DefaultOrientationTolerance = 1e-4;
+    /// <summary>Default of <see cref="MaxDicomdirs"/>.</summary>
+    public const int DefaultMaxDicomdirs = (int)C.SIAARA_GROUPING_DEFAULT_MAX_DICOMDIRS;
+    /// <summary>The most <see cref="MaxDicomdirs"/> may be.</summary>
+    public const int MaxDicomdirsLimit = (int)C.SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT;
 
     /// <summary>The recommended values (the defaults).</summary>
     public static DicomGroupingOptions Recommended { get; } = new();
@@ -130,6 +192,12 @@ public sealed record DicomGroupingOptions
         {
             throw new ArgumentException("Unknown duplicate policy.", nameof(Duplicates));
         }
+        if (!Enum.IsDefined(PositionFallback) || !Enum.IsDefined(TieBreak) || !Enum.IsDefined(UidValidation))
+        {
+            throw new ArgumentException("Unknown position fallback, tie-break or UID validation.");
+        }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDicomdirs);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(MaxDicomdirs, MaxDicomdirsLimit);
     }
 
     internal siaara_grouping_options ToNative()
@@ -155,6 +223,10 @@ public sealed record DicomGroupingOptions
             match_case_insensitive = MatchCaseInsensitive ? C.SIAARA_GROUP_SWITCH_ON : C.SIAARA_GROUP_SWITCH_OFF,
             match_by_trailing_components = MatchByTrailingComponents ? C.SIAARA_GROUP_SWITCH_ON : C.SIAARA_GROUP_SWITCH_OFF,
             orientation_tolerance = OrientationTolerance,
+            position_fallback = (int)PositionFallback,
+            tie_break = (int)TieBreak,
+            uid_validation = (int)UidValidation,
+            max_dicomdirs = (uint)MaxDicomdirs,
         };
     }
 }
@@ -228,6 +300,8 @@ public sealed record DicomGroupedInstance
     public required DicomGroupedText PatientName { get; init; }
     /// <summary>Patient ID (NotRequested unless <see cref="DicomGroupingOptions.IncludePatientFields"/>).</summary>
     public required DicomGroupedText PatientId { get; init; }
+    /// <summary>Issuer of Patient ID (NotRequested unless <see cref="DicomGroupingOptions.IncludePatientFields"/>).</summary>
+    public required DicomGroupedText IssuerOfPatientId { get; init; }
     /// <summary>Index of its series in <see cref="DicomGroupingResult.Series"/>, or -1 when ungrouped.</summary>
     public int Series { get; init; } = -1;
     /// <summary>What placed it in its series.</summary>
@@ -260,6 +334,10 @@ public sealed record DicomGroupedInstance
     public bool IsUngrouped { get; init; }
     /// <summary>Its name matched a DICOMDIR File ID.</summary>
     public bool InDicomdir { get; init; }
+    /// <summary>Its name has a ".." component, is absolute or has a drive letter: never matched (an issue says so).</summary>
+    public bool HasUnsafeName { get; init; }
+    /// <summary>Acquisition Time, else Content Time, in seconds since midnight, or null.</summary>
+    public double? AcquisitionTime { get; init; }
 }
 
 /// <summary>A series: its instances in order.</summary>
@@ -271,7 +349,11 @@ public sealed record DicomGroupedInstance
 /// <param name="Normal">The unit slice normal of its reference orientation, or null.</param>
 /// <param name="Instances">Its instances, in order.</param>
 public sealed record DicomGroupedSeries(int Index, int Study, DicomGroupedText SeriesUid, DicomGroupedText Modality,
-    DicomGroupedText SeriesDescription, IReadOnlyList<double>? Normal, IReadOnlyList<DicomGroupedInstance> Instances);
+    DicomGroupedText SeriesDescription, IReadOnlyList<double>? Normal, IReadOnlyList<DicomGroupedInstance> Instances)
+{
+    /// <summary>The rule the series was ordered by.</summary>
+    public DicomSeriesOrderRule OrderRule { get; init; }
+}
 
 /// <summary>A study: its series.</summary>
 /// <param name="Index">Index in <see cref="DicomGroupingResult.Studies"/>.</param>
@@ -282,13 +364,21 @@ public sealed record DicomGroupedSeries(int Index, int Study, DicomGroupedText S
 public sealed record DicomGroupedStudy(int Index, int Patient, DicomGroupedText StudyUid, DicomGroupedText StudyDate,
     IReadOnlyList<DicomGroupedSeries> Series);
 
-/// <summary>A patient (files with the same Patient ID): its studies.</summary>
+/// <summary>A patient: the files with the same Patient ID and Issuer of Patient ID (both as stored, compared byte
+/// for byte), or the files of one study without a Patient ID (<see cref="NoPatientId"/>; never merged across
+/// studies). Without <see cref="DicomGroupingOptions.IncludePatientFields"/> a patient is an index only.</summary>
 /// <param name="Index">Index in <see cref="DicomGroupingResult.Patients"/>.</param>
 /// <param name="PatientId">Patient ID (NotRequested unless asked for).</param>
 /// <param name="PatientName">Patient's Name (NotRequested unless asked for).</param>
 /// <param name="Studies">Its studies.</param>
 public sealed record DicomGroupedPatient(int Index, DicomGroupedText PatientId, DicomGroupedText PatientName,
-    IReadOnlyList<DicomGroupedStudy> Studies);
+    IReadOnlyList<DicomGroupedStudy> Studies)
+{
+    /// <summary>The files of one study that have no Patient ID.</summary>
+    public bool NoPatientId { get; init; }
+    /// <summary>Issuer of Patient ID (NotRequested unless asked for).</summary>
+    public DicomGroupedText IssuerOfPatientId { get; init; } = DicomGroupedText.Absent;
+}
 
 /// <summary>What a <see cref="DicomGroupingIssue"/> reports.</summary>
 public enum DicomGroupingIssueKind
@@ -313,6 +403,8 @@ public enum DicomGroupingIssueKind
     PresentUnlisted = C.SIAARA_GISSUE_PRESENT_UNLISTED,
     /// <summary>A File ID that two or more names match: one issue per name.</summary>
     AmbiguousMatch = C.SIAARA_GISSUE_AMBIGUOUS_MATCH,
+    /// <summary>A name with a ".." component, an absolute name or one with a drive letter: never matched to a File ID.</summary>
+    UnsafeName = C.SIAARA_GISSUE_UNSAFE_NAME,
 }
 
 /// <summary>Why a file (or DICOMDIR) was not kept.</summary>
@@ -351,6 +443,8 @@ public enum DicomGroupingLimit
     InflatedSize = C.SIAARA_GLIMIT_INFLATED_SIZE,
     /// <summary>A DICOMDIR's record limit.</summary>
     DicomdirRecords = C.SIAARA_GLIMIT_DICOMDIR_RECORDS,
+    /// <summary><see cref="DicomGroupingOptions.MaxDicomdirs"/>.</summary>
+    MaxDicomdirs = C.SIAARA_GLIMIT_MAX_DICOMDIRS,
 }
 
 /// <summary>Which UID an ungrouped instance lacks (missing or not a valid UID).</summary>
@@ -396,8 +490,11 @@ public sealed record DicomGroupingIssue
     public int Series { get; init; } = -1;
     /// <summary>The <see cref="DicomStudyGrouping.AddDicomdir"/> call.</summary>
     public int Dicomdir { get; init; } = -1;
-    /// <summary>The DICOMDIR record's index.</summary>
+    /// <summary>The DICOMDIR record's index (of the first listing).</summary>
     public int Record { get; init; } = -1;
+    /// <summary>ListedMissing, AmbiguousMatch: every <see cref="DicomStudyGrouping.AddDicomdir"/> call whose DICOMDIR
+    /// lists the File ID (a File ID listed more than once is reported once).</summary>
+    public IReadOnlyList<int> ListedBy { get; init; } = Array.Empty<int>();
 }
 
 /// <summary>The result of a grouping: patients / studies / series / instances, and the issues.</summary>
@@ -427,6 +524,8 @@ public sealed record DicomGroupingResult
     public long TotalInflated { get; init; }
     /// <summary>Text kept, in bytes.</summary>
     public long ResultBytes { get; init; }
+    /// <summary>Names reported unsafe.</summary>
+    public long UnsafeNames { get; init; }
 }
 
 /// <summary>
@@ -435,7 +534,9 @@ public sealed record DicomGroupingResult
 /// is from bytes in memory: nothing is written to disk and no file's bytes are kept.
 /// <para>The input is UNTRUSTED: each file is read header-only with the attachment preview's limits, and the grouping
 /// as a whole is held to the budgets of <see cref="DicomGroupingOptions"/>. <see cref="Add"/> never throws for bad
-/// bytes: a file that cannot be read or is past a limit is recorded as skipped (an issue says why).</para>
+/// bytes: a file that cannot be read or is past a limit is recorded as skipped (an issue says why); ungrouped is only
+/// for readable DICOM without a valid Study or Series UID. A name with a ".." component, an absolute name or one with a
+/// drive letter is reported and never matched to a DICOMDIR File ID.</para>
 /// <para>The grouping shows what the files CLAIM; it is not proof that they belong together or to the patient they
 /// name. Reading headers has no time bound: run the grouping in the same separate worker process as the attachment
 /// preview (<see cref="DicomAttachmentPreview"/>), with a kill timer and a memory limit.</para>
@@ -527,6 +628,7 @@ public sealed class DicomStudyGrouping : IDisposable
                 SeriesDescription = T(C.SIAARA_GFIELD_SERIES_DESCRIPTION),
                 PatientName = T(C.SIAARA_GFIELD_PATIENT_NAME),
                 PatientId = T(C.SIAARA_GFIELD_PATIENT_ID),
+                IssuerOfPatientId = T(C.SIAARA_GFIELD_ISSUER_OF_PATIENT_ID),
                 Series = n.series,
                 SortKey = (DicomGroupedSortKey)n.sort_key,
                 ReadLoss = (int)n.read_loss,
@@ -543,6 +645,8 @@ public sealed class DicomStudyGrouping : IDisposable
                 DuplicateOf = n.duplicate_of,
                 IsUngrouped = Has(C.SIAARA_GINST_UNGROUPED),
                 InDicomdir = Has(C.SIAARA_GINST_IN_DICOMDIR),
+                HasUnsafeName = Has(C.SIAARA_GINST_UNSAFE_NAME),
+                AcquisitionTime = Has(C.SIAARA_GINST_ACQUISITION_TIME) ? n.acquisition_time : null,
             };
             instances[i] = inst;
             if (inst.IsUngrouped)
@@ -561,7 +665,10 @@ public sealed class DicomStudyGrouping : IDisposable
                 Text(g, C.SIAARA_GLEVEL_SERIES, k, C.SIAARA_GFIELD_MODALITY),
                 Text(g, C.SIAARA_GLEVEL_SERIES, k, C.SIAARA_GFIELD_SERIES_DESCRIPTION),
                 e.has_normal != 0 ? ToArray(e.normal) : null,
-                new ArraySegment<DicomGroupedInstance>(instances, (int)e.first_instance, (int)e.instance_count));
+                new ArraySegment<DicomGroupedInstance>(instances, (int)e.first_instance, (int)e.instance_count))
+            {
+                OrderRule = (DicomSeriesOrderRule)e.order_rule,
+            };
         }
         var studies = new DicomGroupedStudy[checked((int)sum.studies)];
         for (int s = 0; s < studies.Length; s++)
@@ -581,7 +688,11 @@ public sealed class DicomStudyGrouping : IDisposable
             patients[p] = new DicomGroupedPatient(p,
                 Text(g, C.SIAARA_GLEVEL_PATIENT, p, C.SIAARA_GFIELD_PATIENT_ID),
                 Text(g, C.SIAARA_GLEVEL_PATIENT, p, C.SIAARA_GFIELD_PATIENT_NAME),
-                new ArraySegment<DicomGroupedStudy>(studies, (int)pt.first_study, (int)pt.study_count));
+                new ArraySegment<DicomGroupedStudy>(studies, (int)pt.first_study, (int)pt.study_count))
+            {
+                NoPatientId = (pt.flags & (uint)C.SIAARA_GPATIENT_NO_PATIENT_ID) != 0,
+                IssuerOfPatientId = Text(g, C.SIAARA_GLEVEL_PATIENT, p, C.SIAARA_GFIELD_ISSUER_OF_PATIENT_ID),
+            };
         }
         var issues = new DicomGroupingIssue[checked((int)sum.issues)];
         for (int i = 0; i < issues.Length; i++)
@@ -606,6 +717,7 @@ public sealed class DicomStudyGrouping : IDisposable
                 Series = v.series,
                 Dicomdir = v.dicomdir,
                 Record = v.record,
+                ListedBy = Bits(v.dicomdir_mask),
             };
         }
         return new DicomGroupingResult
@@ -622,6 +734,7 @@ public sealed class DicomStudyGrouping : IDisposable
             TotalBytes = (long)sum.total_bytes,
             TotalInflated = (long)sum.total_inflated,
             ResultBytes = (long)sum.result_bytes,
+            UnsafeNames = (long)sum.unsafe_names,
         };
     }
 
@@ -648,6 +761,19 @@ public sealed class DicomStudyGrouping : IDisposable
         string stored = Encoding.UTF8.GetString(NativeSpan.Bytes(t.stored, t.stored_len));
         string display = Encoding.UTF8.GetString(NativeSpan.Bytes(t.display, t.display_len));
         return new DicomGroupedText(stored, display, status);
+    }
+
+    private static int[] Bits(uint mask)
+    {
+        var list = new List<int>();
+        for (int i = 0; i < 32; i++)
+        {
+            if ((mask & (1u << i)) != 0)
+            {
+                list.Add(i);
+            }
+        }
+        return list.ToArray();
     }
 
     private static double[] ToArray(FixedArray3OfDouble a)

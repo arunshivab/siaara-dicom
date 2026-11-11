@@ -543,8 +543,14 @@ What it does:
   of the series' first file - so an oblique series and Instance Numbers that contradict the
   positions still scroll in space order. A file whose position is missing, not finite, or whose
   orientation differs from the series' by more than `OrientationTolerance` (default 1e-4 per
-  direction cosine) comes after, by Slice Location, then by Instance Number, then as added; the
-  instance's `SortKey` says which. By Instance Number or as added are options. Sorts are stable.
+  direction cosine) has no usable position, and `PositionFallback` decides: `PerSeries` (the
+  default) orders the whole series by one rule - Slice Location when every file has one, else
+  Instance Number when every file has one, else as added - so a series never mixes rules;
+  `PerInstance` puts the positioned files first and the rest after them by Slice Location, then
+  Instance Number, then as added. The series' `OrderRule` and each instance's `SortKey` say what
+  was used. Equal keys (a time series, diffusion, a test bolus) are ordered by `TieBreak`:
+  Instance Number (default), as added, or Acquisition Time (else Content Time); then always as
+  added. By Instance Number or as added are orders of their own (`Order`).
 - **Text**: every value comes exactly as stored (decoded from its character set, padding
   removed) and next to it a display-safe copy: controls and line separators become a space,
   bidirectional overrides, zero-width and other format characters are removed, bytes that are
@@ -553,17 +559,28 @@ What it does:
   is `siaara_text_display_safe` in C, and what `DicomAttachmentPreview.CaptionText` uses in C#.
   A value longer than its cap (UIDs 64 characters, other text 1,024 bytes) is not kept and is
   reported `TooLong`: never cut and passed on as if whole.
-- **Grouping keys**: a UID groups only when it is a valid UID (1 to 64 digits and dots).
-  Patients are told apart by Patient ID; Patient's Name and Patient ID are **not returned**
-  unless `IncludePatientFields` is set. A Study UID under two Patient IDs gives two studies and
-  an issue each; a series whose files disagree on Modality or Rows x Columns is reported.
+- **Grouping keys**: a UID groups only when it is valid - `UidValidation` `Strict` (default,
+  PS3.5 9.1: components of digits separated by single dots, no empty component, no leading zero
+  unless the component is "0", 1 to 64 characters) or `Lenient` (1 to 64 digits and dots). A file
+  whose Study or Series UID is not valid is ungrouped, its value still returned untouched.
+  Ungrouped is only for readable DICOM: a Part 10 file that cannot be read, or holds nothing after
+  its header, is skipped. Patients are told apart by Patient ID plus Issuer of Patient ID, both as
+  stored (byte comparison); files without a Patient ID form one "no Patient ID" patient per study
+  (`NoPatientId`), never merged across studies. Patient's Name, Patient ID and Issuer are **not
+  returned** unless `IncludePatientFields` is set (a patient is then an index only). A Study UID
+  under two patients gives two studies and an issue each; a series whose files disagree on
+  Modality or Rows x Columns is reported.
 - **Duplicates** (the same SOP Instance UID twice): both kept, the second marked (default), or
   only the first kept (`Duplicates = KeepFirst`); an issue names the second either way.
 - **DICOMDIR against the ZIP**: the member's name is split on `/` and `\`, `.` components are
   dropped and ASCII letters compared in any case (`MatchCaseInsensitive`); a File ID of N
   components matches the name's last N components (`MatchByTrailingComponents`), so a wrapping
   folder does not matter. Listed-but-missing, present-but-unlisted and a File ID that two names
-  match are issues. The DICOMDIR is read from bytes (`Dicomdir.Read(ReadOnlySpan<byte>, ...)`,
+  match are issues. A name with a `..` component, an absolute name or one with a drive letter is
+  never matched and is reported as an unsafe name (with or without a DICOMDIR). Several DICOMDIRs
+  may be added (`MaxDicomdirs`, default 4; more are refused with a reason): their records
+  accumulate, and a File ID listed by two of them is reported once with both sources
+  (`ListedBy`). The DICOMDIR is read from bytes (`Dicomdir.Read(ReadOnlySpan<byte>, ...)`,
   `siaara_dicomdir_read_memory`): File IDs come as text and are never resolved to a path; an
   unsafe one (`..`, absolute, a drive letter, more than 8 components, a component longer than
   8 characters, characters outside PS3.10's set) is `Rejected`.
@@ -580,6 +597,7 @@ or negative limit throws `ArgumentOutOfRangeException`):
 | `MaxResultBytes` / `max_result_bytes` | 64 MiB | text kept: stored values plus display copies |
 | `MaxUidChars` / `max_uid_chars` | 64 | a UID of megabytes |
 | `MaxTextBytes` / `max_text_bytes` | 1,024 | long names and descriptions |
+| `MaxDicomdirs` / `max_dicomdirs` | 4 (at most 32) | many DICOMDIRs in one ZIP |
 | `MaxDepth`, `MaxElements`, `MaxInflatedSize`, `MaxValueBytes` | 16, 200,000, 128 MiB, 65,536 | the preview's read limits, per file |
 
 Once a total budget is reached, every later file is recorded as skipped for it; names of skipped

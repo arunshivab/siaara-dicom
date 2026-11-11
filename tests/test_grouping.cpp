@@ -178,7 +178,9 @@ TEST_CASE("grouping: a multi-series CT, shuffled, ordered along an oblique norma
 }
 
 TEST_CASE("grouping: NaN, infinite, missing positions and mixed orientations fall back to Slice Location, then Instance Number") {
-    Grouping g;
+    siaara_grouping_options per_instance = grouping_synth::options();
+    per_instance.position_fallback = SIAARA_GROUP_FALLBACK_PER_INSTANCE;
+    Grouping g(&per_instance);
     auto add = [&](const std::string& sop, const std::vector<std::uint8_t>& b) { CHECK_EQ(g.add(sop, b), SIAARA_OK); };
     auto base = [](const std::string& sop, int instance) {
         Ct c;
@@ -249,6 +251,7 @@ TEST_CASE("grouping: NaN, infinite, missing positions and mixed orientations fal
                                        SIAARA_GSORT_SLICE_LOCATION, SIAARA_GSORT_SLICE_LOCATION, SIAARA_GSORT_INSTANCE_NUMBER,
                                        SIAARA_GSORT_INSTANCE_NUMBER, SIAARA_GSORT_ADDED};
     for (uint32_t i = 0; i < 9; ++i) CHECK_EQ(g.instance(i).sort_key, keys[i]);
+    CHECK_EQ(g.series(0).order_rule, SIAARA_GSERIES_ORDER_MIXED);
     // the NaN is returned as stored, flagged present but not usable
     const siaara_grouped_instance nan = g.instance(5);
     CHECK((nan.flags & SIAARA_GINST_POSITION) != 0);
@@ -259,6 +262,7 @@ TEST_CASE("grouping: NaN, infinite, missing positions and mixed orientations fal
     // With a wider tolerance the tilted file is usable too.
     siaara_grouping_options o = grouping_synth::options();
     o.orientation_tolerance = 0.1;
+    o.position_fallback = SIAARA_GROUP_FALLBACK_PER_INSTANCE;
     Grouping wide(&o);
     {
         Ct c = base("7", 1);
@@ -656,8 +660,14 @@ TEST_CASE("grouping: a ZIP with a DICOMDIR - wrapping folder, case, backslashes,
         }
         CHECK_EQ(s.dicomdirs, 1u);
         std::set<std::string> want_missing = {members[0].first};
-        std::set<std::string> want_unlisted = {rlo_name};
+        // the "../" name is unsafe: never matched, so its File ID is missing and it is unlisted
+        std::set<std::string> want_unlisted = {rlo_name, "../" + members[4].first};
+        want_missing.insert(members[4].first);
         std::set<std::string> want_ambiguous = {"a/" + members[7].first, "b/" + members[7].first};
+        std::size_t unsafe = 0;
+        for (const auto& is : issues) unsafe += is.kind == SIAARA_GISSUE_UNSAFE_NAME ? 1u : 0u;
+        CHECK_EQ(unsafe, 1u);
+        CHECK_EQ(s.unsafe_names, 1u);
         if (pass == 1) {  // case-sensitive: the lower-case name matches nothing
             want_missing.insert(members[2].first);
             want_unlisted.insert("cd/" + lower(members[2].first));
@@ -695,4 +705,169 @@ TEST_CASE("grouping: a ZIP with a DICOMDIR - wrapping folder, case, backslashes,
         CHECK_EQ(issues[0].reason, SIAARA_GSKIP_NOT_DICOM);
         CHECK_EQ(issues[0].dicomdir, 0);
     }
+}
+
+TEST_CASE("grouping: position fallback per series, tie-breaks, strict UIDs, the patient key, unsafe names, a header and nothing else") {
+    auto slice = [](const std::string& sop, int instance, double z, bool has_ipp = true) {
+        Ct c;
+        c.sop = "1.2.826.0.1.9." + sop;
+        c.series = "1.2.826.0.1.9";
+        c.instance = instance;
+        c.ipp = {0, 0, z};
+        c.has_ipp = has_ipp;
+        return ct(c);
+    };
+    {  // PER_SERIES (default): one file without a position puts the whole series on Instance Number
+        Grouping g;
+        CHECK_EQ(g.add("a", slice("1", 3, 10)), SIAARA_OK);
+        CHECK_EQ(g.add("b", slice("2", 1, 30)), SIAARA_OK);
+        CHECK_EQ(g.add("c", slice("3", 2, 0, false)), SIAARA_OK);
+        (void)g.result();
+        CHECK_EQ(g.series(0).order_rule, SIAARA_GSERIES_ORDER_INSTANCE_NUMBER);
+        CHECK(series_sops(g, 0) == (std::vector<std::string>{"1.2.826.0.1.9.2", "1.2.826.0.1.9.3", "1.2.826.0.1.9.1"}));
+        for (uint32_t i = 0; i < 3; ++i) CHECK_EQ(g.instance(i).sort_key, SIAARA_GSORT_INSTANCE_NUMBER);
+        // all positioned: by position
+        Grouping h;
+        CHECK_EQ(h.add("a", slice("1", 3, 10)), SIAARA_OK);
+        CHECK_EQ(h.add("b", slice("2", 1, 30)), SIAARA_OK);
+        (void)h.result();
+        CHECK_EQ(h.series(0).order_rule, SIAARA_GSERIES_ORDER_POSITION);
+    }
+    {  // ties at one position: Instance Number (default), as added, acquisition time
+        auto timed = [&](const std::string& sop, int instance, const char* tm) {
+            Ct c;
+            c.sop = "1.2.826.0.1.9." + sop;
+            c.series = "1.2.826.0.1.9";
+            c.instance = instance;
+            DicomFile f = ct_file(c);
+            (void)f.dataset.set_string(0x00080032, VR::TM, tm);
+            return grouping_synth::bytes_of(f);
+        };
+        const auto a = timed("1", 3, "101500.5"), b = timed("2", 1, "101502"), c = timed("3", 2, "10:14:59");
+        for (int tie : {SIAARA_GROUP_TIE_INSTANCE_NUMBER, SIAARA_GROUP_TIE_AS_ADDED, SIAARA_GROUP_TIE_ACQUISITION_TIME}) {
+            siaara_grouping_options o = grouping_synth::options();
+            o.tie_break = tie;
+            Grouping g(&o);
+            CHECK_EQ(g.add("a", a), SIAARA_OK);
+            CHECK_EQ(g.add("b", b), SIAARA_OK);
+            CHECK_EQ(g.add("c", c), SIAARA_OK);
+            (void)g.result();
+            const std::string p = "1.2.826.0.1.9.";
+            const std::vector<std::string> want = tie == SIAARA_GROUP_TIE_INSTANCE_NUMBER ? std::vector<std::string>{p + "2", p + "3", p + "1"}
+                                                  : tie == SIAARA_GROUP_TIE_AS_ADDED     ? std::vector<std::string>{p + "1", p + "2", p + "3"}
+                                                                                         : std::vector<std::string>{p + "3", p + "1", p + "2"};
+            CHECK(series_sops(g, 0) == want);
+            CHECK((g.instance(0).flags & SIAARA_GINST_ACQUISITION_TIME) != 0);
+        }
+    }
+    {  // strict UIDs (default) against lenient
+        Ct c;
+        c.sop = "1.2.826.0.1.9.1";
+        c.series = "1.2.0826.1";  // a leading zero
+        const auto leading_zero = ct(c);
+        Grouping strict;
+        CHECK_EQ(strict.add("z", leading_zero), SIAARA_OK);
+        siaara_grouping_summary s = strict.result();
+        CHECK_EQ(s.ungrouped, 1u);
+        CHECK_EQ(strict.status(SIAARA_GLEVEL_INSTANCE, 0, SIAARA_GFIELD_SERIES_UID), SIAARA_GTEXT_NOT_A_UID);
+        CHECK(strict.stored(SIAARA_GLEVEL_INSTANCE, 0, SIAARA_GFIELD_SERIES_UID) == "1.2.0826.1");
+        CHECK(!store::grouping_uid_valid("1..2") && !store::grouping_uid_valid(".1") && !store::grouping_uid_valid("1."));
+        CHECK(store::grouping_uid_valid("1.0.2") && store::grouping_uid_valid("0"));
+        CHECK(store::grouping_uid_valid("1..2", store::UidValidation::Lenient));
+        siaara_grouping_options o = grouping_synth::options();
+        o.uid_validation = SIAARA_GROUP_UID_LENIENT;
+        Grouping lenient(&o);
+        CHECK_EQ(lenient.add("z", leading_zero), SIAARA_OK);
+        s = lenient.result();
+        CHECK_EQ(s.ungrouped, 0u);
+        CHECK_EQ(s.series, 1u);
+    }
+    {  // the patient key: Patient ID plus Issuer; no Patient ID: one node per study
+        auto file = [](const std::string& sop, const std::string& study, const char* pid, const char* issuer) {
+            Ct c;
+            c.sop = sop;
+            c.study = study;
+            c.series = study + ".1";
+            DicomFile f = ct_file(c);
+            if (pid) (void)f.dataset.set_string(0x00100020, VR::LO, pid);
+            else (void)f.dataset.remove(0x00100020);
+            if (issuer) (void)f.dataset.set_string(0x00100021, VR::LO, issuer);
+            return grouping_synth::bytes_of(f);
+        };
+        Grouping g;
+        CHECK_EQ(g.add("1", file("1.2.7.1", "1.2.7", "P1", "HOSP_A")), SIAARA_OK);
+        CHECK_EQ(g.add("2", file("1.2.7.2", "1.2.8", "P1", "HOSP_B")), SIAARA_OK);  // another issuer: another patient
+        CHECK_EQ(g.add("3", file("1.2.7.3", "1.2.9", nullptr, nullptr)), SIAARA_OK);
+        CHECK_EQ(g.add("4", file("1.2.7.4", "1.2.10", "", nullptr)), SIAARA_OK);     // empty: as missing
+        CHECK_EQ(g.add("5", file("1.2.7.5", "1.2.9", nullptr, nullptr)), SIAARA_OK); // same study as 3: same node
+        const siaara_grouping_summary s = g.result();
+        CHECK_EQ(s.patients, 4u);
+        CHECK_EQ(g.patient(0).flags, 0u);
+        CHECK_EQ(g.patient(1).flags, 0u);
+        CHECK_EQ(g.patient(2).flags, static_cast<uint32_t>(SIAARA_GPATIENT_NO_PATIENT_ID));
+        CHECK_EQ(g.patient(2).instance_count, 2u);
+        CHECK_EQ(g.patient(3).flags, static_cast<uint32_t>(SIAARA_GPATIENT_NO_PATIENT_ID));
+        CHECK_EQ(g.status(SIAARA_GLEVEL_PATIENT, 0, SIAARA_GFIELD_ISSUER_OF_PATIENT_ID), SIAARA_GTEXT_NOT_REQUESTED);
+        siaara_grouping_options o = grouping_synth::options();
+        o.include_patient_fields = 1;
+        Grouping w(&o);
+        CHECK_EQ(w.add("1", file("1.2.7.1", "1.2.7", "P1", "HOSP_A")), SIAARA_OK);
+        (void)w.result();
+        CHECK(w.stored(SIAARA_GLEVEL_PATIENT, 0, SIAARA_GFIELD_ISSUER_OF_PATIENT_ID) == "HOSP_A");
+    }
+    {  // unsafe names (reported without a DICOMDIR too); a Part 10 header and nothing else is skipped
+        Grouping g;
+        for (const char* n : {"/abs/IM1", "\\\\server\\share\\IM2", "C:\\IM3", "a/../IM4", "..\\IM5", "ok/IM6", "c:IM7"}) {
+            Ct c;
+            c.sop = std::string("1.2.11.") + std::to_string(std::strlen(n));
+            CHECK_EQ(g.add(n, ct(c)), SIAARA_OK);
+        }
+        std::vector<std::uint8_t> dicm(132, 0);
+        std::memcpy(dicm.data() + 128, "DICM", 4);
+        CHECK_EQ(g.add("dicm-only", dicm), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        CHECK_EQ(s.unsafe_names, 6u);
+        CHECK_EQ(s.ungrouped, 0u);
+        const auto issues = g.issues(s.issues);
+        CHECK_EQ(count_kind(issues, SIAARA_GISSUE_UNSAFE_NAME), 6u);
+        bool skipped = false;
+        for (uint32_t i = 0; i < issues.size(); ++i)
+            if (issues[i].kind == SIAARA_GISSUE_SKIPPED && g.stored(SIAARA_GLEVEL_ISSUE, i, SIAARA_GFIELD_NAME) == "dicm-only") {
+                skipped = true;
+                CHECK_EQ(issues[i].reason, SIAARA_GSKIP_UNREADABLE);
+            }
+        CHECK(skipped);
+        for (uint32_t i = 0; i < s.instances; ++i)
+            CHECK(((g.instance(i).flags & SIAARA_GINST_UNSAFE_NAME) != 0) ==
+                  (g.stored(SIAARA_GLEVEL_INSTANCE, i, SIAARA_GFIELD_NAME) != "ok/IM6"));
+        CHECK(store::grouping_name_unsafe("x/.."));
+        CHECK(!store::grouping_name_unsafe("x/..y/z") && !store::grouping_name_unsafe("xy:z"));
+    }
+}
+
+TEST_CASE("grouping: several DICOMDIRs - records accumulate, a File ID listed twice is one entry with both sources, max_dicomdirs") {
+    store_synth::TempDir td("siaara-gdd2");
+    make_media(td / "src", td / "m", 1);
+    const std::vector<std::uint8_t> dd = store_synth::read_bytes(td / "m" / "DICOMDIR");
+    siaara_grouping_options o = grouping_synth::options();
+    o.max_dicomdirs = 2;
+    Grouping g(&o);
+    for (int i = 0; i < 3; ++i) CHECK_EQ(g.add_dicomdir(dd), SIAARA_OK);
+    const siaara_grouping_summary s = g.result();
+    CHECK_EQ(s.dicomdirs, 3u);
+    CHECK_EQ(s.listed_missing, 8u);  // each File ID once, not twice
+    const auto issues = g.issues(s.issues);
+    std::size_t refused = 0;
+    for (const auto& is : issues) {
+        if (is.kind == SIAARA_GISSUE_LISTED_MISSING) CHECK_EQ(is.dicomdir_mask, 3u);
+        if (is.kind == SIAARA_GISSUE_DICOMDIR_SKIPPED) {
+            ++refused;
+            CHECK_EQ(is.dicomdir, 2);
+            CHECK_EQ(is.limit, SIAARA_GLIMIT_MAX_DICOMDIRS);
+        }
+    }
+    CHECK_EQ(refused, 1u);
+    o.max_dicomdirs = SIAARA_GROUPING_MAX_DICOMDIRS_LIMIT + 1;
+    siaara_grouping* bad = nullptr;
+    CHECK_EQ(siaara_grouping_create(&o, &bad), SIAARA_ERR_INVALID_ARGUMENT);
 }
