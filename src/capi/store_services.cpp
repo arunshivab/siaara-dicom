@@ -383,6 +383,7 @@ std::uint16_t store_retrieve(const store::Store& s, std::string_view sop_class, 
         if (items.size() >= opt.max_retrieve_instances) return false;
         net::RetrieveItem it;
         it.path = inst[Str::FilePath];
+        it.network_input = store::read_as_network_input(inst.flags);  // sent as it was indexed
         items.push_back(std::move(it));
         return true;
     };
@@ -518,6 +519,7 @@ web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool r
                 inst.path = row[Str::FilePath];
                 inst.size = row.file_size;
                 inst.transfer_syntax = row[Str::TransferSyntaxUid];
+                inst.network_input = store::read_as_network_input(row.flags);  // read for replies as it was indexed
                 // R-161: what the instance takes once decoded, from the index alone.
                 if ((row.flags & store::kEncapsulated) != 0) {
                     const auto mul = [](std::uint64_t a, std::uint64_t b) { return a != 0 && b > UINT64_MAX / a ? UINT64_MAX : a * b; };

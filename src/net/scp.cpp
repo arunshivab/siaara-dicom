@@ -675,15 +675,17 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         std::string path;
         std::string sop_class, sop_instance, ts;
         bool ok = false;
+        bool network_input = false;
     };
     std::vector<Loaded> loaded(items.size());
     for (std::size_t i = 0; i < items.size(); ++i) {
         Loaded& l = loaded[i];
         l.file = items[i].file;
         l.path = items[i].path;
+        l.network_input = items[i].network_input;
         std::shared_ptr<const DicomFile> hdr = l.file;
         if (!hdr) {
-            ReadOptions ro;
+            ReadOptions ro = l.network_input ? network_read_options() : ReadOptions{};  // as it was indexed
             ro.stop_before_pixel_data = true;
             ro.open_mode = io::OpenMode::Map;  // the store's own files
             Result<DicomFile> f = read_file(l.path, ro);
@@ -780,7 +782,7 @@ Status ScpServer::do_retrieve(Ctx& c, const Message& m, bool is_get) {
         std::uint16_t st = dimse_status::ProcessingFailure;
         std::shared_ptr<const DicomFile> f = l.file;
         if (l.ok && !f) {
-            ReadOptions full_ro;
+            ReadOptions full_ro = l.network_input ? network_read_options() : ReadOptions{};  // as it was indexed
             full_ro.open_mode = io::OpenMode::Map;  // the store's own files
             Result<DicomFile> full = read_file(l.path, full_ro);
             if (full) f = std::make_shared<const DicomFile>(std::move(full.value()));

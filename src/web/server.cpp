@@ -56,9 +56,12 @@ std::string origin_of(const http::Request& rq, bool tls) {
 // Converts a stored instance to the wanted transfer syntax ("" = Explicit VR Little Endian, the
 // PS3.18 default; "*" = as stored). Native targets only: compressed data is decompressed with
 // the codec layer, compressing is not offered.
-Result<Bytes> convert_instance(const Bytes& raw, const std::string& want, std::string& out_ts,
+// How a stored instance is read for a reply: the way it was read when it was indexed.
+ReadOptions stored_read_options(bool network_input) { return network_input ? network_read_options() : ReadOptions{}; }
+
+Result<Bytes> convert_instance(const Bytes& raw, const std::string& want, std::string& out_ts, bool network_input,
                                std::uint64_t decode_memory = 0) {
-    auto f = read_part10(raw);
+    auto f = read_part10(raw, stored_read_options(network_input));
     if (!f) return f.take_error();
     const std::string stored = f->transfer_syntax;
     if (want == "*" || want == stored || (want.empty() && stored == ts::ExplicitVRLittleEndian)) {
@@ -156,8 +159,8 @@ std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) noexcept { return b > UI
 
 // R-161: the size of the instance's Part 10 stream once its pixel data is decoded, from its
 // header alone (the pixel data is not read). 0 when it has no encapsulated pixel data.
-std::uint64_t decoded_size_from_header(const Bytes& raw) {
-    ReadOptions ro;
+std::uint64_t decoded_size_from_header(const Bytes& raw, bool network_input) {
+    ReadOptions ro = stored_read_options(network_input);
     ro.stop_before_pixel_data = true;
     auto f = read_part10(raw, ro);
     if (!f) return 0;
@@ -413,7 +416,12 @@ private:
 
     // The Part 10 streams under the key, for the routes that work on one instance (frames, bulk
     // data, WADO-URI). With Store::locate they are memory-mapped, not read.
+    // load() fills `out` and, per instance, how it is to be read (StoredInstance::network_input).
+    std::vector<bool> loaded_network_;
+    bool network_at(std::size_t i) const { return i < loaded_network_.size() && loaded_network_[i]; }
+
     bool load(const InstanceKey& key, std::vector<Bytes>& out) {
+        loaded_network_.clear();
         if (store_.locate) {
             std::vector<StoredInstance> list;
             if (!locate(key, list)) return false;
@@ -422,6 +430,7 @@ private:
                 auto b = open_instance(store_, inst);
                 if (!b) { fail(rs_, 500, "retrieve failed"); return false; }
                 out.push_back(std::move(b.value()));
+                loaded_network_.push_back(inst.network_input);
             }
             return true;
         }
@@ -476,7 +485,7 @@ private:
                 if (decoded == 0) {
                     Result<Bytes> raw = open_instance(store_, inst);
                     if (!raw) return fail(rs_, 500, "retrieve failed");
-                    decoded = decoded_size_from_header(*raw);
+                    decoded = decoded_size_from_header(*raw, inst.network_input);
                 }
                 if (decoded != 0) {
                     part = decoded;
@@ -517,7 +526,7 @@ private:
                 Result<Bytes> raw = open_instance(*store, inst);
                 if (!raw) return raw.take_error();
                 std::string ts_out;
-                Result<Bytes> conv = convert_instance(*raw, want, ts_out, decode_memory);
+                Result<Bytes> conv = convert_instance(*raw, want, ts_out, inst.network_input, decode_memory);
                 if (!conv) return conv.take_error();
                 total += conv->size();
                 if (total > max_bytes) return Status(Errc::LimitExceeded, "response too large");
@@ -554,9 +563,10 @@ private:
             multipart::Writer w;
             bool all = true;
             std::uint64_t total = 0;
-            for (const auto& r : raw) {
+            for (std::size_t ri = 0; ri < raw.size(); ++ri) {
+                const Bytes& r = raw[ri];
                 std::string ts_out;
-                auto conv = convert_instance(r, want, ts_out);
+                auto conv = convert_instance(r, want, ts_out, network_at(ri));
                 if (!conv) { all = false; break; }
                 total += conv->size();
                 if (total > cfg_.max_response_bytes) return fail(rs_, 413, "response too large");
@@ -605,7 +615,7 @@ private:
             } else {
                 bytes = raw[i];
             }
-            auto parsed = read_part10(bytes);
+            auto parsed = read_part10(bytes, stored_read_options(store_.locate ? list[i].network_input : network_at(i)));
             if (!parsed) return fail(rs_, 500, "stored instance cannot be read");
             const DicomFile& file = parsed.value();
             const std::string url = instance_url(file.dataset);
@@ -701,7 +711,7 @@ private:
         std::vector<Bytes> raw;
         if (!load(key, raw)) return;
         if (raw.size() != 1) return fail(rs_, 500, "instance is not unique");
-        auto f = read_part10(raw[0]);
+        auto f = read_part10(raw[0], stored_read_options(network_at(0)));
         if (!f) return fail(rs_, 500, "stored instance cannot be read");
         auto fr = image::FrameReader::open(f->dataset, f->transfer_syntax);
         if (!fr) return fail(rs_, 404, "instance has no frames");
@@ -754,7 +764,7 @@ private:
         std::vector<Bytes> raw;
         if (!load(key, raw)) return;
         if (raw.size() != 1) return fail(rs_, 500, "instance is not unique");
-        auto f = read_part10(raw[0]);
+        auto f = read_part10(raw[0], stored_read_options(network_at(0)));
         if (!f) return fail(rs_, 500, "stored instance cannot be read");
         const Dataset* ds = &f->dataset;
         const Element* el = nullptr;
@@ -962,7 +972,7 @@ private:
         if (!load({*st, *se, *ob}, raw)) return;
         if (raw.size() != 1) return fail(rs_, 500, "instance is not unique");
         std::string ts_out;
-        auto conv = convert_instance(raw[0], want, ts_out);
+        auto conv = convert_instance(raw[0], want, ts_out, network_at(0));
         if (!conv) return fail(rs_, 406, "requested transfer syntax not available");
         rs_.status = 200;
         rs_.set("Content-Type", std::string(media::Dicom));

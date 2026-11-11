@@ -1258,11 +1258,6 @@ struct Store::Impl {
         return todo.size();
     }
 
-    // Was an instance with these index flags read with the network read options when it was added?
-    // (kIncompleteRead alone: a store written before kNetworkInput existed - only receive paths
-    // and the quarantine set it.)
-    static bool reindex_as_network(std::uint32_t flags) noexcept { return (flags & (kNetworkInput | kIncompleteRead)) != 0; }
-
     // Builds a state from every file under data/ plus the referenced files of `old`.
     State scan_state(const State& old, const Store::Progress* progress = nullptr, bool* stopped = nullptr) {
         State fresh;
@@ -1287,7 +1282,7 @@ struct Store::Impl {
             const std::string rel = rel_generic(p, root);
             const auto was = known.find(rel);
             ExtractOptions xo;
-            xo.network_input = was != known.end() ? reindex_as_network(was->second) : opt.reindex_unknown_as_network_input;
+            xo.network_input = was != known.end() ? read_as_network_input(was->second) : opt.reindex_unknown_as_network_input;
             if (!extract_index_file(to_utf8(p), r, xo) || r[Str::SopInstanceUid].empty()) continue;
             if (xo.network_input) r.flags |= kNetworkInput;
             if (was != known.end()) r.flags |= was->second & kIncompleteRead;  // what only the receiver knew
@@ -1768,7 +1763,7 @@ Result<VerifyReport> Store::verify(bool deep, bool repair, const Progress& progr
             IndexRecord r;
             // R-194: the file is read again the way it was read when it was added.
             ExtractOptions xo;
-            xo.network_input = !it.referenced && Impl::reindex_as_network(it.flags);
+            xo.network_input = !it.referenced && read_as_network_input(it.flags);
             const Status s = extract_index_file(to_utf8(it.path), r, xo);
             if (s) r.flags |= it.flags & (kNetworkInput | kIncompleteRead);
             if (!s || r[Str::SopInstanceUid] != it.uid) {

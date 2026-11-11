@@ -65,6 +65,12 @@ struct StoredInstance {
     // Samples per Pixel), from the index. 0: not known - the server then reads the instance's
     // header (not its pixel data) when it has to know.
     std::uint64_t decoded_size = 0;
+    // The instance arrived over the network and was indexed with the network read options (no
+    // recovery of damaged lengths; store::read_as_network_input). Every read of it for a reply -
+    // metadata, frames, bulk data, a retrieve that converts - uses the same options, so what the
+    // server says about the instance is what the index says (testing verdict T1). false: a local
+    // file, read with the local defaults. Stores that only have `retrieve` cannot say: false.
+    bool network_input = false;
 };
 
 // What a study / series / instance retrieve sends when the Accept header names no transfer

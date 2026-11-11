@@ -49,6 +49,10 @@ struct QueryRequest {
 struct RetrieveItem {
     std::string path;
     std::shared_ptr<const DicomFile> file;
+    // `path` only: the instance arrived over the network and was indexed with the network read
+    // options (store::read_as_network_input); it is read the same way to be sent (testing verdict
+    // T1). false: a local file, read with the local defaults.
+    bool network_input = false;
 };
 
 struct MoveDestination {

@@ -57,6 +57,11 @@ constexpr std::uint32_t kIncompleteRead    = 1u << 11;
 // (ExtractOptions::network_input). Kept so that a rebuild / verify that re-reads the stored file
 // reads it the way it was read when it arrived (R-194), not with the local-file defaults.
 constexpr std::uint32_t kNetworkInput      = 1u << 12;
+// Was an instance with these index flags read with the network read options when it was added?
+// Every later read of the stored file by the store or a server over it (rebuild, verify, WADO-RS,
+// C-GET / C-MOVE sub-operations) reads it the same way. (kIncompleteRead alone: a store written
+// before kNetworkInput existed - only receive paths and the quarantine set it.)
+constexpr bool read_as_network_input(std::uint32_t flags) noexcept { return (flags & (kNetworkInput | kIncompleteRead)) != 0; }
 
 enum class Level : std::int32_t { Patient = 0, Study = 1, Series = 2, Instance = 3 };
 

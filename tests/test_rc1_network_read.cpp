@@ -474,3 +474,70 @@ TEST_CASE("net2: rc2 R-194 a rebuild re-reads a received instance with the netwo
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+// Testing verdict T1: a server over the store reads a stored file for its replies the way the
+// instance was indexed. An instance that arrived over the network (indexed without the
+// recovery) must not come back "recovered" - with more attributes than the index has - in WADO-RS
+// metadata, frames or bulk data; a local import keeps the local read.
+TEST_CASE("web/ rc2 T1 WADO-RS metadata, frames and retrieve read a stored instance the way it was indexed") {
+    const auto dir = fresh_dir("serve");
+    const std::vector<std::uint8_t> late = ge_part10(true);
+    auto as_network = read_part10(Bytes::copy_of(late.data(), late.size()), network_read_options());
+    auto as_local = read_part10(Bytes::copy_of(late.data(), late.size()));
+    REQUIRE(as_network);
+    REQUIRE(as_local);
+    REQUIRE(as_network->dataset.size() < as_local->dataset.size());  // the recovery reads more
+    for (const bool received : {true, false}) {
+        siaara_store* store = open_store(dir / (received ? "received" : "local"));
+        REQUIRE(store != nullptr);
+        if (received) {
+            REQUIRE(store->store->add_buffer(Bytes::copy_of(late.data(), late.size()), store::DuplicatePolicy::Keep, store::kIncompleteRead,
+                                             store::network_extract_options()));
+        } else {
+            REQUIRE(siaara_store_add_memory(store, late.data(), late.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_OK);
+        }
+        CHECK_EQ(indexed_rows(store), received ? 0u : 2u);
+        siaara_web_server_options o;
+        std::memset(&o, 0, sizeof o);
+        o.struct_size = sizeof o;
+        siaara_web_server* ws = nullptr;
+        REQUIRE(siaara_web_server_start(&o, store, &ws) == SIAARA_OK);
+        uint32_t port = 0;
+        REQUIRE(siaara_web_server_port(ws, &port) == SIAARA_OK);
+        web::DicomwebClientConfig cc;
+        cc.base_url = "http://127.0.0.1:" + std::to_string(port) + "/dicomweb";
+        web::DicomwebClient client(cc);
+        // Metadata: the attributes of the indexed read, no more (bulk data is referenced, so
+        // every element of the read is listed).
+        const DicomFile& expect = received ? *as_network : *as_local;
+        for (const bool whole_study : {true, false}) {
+            auto meta = whole_study ? client.retrieve_metadata(kStudy) : client.retrieve_metadata(kStudy, kSeries, kSop);
+            REQUIRE(meta);
+            REQUIRE(meta->size() == 1);
+            std::size_t listed = 0;  // elements of the indexed read the metadata lists
+            for (const Element& e : expect.dataset.elements()) listed += (*meta)[0].contains(e.tag) ? 1u : 0u;
+            std::fprintf(stderr, "  %s: metadata %zu attributes, indexed read %zu, of them listed %zu\n", received ? "received" : "local",
+                         (*meta)[0].size(), expect.dataset.size(), listed);
+            CHECK_EQ(listed, (*meta)[0].size());           // nothing the indexed read does not have
+            CHECK(listed + 1 >= expect.dataset.size());    // and all of it (at most one element is left out of the JSON model)
+            CHECK((*meta)[0].contains(tags::Rows) == !received);
+            CHECK((*meta)[0].contains(0x00204000) == expect.dataset.contains(0x00204000));
+        }
+        // Frames and bulk data: the received instance has no pixel data in its indexed read, so
+        // none is served (the recovery would have "found" Pixel Data).
+        if (received) {
+            CHECK(!client.retrieve_frames(kStudy, kSeries, kSop, {1}));
+            CHECK(!client.retrieve_bulkdata("/dicomweb/studies/" + std::string(kStudy) + "/series/" + kSeries + "/instances/" + kSop +
+                                            "/bulkdata/7FE00010"));
+        }
+        // The instance as stored is the bytes as they arrived, either way.
+        auto raw = client.retrieve_raw(kStudy, kSeries, kSop, {"*"});
+        REQUIRE(raw);
+        REQUIRE(raw->size() == 1);
+        CHECK((*raw)[0].size() == late.size() && std::memcmp((*raw)[0].data(), late.data(), late.size()) == 0);
+        siaara_web_server_free(ws);
+        siaara_store_free(store);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
