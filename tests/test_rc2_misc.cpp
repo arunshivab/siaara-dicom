@@ -236,6 +236,45 @@ TEST_CASE("rc2 P3-10: an ACR-NEMA volume without Number of Frames is read as Pla
     bool said = false;
     for (const std::string& w : fr->warnings()) said = said || w.rfind("ACR_NEMA_PLANES", 0) == 0;
     CHECK(said);
+    // Testing verdict T2: the reading is a frame warning with a code of its own, for every frame,
+    // and reachable through the C API (siaara_frame_warning_count / siaara_frame_warning).
+    REQUIRE(fr->frame_warnings().size() == 1);
+    CHECK(fr->frame_warnings()[0].code == image::FrameWarningCode::AcrNemaPlanes);
+    {
+        std::vector<image::FrameWarning> fw;
+        REQUIRE(fr->check_frame(3, fw));
+        REQUIRE(fw.size() == 1);
+        CHECK(fw[0].code == image::FrameWarningCode::AcrNemaPlanes && fw[0].frame == 3);
+        std::vector<std::uint8_t> one(64);
+        REQUIRE(fr->decode(2, one, &fw));
+        REQUIRE(fw.size() == 1);
+        CHECK(fw[0].frame == 2);
+        std::vector<std::uint8_t> bytes;
+        REQUIRE(write_part10(f, bytes));
+        siaara_file* file = nullptr;
+        REQUIRE(siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &file) == SIAARA_OK);
+        for (const uint32_t frame : {0u, 4u}) {
+            uint32_t n = 0;
+            REQUIRE(siaara_frame_warning_count(file, frame, &n) == SIAARA_OK);
+            REQUIRE(n == 1);
+            int32_t code = 0;
+            char text[256];
+            size_t need = 0;
+            REQUIRE(siaara_frame_warning(file, frame, 0, &code, text, sizeof text, &need) == SIAARA_OK);
+            CHECK_EQ(code, SIAARA_FRAME_WARN_ACR_NEMA_PLANES);
+            CHECK(std::string(text).rfind("ACR_NEMA_PLANES", 0) == 0);
+        }
+        siaara_file_free(file);
+        // An ordinary single-frame image has no such warning.
+        const DicomFile plain = small_image("1.2.840.10008.5.1.4.1.1.7", "OT");
+        bytes.clear();
+        REQUIRE(write_part10(plain, bytes));
+        REQUIRE(siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &file) == SIAARA_OK);
+        uint32_t n = 7;
+        REQUIRE(siaara_frame_warning_count(file, 0, &n) == SIAARA_OK);
+        CHECK_EQ(n, 0u);
+        siaara_file_free(file);
+    }
     auto last = fr->decode(4);
     REQUIRE(last);
     CHECK_EQ((*last)[0], 4u);

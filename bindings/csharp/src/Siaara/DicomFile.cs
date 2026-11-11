@@ -101,6 +101,43 @@ public sealed record DicomReadOptions
     };
 }
 
+/// <summary>Kind of a frame adjustment (SIAARA_FRAME_WARN_*).</summary>
+public enum DicomFrameWarningCode
+{
+    /// <summary>No code.</summary>
+    None = 0,
+    /// <summary>Codestream precision below Bits Stored: values used as decoded.</summary>
+    PrecisionBelowBitsStored = C.SIAARA_FRAME_WARN_PRECISION_BELOW_BITS_STORED,
+    /// <summary>Codestream precision above Bits Stored: values kept.</summary>
+    PrecisionAboveBitsStored = C.SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_STORED,
+    /// <summary>JPEG 2000 signedness differs from Pixel Representation.</summary>
+    SignednessMismatch = C.SIAARA_FRAME_WARN_SIGNEDNESS_MISMATCH,
+    /// <summary>More components than Samples per Pixel: the first ones are used.</summary>
+    ExtraComponents = C.SIAARA_FRAME_WARN_EXTRA_COMPONENTS,
+    /// <summary>Codestream larger than Rows x Columns: the top-left part is used.</summary>
+    CodestreamCropped = C.SIAARA_FRAME_WARN_CODESTREAM_CROPPED,
+    /// <summary>Codestream precision above Bits Allocated.</summary>
+    PrecisionAboveBitsAllocated = C.SIAARA_FRAME_WARN_PRECISION_ABOVE_BITS_ALLOCATED,
+    /// <summary>Decoded samples widened into Bits Allocated.</summary>
+    ContainerWidened = C.SIAARA_FRAME_WARN_CONTAINER_WIDENED,
+    /// <summary>Invalid Bits Allocated: the depth comes from the codestream.</summary>
+    BitsFromCodestream = C.SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM,
+    /// <summary>Single frame: Rows / Columns come from the codestream.</summary>
+    SizeFromCodestream = C.SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM,
+    /// <summary>RLE run cut at its segment end; the missing bytes are 0.</summary>
+    RleRunClamped = C.SIAARA_FRAME_WARN_RLE_RUN_CLAMPED,
+    /// <summary>JPEG: invalid Huffman codes read as symbol 0.</summary>
+    CorruptEntropyData = C.SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA,
+    /// <summary>No Number of Frames: the retired Planes (0028,0012) was taken as the number of frames because the
+    /// native pixel data holds exactly that many (ACR-NEMA volumes).</summary>
+    AcrNemaPlanes = C.SIAARA_FRAME_WARN_ACR_NEMA_PLANES,
+}
+
+/// <summary>One adjustment lenient reading made for a frame.</summary>
+/// <param name="Code">Its kind.</param>
+/// <param name="Message">What was adjusted (codestream and attribute values only).</param>
+public readonly record struct DicomFrameWarning(DicomFrameWarningCode Code, string Message);
+
 /// <summary>What a read left out (siaara_read_report.loss bits).</summary>
 [Flags]
 public enum DicomReadLoss
@@ -375,6 +412,28 @@ public sealed partial class DicomFile : IDisposable
     }
 
     // ------------------------------------------------------------------ pixel data
+
+    /// <summary>What lenient reading adjusted for one frame: a codestream header that disagrees with the Image
+    /// Pixel module, a repaired RLE or JPEG stream, Planes read as the number of frames of an ACR-NEMA volume.
+    /// Decodes the frame to find them.</summary>
+    /// <param name="frame">0-based frame index.</param>
+    /// <returns>The adjustments (empty when there are none).</returns>
+    /// <exception cref="SiaaraException">No pixel data, a frame index out of range, or the frame cannot be decoded.</exception>
+    public IReadOnlyList<DicomFrameWarning> GetFrameWarnings(int frame = 0)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(frame);
+        using var l = new HandleLease(_handle);
+        Status.Check(Native.siaara_frame_warning_count(l.Pointer, (uint)frame, out uint n));
+        var list = new DicomFrameWarning[n];
+        for (int i = 0; i < list.Length; i++)
+        {
+            int code = 0;
+            string text = Status.ReadString((F: l.Pointer, Fr: (uint)frame, I: (uint)i), (s, b, out nn) =>
+                Native.siaara_frame_warning(s.F, s.Fr, s.I, out code, b, out nn));
+            list[i] = new DicomFrameWarning((DicomFrameWarningCode)code, text);
+        }
+        return list;
+    }
 
     /// <summary>The validated Image Pixel module of the main data set.</summary>
     /// <returns>The pixel description.</returns>

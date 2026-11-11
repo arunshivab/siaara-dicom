@@ -9,6 +9,35 @@ internal static class PixelTests
 {
     internal static void Register()
     {
+        Case("pixel: frame warnings - an ACR-NEMA volume read by Planes says so for every frame (T2)", () =>
+        {
+            using DicomFile file = DicomFile.Create();
+            DicomDataset ds = file.Dataset;
+            ds.SetString(DicomTags.SOPClassUID, "1.2.840.10008.5.1.4.1.1.7");
+            ds.SetString(DicomTags.SOPInstanceUID, "2.25.7720");
+            ds.SetString(DicomTags.PhotometricInterpretation, "MONOCHROME2");
+            ds.SetUInt16(DicomTags.SamplesPerPixel, 1);
+            ds.SetUInt16(DicomTags.Rows, 8);
+            ds.SetUInt16(DicomTags.Columns, 8);
+            ds.SetUInt16(DicomTags.BitsAllocated, 8);
+            ds.SetUInt16(DicomTags.BitsStored, 8);
+            ds.SetUInt16(DicomTags.HighBit, 7);
+            ds.SetUInt16(DicomTags.PixelRepresentation, 0);
+            ds.SetBytes(DicomTags.PixelData, "OB", new byte[64]);
+            CheckEq(file.GetFrameWarnings().Count, 0);            // an ordinary image: nothing adjusted
+            ds.SetBytes(DicomTags.PixelData, "OB", new byte[64 * 5]);
+            ds.SetUInt16(new DicomTag(0x00280012u), 5);          // Planes (retired); no Number of Frames
+            CheckEq(file.GetPixelInfo().NumberOfFrames, 5);
+            foreach (int frame in new[] { 0, 4 })
+            {
+                var w = file.GetFrameWarnings(frame);
+                Require(w.Count == 1);
+                CheckEq(w[0].Code, DicomFrameWarningCode.AcrNemaPlanes);
+                Check(w[0].Message.StartsWith("ACR_NEMA_PLANES", StringComparison.Ordinal));
+            }
+            Check(Throws<SiaaraException>(() => file.GetFrameWarnings(5)) is not null);
+        });
+
         Case("pixel: info, native decode, modality float32", () =>
         {
             using DicomFile f = Builders.Smoke();

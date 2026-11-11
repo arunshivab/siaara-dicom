@@ -1558,7 +1558,12 @@ enum {
     SIAARA_FRAME_WARN_BITS_FROM_CODESTREAM = 8,           /* invalid Bits Allocated: depth from the codestream */
     SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9,           /* single frame: Rows/Columns from the codestream */
     SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10,               /* RLE run cut at its segment end; missing bytes 0 */
-    SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11           /* JPEG: invalid Huffman codes read as symbol 0 */
+    SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11,          /* JPEG: invalid Huffman codes read as symbol 0 */
+    SIAARA_FRAME_WARN_ACR_NEMA_PLANES = 12                /* native pixel data, no Number of Frames: the retired
+                                                             Planes (0028,0012) was taken as the number of frames
+                                                             because the pixel data holds exactly that many
+                                                             (ACR-NEMA volumes); the message starts with
+                                                             "ACR_NEMA_PLANES". Reported for every frame. */
 };
 /* Number of adjustments made for frame `frame` (0-based). Decodes the frame to find them. The pixel
  * info (siaara_file_pixel_info) already reports adjusted Bits Allocated / Bits Stored / size. */

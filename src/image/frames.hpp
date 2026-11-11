@@ -63,6 +63,9 @@ enum class FrameWarningCode : std::uint16_t {
     // JPEG: entropy-coded data held Huffman codes that match no table entry; each was replaced by
     // symbol 0 (as the IJG-derived decoders do).
     CorruptEntropyData = 11,
+    // Native pixel data without Number of Frames: Planes (0028,0012, retired) was taken as the
+    // number of frames (PixelInfo warning "ACR_NEMA_PLANES ..."). Reported for every frame.
+    AcrNemaPlanes = 12,
 };
 
 struct FrameWarning {
@@ -171,6 +174,7 @@ private:
     std::vector<std::string> warnings_;
     std::vector<FrameWarning> frame_warnings_;
     std::vector<FrameWarning> attr_warnings_;  // attribute replacements made at open(), every frame
+    std::vector<FrameWarning> module_warnings_;  // pixel-module readings with a code (native data), every frame
     std::uint16_t declared_bits_stored_ = 0;
 
     // native

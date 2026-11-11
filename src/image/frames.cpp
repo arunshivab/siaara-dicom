@@ -355,6 +355,10 @@ Result<FrameReader> FrameReader::open(const Dataset& ds, std::string_view ts_uid
     r.info_ = std::move(pi).value();
     r.warnings_ = r.info_.warnings;
     r.declared_bits_stored_ = r.info_.bits_stored;
+    // The pixel-module readings a caller must be able to find by code (testing verdict T2).
+    for (const std::string& w : r.info_.warnings)
+        if (w.rfind("ACR_NEMA_PLANES", 0) == 0) r.module_warnings_.push_back(FrameWarning{FrameWarningCode::AcrNemaPlanes, 0, w});
+    r.frame_warnings_ = r.module_warnings_;  // (probe_first_frame replaces it for encapsulated data, which has none)
 
     r.ts_ = find_transfer_syntax(ts_uid);
     const Element* e = ds.find(r.info_.pixel_tag);
@@ -662,6 +666,7 @@ Status FrameReader::check_frame(std::uint32_t index, std::vector<FrameWarning>& 
     if (index >= info_.number_of_frames)
         return Status(Errc::InvalidArgument, "frames: frame index " + std::to_string(index) + " out of range");
     const Family f = codec_family(codec_);
+    for (const auto& m : module_warnings_) out.push_back(FrameWarning{m.code, index, m.message});
     if (!encapsulated_ || !opt_.lenient || f == Family::None) return Status::ok();
     std::span<const std::uint8_t> data;
     std::vector<std::uint8_t> joined;
@@ -709,6 +714,8 @@ Status FrameReader::decode_one(std::uint32_t index, std::span<std::uint8_t> out,
     if (index >= info_.number_of_frames)
         return Status(Errc::InvalidArgument, "frames: frame index " + std::to_string(index) + " out of range");
     if (out.size() < frame_bytes_) return Status(Errc::BufferTooSmall, "frames: output buffer too small");
+    if (warnings && !encapsulated_)
+        for (const auto& m : module_warnings_) warnings->push_back(FrameWarning{m.code, index, m.message});
     return encapsulated_ ? decode_encapsulated(index, out.first(static_cast<std::size_t>(frame_bytes_)), warnings, gate,
                                                codec_budget)
                          : decode_native(index, out.first(static_cast<std::size_t>(frame_bytes_)));

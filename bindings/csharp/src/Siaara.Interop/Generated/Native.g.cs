@@ -284,6 +284,7 @@ internal static class C
     public const int SIAARA_FRAME_WARN_SIZE_FROM_CODESTREAM = 9;
     public const int SIAARA_FRAME_WARN_RLE_RUN_CLAMPED = 10;
     public const int SIAARA_FRAME_WARN_CORRUPT_ENTROPY_DATA = 11;
+    public const int SIAARA_FRAME_WARN_ACR_NEMA_PLANES = 12;
     public const int SIAARA_SEQ_LENGTHS_KEEP = 0;
     public const int SIAARA_SEQ_LENGTHS_EXPLICIT = 1;
     public const int SIAARA_SEQ_LENGTHS_UNDEFINED = 2;
