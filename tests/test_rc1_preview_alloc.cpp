@@ -3,6 +3,9 @@
 // input - mutated and truncated files, decompression bombs, a deflate bomb, a million claimed
 // frames, element and nesting bombs - must end in an error or a bounded preview, within a small
 // memory budget and a time limit; never a crash or a hang.
+// Round 6: R-191 (a render is charged to the frame memory budget; a pixel-count cap before any
+// decode), R-192 (JPEG scans per frame, a pixel budget for the whole preview), R-193 (a huge
+// caption value is not decoded), R-199 (control and format characters, HTML escaping), R-201.
 // Uses the allocation guard (alloc_guard.hpp), so this file is left out of TSan builds.
 #include <algorithm>
 #include <chrono>
@@ -63,12 +66,12 @@ struct Run {
 
 // One preview under the allocation guard and a clock; a picture is also encoded, as the mail
 // server would.
-Run preview(const std::vector<std::uint8_t>& bytes, const preview_limits& lim) {
+Run preview(const std::vector<std::uint8_t>& bytes, const preview_limits& lim, std::size_t heap_budget = kHeapBudget) {
     Run run;
     preview_result r;
     const auto t0 = std::chrono::steady_clock::now();
     {
-        siaara_test::AllocGuard guard(kHeapBudget);
+        siaara_test::AllocGuard guard(heap_budget);
         run.outcome = preview_attachment(bytes.data(), bytes.size(), &lim, &r);
         if (run.outcome == PREVIEW_OK) {
             siaara_buffer* png = nullptr;
@@ -640,4 +643,253 @@ TEST_CASE("rc1 preview: the frame limits of siaara_read_options hold for every f
         CHECK(siaara_frame_decode(file, 0, SIAARA_FRAME_NATIVE, out.data(), out.size(), &need) == SIAARA_OK);
         siaara_file_free(file);
     }
+}
+
+namespace {
+
+// A single-frame grayscale image of rows x columns with `bits` allocated (1 or 8), all zeros, in
+// the Deflated Explicit VR Little Endian transfer syntax: tens of megabytes of pixels in a file
+// of a few tens of kilobytes.
+std::vector<std::uint8_t> deflated_gray(std::uint16_t rows, std::uint16_t columns, std::uint16_t bits) {
+    ImageSpec s;
+    s.rows = 1;
+    s.columns = 1;
+    s.bits = 8;
+    DicomFile f = image_file(s);
+    f.transfer_syntax = kDeflated;
+    Dataset& ds = f.dataset;
+    (void)ds.set_uint16(tags::Rows, rows);
+    (void)ds.set_uint16(tags::Columns, columns);
+    (void)ds.set_uint16(tags::BitsAllocated, bits);
+    (void)ds.set_uint16(tags::BitsStored, bits);
+    (void)ds.set_uint16(tags::HighBit, static_cast<std::uint16_t>(bits - 1));
+    const std::uint64_t pixels = std::uint64_t{rows} * columns;
+    const std::vector<std::uint8_t> zeros(static_cast<std::size_t>(bits == 1 ? (pixels + 7) / 8 : pixels), 0);
+    (void)ds.set_bytes(tags::PixelData, VR::OB, Bytes::copy_of(zeros.data(), zeros.size()));
+    return bytes_of(f);
+}
+
+constexpr std::size_t kMiB = std::size_t{1} << 20;
+
+}  // namespace
+
+TEST_CASE("rc2 R-191: a 62 kB attachment that states 23000 x 23000 1-bit pixels is refused before anything is decoded") {
+    // The recommended limits, as a mail server would run them. The frame is 63 MiB packed (within
+    // max_frame_bytes) and 529 million pixels: 2.1 GiB as RGBA.
+    preview_limits lim;
+    preview_default_limits(&lim);
+    CHECK_EQ(lim.max_pixels, std::uint64_t{PREVIEW_DEFAULT_MAX_PIXELS});
+    const std::vector<std::uint8_t> bytes = deflated_gray(23000, 23000, 1);
+    REQUIRE(!bytes.empty());
+    CHECK(bytes.size() < 200 * 1024);
+    // What the limits allow for the read: up to twice max_inflated_size while the inflated data
+    // set grows (R-195, a known limitation). Nothing of the picture: no decoded frame, no RGBA.
+    const Run run = preview(bytes, lim, std::size_t{1} << 30);
+    std::printf("  1-bit 23000 x 23000, %zu bytes: outcome %d, peak %zu MiB, %.2f s (%s)\n", bytes.size(), run.outcome,
+                run.peak / kMiB, run.seconds, run.reason.c_str());
+    CHECK_EQ(run.outcome, PREVIEW_TOO_LARGE);
+    CHECK(!run.refused);
+    CHECK(run.reason.find("pixels") != std::string::npos);
+    CHECK(run.peak < 2 * lim.max_inflated_size);
+}
+
+TEST_CASE("rc2 R-191: a 60 kB attachment with an 8000 x 8000 8-bit frame never renders past the frame memory budget") {
+    preview_limits lim;
+    preview_default_limits(&lim);
+    const std::vector<std::uint8_t> bytes = deflated_gray(8000, 8000, 8);
+    REQUIRE(!bytes.empty());
+    CHECK(bytes.size() < 200 * 1024);
+    // 64,000,000 pixels: exactly at max_pixels, so the frame is decoded (61 MiB, within the
+    // budget of 256 MiB); the render would need 244 MiB more as RGBA and is refused by the budget
+    // of the file handle before it allocates anything.
+    const Run run = preview(bytes, lim, std::size_t{1} << 30);
+    std::printf("  8-bit 8000 x 8000, %zu bytes: outcome %d, peak %zu MiB, %.2f s (%s)\n", bytes.size(), run.outcome,
+                run.peak / kMiB, run.seconds, run.reason.c_str());
+    CHECK_EQ(run.outcome, PREVIEW_TOO_LARGE);
+    CHECK(!run.refused);
+    CHECK(run.reason.find("frame_memory_budget") != std::string::npos);
+    // The read (2 x 61 MiB while inflating) or the data set plus the decoded frame, never the
+    // RGBA on top: well inside frame_memory_budget.
+    CHECK(run.peak < lim.frame_memory_budget);
+    // One pixel fewer per row and the cap of max_pixels would not matter either; one more and it
+    // refuses before the decode.
+    lim.max_pixels = 63999999u;
+    const Run early = preview(bytes, lim, std::size_t{1} << 30);
+    CHECK_EQ(early.outcome, PREVIEW_TOO_LARGE);
+    CHECK(early.reason.find("pixels") != std::string::npos);
+}
+
+TEST_CASE("rc2 R-191: siaara_frame_render is held to the frame memory budget of the file handle") {
+    // 1-bit 8000 x 8000: 7.6 MiB decoded, 64 million pixels. With the pixel cap of the preview out
+    // of the way the library itself must refuse the render: 244 MiB of RGBA against 32 MiB.
+    preview_limits lim = test_limits();
+    lim.max_pixels = UINT64_MAX;
+    lim.max_total_pixels = UINT64_MAX;
+    const std::vector<std::uint8_t> bytes = deflated_gray(8000, 8000, 1);
+    REQUIRE(!bytes.empty());
+    const Run run = preview(bytes, lim);
+    std::printf("  1-bit 8000 x 8000, budget 32 MiB: outcome %d, peak %zu MiB, %.2f s (%s)\n", run.outcome, run.peak / kMiB,
+                run.seconds, run.reason.c_str());
+    CHECK_EQ(run.outcome, PREVIEW_TOO_LARGE);
+    CHECK(!run.refused);
+    CHECK(run.peak < lim.frame_memory_budget + 2 * lim.max_inflated_size);
+    // The same through the C API, every output format and with a size query first; an image that
+    // fits renders as before, and the default budget (4 GiB) leaves ordinary images alone.
+    ImageSpec s;
+    s.rows = 512;
+    s.columns = 512;  // 512 KiB decoded, 1 MiB of RGBA
+    const std::vector<std::uint8_t> small = bytes_of(image_file(s));
+    for (const std::uint64_t budget : {std::uint64_t{0}, std::uint64_t{2} << 20, std::uint64_t{1} << 20}) {
+        siaara_read_options ro;
+        std::memset(&ro, 0, sizeof ro);
+        ro.struct_size = sizeof ro;
+        ro.frame_memory_budget = budget;
+        siaara_file* file = nullptr;
+        REQUIRE(siaara_file_open_memory(small.data(), small.size(), &ro, &file) == SIAARA_OK);
+        siaara_frame* frame = nullptr;
+        REQUIRE(siaara_frame_open(file, 0, &frame) == SIAARA_OK);
+        for (const int32_t format : {SIAARA_PIXELS_RGBA8, SIAARA_PIXELS_GRAY8}) {
+            siaara_view2d_options vo;
+            std::memset(&vo, 0, sizeof vo);
+            vo.struct_size = sizeof vo;
+            vo.viewport_width = 64;
+            vo.viewport_height = 64;
+            vo.output_format = format;
+            vo.background_rgba[3] = 255;
+            std::vector<std::uint8_t> out(64u * 64u * 4u);
+            size_t need = 0;
+            CHECK(siaara_frame_render(frame, &vo, nullptr, 0, &need) == SIAARA_OK);  // the size query allocates nothing
+            siaara_status st = SIAARA_OK;
+            bool refused = false;
+            {
+                siaara_test::AllocGuard guard(4 * kMiB);
+                st = siaara_frame_render(frame, &vo, out.data(), out.size(), &need);
+                refused = guard.refused();
+            }
+            CHECK(!refused);
+            // 512 KiB held + 1 MiB RGBA + the 16 KiB value table (+ 256 KiB gray copy).
+            if (budget == (std::uint64_t{1} << 20)) CHECK(st == SIAARA_ERR_LIMIT_EXCEEDED);
+            else CHECK(st == SIAARA_OK);
+        }
+        siaara_frame_free(frame);
+        siaara_file_free(file);
+    }
+}
+
+TEST_CASE("rc2 R-192: the preview's pixel budget ends the strip; the limits reach the file handle") {
+    ImageSpec s;
+    s.rows = 256;
+    s.columns = 256;
+    s.frames = 6;
+    const std::vector<std::uint8_t> bytes = bytes_of(image_file(s));
+    preview_limits lim = test_limits();
+    lim.max_strip_frames = 6;
+    CHECK_EQ(preview(bytes, lim).strip_frames, 6u);
+    // Room for the picture and three more frames.
+    lim.max_total_pixels = 4u * 256u * 256u;
+    const Run cut = preview(bytes, lim);
+    CHECK_EQ(cut.outcome, PREVIEW_OK);
+    CHECK_EQ(cut.strip_frames, 3u);
+    // Not even the picture.
+    lim.max_total_pixels = 256u * 256u - 1u;
+    CHECK_EQ(preview(bytes, lim).outcome, PREVIEW_TOO_LARGE);
+    // The defaults of the example are the documented ones.
+    preview_default_limits(&lim);
+    CHECK_EQ(lim.max_scans, 64u);
+    CHECK_EQ(lim.max_crop_factor, 1u);
+    CHECK_EQ(lim.max_total_pixels, std::uint64_t{128000000});
+    CHECK_EQ(lim.max_value_bytes, std::size_t{65536});
+    CHECK_EQ(lim.strip_control_and_format, 1);
+}
+
+TEST_CASE("rc2 R-193: a caption value of many megabytes is not decoded") {
+    // Series Description as 24 MiB of text (UT, so the length fits).
+    ImageSpec s;
+    DicomFile f = image_file(s);
+    const std::vector<std::uint8_t> text(24 * kMiB, 'A');
+    (void)f.dataset.set_bytes(0x0008103E, VR::UT, Bytes::copy_of(text.data(), text.size()));
+    const std::vector<std::uint8_t> bytes = bytes_of(f);
+    REQUIRE(bytes.size() > 24 * kMiB);
+    preview_limits lim;
+    preview_default_limits(&lim);
+    siaara_file* file = nullptr;
+    REQUIRE(siaara_file_open_memory(bytes.data(), bytes.size(), nullptr, &file) == SIAARA_OK);
+    siaara_dataset* ds = nullptr;
+    REQUIRE(siaara_file_dataset(file, &ds) == SIAARA_OK);
+    char description[260] = "x", modality[20] = "";
+    std::size_t peak = 0;
+    bool refused = true;
+    {
+        siaara_test::AllocGuard guard(kMiB);
+        preview_text(ds, 0x0008103Eu, &lim, description, sizeof description);
+        preview_text(ds, 0x00080060u, &lim, modality, sizeof modality);
+        peak = guard.peak();
+        refused = guard.refused();
+    }
+    CHECK(!refused);
+    CHECK(peak < 64 * 1024);
+    CHECK(description[0] == '\0');
+    CHECK(std::string(modality) == "OT");
+    // With the cap out of the way the value is decoded (and does not fit the caption): the cap is
+    // what saved the 24 MiB.
+    lim.max_value_bytes = SIZE_MAX;
+    {
+        siaara_test::AllocGuard guard(std::size_t{1} << 30);
+        preview_text(ds, 0x0008103Eu, &lim, description, sizeof description);
+        peak = guard.peak();
+    }
+    CHECK(peak >= 24 * kMiB);
+    CHECK(description[0] == '\0');
+    siaara_file_free(file);
+    // The whole preview of the same attachment, deflated to a few kB, stays bounded.
+    f.transfer_syntax = kDeflated;
+    const std::vector<std::uint8_t> small = bytes_of(f);
+    REQUIRE(!small.empty());
+    CHECK(small.size() < kMiB);
+    preview_default_limits(&lim);
+    preview_result r;
+    CHECK_EQ(preview_attachment(small.data(), small.size(), &lim, &r), PREVIEW_OK);
+    CHECK(r.series_description[0] == '\0');
+    CHECK(std::string(r.modality) == "OT");
+    preview_free(&r);
+}
+
+TEST_CASE("rc2 R-199: captions lose control and format characters; text is escaped for HTML") {
+    // C0, DEL, C1 (U+0085), the line separator: a space each. RIGHT-TO-LEFT OVERRIDE (U+202E),
+    // ZERO WIDTH SPACE (U+200B), the byte order mark (U+FEFF), a tag character (U+E0041): removed.
+    // Bytes that are not UTF-8: '?'. Everything else stays, four-byte characters included.
+    char text[] = "A\x01" "B\x7F" "C\xC2\x85" "D\xE2\x80\xA8" "E\xE2\x80\xAE" "gpj.exe\xE2\x80\x8B" "F\xEF\xBB\xBF"
+                  "G\xF3\xA0\x81\x81" "H\xFF" "I\xC3" " \xC3\xA9\xE0\xAE\x85\xF0\x9F\x98\x80" "\xE0\x80\x80" "Z";
+    preview_clean_text(text);
+    CHECK(std::string(text) == "A B C D Egpj.exeFGH?I? \xC3\xA9\xE0\xAE\x85\xF0\x9F\x98\x80???Z");
+    char empty[] = "";
+    preview_clean_text(empty);
+    CHECK(empty[0] == '\0');
+    // Through the preview: the caption of a file whose Series Description carries an override.
+    ImageSpec s;
+    DicomFile f = image_file(s);
+    (void)f.dataset.set_string(tags::SpecificCharacterSet, VR::CS, "ISO_IR 192");
+    (void)f.dataset.set_string(0x0008103E, VR::LO, "scan\xE2\x80\xAE" "gpj.exe<b>");
+    const std::vector<std::uint8_t> bytes = bytes_of(f);
+    preview_limits lim = test_limits();
+    preview_result r;
+    REQUIRE(preview_attachment(bytes.data(), bytes.size(), &lim, &r) == PREVIEW_OK);
+    CHECK(std::string(r.series_description) == "scangpj.exe<b>");
+    char html[64];
+    CHECK_EQ(preview_html_escape(r.series_description, html, sizeof html), std::strlen(html));
+    CHECK(std::string(html) == "scangpj.exe&lt;b&gt;");
+    preview_free(&r);
+    // The option off: the text as the file has it (C0 controls still become spaces).
+    lim.strip_control_and_format = 0;
+    REQUIRE(preview_attachment(bytes.data(), bytes.size(), &lim, &r) == PREVIEW_OK);
+    CHECK(std::string(r.series_description) == "scan\xE2\x80\xAE" "gpj.exe<b>");
+    preview_free(&r);
+    // Escaping: the five characters, and a cut that never splits a reference.
+    CHECK_EQ(preview_html_escape("a&b<c>d\"e'f", html, sizeof html), std::size_t{30});
+    CHECK(std::string(html) == "a&amp;b&lt;c&gt;d&quot;e&#39;f");
+    char tiny[8];
+    CHECK_EQ(preview_html_escape("ab&cd", tiny, sizeof tiny), std::size_t{7});
+    CHECK(std::string(tiny) == "ab&amp;");
+    CHECK_EQ(preview_html_escape("abc&d", tiny, sizeof tiny), std::size_t{3});
+    CHECK(std::string(tiny) == "abc");
 }

@@ -379,6 +379,23 @@ public sealed partial class DicomDataset
         return true;
     }
 
+    /// <summary>The length in bytes of an element's value as it is held (before any character set decoding),
+    /// without copying or decoding it: check it before reading a value of untrusted input.</summary>
+    /// <param name="tag">The tag.</param>
+    /// <param name="length">The length, when the method returns true.</param>
+    /// <returns>False when the element is absent, a sequence or encapsulated.</returns>
+    public bool TryGetValueLength(DicomTag tag, out long length)
+    {
+        using var l = new HandleLease(_file.Handle);
+        if (Native.siaara_dataset_get_raw(Resolve(l.Pointer), tag.Value, out _, out nuint n) != Status.Ok)
+        {
+            length = 0;
+            return false;
+        }
+        length = (long)n;
+        return true;
+    }
+
     /// <summary>Copies the raw value bytes into destination without allocating.</summary>
     /// <param name="tag">The tag.</param>
     /// <param name="destination">Output buffer.</param>

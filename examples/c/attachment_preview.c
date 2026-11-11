@@ -72,6 +72,12 @@ static int show(const char* label, const uint8_t* data, size_t size, const char*
                r.series_description[0] ? ", " : "", r.series_description);
         if (r.rows) printf(", %u x %u, %u frame(s)", (unsigned)r.columns, (unsigned)r.rows, (unsigned)r.frames);
         printf(", %s\n", r.transfer_syntax_name[0] ? r.transfer_syntax_name : r.transfer_syntax);
+        if (r.series_description[0]) {
+            /* Caption text comes from the file: it is escaped before it goes into a page. */
+            char html[sizeof r.series_description * 6];
+            preview_html_escape(r.series_description, html, sizeof html);
+            printf("  as HTML: <figcaption>%s</figcaption>\n", html);
+        }
     }
     if (r.incomplete)
         printf("  note: the file is incomplete (read loss 0x%X)%s\n", (unsigned)r.read_loss,

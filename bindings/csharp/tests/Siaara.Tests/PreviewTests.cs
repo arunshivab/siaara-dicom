@@ -92,8 +92,30 @@ internal static class PreviewTests
             CheckEq(d.MaxFrameBytes, 64L << 20);
             CheckEq(d.FrameMemoryBudget, 256L << 20);
             CheckEq(d.MaxCaptionLength, 256);
+            CheckEq(d.MaxPixels, 64_000_000L);
+            CheckEq(d.MaxPixels, DicomPreviewOptions.DefaultMaxPixels);
+            CheckEq(d.MaxTotalPixels, 128_000_000L);
+            CheckEq(d.MaxTotalPixels, DicomPreviewOptions.DefaultMaxTotalPixels);
+            CheckEq(d.MaxScans, 64);
+            CheckEq(d.MaxScans, DicomPreviewOptions.DefaultMaxScans);
+            CheckEq(d.MaxCropFactor, 1);
+            CheckEq(d.MaxCropFactor, DicomPreviewOptions.DefaultMaxCropFactor);
+            CheckEq(d.MaxValueBytes, 65_536L);
+            CheckEq(d.MaxValueBytes, DicomPreviewOptions.DefaultMaxValueBytes);
+            Check(d.StripControlAndFormatCharacters);
+            // The untrusted preset: every limit reaches the read options.
             DicomReadOptions ro = d.ToReadOptions();
             Check(!ro.AllowRawDataset);
+            Check(ro.RecoverOverlongLengths == false);
+            CheckEq(ro.MaxDepth, 16);
+            CheckEq(ro.MaxElements, 200_000L);
+            CheckEq(ro.MaxInflatedSize, 128L << 20);
+            CheckEq(ro.MaxFrameBytes, 64L << 20);
+            CheckEq(ro.FrameMemoryBudget, 256L << 20);
+            CheckEq(ro.MaxScans, 64);
+            CheckEq(ro.MaxCropFactor, 1);
+            CheckEq(new DicomReadOptions().MaxScans, 0);       // the library defaults stay what they were
+            CheckEq(new DicomReadOptions().MaxCropFactor, 0);
             DicomPreview p = DicomAttachmentPreview.Create(data, d with { MaxBox = 32, MaxStripFrames = 0, MaxCaptionLength = 7 });
             CheckEq(p.Outcome, DicomPreviewOutcome.Ok);
             Require(p.Image is not null);
@@ -147,6 +169,102 @@ internal static class PreviewTests
                 bad[at] ^= 0xFF;
                 DicomAttachmentPreview.Create(bad);
             }
+        });
+
+        Case("preview: MaxPixels refuses before decoding; MaxTotalPixels ends the strip; a render stays in the budget (R-191, R-192)", () =>
+        {
+            byte[] data = MultiFrame();  // 3 frames of 64 x 48
+            DicomPreviewOptions o = DicomPreviewOptions.Recommended;
+            DicomPreview at = DicomAttachmentPreview.Create(data, o with { MaxPixels = 64 * 48 });
+            CheckEq(at.Outcome, DicomPreviewOutcome.Ok);
+            DicomPreview over = DicomAttachmentPreview.Create(data, o with { MaxPixels = 64 * 48 - 1 });
+            CheckEq(over.Outcome, DicomPreviewOutcome.TooLarge);
+            Check(over.Reason.Contains("pixels", StringComparison.Ordinal));
+            Check(over.Image is null);
+            CheckEq(over.Rows, 48);       // the caption and the stated size are still there
+            CheckEq(over.Modality, "OT");
+
+            // The picture and one more frame fit the preview's pixel budget.
+            DicomPreview two = DicomAttachmentPreview.Create(data, o with { MaxTotalPixels = 2 * 64 * 48 });
+            CheckEq(two.Outcome, DicomPreviewOutcome.Ok);
+            CheckEq(two.StripFrames, 1);
+            DicomPreview one = DicomAttachmentPreview.Create(data, o with { MaxTotalPixels = 64 * 48 });
+            CheckEq(one.Outcome, DicomPreviewOutcome.Ok);
+            Check(one.Strip is null);
+            CheckEq(DicomAttachmentPreview.Create(data, o with { MaxTotalPixels = 64 * 48 - 1 }).Outcome, DicomPreviewOutcome.TooLarge);
+
+            // A 1-bit frame of 8000 x 8000: 8 MB of pixel data, 64,000,000 pixels, 256 MB as RGBA.
+            using DicomFile file = DicomFile.Create();
+            DicomDataset ds = file.Dataset;
+            ds.SetString(DicomTags.SOPClassUID, "1.2.840.10008.5.1.4.1.1.7");
+            ds.SetString(DicomTags.SOPInstanceUID, "2.25.791");
+            ds.SetString(DicomTags.Modality, "OT");
+            ds.SetString(DicomTags.PhotometricInterpretation, "MONOCHROME2");
+            ds.SetUInt16(DicomTags.SamplesPerPixel, 1);
+            ds.SetUInt16(DicomTags.Rows, 8000);
+            ds.SetUInt16(DicomTags.Columns, 8000);
+            ds.SetUInt16(DicomTags.BitsAllocated, 1);
+            ds.SetUInt16(DicomTags.BitsStored, 1);
+            ds.SetUInt16(DicomTags.HighBit, 0);
+            ds.SetUInt16(DicomTags.PixelRepresentation, 0);
+            ds.SetBytes(DicomTags.PixelData, "OB", new byte[8000 * 8000 / 8]);
+            byte[] bits = Bytes(file, "preview-1bit.dcm");
+            // One pixel under the count: refused before anything is decoded.
+            DicomPreview early = DicomAttachmentPreview.Create(bits, o with { MaxPixels = 63_999_999 });
+            CheckEq(early.Outcome, DicomPreviewOutcome.TooLarge);
+            Check(early.Reason.Contains("pixels", StringComparison.Ordinal));
+            // At the default count the frame is decoded (8 MB); the render at image resolution does not fit a
+            // budget of 64 MiB and the library refuses it before allocating.
+            DicomPreview late = DicomAttachmentPreview.Create(bits, o with { FrameMemoryBudget = 64L << 20 });
+            CheckEq(late.Outcome, DicomPreviewOutcome.TooLarge);
+            Check(late.Reason.Contains("frame_memory_budget", StringComparison.Ordinal));
+            Check(late.Image is null);
+        });
+
+        Case("preview: captions - control and format characters, value length cap, HTML escaping (R-193, R-199)", () =>
+        {
+            using DicomFile file = DicomFile.Create();
+            DicomDataset ds = file.Dataset;
+            ds.SetString(DicomTags.SOPClassUID, "1.2.840.10008.5.1.4.1.1.88.11");
+            ds.SetString(DicomTags.SOPInstanceUID, "2.25.792");
+            ds.SetString(DicomTags.SpecificCharacterSet, "ISO_IR 192");
+            ds.SetString(DicomTags.Modality, "SR");
+            // RIGHT-TO-LEFT OVERRIDE, ZERO WIDTH SPACE, a C1 control (NEL), markup.
+            const string hostile = "scan\u202Egpj.exe\u200B \u0085<img src=x onerror=alert(1)> & 'q' \"r\"";
+            ds.SetString(DicomTags.SeriesDescription, hostile);
+            byte[] data = Bytes(file, "preview-caption.dcm");
+
+            DicomPreview p = DicomAttachmentPreview.Create(data);
+            CheckEq(p.Outcome, DicomPreviewOutcome.NoPixelData);
+            CheckEq(p.SeriesDescription, "scangpj.exe  <img src=x onerror=alert(1)> & 'q' \"r\"");
+            CheckEq(DicomAttachmentPreview.HtmlEscape(p.SeriesDescription),
+                    "scangpj.exe  &lt;img src=x onerror=alert(1)&gt; &amp; &#39;q&#39; &quot;r&quot;");
+            // The option off: the text as the file has it.
+            DicomPreview raw = DicomAttachmentPreview.Create(data, DicomPreviewOptions.Recommended with { StripControlAndFormatCharacters = false });
+            CheckEq(raw.SeriesDescription, hostile);
+
+            // A stored value longer than MaxValueBytes is not decoded: the field stays empty, the rest is there.
+            Check(ds.TryGetValueLength(DicomTags.SeriesDescription, out long stored));
+            Check(stored >= hostile.Length);
+            Check(!ds.TryGetValueLength(DicomTags.PatientName, out _));
+            DicomPreview capped = DicomAttachmentPreview.Create(data, DicomPreviewOptions.Recommended with { MaxValueBytes = stored - 1 });
+            CheckEq(capped.SeriesDescription, "");
+            CheckEq(capped.Modality, "SR");
+            CheckEq(DicomAttachmentPreview.Create(data, DicomPreviewOptions.Recommended with { MaxValueBytes = stored }).SeriesDescription,
+                    p.SeriesDescription);
+
+            // CaptionText on its own: categories Cc and Cf, separators, lone surrogates, the cut.
+            CheckEq(DicomAttachmentPreview.CaptionText("a\tb\u007Fc\u009Fd\u2028e\u2029f", 100), "a b c d e f");
+            CheckEq(DicomAttachmentPreview.CaptionText("a\u200Db\u2066c\uFEFFd\u00ADe\U000E0041f", 100), "abcdef");
+            CheckEq(DicomAttachmentPreview.CaptionText("a\uD83Db", 100), "a\uFFFDb");
+            CheckEq(DicomAttachmentPreview.CaptionText("\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD \U0001F600", 100), "\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD \U0001F600");
+            CheckEq(DicomAttachmentPreview.CaptionText("ab\U0001F600cd", 3), "ab");      // never half a surrogate pair
+            CheckEq(DicomAttachmentPreview.CaptionText("ab\U0001F600cd", 4), "ab\U0001F600");
+            CheckEq(DicomAttachmentPreview.CaptionText("a\u202Eb", 100, strip: false), "a\u202Eb");
+            CheckEq(DicomAttachmentPreview.CaptionText("abc", 0), "");
+            CheckEq(DicomAttachmentPreview.HtmlEscape(null), "");
+            CheckEq(DicomAttachmentPreview.HtmlEscape("plain"), "plain");
+            CheckEq(DicomAttachmentPreview.HtmlEscape("<a href=\"x\">&</a>"), "&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;");
         });
 
         Case("preview: patient identifiers only on request", () =>
