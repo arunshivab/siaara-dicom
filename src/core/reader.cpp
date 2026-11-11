@@ -640,13 +640,15 @@ private:
     std::uint32_t overlong_by(Syntax syn, Tag cur, std::size_t vend, std::uint32_t len) const {
         if (vend >= limit_) return 0;
         if (chain(syn, vend, cur, 3) >= 3) return 0;
-        // R-164: one fitting header of a standard attribute exactly at the stated end is enough
-        // not to doubt that end, whatever its tag order. (A value that happens to end in bytes
-        // that look like the start of a header, followed by an out-of-order element, was read
-        // short otherwise.) In the GE case the bytes at the stated end are the middle of the next
-        // header and do not form one.
+        // R-164: one fitting header of a standard attribute, or of a group length element (even
+        // group, length 4: as real a header as the recovery itself accepts), exactly at the
+        // stated end is enough not to doubt that end, whatever its tag order. (A value that
+        // happens to end in bytes that look like the start of a header, followed by an
+        // out-of-order element, was read short otherwise.) In the GE case the bytes at the stated
+        // end are the middle of the next header and do not form one.
         if (const auto h = header_at(syn, vend);
-            h && tag_group(h->tag) != 0xFFFE && h->len != kUndefinedLength && header_fits(*h, vend) && recovery_tag_known(h->tag))
+            h && tag_group(h->tag) != 0xFFFE && h->len != kUndefinedLength && header_fits(*h, vend) &&
+            (recovery_tag_known(h->tag) || group_length_header(*h)))
             return 0;
         for (std::uint32_t k = 1; k <= 7 && k <= len; ++k) {
             const std::size_t q = vend - k;

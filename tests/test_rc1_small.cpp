@@ -186,3 +186,48 @@ TEST_CASE("rc1 R-164: a value ending in bytes that look like a header, before an
     CHECK(f->dataset.get_string(0x0020000D).value_or("") == "2.25.164900");
     CHECK(f->dataset.get_string(0x0020000E).value_or("") == "2.25.164901");
 }
+
+TEST_CASE("rc2 R-164: a group length element at a value's stated end is a real header too - the value is not read short") {
+    // As above, but the out-of-order element after the name is a group length element
+    // (0008,0000), length 4: no attribute of the dictionary, yet six of its eight header bytes
+    // are fixed. Its tag bytes read as the length 8 of the would-be Patient ID at four bytes
+    // before the stated end, whose "value" is then the rest of the group length element, and
+    // the UIDs that follow complete a run of three: the recovery took that for a GE overrun.
+    const std::string name = std::string("AB") + std::string("\x10\x00\x20\x00", 4);
+    std::vector<std::uint8_t> b;
+    imp(b, 0x0008, 0x0016, std::string("1.2.840.10008.5.1.4.1.1.4") + '\0');
+    imp(b, 0x0008, 0x0018, "2.25.164002");
+    imp(b, 0x0010, 0x0010, name);
+    imp(b, 0x0008, 0x0000, std::string("\x2A\x00\x00\x00", 4));      // out of order: a group length element
+    imp(b, 0x0020, 0x000D, "2.25.164900 ");
+    imp(b, 0x0020, 0x000E, "2.25.164901 ");
+    imp(b, 0x0028, 0x0010, std::string("\x02\x00", 2));
+    auto f = read_dataset_report(Bytes::copy_of(b.data(), b.size()), "1.2.840.10008.1.2");
+    REQUIRE(f);
+    int recovered = 0;
+    for (const std::string& w : f->warnings) recovered += w.find("ELEMENT_LENGTH_RECOVERED") != std::string::npos ? 1 : 0;
+    CHECK_EQ(recovered, 0);
+    CHECK((f->read_loss & DicomFile::kReadRecovered) == 0);
+    const Element* pn = f->dataset.find(0x00100010);
+    REQUIRE(pn != nullptr);
+    CHECK_EQ(pn->value.size(), name.size());
+    CHECK(!f->dataset.contains(0x00100020));
+    CHECK(f->dataset.contains(0x00080000));
+    CHECK(f->dataset.get_string(0x0020000D).value_or("") == "2.25.164900");
+    // The GE case itself is still recovered: a value stated 3 bytes too long right before the
+    // group length element of the next group.
+    std::vector<std::uint8_t> ge;
+    imp(ge, 0x0008, 0x0016, std::string("1.2.840.10008.5.1.4.1.1.4") + '\0');
+    imp(ge, 0x0008, 0x0018, "2.25.164003");
+    imp(ge, 0x0008, 0x103E, "AX T1 POST");
+    ge[ge.size() - 10 - 4] = 13;  // the stated length: 13 for 10 bytes
+    imp(ge, 0x0010, 0x0000, std::string("\x12\x00\x00\x00", 4));
+    imp(ge, 0x0010, 0x0010, "TEN^B ");
+    imp(ge, 0x0010, 0x0020, "ID4A");
+    imp(ge, 0x0020, 0x000D, "2.25.164900 ");
+    auto g = read_dataset_report(Bytes::copy_of(ge.data(), ge.size()), "1.2.840.10008.1.2");
+    REQUIRE(g);
+    CHECK((g->read_loss & DicomFile::kReadRecovered) != 0);
+    CHECK(g->dataset.get_string(0x0008103E).value_or("") == "AX T1 POST");
+    CHECK(g->dataset.get_string(0x00100020).value_or("") == "ID4A");
+}
