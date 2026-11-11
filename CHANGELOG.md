@@ -148,6 +148,12 @@ Stated plainly, so that nobody finds them by surprise.
   contexts an association can carry (two per class, more with transcoding targets):
   `siaara_dimse_store_files` then fails with `SIAARA_ERR_LIMIT_EXCEEDED` before connecting. Send such
   a set in smaller batches.
+- **An instance that arrived over the network before this release** has no `SIAARA_IDXF_NETWORK`
+  flag in an existing store's index: unless it is flagged incomplete it is re-read (rebuild,
+  verify, DICOMweb replies, C-GET / C-MOVE) with the local defaults, as before.
+- **The up-front size check of a decoding DICOMweb retrieve uses bounds per codec** (JPEG 2000:
+  6 or 12 bytes per sample of working memory); a JPEG 2000 codestream with unusually small
+  code-blocks can still need more than its bound and end a reply that was started.
 - A crash while an instance is being written into the store can leave a `*.siaara-tmp` file
   under `data/`; `siaara_store_verify` with repair removes it. (Leftover temporary files of the
   quarantine and of the spool are removed automatically after an hour.)
