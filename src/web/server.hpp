@@ -65,6 +65,12 @@ struct StoredInstance {
     // Samples per Pixel), from the index. 0: not known - the server then reads the instance's
     // header (not its pixel data) when it has to know.
     std::uint64_t decoded_size = 0;
+    // With decoded_size: the samples of one frame (Rows x Columns x Samples per Pixel) and the
+    // number of frames, from the index. The server adds the working memory the instance's codec
+    // can need for the frames it decodes at a time to what a decoding retrieve is charged
+    // (testing verdict T5). 0: not known - read from the header with decoded_size.
+    std::uint64_t frame_samples = 0;
+    std::uint32_t frames = 0;
     // The instance arrived over the network and was indexed with the network read options (no
     // recovery of damaged lengths; store::read_as_network_input). Every read of it for a reply -
     // metadata, frames, bulk data, a retrieve that converts - uses the same options, so what the
@@ -85,6 +91,16 @@ inline constexpr DefaultTransferSyntax kDefaultWadoTransferSyntax = DefaultTrans
 inline constexpr std::uint64_t kDefaultWebDecodeMemoryBytes = 2ull << 30;
 // How long a retrieve waits for its share of that memory before the reply is abandoned.
 inline constexpr int kDefaultWebDecodeWaitMs = 60 * 1000;
+// What a decoding retrieve is charged for the codec's working memory, per sample of a frame and
+// per frame decoded at a time (the decoder's own buffers, besides the decoded frames and the
+// reply built from them, which are charged 2 x the decoded size). JPEG 2000 / HTJ2K: a 32-bit
+// coefficient per sample, a second 32-bit buffer for the irreversible transform, and room for
+// code-block and precinct tables; three times the stored size for the parsed codestream is added.
+// JPEG: 16-bit planes, and 16-bit coefficients for progressive frames. Change them here only.
+inline constexpr std::uint64_t kWebJ2kLosslessBytesPerSample = 6;
+inline constexpr std::uint64_t kWebJ2kBytesPerSample = 12;
+inline constexpr std::uint64_t kWebJpegBytesPerSample = 4;
+inline constexpr std::uint32_t kWebDecodeFramesAtATime = 8;  // image::FrameReader::decode_range uses at most 8 workers
 
 // Server-wide budget for memory used to decode instances for retrieve replies (R-161): one
 // decoded instance per connection used to be bounded only by the number of connections.

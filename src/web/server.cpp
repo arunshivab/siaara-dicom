@@ -159,13 +159,50 @@ std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) noexcept { return b > UI
 
 // R-161: the size of the instance's Part 10 stream once its pixel data is decoded, from its
 // header alone (the pixel data is not read). 0 when it has no encapsulated pixel data.
-std::uint64_t decoded_size_from_header(const Bytes& raw, bool network_input) {
+// What decoding costs, for the up-front check of a retrieve.
+struct DecodeCost {
+    std::uint64_t decoded = 0;        // the Part 10 stream with native pixel data; 0: nothing to decode
+    std::uint64_t frame_samples = 0;  // Rows x Columns x Samples per Pixel
+    std::uint64_t frames = 1;
+};
+
+// T5: the working memory the codec of `ts` can need while frames are decoded (see server.hpp).
+std::uint64_t codec_working_bytes(const TransferSyntaxInfo* ts, const DecodeCost& c, std::uint64_t stored_size) {
+    if (!ts || c.frame_samples == 0) return 0;
+    std::uint64_t per_sample = 0, extra = 0;
+    switch (ts->codec) {
+        case Codec::Jpeg2000:
+        case Codec::Htj2k:
+            per_sample = ts->lossy ? kWebJ2kBytesPerSample : kWebJ2kLosslessBytesPerSample;
+            extra = sat_mul(stored_size, 3);
+            break;
+        case Codec::JpegBaseline:
+        case Codec::JpegExtended:
+        case Codec::JpegLossless:
+            per_sample = kWebJpegBytesPerSample;
+            extra = std::uint64_t{1} << 20;  // planes are padded to whole MCUs
+            break;
+        default: return 0;
+    }
+    const std::uint64_t at_a_time = std::min<std::uint64_t>(std::max<std::uint64_t>(c.frames, 1), kWebDecodeFramesAtATime);
+    return sat_add(sat_mul(sat_mul(c.frame_samples, per_sample), at_a_time), extra);
+}
+
+// The transfer syntax of a stored instance the index does not name.
+const TransferSyntaxInfo* stored_ts_of(const Bytes& raw, bool network_input) {
     ReadOptions ro = stored_read_options(network_input);
     ro.stop_before_pixel_data = true;
     auto f = read_part10(raw, ro);
-    if (!f) return 0;
+    return f ? find_transfer_syntax(f->transfer_syntax) : nullptr;
+}
+
+DecodeCost decode_cost_from_header(const Bytes& raw, bool network_input) {
+    ReadOptions ro = stored_read_options(network_input);
+    ro.stop_before_pixel_data = true;
+    auto f = read_part10(raw, ro);
+    if (!f) return {};
     const auto* ts_info = find_transfer_syntax(f->transfer_syntax);
-    if (!ts_info || !ts_info->encapsulated) return 0;
+    if (!ts_info || !ts_info->encapsulated) return {};
     const Dataset& ds = f->dataset;
     const auto num = [&](Tag t, std::uint64_t fallback) -> std::uint64_t {
         const auto v = ds.get_int(t);
@@ -177,7 +214,11 @@ std::uint64_t decoded_size_from_header(const Bytes& raw, bool network_input) {
     const std::uint64_t frames = std::max<std::uint64_t>(num(tags::NumberOfFrames, 1), 1);
     const std::uint64_t pixels = sat_mul(sat_mul(sat_mul(rows, cols), frames), sat_mul(std::max<std::uint64_t>(samples, 1), (bits + 7) / 8));
     // The header's own bytes stand for the other elements (the stream up to Pixel Data).
-    return sat_add(pixels, std::min<std::uint64_t>(raw.size(), std::uint64_t{64} << 20));
+    DecodeCost c;
+    c.decoded = sat_add(pixels, std::min<std::uint64_t>(raw.size(), std::uint64_t{64} << 20));
+    c.frame_samples = sat_mul(sat_mul(rows, cols), std::max<std::uint64_t>(samples, 1));
+    c.frames = frames;
+    return c;
 }
 
 class Handler {
@@ -481,15 +522,25 @@ private:
             std::uint64_t part = inst.size;
             const auto* stored_ts = find_transfer_syntax(inst.transfer_syntax);
             if (!sent_as_stored(inst.transfer_syntax, *chosen) && (inst.transfer_syntax.empty() || (stored_ts && stored_ts->encapsulated))) {
-                std::uint64_t decoded = inst.decoded_size;
-                if (decoded == 0) {
+                DecodeCost cost;
+                cost.decoded = inst.decoded_size;
+                cost.frame_samples = inst.frame_samples;
+                cost.frames = std::max<std::uint32_t>(inst.frames, 1);
+                const TransferSyntaxInfo* codec_ts = stored_ts;
+                if (cost.decoded == 0 || cost.frame_samples == 0) {
                     Result<Bytes> raw = open_instance(store_, inst);
                     if (!raw) return fail(rs_, 500, "retrieve failed");
-                    decoded = decoded_size_from_header(*raw, inst.network_input);
+                    const std::uint64_t indexed = cost.decoded;
+                    cost = decode_cost_from_header(*raw, inst.network_input);
+                    if (indexed != 0 && cost.decoded != 0) cost.decoded = indexed;
+                    if (!codec_ts) codec_ts = stored_ts_of(*raw, inst.network_input);
                 }
-                if (decoded != 0) {
-                    part = decoded;
-                    charge[i] = sat_mul(decoded, 2);  // the decoded frames and the stream built from them
+                if (cost.decoded != 0) {
+                    part = cost.decoded;
+                    // The decoded frames and the stream built from them, and what the codec itself
+                    // needs meanwhile (T5: a JPEG 2000 decoder needs more than the frame it
+                    // produces; charging 2 x alone answered 200 and then cut the reply).
+                    charge[i] = sat_add(sat_mul(cost.decoded, 2), codec_working_bytes(codec_ts, cost, inst.size));
                     if (charge[i] > cfg_.max_decode_memory) return fail(rs_, 413, "response too large");
                 }
             }

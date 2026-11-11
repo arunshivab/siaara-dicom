@@ -3198,7 +3198,10 @@ typedef struct siaara_web_server_options {
      * response. */
     int32_t streamed_response_timeout_ms;
     /* Memory all connections together may use for decoding instances for retrieve replies; 0 =
-     * 2 GiB. An instance is charged twice its decoded size while its part is produced and sent.
+     * 2 GiB. An instance is charged twice its decoded size while its part is produced and sent,
+     * plus the working memory its codec can need (JPEG 2000 / HTJ2K: 6 bytes per sample of a frame for
+     * the lossless-only syntaxes, 12 otherwise, and 3 x the stored size; JPEG: 4 bytes per sample;
+     * times the frames decoded at a time, at most 8).
      * A retrieve that needs decoding is sized from the decoded sizes (Rows x Columns x frames x
      * bytes per sample x samples, from the index) BEFORE anything is sent: 413 when the reply
      * would pass max_response_bytes or one instance does not fit this memory. */

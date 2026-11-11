@@ -531,6 +531,8 @@ web::Store dicomweb_store(store::Store& s, store::DuplicatePolicy policy, bool r
                                                     : row.file_size;
                     inst.decoded_size = pixels > UINT64_MAX - other ? UINT64_MAX : pixels + other;
                     if (inst.decoded_size == 0) inst.decoded_size = 1;
+                    inst.frame_samples = mul(mul(row.rows, row.columns), std::max<std::uint64_t>(row.samples_per_pixel, 1));
+                    inst.frames = std::max<std::uint32_t>(row.number_of_frames, 1);
                 }
                 out.push_back(std::move(inst));
             }

@@ -2,6 +2,7 @@
 // sized from the decoded sizes and answered 413 before anything is sent; the default transfer
 // syntax is an option; decode memory is a server-wide budget), R-168 (no whole-message deadline
 // for streamed replies unless configured), R-182 (too many instances under a key is 413).
+#include <cstdio>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -302,6 +303,79 @@ TEST_CASE("web/ rc1 R-168 a streamed reply to a healthy client is not cut by the
         CHECK(!(r.status == 200 && r.complete));
         server.stop();
     }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+// Testing verdict T5: the up-front check of a decoding retrieve charges what the codec itself can
+// need, not only the decoded frames and the reply. A JPEG 2000 decoder works on 32-bit
+// coefficients: with a decode budget between 2 x and 4 x the decoded size the check used to pass,
+// the decoder then failed ("tile buffers exceed the memory budget") and the reply - already 200 -
+// was cut.
+TEST_CASE("web/ rc2 T5 a JPEG 2000 retrieve is charged the decoder's working memory: 413 up front, never a cut 200") {
+    const auto dir = fresh_dir("t5");
+    constexpr std::uint64_t kDecoded = 1024ull * 1024ull * 2ull;  // one frame, 16 bit: 2 MiB
+    const char* kJ2kLossless = "1.2.840.10008.1.2.4.90";
+    std::vector<std::uint8_t> bytes;
+    {
+        DicomFile f;
+        f.transfer_syntax = std::string(ts::ExplicitVRLittleEndian);
+        Dataset& ds = f.dataset;
+        (void)ds.set_string(tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+        (void)ds.set_string(tags::SOPInstanceUID, VR::UI, "2.25.161500");
+        (void)ds.set_string(tags::StudyInstanceUID, VR::UI, kStudy);
+        (void)ds.set_string(tags::SeriesInstanceUID, VR::UI, "2.25.161905");
+        (void)ds.set_string(tags::Modality, VR::CS, "OT");
+        (void)ds.set_uint16(tags::SamplesPerPixel, 1);
+        (void)ds.set_string(tags::PhotometricInterpretation, VR::CS, "MONOCHROME2");
+        (void)ds.set_uint16(tags::Rows, 1024);
+        (void)ds.set_uint16(tags::Columns, 1024);
+        (void)ds.set_uint16(tags::BitsAllocated, 16);
+        (void)ds.set_uint16(tags::BitsStored, 12);
+        (void)ds.set_uint16(tags::HighBit, 11);
+        (void)ds.set_uint16(tags::PixelRepresentation, 0);
+        std::vector<std::uint8_t> px(static_cast<std::size_t>(kDecoded));
+        for (std::size_t i = 0; i < px.size() / 2; ++i) {
+            const std::size_t v = ((i % 1024) * 3 + (i / 1024) * 5) & 0x0FFFu;
+            px[2 * i] = static_cast<std::uint8_t>(v & 0xFFu);
+            px[2 * i + 1] = static_cast<std::uint8_t>(v >> 8);
+        }
+        (void)ds.set_bytes(tags::PixelData, VR::OW, Bytes::copy_of(px.data(), px.size()));
+        REQUIRE(codec::transcode_file(f, kJ2kLossless));
+        REQUIRE(write_part10(f, bytes));
+    }
+    siaara_store* store = nullptr;
+    const std::string root = (dir / "store").string();
+    REQUIRE(siaara_store_open(root.c_str(), root.size(), nullptr, &store) == SIAARA_OK);
+    REQUIRE(siaara_store_add_memory(store, bytes.data(), bytes.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_OK);
+    const std::string target = std::string("/dicomweb/studies/") + kStudy;
+    static_assert(web::kWebJ2kLosslessBytesPerSample == 6 && web::kWebJ2kBytesPerSample == 12 && web::kWebJpegBytesPerSample == 4);
+    // Charged: 2 x 2 MiB (frames and reply) + 6 bytes per sample (6 MiB) + a little: 5 x the decoded size.
+    struct Point {
+        double factor;
+        int status;
+    };
+    for (const Point pt : {Point{2.1, 413}, Point{3.0, 413}, Point{4.9, 413}, Point{6.0, 200}, Point{16.0, 200}}) {
+        siaara_web_server_options o = options();
+        o.max_decode_memory_bytes = static_cast<std::uint64_t>(pt.factor * static_cast<double>(kDecoded));
+        CServer s(store, o);
+        REQUIRE(s.ws != nullptr);
+        const Reply r = get(s.port, target, kAnyDicom);
+        std::fprintf(stderr, "  JPEG 2000, decode budget %.1f x decoded: status %d%s\n", pt.factor, r.status,
+                     r.status == 200 ? (r.complete ? ", complete" : ", CUT") : "");
+        CHECK_EQ(r.status, pt.status);  // never -1 (cut) and never a 200 that does not finish
+        if (r.status == 200) {
+            CHECK(r.complete);
+            CHECK_EQ(r.parts, 1u);
+            CHECK(r.first_ts == ts::ExplicitVRLittleEndian);
+            CHECK(r.body_bytes > kDecoded);
+        }
+        // As stored nothing is decoded: served whatever the budget.
+        const Reply stored = get(s.port, target, kAsStored);
+        CHECK_EQ(stored.status, 200);
+        CHECK(stored.complete);
+    }
+    siaara_store_free(store);
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
