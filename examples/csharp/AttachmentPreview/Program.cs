@@ -2,6 +2,10 @@
 // attachment) - a caption from a few safe header fields and a small PNG / JPEG of the first
 // frame, or a plain reason why there is no picture. Server side, from memory, no temporary file.
 // The work is done by the package: Siaara.DicomAttachmentPreview.Create(bytes, options).
+// The limits bound memory and the amount of work, not time: a decode has no deadline and cannot be
+// cancelled. In a product, run this in a SEPARATE PROCESS with a kill timer and a memory limit (this
+// program, started once per attachment, is such a worker). Caption text is text from the file:
+// DicomAttachmentPreview.HtmlEscape before it goes into a page.
 //     siaara-attachment-preview <empty work folder> [file.dcm]
 // docs/GETTING_STARTED.md, "Showing a DICOM attachment safely (untrusted input)".
 using System;
