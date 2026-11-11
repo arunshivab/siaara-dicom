@@ -1,5 +1,6 @@
 // Local store tests: index extraction, add/dedupe/replace, every query filter, ordering,
 // delete/move/verify/rebuild, crash recovery at every journal byte, lock file, C API.
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <atomic>
@@ -731,6 +732,16 @@ TEST_CASE("store: verify finds missing, changed and orphan files; repair fixes t
     }
     store_synth::write_bytes(root / "data" / "00" / "00" / "stray.dcm", {1, 2, 3});
     store_synth::write_bytes(root / "data" / "00" / "00" / "x.dcm.123.siaara-tmp", {1});
+    {
+        // Left by a crash long ago: an orphan. A recent one may be an add still being written
+        // (a streamed instance of many GiB, R-190): verify leaves it alone.
+        std::error_code tec;
+        fs::last_write_time(root / "data" / "00" / "00" / "x.dcm.123.siaara-tmp",
+                            fs::file_time_type::clock::now() - std::chrono::hours(3), tec);
+        store_synth::write_bytes(root / "data" / "incoming.dcm.456.siaara-tmp", {1});
+        CHECK_EQ(StoreOptions{}.stale_temp_after_minutes, StoreOptions::kDefaultStaleTempMinutes);
+        CHECK_EQ(StoreOptions::kDefaultStaleTempMinutes, 60);
+    }
     rep = st->verify(false, false);
     REQUIRE(rep.is_ok());
     CHECK_EQ(rep->missing, 1u);
@@ -746,6 +757,8 @@ TEST_CASE("store: verify finds missing, changed and orphan files; repair fixes t
     rep = st->verify(true, false);
     REQUIRE(rep.is_ok());
     CHECK(rep->ok());
+    CHECK(fs::exists(root / "data" / "incoming.dcm.456.siaara-tmp"));
+    CHECK(!fs::exists(root / "data" / "00" / "00" / "x.dcm.123.siaara-tmp"));
     CHECK_EQ(st->stats().instances, 3u);
     auto r2 = st->instance(spec(1, 1, 1, 2).sop_uid);
     REQUIRE(r2.is_ok());

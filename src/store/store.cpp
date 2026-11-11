@@ -1795,6 +1795,11 @@ Result<VerifyReport> Store::verify(bool deep, bool repair, const Progress& progr
         if (!di->is_regular_file(ec2)) continue;
         const std::string rel = rel_generic(di->path(), impl_->root);
         if (expected.count(rel)) continue;
+        // A temporary file of an add that may still be running is left alone (see StoreOptions).
+        if (impl_->opt.stale_temp_after_minutes > 0 && di->path().extension() == ".siaara-tmp") {
+            const auto t = di->last_write_time(ec2);
+            if (!ec2 && t > fs::file_time_type::clock::now() - std::chrono::minutes(impl_->opt.stale_temp_after_minutes)) continue;
+        }
         ++rep.orphans;
         rep.orphan_paths.push_back(rel);
         orphans.push_back(di->path());

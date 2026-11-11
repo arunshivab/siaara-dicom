@@ -101,6 +101,12 @@ struct StoreOptions {
     // A file under data/ the index does not know (the index was unreadable, or the file was put
     // there by hand) has no such record: true (default) reads it with the network read options -
     // nothing is guessed about bytes of unknown origin - false with the local defaults.
+    // An instance being added is written to a temporary file under data/ ("*.siaara-tmp") and
+    // renamed when complete; for a streamed instance of many GiB (R-190) that takes a while. A
+    // verify does not report or repair away such a file while it may still be written: only one
+    // not modified for this many minutes is an orphan (a crash left it). 0 = every one is.
+    static constexpr int kDefaultStaleTempMinutes = 60;
+    int stale_temp_after_minutes = kDefaultStaleTempMinutes;
     static constexpr bool kDefaultReindexUnknownAsNetworkInput = true;
     bool reindex_unknown_as_network_input = kDefaultReindexUnknownAsNetworkInput;
 };
