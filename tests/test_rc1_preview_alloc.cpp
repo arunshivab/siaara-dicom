@@ -875,8 +875,9 @@ TEST_CASE("rc2 R-199: captions lose control and format characters; text is escap
     preview_result r;
     REQUIRE(preview_attachment(bytes.data(), bytes.size(), &lim, &r) == PREVIEW_OK);
     CHECK(std::string(r.series_description) == "scangpj.exe<b>");
-    char html[64];
-    CHECK_EQ(preview_html_escape(r.series_description, html, sizeof html), std::strlen(html));
+    char html[64] = {0};
+    const size_t escaped = preview_html_escape(r.series_description, html, sizeof html);  // first: it fills html
+    CHECK_EQ(escaped, std::strlen(html));
     CHECK(std::string(html) == "scangpj.exe&lt;b&gt;");
     preview_free(&r);
     // The option off: the text as the file has it (C0 controls still become spaces).
