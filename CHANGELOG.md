@@ -21,7 +21,10 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   GitHub Packages feed.
 - A preview of untrusted DICOM bytes (a mail attachment, an upload) is part of the C# package:
   `DicomAttachmentPreview.Create` gives a caption and a small picture, or the reason there is
-  none, within explicit limits (`DicomPreviewOptions`).
+  none, within explicit limits (`DicomPreviewOptions`; `ToReadOptions()` is the preset for any
+  read of untrusted bytes). Captions lose control and format characters;
+  `DicomAttachmentPreview.HtmlEscape` escapes them for a page. It bounds memory, not time: see
+  the known limitations.
 - Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 12+ (universal).
 - Zero third-party dependencies. Reproducible archives, an SPDX 2.3 SBOM per archive, SHA-256
   checksums, build provenance attestation.
@@ -115,8 +118,39 @@ Stated plainly, so that nobody finds them by surprise.
   (`recover_overlong_lengths`).
 - A Segmentation object that states a false frame count can cost up to about 15 seconds and
   336 MB before it is rejected.
-- 3D rendering and volume resampling cannot be cancelled once started. Decoding a frame has no
-  time limit of its own either: for untrusted input the size limits bound the work.
+- 3D rendering and volume resampling cannot be cancelled once started.
+- **Decoding has no time bound and cannot be cancelled.** The limits for untrusted input
+  (`siaara_read_options`, `DicomPreviewOptions`) bound memory and the amount of work, not the
+  time: one frame of a progressive JPEG with hundreds of legal scans can take many seconds
+  (`max_scans` / `MaxScans` caps the scans; the preview uses 64). Previews and any other decode
+  of untrusted input must run in a **separate process with a kill timer and a memory limit**;
+  a thread cannot be abandoned. (A cancel token and a deadline for decodes are planned.)
+- **Inflating needs up to twice `max_inflated_size`** while a deflated data set is read (the
+  output buffer grows by doubling); size the memory limit of a preview worker for it.
+- **A header-only open reads the whole file in the default open mode.** With
+  `SIAARA_OPEN_AUTO`, `stop_before_pixel_data` still brings a file of up to 256 MiB into memory
+  before it is parsed. For header-only scans of your own files use `SIAARA_OPEN_MAP`.
+- **`SIAARA_OPEN_AUTO` holds up to 256 MiB per open file in memory**, outside any budget
+  (`open_read_threshold` lowers it; larger files are mapped).
+- **A rendered frame costs 4 bytes per pixel at image resolution**, whatever the size of the
+  viewport, and is refused (`SIAARA_ERR_LIMIT_EXCEEDED`) when that and the decoded frame do not
+  fit `frame_memory_budget`; the viewport is not sampled straight from the source yet.
+- **A text value is decoded whole by the string getters** (`siaara_dataset_get_utf8` and the
+  others report the needed size, so they convert the entire value first). For untrusted input
+  check the stored length first (`siaara_dataset_get_raw`, `DicomDataset.TryGetValueLength`), as
+  the preview does (`MaxValueBytes`).
+- **On Windows a mapped file cannot be shortened or replaced by another process**, so the
+  hazard of the next item does not arise there; it applies to POSIX systems.
+- **More than about 64 SOP classes in one C-STORE batch** need more than the 128 presentation
+  contexts an association can carry (two per class, more with transcoding targets):
+  `siaara_dimse_store_files` then fails with `SIAARA_ERR_LIMIT_EXCEEDED` before connecting. Send such
+  a set in smaller batches.
+- A crash while an instance is being written into the store can leave a `*.siaara-tmp` file
+  under `data/`; `siaara_store_verify` with repair removes it. (Leftover temporary files of the
+  quarantine and of the spool are removed automatically after an hour.)
+- There is no single C function that fills `siaara_read_options` with the limits for untrusted
+  input; the values are in `examples/c/attachment_preview.h` (`preview_default_limits`) and, in
+  C#, `DicomPreviewOptions.Recommended.ToReadOptions()`.
 - New UIDs are not fork-safe: a process that calls `fork()` and creates UIDs in both parent and
   child without an `exec` can produce the same UID twice.
 - **Memory-mapped files and files that shrink.** A file that is memory-mapped (larger than

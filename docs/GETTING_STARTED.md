@@ -313,9 +313,19 @@ Things to know:
 ## 7. Showing a DICOM attachment safely (untrusted input)
 
 A DICOM file that arrives from outside - a mail attachment, an upload - is **untrusted bytes**.
-To show it (a caption and a small picture) without letting it take the server's memory or time,
+To show it (a caption and a small picture) without letting it take the server's memory,
 open it from memory with every limit set explicitly, decode a fixed number of frames, and render
 at a fixed size.
+
+> **Run the preview in a separate process, with a kill timer and a memory limit.** The limits
+> below bound the memory and the amount of work. They do **not** bound the time: decoding a frame
+> has no deadline and cannot be cancelled (a progressive JPEG of 8456 x 7936 with 883 legal
+> scans took 12.9 s for one frame in the security review), and a thread that is still decoding
+> cannot be abandoned - it keeps its memory and its core until it returns. So the worker that
+> calls the preview must be a process of its own that the caller kills when it has not answered
+> in time (a few seconds), and that runs under an operating-system memory limit (a job object on
+> Windows, a cgroup or `ulimit -v` on Linux) a little above the limits you configure. One
+> attachment per call; a killed worker costs nothing but that one preview.
 
 **In C# this is one call of the package** - there is nothing to copy into your product:
 
@@ -341,10 +351,25 @@ switch (p.Outcome)
 
 `Create` never throws for bad input. `DicomPreviewOptions` carries every limit of the table
 below plus how the picture is drawn (`MaxBox`, `MaxStripFrames`, `StripBox`,
-`MaxCaptionLength`, `Interpolation`, `VoiMode`, `Background`); its defaults are the recommended
-values. `examples/csharp/AttachmentPreview` shows it on five kinds of attachment. In C the same
-is `examples/c/attachment_preview.h` (`preview_attachment`), a header to compile into your
-program. Both are run by the test suite.
+`MaxCaptionLength`, `StripControlAndFormatCharacters`, `Interpolation`, `VoiMode`,
+`Background`); its defaults are the recommended values.
+`DicomPreviewOptions.Recommended.ToReadOptions()` is the toolkit's **preset for untrusted
+input**: use it for your own `DicomFile.Open` of bytes you do not trust, too.
+`examples/csharp/AttachmentPreview` shows the preview on five kinds of attachment. In C the same
+is `examples/c/attachment_preview.h` (`preview_attachment`, `preview_default_limits`), a header
+to compile into your program. Both are run by the test suite.
+
+The caption fields are **text from the file**. The preview takes control characters and Unicode
+format characters out of them (bidirectional overrides such as U+202E, which make
+`gpj.exe` read as `exe.jpg`, zero-width characters, the byte order mark) and cuts them to
+`MaxCaptionLength`; it does not escape them. Before a caption goes into a page:
+
+```csharp
+string html = "<figcaption>" + DicomAttachmentPreview.HtmlEscape(p.SeriesDescription) + "</figcaption>";
+```
+
+(`preview_html_escape` in the C example; `DicomAttachmentPreview.CaptionText` cleans any other
+text from a file the same way.)
 
 What the call does, step by step, with the public API (the C calls are in brackets):
 
@@ -362,16 +387,22 @@ using DicomFile file = DicomFile.Open(data, new DicomReadOptions
     MaxInflatedSize = 128L << 20,
     MaxFrameBytes = 64L << 20,
     FrameMemoryBudget = 256L << 20,
-});
+    MaxScans = 64,
+    MaxCropFactor = 1,
+});                                   // = DicomPreviewOptions.Recommended.ToReadOptions()
 
 // 3. Was the read complete? If not, show what there is and say so  [siaara_file_read_report]
 bool incomplete = !file.ReadReport.IsComplete;
 
-// 4. Caption: safe header fields only  [siaara_dataset_get_utf8]
-string modality = file.Dataset.TryGetString(DicomTags.Modality, out string? m) ? m : "";
+// 4. Caption: safe header fields only, and only values of a sane stored length - a longer one is
+//    not decoded at all  [siaara_dataset_get_raw for the length, siaara_dataset_get_utf8]
+string modality = file.Dataset.TryGetValueLength(DicomTags.Modality, out long stored) && stored <= 65_536
+                  && file.Dataset.TryGetString(DicomTags.Modality, out string? m)
+                      ? DicomAttachmentPreview.CaptionText(m, 256) : "";
 
 // 5. Is there an image the toolkit can decode? Nothing is decoded yet  [siaara_file_pixel_info]
 DicomPixelInfo pi = file.GetPixelInfo();   // NotFound: no image; Unsupported: video, JPEG XL ...
+if ((long)pi.Rows * pi.Columns > 64_000_000) return TooLarge;   // pixels, not bytes: see the table
 
 // 6. Frame 0, with the file's own window / palette / presentation defaults, fitted into 512 x 512
 //    [siaara_frame_open + siaara_frame_render with viewport_width / viewport_height, zoom 0]
@@ -394,7 +425,13 @@ The recommended settings and what each protects against:
 | `MaxElements` (`max_elements`) | 200,000 | millions of tiny elements or empty sequence items: 8 bytes of input each become an object in memory |
 | `MaxInflatedSize` (`max_inflated_size`) | 128 MiB | a deflate bomb: a few kB in a deflated transfer syntax that inflate to gigabytes |
 | `MaxFrameBytes` (`max_frame_bytes`) | 64 MiB | huge Rows x Columns: a frame larger than this is refused before anything is decoded |
-| `FrameMemoryBudget` (`frame_memory_budget`) | 256 MiB | a JPEG 2000 / JPEG-LS / JPEG stream that claims huge dimensions or many components |
+| `FrameMemoryBudget` (`frame_memory_budget`) | 256 MiB | a JPEG 2000 / JPEG-LS / JPEG stream that claims huge dimensions or many components; a render, which works at image resolution with 4 bytes per pixel before it is scaled down, is held to it too |
+| `MaxPixels` (`max_pixels`, the preview's own check of Rows x Columns) | 64,000,000 | a small file that states a huge 1-bit or 8-bit image: a 1-bit frame of 64 MiB is 537 million pixels. Refused before anything is decoded |
+| `MaxTotalPixels` (`max_total_pixels`, the preview's own count) | 128,000,000 | many large frames: the strip ends when the next frame would pass it |
+| `MaxScans` (`max_scans`) | 64 | a progressive JPEG with hundreds of scans, each a pass over the whole frame (the library default is 1000) |
+| `MaxCropFactor` (`max_crop_factor`) | 1 | a codestream larger than Rows x Columns that is decoded only to be cropped (the library default allows 2 x per axis, for files whose codestream is padded) |
+| `MaxValueBytes` (`max_value_bytes`, the preview's own check) | 65,536 | a caption attribute with a value of many megabytes: its stored length is looked at first and it is not decoded |
+| `StripControlAndFormatCharacters` (`strip_control_and_format`) | on | captions that reorder or hide text on screen (bidirectional overrides, zero-width characters), terminal escapes |
 | frames decoded | frame 0, plus at most 8 for a strip | a file that claims a million frames: frames are decoded one at a time, only the ones you ask for |
 | output size | 512 x 512 (strip tiles 128 x 128) | the size of what you produce and encode, whatever the file claims |
 | patient identifiers | not read | personal data in a preview nobody asked for; `ReadPatientFields` / `preview_patient_fields` read them on request |
@@ -412,14 +449,25 @@ What you get back, and what to show:
 
 Things to know:
 
-- The frame limits (`MaxFrameBytes`, `FrameMemoryBudget`) belong to the **opened file**: every
-  later decode, render and `OpenFrame` on that `DicomFile` is held to them. A file opened without
-  them has the library defaults (4 GiB), which are meant for trusted data.
-- **There is no time limit in the API.** The limits bound the work, and the toolkit's test for
-  this path (`tests/test_rc1_preview_alloc.cpp`: mutated and truncated files, decompression and
-  deflate bombs, a million claimed frames, element and nesting bombs) holds each preview to a
-  small memory budget and a time limit. Still, run previews on a worker you can abandon.
-- The caption fields are text from the file. Escape them before they go into HTML.
+- The frame limits (`MaxFrameBytes`, `FrameMemoryBudget`, `MaxScans`, `MaxCropFactor`) belong to
+  the **opened file**: every later decode, render and `OpenFrame` on that `DicomFile` is held to
+  them. A file opened without them has the library defaults (4 GiB), which are meant for trusted
+  data.
+- **With the default budget of 256 MiB the largest picture that renders** is about 53 million
+  pixels for 8-bit grayscale, 44 million for 16-bit and 26 million for 8-bit colour (the decoded
+  frame plus 4 bytes per pixel, plus 3 more for colour); a larger image within `MaxPixels` ends
+  as "too large" when it is rendered, after its frame was decoded. Raise `FrameMemoryBudget` if
+  you need more, and the memory limit of the worker process with it.
+- **There is no time limit in the API and a decode cannot be cancelled** - hence the separate
+  process with a kill timer at the top of this section. The toolkit's test for this path
+  (`tests/test_rc1_preview_alloc.cpp`: mutated and truncated files, decompression and deflate
+  bombs, a million claimed frames, element and nesting bombs, the huge 1-bit and 8-bit frames)
+  holds each preview to a memory budget; it cannot promise a time.
+- **What the memory limit of the worker has to allow**: reading a deflated file needs up to twice
+  `MaxInflatedSize` while it inflates (256 MiB with the recommended value), then
+  `FrameMemoryBudget` for a frame. About 600 MiB is a safe limit for the recommended settings.
+- The caption fields are text from the file. Escape them before they go into HTML
+  (`DicomAttachmentPreview.HtmlEscape`).
 - Colour, palette colour, signed and 12 / 16-bit images, MONOCHROME1 and the file's window are
   handled by the render call. Pixel spacing with non-square pixels is not corrected in the
   example.
