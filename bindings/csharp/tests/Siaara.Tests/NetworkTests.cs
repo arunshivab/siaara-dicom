@@ -91,8 +91,10 @@ internal static class NetworkTests
             CheckEq(st.InstancesStored, 4L);
             CheckEq(st.Echoes, 1L);
             Check(st.AssociationsRejected >= 1);
-            Check(events.Count(e => e.Kind == ScpEventKind.Stored) == 4);
-            Check(events.Any(e => e.Kind == ScpEventKind.Echo && e.CallingAeTitle == "CS_SCU"));
+            // Events are raised on the server's dispatcher thread, after the peer has its answer: wait for them.
+            Check(SpinWait.SpinUntil(() => events.Count(e => e.Kind == ScpEventKind.Stored) == 4, 10000));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Echo && e.CallingAeTitle == "CS_SCU"), 10000));
+            CheckEq(events.Count(e => e.Kind == ScpEventKind.Stored), 4);  // and no more than the four
             scp.Stop();
             Throws<SiaaraException>(() => Dimse.EchoAsync(Peer(scp.Port)).GetAwaiter().GetResult());
             SiaaraLog.SetHandler(null);

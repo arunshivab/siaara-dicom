@@ -173,8 +173,8 @@ internal static class Network2Tests
                 CheckEq(Directory.GetFiles(folder).Length, 2);
             }
             SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Get), 5000);
-            Check(events.Any(e => e.Kind == ScpEventKind.Move && e.DestinationAeTitle == "DEST" && e.Completed == 2));
-            Check(events.Any(e => e.Kind == ScpEventKind.Find && e.DatasetJson is not null));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Move && e.DestinationAeTitle == "DEST" && e.Completed == 2), 10000));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Find && e.DatasetJson is not null), 10000));
             StorageScpStatistics st = scp.GetStatistics();
             Check(st.Finds >= 3);
             CheckEq(st.Retrieves, 2L);
@@ -254,7 +254,7 @@ internal static class Network2Tests
             CheckEq(cr.FailureReasons[1], 0x0112);
             Check(cr.TransactionUid.Length > 5);
             SpinWait.SpinUntil(() => revents.Any(e => e.Kind == ScpEventKind.CommitmentReport), 5000);
-            Check(revents.Any(e => e.Kind == ScpEventKind.CommitmentReport && e.TransactionUid == cr.TransactionUid));
+            Check(SpinWait.SpinUntil(() => revents.Any(e => e.Kind == ScpEventKind.CommitmentReport && e.TransactionUid == cr.TransactionUid), 10000));
 
             using DicomFile ups = DicomFile.Create();
             ups.Dataset.SetString(new DicomTag(0x00741000u), "CS", "SCHEDULED");
@@ -272,10 +272,10 @@ internal static class Network2Tests
                 Check(got is not null);
             }
             SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Ups), 5000);
-            Check(events.Any(e => e.Kind == ScpEventKind.MppsCreate && e.SopInstanceUid == uid && e.DatasetJson is not null));
-            Check(events.Any(e => e.Kind == ScpEventKind.Refused && e.CallingAeTitle == "OTHER"));
-            Check(events.Any(e => e.Kind == ScpEventKind.Worklist && e.Completed == 1));
-            Check(events.Any(e => e.Kind == ScpEventKind.CommitmentRequest && e.Outcome == 1));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.MppsCreate && e.SopInstanceUid == uid && e.DatasetJson is not null), 10000));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Refused && e.CallingAeTitle == "OTHER"), 10000));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.Worklist && e.Completed == 1), 10000));
+            Check(SpinWait.SpinUntil(() => events.Any(e => e.Kind == ScpEventKind.CommitmentRequest && e.Outcome == 1), 10000));
             StorageScpStatistics st = scp.GetStatistics();
             CheckEq(st.Refused, 1L);
             CheckEq(st.Commitments, 1L);
