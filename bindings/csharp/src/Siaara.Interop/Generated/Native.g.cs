@@ -26,6 +26,17 @@ internal static class C
     public const int SIAARA_LOSSY_HISTORY_ALIGNED = 1;
     public const int SIAARA_LOSSY_HISTORY_METHOD_FILLED = 2;
     public const int SIAARA_LOSSY_HISTORY_MISALIGNED = 3;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_FILES = 10000u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_FILE_BYTES = 67108864u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_TOTAL_BYTES = 2147483648u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_TOTAL_INFLATED = 2147483648u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_RESULT_BYTES = 67108864u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_UID_CHARS = 64u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_TEXT_BYTES = 1024u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_DEPTH = 16u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_ELEMENTS = 200000u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_INFLATED_SIZE = 134217728u;
+    public const uint SIAARA_GROUPING_DEFAULT_MAX_VALUE_BYTES = 65536u;
     public const int SIAARA_OK = 0;
     public const int SIAARA_ERR_INVALID_ARGUMENT = 1;
     public const int SIAARA_ERR_IO = 2;
@@ -475,6 +486,78 @@ internal static class C
     public const int SIAARA_N_DELETE = 0x0150;
     public const int SIAARA_WEB_DEFAULT_TS_EXPLICIT_VR_LE = 0;
     public const int SIAARA_WEB_DEFAULT_TS_AS_STORED = 1;
+    public const int SIAARA_GROUP_ORDER_POSITION = 0;
+    public const int SIAARA_GROUP_ORDER_INSTANCE_NUMBER = 1;
+    public const int SIAARA_GROUP_ORDER_AS_ADDED = 2;
+    public const int SIAARA_GROUP_DUPLICATES_KEEP_BOTH = 0;
+    public const int SIAARA_GROUP_DUPLICATES_KEEP_FIRST = 1;
+    public const int SIAARA_GROUP_SWITCH_DEFAULT = 0;
+    public const int SIAARA_GROUP_SWITCH_ON = 1;
+    public const int SIAARA_GROUP_SWITCH_OFF = 2;
+    public const int SIAARA_GLEVEL_PATIENT = 0;
+    public const int SIAARA_GLEVEL_STUDY = 1;
+    public const int SIAARA_GLEVEL_SERIES = 2;
+    public const int SIAARA_GLEVEL_INSTANCE = 3;
+    public const int SIAARA_GLEVEL_ISSUE = 4;
+    public const int SIAARA_GINST_SERIES_NUMBER = 1 << 0;
+    public const int SIAARA_GINST_INSTANCE_NUMBER = 1 << 1;
+    public const int SIAARA_GINST_POSITION = 1 << 2;
+    public const int SIAARA_GINST_ORIENTATION = 1 << 3;
+    public const int SIAARA_GINST_SLICE_LOCATION = 1 << 4;
+    public const int SIAARA_GINST_FRAMES = 1 << 5;
+    public const int SIAARA_GINST_ROWS = 1 << 6;
+    public const int SIAARA_GINST_COLUMNS = 1 << 7;
+    public const int SIAARA_GINST_POSITION_USABLE = 1 << 8;
+    public const int SIAARA_GINST_DUPLICATE = 1 << 9;
+    public const int SIAARA_GINST_UNGROUPED = 1 << 10;
+    public const int SIAARA_GINST_IN_DICOMDIR = 1 << 11;
+    public const int SIAARA_GSORT_POSITION = 0;
+    public const int SIAARA_GSORT_SLICE_LOCATION = 1;
+    public const int SIAARA_GSORT_INSTANCE_NUMBER = 2;
+    public const int SIAARA_GSORT_ADDED = 3;
+    public const int SIAARA_GISSUE_SKIPPED = 0;
+    public const int SIAARA_GISSUE_UNGROUPED = 1;
+    public const int SIAARA_GISSUE_DUPLICATE = 2;
+    public const int SIAARA_GISSUE_STUDY_PATIENT_CONFLICT = 3;
+    public const int SIAARA_GISSUE_SERIES_MODALITY_CONFLICT = 4;
+    public const int SIAARA_GISSUE_SERIES_SIZE_CONFLICT = 5;
+    public const int SIAARA_GISSUE_DICOMDIR_SKIPPED = 6;
+    public const int SIAARA_GISSUE_LISTED_MISSING = 7;
+    public const int SIAARA_GISSUE_PRESENT_UNLISTED = 8;
+    public const int SIAARA_GISSUE_AMBIGUOUS_MATCH = 9;
+    public const int SIAARA_GSKIP_NOT_DICOM = 1;
+    public const int SIAARA_GSKIP_UNREADABLE = 2;
+    public const int SIAARA_GSKIP_FILE_LIMIT = 3;
+    public const int SIAARA_GSKIP_TOTAL_BUDGET = 4;
+    public const int SIAARA_GLIMIT_NONE = 0;
+    public const int SIAARA_GLIMIT_MAX_FILES = 1;
+    public const int SIAARA_GLIMIT_FILE_BYTES = 2;
+    public const int SIAARA_GLIMIT_TOTAL_BYTES = 3;
+    public const int SIAARA_GLIMIT_TOTAL_INFLATED = 4;
+    public const int SIAARA_GLIMIT_RESULT_BYTES = 5;
+    public const int SIAARA_GLIMIT_READ_LIMITS = 6;
+    public const int SIAARA_GLIMIT_INFLATED_SIZE = 7;
+    public const int SIAARA_GLIMIT_DICOMDIR_RECORDS = 8;
+    public const int SIAARA_GUNGROUPED_STUDY_UID = 1;
+    public const int SIAARA_GUNGROUPED_SERIES_UID = 2;
+    public const int SIAARA_GUNGROUPED_BOTH = 3;
+    public const int SIAARA_GFIELD_NAME = 0;
+    public const int SIAARA_GFIELD_SOP_CLASS_UID = 1;
+    public const int SIAARA_GFIELD_SOP_INSTANCE_UID = 2;
+    public const int SIAARA_GFIELD_STUDY_UID = 3;
+    public const int SIAARA_GFIELD_SERIES_UID = 4;
+    public const int SIAARA_GFIELD_MODALITY = 5;
+    public const int SIAARA_GFIELD_STUDY_DATE = 6;
+    public const int SIAARA_GFIELD_SERIES_DESCRIPTION = 7;
+    public const int SIAARA_GFIELD_PATIENT_NAME = 8;
+    public const int SIAARA_GFIELD_PATIENT_ID = 9;
+    public const int SIAARA_GFIELD_SUBJECT = 10;
+    public const int SIAARA_GTEXT_ABSENT = 0;
+    public const int SIAARA_GTEXT_OK = 1;
+    public const int SIAARA_GTEXT_TOO_LONG = 2;
+    public const int SIAARA_GTEXT_NOT_A_UID = 3;
+    public const int SIAARA_GTEXT_NOT_REQUESTED = 4;
+    public const int SIAARA_GTEXT_NOT_KEPT = 5;
 }
 
 [InlineArray(3)]
@@ -1934,6 +2017,146 @@ internal struct siaara_web_stow_options
     public int allow_incomplete;
 }
 
+/// <summary>siaara_grouping_options (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouping_options
+{
+    public uint struct_size;
+    public uint max_files;
+    public ulong max_file_bytes;
+    public ulong max_total_bytes;
+    public ulong max_total_inflated;
+    public ulong max_result_bytes;
+    public uint max_uid_chars;
+    public uint max_text_bytes;
+    public uint max_depth;
+    public uint reserved0;
+    public ulong max_elements;
+    public ulong max_inflated_size;
+    public ulong max_value_bytes;
+    public int order;
+    public int include_patient_fields;
+    public int duplicates;
+    public int match_case_insensitive;
+    public int match_by_trailing_components;
+    public uint reserved1;
+    public double orientation_tolerance;
+}
+
+/// <summary>siaara_grouping_summary (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouping_summary
+{
+    public uint struct_size;
+    public uint budget_reached;
+    public ulong files;
+    public ulong files_read;
+    public ulong instances;
+    public ulong patients;
+    public ulong studies;
+    public ulong series;
+    public ulong issues;
+    public ulong skipped;
+    public ulong ungrouped;
+    public ulong duplicates;
+    public ulong inconsistencies;
+    public ulong dicomdirs;
+    public ulong listed_missing;
+    public ulong present_unlisted;
+    public ulong ambiguous;
+    public ulong total_bytes;
+    public ulong total_inflated;
+    public ulong result_bytes;
+}
+
+/// <summary>siaara_grouped_patient (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouped_patient
+{
+    public uint struct_size;
+    public uint first_study;
+    public uint study_count;
+    public uint instance_count;
+}
+
+/// <summary>siaara_grouped_study (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouped_study
+{
+    public uint struct_size;
+    public uint patient;
+    public uint first_series;
+    public uint series_count;
+    public uint instance_count;
+    public uint reserved0;
+}
+
+/// <summary>siaara_grouped_series (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouped_series
+{
+    public uint struct_size;
+    public uint study;
+    public uint first_instance;
+    public uint instance_count;
+    public int has_normal;
+    public uint reserved0;
+    public FixedArray3OfDouble normal;
+}
+
+/// <summary>siaara_grouped_instance (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouped_instance
+{
+    public uint struct_size;
+    public uint flags;
+    public int series;
+    public uint file;
+    public int sort_key;
+    public uint read_loss;
+    public int duplicate_of;
+    public uint reserved0;
+    public long series_number;
+    public long instance_number;
+    public long number_of_frames;
+    public uint rows;
+    public uint columns;
+    public FixedArray3OfDouble image_position;
+    public FixedArray6OfDouble image_orientation;
+    public double slice_location;
+    public double position;
+}
+
+/// <summary>siaara_grouping_issue (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouping_issue
+{
+    public uint struct_size;
+    public int kind;
+    public int reason;
+    public int limit;
+    public int status;
+    public int file;
+    public int instance;
+    public int other_instance;
+    public int study;
+    public int series;
+    public int dicomdir;
+    public int record;
+}
+
+/// <summary>siaara_grouping_text (blittable, C layout).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct siaara_grouping_text
+{
+    public uint struct_size;
+    public int status;
+    public nint stored;
+    public nuint stored_len;
+    public nint display;
+    public nuint display_len;
+}
+
 /// <summary>[LibraryImport] declarations with the C signatures (pointers as pointers).</summary>
 internal static unsafe partial class Raw
 {
@@ -2980,6 +3203,50 @@ internal static unsafe partial class Raw
     [LibraryImport(Library, EntryPoint = "siaara_text_display_safe")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_text_display_safe(byte* text, nuint len, byte* buf, nuint cap, nuint* needed);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_create")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_create(siaara_grouping_options* options, nint* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_free")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial void siaara_grouping_free(nint grouping);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_add_file")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_add_file(nint grouping, byte* name, nuint name_len, byte* data, nuint size);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_add_dicomdir")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_add_dicomdir(nint grouping, byte* data, nuint size);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_result")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_result(nint grouping, siaara_grouping_summary* summary);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_patient")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_patient(nint grouping, uint index, siaara_grouped_patient* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_study")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_study(nint grouping, uint index, siaara_grouped_study* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_series")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_series(nint grouping, uint index, siaara_grouped_series* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_instance")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_instance(nint grouping, uint index, siaara_grouped_instance* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_issue_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_issue_get(nint grouping, uint index, siaara_grouping_issue* @out);
+
+    [LibraryImport(Library, EntryPoint = "siaara_grouping_text_get")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_grouping_text_get(nint grouping, int level, uint index, int field, siaara_grouping_text* @out);
 
 }
 
@@ -5034,6 +5301,74 @@ internal static unsafe class Native
         fixed (byte* p_buf = buf)
         fixed (nuint* p_needed = &needed)
             return Raw.siaara_text_display_safe((byte*)p_text, (nuint)text.Length, (byte*)p_buf, (nuint)buf.Length, p_needed);
+    }
+
+    internal static int siaara_grouping_create(in siaara_grouping_options options, out nint @out)
+    {
+        @out = 0;
+        fixed (siaara_grouping_options* p_options = &options)
+        fixed (nint* p_out = &@out)
+            return Raw.siaara_grouping_create(p_options, p_out);
+    }
+
+    internal static void siaara_grouping_free(nint grouping)
+    {
+        Raw.siaara_grouping_free(grouping);
+    }
+
+    internal static int siaara_grouping_add_file(nint grouping, ReadOnlySpan<byte> name, ReadOnlySpan<byte> data)
+    {
+        fixed (byte* p_name = name)
+        fixed (byte* p_data = data)
+            return Raw.siaara_grouping_add_file(grouping, (byte*)p_name, (nuint)name.Length, (byte*)p_data, (nuint)data.Length);
+    }
+
+    internal static int siaara_grouping_add_dicomdir(nint grouping, ReadOnlySpan<byte> data)
+    {
+        fixed (byte* p_data = data)
+            return Raw.siaara_grouping_add_dicomdir(grouping, (byte*)p_data, (nuint)data.Length);
+    }
+
+    internal static int siaara_grouping_result(nint grouping, ref siaara_grouping_summary summary)
+    {
+        fixed (siaara_grouping_summary* p_summary = &summary)
+            return Raw.siaara_grouping_result(grouping, p_summary);
+    }
+
+    internal static int siaara_grouping_patient(nint grouping, uint index, ref siaara_grouped_patient @out)
+    {
+        fixed (siaara_grouped_patient* p_out = &@out)
+            return Raw.siaara_grouping_patient(grouping, index, p_out);
+    }
+
+    internal static int siaara_grouping_study(nint grouping, uint index, ref siaara_grouped_study @out)
+    {
+        fixed (siaara_grouped_study* p_out = &@out)
+            return Raw.siaara_grouping_study(grouping, index, p_out);
+    }
+
+    internal static int siaara_grouping_series(nint grouping, uint index, ref siaara_grouped_series @out)
+    {
+        fixed (siaara_grouped_series* p_out = &@out)
+            return Raw.siaara_grouping_series(grouping, index, p_out);
+    }
+
+    internal static int siaara_grouping_instance(nint grouping, uint index, ref siaara_grouped_instance @out)
+    {
+        fixed (siaara_grouped_instance* p_out = &@out)
+            return Raw.siaara_grouping_instance(grouping, index, p_out);
+    }
+
+    internal static int siaara_grouping_issue_get(nint grouping, uint index, ref siaara_grouping_issue @out)
+    {
+        fixed (siaara_grouping_issue* p_out = &@out)
+            return Raw.siaara_grouping_issue_get(grouping, index, p_out);
+    }
+
+    internal static int siaara_grouping_text_get(nint grouping, int level, uint index, int field, ref siaara_grouping_text @out)
+    {
+        fixed (siaara_grouping_text* p_out = &@out)
+            return Raw.siaara_grouping_text_get(grouping, level, index, field, p_out);
     }
 
 }

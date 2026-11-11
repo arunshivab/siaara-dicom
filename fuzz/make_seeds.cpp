@@ -5,6 +5,7 @@
 // Writes small, valid inputs for every target into <output-folder>/<target>/, made with the
 // toolkit's own writers and encoders, in the input layout each harness in fuzz/targets/ expects.
 // fuzz/make_seeds.py runs this and adds the pydicom test files on top (not committed).
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -728,6 +729,29 @@ void seeds_dicomdir() {
     emit("dicomdir", "dicomdir3.bin", bytes);
     emit("dicomdir_memory", "dicomdir3.bin", bytes);
     in.close();
+    // grouping: the media as a ZIP would carry it (a wrapping folder), the DICOMDIR first, one file twice.
+    std::vector<std::uint8_t> g{0};
+    auto entry = [&g](std::uint8_t kind, const std::string& name, const std::vector<std::uint8_t>& b) {
+        g.push_back(kind);
+        g.push_back(static_cast<std::uint8_t>(name.size()));
+        g.insert(g.end(), name.begin(), name.end());
+        for (int k = 0; k < 4; ++k) g.push_back(static_cast<std::uint8_t>(b.size() >> (8 * k)));
+        g.insert(g.end(), b.begin(), b.end());
+    };
+    entry(1, "CD/DICOMDIR", bytes);
+    std::vector<fs::path> members;
+    for (const auto& e : fs::recursive_directory_iterator(media / "DICOM"))
+        if (e.is_regular_file()) members.push_back(e.path());
+    std::sort(members.begin(), members.end());
+    for (const auto& m : members) {
+        std::ifstream mf(m, std::ios::binary);
+        std::vector<std::uint8_t> b((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+        entry(0, "CD/" + fs::relative(m, media).generic_string(), b);
+        if (&m == &members.front()) entry(0, "cd\\dicom\\copy", b);
+    }
+    emit("grouping", "media3.bin", g);
+    g[0] = 0x41;  // small budgets, instance-number order
+    emit("grouping", "media3_small.bin", g);
     fs::remove_all(root);
 }
 

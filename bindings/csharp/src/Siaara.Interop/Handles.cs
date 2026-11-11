@@ -34,6 +34,16 @@ internal sealed class FileHandle : SiaaraHandle
     }
 }
 
+/// <summary>siaara_grouping (siaara_grouping_free).</summary>
+internal sealed class GroupingHandle : SiaaraHandle
+{
+    protected override bool ReleaseHandle()
+    {
+        Raw.siaara_grouping_free(handle);
+        return true;
+    }
+}
+
 /// <summary>siaara_web_client (siaara_web_client_free).</summary>
 internal sealed class WebClientHandle : SiaaraHandle
 {

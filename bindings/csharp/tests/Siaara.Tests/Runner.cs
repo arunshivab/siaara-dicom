@@ -188,6 +188,7 @@ internal static class Program
             PreviewTests.Register();
             DisplayTextTests.Register();
             DicomdirMemoryTests.Register();
+            GroupingTests.Register();
             EncoderTests.Register();
             PrivateDictionaryTests.Register();
             NamedTests.Register();

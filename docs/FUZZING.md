@@ -33,6 +33,7 @@ Without libFuzzer (GCC, MSVC, or Clang without the runtime) `fuzz_<target>` is a
 | `dicom_json`, `dicom_xml` | DICOM JSON and Native XML model readers | accepted documents written back read again |
 | `dicomdir` | DICOMDIR reader (written to a scratch file) | record depth within the limit |
 | `dicomdir_memory` | DICOMDIR reader from bytes (`siaara_dicomdir_read_memory`), default and small record limits | depth within the limit; a File ID reported well formed is 1 to 8 components of A-Z 0-9 _ |
+| `grouping` | grouping of files that arrived together (`siaara_grouping_*`): entries `<kind><name length><name><u32 length><data>`, byte 0 picks options and small budgets | series in their tiers, positions ordered and finite, budgets held, every display copy is the cleaner's output |
 | `display_text` | display-safe text cleaner (`siaara_text_display_safe`) | output is UTF-8 without controls, separators or format characters, at most 3 x the input, cleaning again changes nothing, a cut copy ends on a character |
 | `store_journal` | store snapshot load and journal replay at `Store::open` (records framed with valid CRCs by the harness) | after compaction, reopening gives the same counts |
 | `deid` | de-identifier on a parsed file with PHI planted at the top level and in sequence items | the planted marker never appears in the output |

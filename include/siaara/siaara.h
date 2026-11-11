@@ -3358,6 +3358,364 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_stow_ex(siaara_web_client* clien
 SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, size_t len, char* buf, size_t cap,
                                                               size_t* needed);
 
+/* ---------------------------------------------------------------- grouping (appended) */
+/* Groups files that arrived together (the members of a ZIP from a mail, with or without a
+ * DICOMDIR) into patient / study / series, orders each series for scrolling, and sets what a
+ * DICOMDIR lists against what arrived. Everything is from bytes in memory: nothing is written to
+ * disk, and no file's bytes are kept (each is read header-only during siaara_grouping_add_file).
+ *
+ * The input is UNTRUSTED. Each file is read with the attachment preview's limits (Part 10 only,
+ * no overlong-length recovery, nesting, elements, inflate) and the grouping as a whole is held to
+ * the budgets of siaara_grouping_options. A file that cannot be read or is past a limit is
+ * recorded as skipped with the reason: siaara_grouping_add_file does not fail for bad bytes.
+ * Reading headers has no time bound: run the grouping in the same separate worker process as the
+ * attachment preview (docs/GETTING_STARTED.md), with a kill timer and a memory limit.
+ *
+ * The result shows what the files CLAIM; it is not proof that they belong together or to the
+ * patient they name.
+ *
+ * Text: every text value is returned exactly as stored (decoded from its character set to UTF-8,
+ * padding removed, as siaara_dataset_get_utf8 returns all its values) and, next to it, a
+ * display-safe copy (siaara_text_display_safe). A value longer than its cap (UIDs max_uid_chars,
+ * other text max_text_bytes, any stored value max_value_bytes) is NOT kept: its status is
+ * SIAARA_GTEXT_TOO_LONG; it is never cut and passed on as if whole. A UID is used for grouping
+ * only when it is a valid UID (1 to 64 characters, digits and dots only); other UID values are
+ * kept with status SIAARA_GTEXT_NOT_A_UID. The caller's file name is kept as given (never
+ * changed) with a display-safe copy; a name longer than max_text_bytes is not kept (and cannot
+ * match a DICOMDIR File ID).
+ *
+ * Grouping: patients are told apart by Patient ID (the stored text, compared exactly; files
+ * without one form one patient), studies by Study Instance UID within a patient, series by Series
+ * Instance UID within a study. Patients, studies and series come in the order their first file
+ * was added. A Study UID seen under more than one Patient ID gives one study under each patient
+ * and an issue SIAARA_GISSUE_STUDY_PATIENT_CONFLICT for each (they are not merged); this check
+ * is made even when the patient fields are not returned. A file without a valid Study or Series
+ * UID is ungrouped (SIAARA_GISSUE_UNGROUPED).
+ *
+ * Order within a series (siaara_grouping_options.order):
+ *   SIAARA_GROUP_ORDER_POSITION (default): by the position along the slice normal: dot(Image
+ *     Position (Patient), normal), normal = row x column of the series' reference Image
+ *     Orientation (Patient) (that of its first file, as added, with a usable orientation). A file
+ *     whose position is missing, not finite, or whose orientation differs from the reference by
+ *     more than orientation_tolerance in any direction cosine comes after the positioned files,
+ *     ordered by Slice Location; then files with neither, by Instance Number; then the rest as
+ *     added. siaara_grouped_instance.sort_key says which placed each file.
+ *   SIAARA_GROUP_ORDER_INSTANCE_NUMBER: by Instance Number, files without one after, as added.
+ *   SIAARA_GROUP_ORDER_AS_ADDED.
+ * Every sort is stable (equal keys keep the order the files were added in).
+ *
+ * Threads: one thread at a time per siaara_grouping object (different objects may be used on
+ * different threads at once).
+ *
+ * Lifetime of what the result hands out: siaara_grouping_result builds the result; the getters
+ * below read it. Every pointer they hand out (the text in siaara_grouping_text) points into the
+ * grouping object and stays valid until the next siaara_grouping_add_file,
+ * siaara_grouping_add_dicomdir or siaara_grouping_result call on the same object, or
+ * siaara_grouping_free, whichever comes first. A getter called before siaara_grouping_result, or
+ * after a file was added since, is SIAARA_ERR_INVALID_ARGUMENT. */
+typedef struct siaara_grouping siaara_grouping;
+
+/* Defaults (0 in an options field means the default). */
+#define SIAARA_GROUPING_DEFAULT_MAX_FILES 10000u
+#define SIAARA_GROUPING_DEFAULT_MAX_FILE_BYTES 67108864u       /* 64 MiB */
+#define SIAARA_GROUPING_DEFAULT_MAX_TOTAL_BYTES 2147483648u    /* 2 GiB */
+#define SIAARA_GROUPING_DEFAULT_MAX_TOTAL_INFLATED 2147483648u /* 2 GiB */
+#define SIAARA_GROUPING_DEFAULT_MAX_RESULT_BYTES 67108864u     /* 64 MiB */
+#define SIAARA_GROUPING_DEFAULT_MAX_UID_CHARS 64u
+#define SIAARA_GROUPING_DEFAULT_MAX_TEXT_BYTES 1024u
+#define SIAARA_GROUPING_DEFAULT_MAX_DEPTH 16u
+#define SIAARA_GROUPING_DEFAULT_MAX_ELEMENTS 200000u
+#define SIAARA_GROUPING_DEFAULT_MAX_INFLATED_SIZE 134217728u   /* 128 MiB */
+#define SIAARA_GROUPING_DEFAULT_MAX_VALUE_BYTES 65536u
+/* The default orientation_tolerance is 1e-4 (C++ store::kGroupingDefaultOrientationTolerance,
+ * C# DicomGroupingOptions.DefaultOrientationTolerance). */
+
+enum {
+    SIAARA_GROUP_ORDER_POSITION = 0,        /* the default */
+    SIAARA_GROUP_ORDER_INSTANCE_NUMBER = 1,
+    SIAARA_GROUP_ORDER_AS_ADDED = 2
+};
+enum {
+    SIAARA_GROUP_DUPLICATES_KEEP_BOTH = 0,  /* the default: the second file is kept, flagged SIAARA_GINST_DUPLICATE */
+    SIAARA_GROUP_DUPLICATES_KEEP_FIRST = 1  /* the second file is not kept (an issue names it) */
+};
+/* A switch whose default is on: 0 takes the default. */
+enum { SIAARA_GROUP_SWITCH_DEFAULT = 0, SIAARA_GROUP_SWITCH_ON = 1, SIAARA_GROUP_SWITCH_OFF = 2 };
+
+typedef struct siaara_grouping_options {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouping_options) */
+    uint32_t max_files;              /* most files read; later siaara_grouping_add_file calls are skipped */
+    uint64_t max_file_bytes;         /* one file (or DICOMDIR) larger is skipped */
+    uint64_t max_total_bytes;        /* sizes of all files and DICOMDIRs read, together */
+    uint64_t max_total_inflated;     /* what deflated files inflate to while their headers are read, together */
+    uint64_t max_result_bytes;       /* all text kept: stored values plus display-safe copies (names,
+                                        UIDs, text fields, File IDs) */
+    uint32_t max_uid_chars;          /* a longer UID is not kept (SIAARA_GTEXT_TOO_LONG) */
+    uint32_t max_text_bytes;         /* other text (and names, File IDs): a longer one is not kept */
+    uint32_t max_depth;              /* the preview's read limits, per file: sequence nesting */
+    uint32_t reserved0;              /* set to 0 */
+    uint64_t max_elements;           /* data elements, and sequence items, of one file */
+    uint64_t max_inflated_size;      /* what one deflated file may inflate to */
+    uint64_t max_value_bytes;        /* a longer stored value is not decoded (SIAARA_GTEXT_TOO_LONG) */
+    int32_t order;                   /* SIAARA_GROUP_ORDER_* */
+    int32_t include_patient_fields;  /* 0 (default): Patient's Name and Patient ID are not returned
+                                        (SIAARA_GTEXT_NOT_REQUESTED); 1: they are */
+    int32_t duplicates;              /* SIAARA_GROUP_DUPLICATES_*: files with a SOP Instance UID an
+                                        earlier file has (a valid UID only) */
+    int32_t match_case_insensitive;  /* SIAARA_GROUP_SWITCH_*, default on: ASCII letters match in any case */
+    int32_t match_by_trailing_components; /* SIAARA_GROUP_SWITCH_*, default on: a name matches a File
+                                        ID of N components by its last N components (a ZIP's wrapping
+                                        folder is ignored); off: by the whole name */
+    uint32_t reserved1;              /* set to 0 */
+    double orientation_tolerance;    /* 0 = default (1e-4); negative or not finite is an argument error */
+} siaara_grouping_options;
+/* The budgets: once max_files, max_total_bytes, max_total_inflated or max_result_bytes is
+ * reached, every later file is skipped for it (SIAARA_GSKIP_TOTAL_BUDGET with the limit). Names
+ * of skipped files are kept while max_result_bytes allows (later: SIAARA_GTEXT_NOT_KEPT). Each
+ * siaara_grouping_add_file call is one entry of small fixed size whatever happens: cap the number
+ * of ZIP members you pass, as you cap the attachment's size.
+ *
+ * Matching DICOMDIR File IDs to the names given to siaara_grouping_add_file: the name is split on
+ * '/' and '\', '.' components are dropped (for matching only: the name returned is unchanged),
+ * letters are compared ASCII-only case-folded (match_case_insensitive), and a File ID of N
+ * components matches the last N components of the name (match_by_trailing_components; off: the
+ * whole name). Only well-formed File IDs of records in use are matched; a name that matches a File
+ * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH). */
+
+/* Creates a grouping. options may be NULL (every default). A limit of 0 takes its default; an
+ * unknown order / duplicates / switch value, or a bad tolerance, is SIAARA_ERR_INVALID_ARGUMENT.
+ * Caller owns *out: free with siaara_grouping_free. */
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_create(const siaara_grouping_options* options,
+                                                            siaara_grouping** out);
+SIAARA_API void SIAARA_CALL siaara_grouping_free(siaara_grouping* grouping) SIAARA_NOEXCEPT;
+/* One file: `name` (name_len bytes, the caller's name for it, for example the ZIP member's path;
+ * NULL when name_len is 0) and its `size` bytes at `data`, only read during the call (never kept).
+ * Returns SIAARA_OK whenever the file was recorded, as an instance or as skipped (the reason is an
+ * issue): bad bytes are not an error. SIAARA_ERR_INVALID_ARGUMENT for a NULL grouping, or NULL
+ * name / data with a non-zero length. */
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_add_file(siaara_grouping* grouping, const char* name,
+                                                              size_t name_len, const uint8_t* data, size_t size);
+/* A DICOMDIR (optional; more than one may be added), read as siaara_dicomdir_read_memory does,
+ * with max_bytes = max_file_bytes and the default max_records. Its File IDs are set against the
+ * names of the files (see above). Pass it here, not to siaara_grouping_add_file. Returns
+ * SIAARA_OK whenever it was recorded; one that cannot be read is an issue
+ * (SIAARA_GISSUE_DICOMDIR_SKIPPED). */
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_add_dicomdir(siaara_grouping* grouping, const uint8_t* data,
+                                                                  size_t size);
+
+typedef struct siaara_grouping_summary {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouping_summary) */
+    uint32_t budget_reached;         /* SIAARA_GLIMIT_* of the first total budget reached, 0 = none */
+    uint64_t files;                  /* siaara_grouping_add_file calls */
+    uint64_t files_read;             /* of them, files whose bytes were looked at (within max_files and the size budgets) */
+    uint64_t instances;              /* files kept (index range of siaara_grouping_instance) */
+    uint64_t patients;
+    uint64_t studies;
+    uint64_t series;
+    uint64_t issues;                 /* index range of siaara_grouping_issue */
+    uint64_t skipped;
+    uint64_t ungrouped;
+    uint64_t duplicates;
+    uint64_t inconsistencies;        /* study / patient, series modality, series size issues */
+    uint64_t dicomdirs;              /* siaara_grouping_add_dicomdir calls */
+    uint64_t listed_missing;
+    uint64_t present_unlisted;
+    uint64_t ambiguous;
+    uint64_t total_bytes;
+    uint64_t total_inflated;
+    uint64_t result_bytes;
+} siaara_grouping_summary;
+/* Builds the result from everything added so far (groups, orders, matches, lists the issues) and
+ * fills *summary (may be NULL). May be called again after more files were added. */
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_result(siaara_grouping* grouping, siaara_grouping_summary* summary);
+
+/* Levels of the result. Patients, studies, series, instances and issues are numbered from 0 in
+ * result order: studies patient by patient, series study by study, instances series by series
+ * (each series in its order), then the ungrouped instances in the order they were added. */
+enum {
+    SIAARA_GLEVEL_PATIENT = 0,
+    SIAARA_GLEVEL_STUDY = 1,
+    SIAARA_GLEVEL_SERIES = 2,
+    SIAARA_GLEVEL_INSTANCE = 3,
+    SIAARA_GLEVEL_ISSUE = 4
+};
+
+typedef struct siaara_grouped_patient {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouped_patient) */
+    uint32_t first_study;            /* its studies: first_study .. first_study + study_count - 1 */
+    uint32_t study_count;
+    uint32_t instance_count;
+} siaara_grouped_patient;
+typedef struct siaara_grouped_study {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouped_study) */
+    uint32_t patient;
+    uint32_t first_series;
+    uint32_t series_count;
+    uint32_t instance_count;
+    uint32_t reserved0;
+} siaara_grouped_study;
+typedef struct siaara_grouped_series {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouped_series) */
+    uint32_t study;
+    uint32_t first_instance;         /* its instances, in order: first_instance .. + instance_count - 1 */
+    uint32_t instance_count;
+    int32_t has_normal;              /* 1: normal is the unit slice normal of the reference orientation */
+    uint32_t reserved0;
+    double normal[3];
+} siaara_grouped_series;
+
+/* siaara_grouped_instance.flags */
+enum {
+    SIAARA_GINST_SERIES_NUMBER = 1 << 0,    /* series_number is set */
+    SIAARA_GINST_INSTANCE_NUMBER = 1 << 1,
+    SIAARA_GINST_POSITION = 1 << 2,         /* image_position: 3 numbers as stored (they may be NaN or
+                                               infinite when stored as FD) */
+    SIAARA_GINST_ORIENTATION = 1 << 3,      /* image_orientation: 6 numbers as stored */
+    SIAARA_GINST_SLICE_LOCATION = 1 << 4,
+    SIAARA_GINST_FRAMES = 1 << 5,           /* number_of_frames is set */
+    SIAARA_GINST_ROWS = 1 << 6,
+    SIAARA_GINST_COLUMNS = 1 << 7,
+    SIAARA_GINST_POSITION_USABLE = 1 << 8,  /* position (along the series normal) is set and usable */
+    SIAARA_GINST_DUPLICATE = 1 << 9,        /* an earlier file has its SOP Instance UID (duplicate_of) */
+    SIAARA_GINST_UNGROUPED = 1 << 10,       /* no valid Study or Series UID: series is -1 */
+    SIAARA_GINST_IN_DICOMDIR = 1 << 11      /* its name matched a DICOMDIR File ID */
+};
+/* siaara_grouped_instance.sort_key: what placed the instance in its series. */
+enum {
+    SIAARA_GSORT_POSITION = 0,
+    SIAARA_GSORT_SLICE_LOCATION = 1,
+    SIAARA_GSORT_INSTANCE_NUMBER = 2,
+    SIAARA_GSORT_ADDED = 3
+};
+typedef struct siaara_grouped_instance {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouped_instance) */
+    uint32_t flags;                  /* SIAARA_GINST_* */
+    int32_t series;                  /* series index, -1 when ungrouped */
+    uint32_t file;                   /* which siaara_grouping_add_file call (0-based) */
+    int32_t sort_key;                /* SIAARA_GSORT_* */
+    uint32_t read_loss;              /* SIAARA_READ_* bits of its header read (0 = complete) */
+    int32_t duplicate_of;            /* SIAARA_GINST_DUPLICATE: instance index of the first, else -1 */
+    uint32_t reserved0;
+    int64_t series_number;           /* Series Number (0020,0011) */
+    int64_t instance_number;         /* Instance Number (0020,0013) */
+    int64_t number_of_frames;        /* Number of Frames (0028,0008) */
+    uint32_t rows;                   /* Rows (0028,0010) */
+    uint32_t columns;                /* Columns (0028,0011) */
+    double image_position[3];        /* Image Position (Patient) (0020,0032) */
+    double image_orientation[6];     /* Image Orientation (Patient) (0020,0037) */
+    double slice_location;           /* Slice Location (0020,1041) */
+    double position;                 /* dot(image_position, series normal), SIAARA_GINST_POSITION_USABLE */
+} siaara_grouped_instance;
+
+/* siaara_grouping_issue.kind */
+enum {
+    SIAARA_GISSUE_SKIPPED = 0,                 /* a file not kept: reason SIAARA_GSKIP_*, limit, status */
+    SIAARA_GISSUE_UNGROUPED = 1,               /* instance without a valid Study / Series UID: reason SIAARA_GUNGROUPED_* */
+    SIAARA_GISSUE_DUPLICATE = 2,               /* instance (or, KEEP_FIRST, file: instance -1) whose SOP Instance UID
+                                                  other_instance has; subject: the UID */
+    SIAARA_GISSUE_STUDY_PATIENT_CONFLICT = 3,  /* study whose Study UID another patient's study has too; subject: the UID */
+    SIAARA_GISSUE_SERIES_MODALITY_CONFLICT = 4,/* series: instance's Modality differs from other_instance's (its first file) */
+    SIAARA_GISSUE_SERIES_SIZE_CONFLICT = 5,    /* series: instance's Rows x Columns differ from other_instance's */
+    SIAARA_GISSUE_DICOMDIR_SKIPPED = 6,        /* a DICOMDIR not read: reason, limit, status */
+    SIAARA_GISSUE_LISTED_MISSING = 7,          /* a DICOMDIR File ID no name matches; subject: the File ID; status
+                                                  SIAARA_ERR_REJECTED when the File ID is not well formed */
+    SIAARA_GISSUE_PRESENT_UNLISTED = 8,        /* instance whose name matches no DICOMDIR File ID (only when a
+                                                  DICOMDIR was read) */
+    SIAARA_GISSUE_AMBIGUOUS_MATCH = 9          /* a File ID that two or more names match: one issue per name */
+};
+enum {
+    SIAARA_GSKIP_NOT_DICOM = 1,      /* not a DICOM Part 10 file (no preamble and "DICM") */
+    SIAARA_GSKIP_UNREADABLE = 2,     /* DICOM that cannot be read (status says why) */
+    SIAARA_GSKIP_FILE_LIMIT = 3,     /* over a limit of one file (limit says which) */
+    SIAARA_GSKIP_TOTAL_BUDGET = 4    /* over a budget of the grouping (limit says which) */
+};
+enum {
+    SIAARA_GLIMIT_NONE = 0,
+    SIAARA_GLIMIT_MAX_FILES = 1,
+    SIAARA_GLIMIT_FILE_BYTES = 2,
+    SIAARA_GLIMIT_TOTAL_BYTES = 3,
+    SIAARA_GLIMIT_TOTAL_INFLATED = 4,
+    SIAARA_GLIMIT_RESULT_BYTES = 5,
+    SIAARA_GLIMIT_READ_LIMITS = 6,       /* max_depth or max_elements of one file */
+    SIAARA_GLIMIT_INFLATED_SIZE = 7,     /* max_inflated_size of one file */
+    SIAARA_GLIMIT_DICOMDIR_RECORDS = 8   /* a DICOMDIR's max_records */
+};
+enum { SIAARA_GUNGROUPED_STUDY_UID = 1, SIAARA_GUNGROUPED_SERIES_UID = 2, SIAARA_GUNGROUPED_BOTH = 3 };
+typedef struct siaara_grouping_issue {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouping_issue) */
+    int32_t kind;                    /* SIAARA_GISSUE_* */
+    int32_t reason;                  /* SIAARA_GSKIP_* or SIAARA_GUNGROUPED_*, else 0 */
+    int32_t limit;                   /* SIAARA_GLIMIT_* */
+    siaara_status status;            /* the read's status (skipped), the File ID's status (listed-missing), else 0 */
+    int32_t file;                    /* the siaara_grouping_add_file call, -1 when none */
+    int32_t instance;                /* -1 when none */
+    int32_t other_instance;          /* -1 when none */
+    int32_t study;                   /* -1 when none */
+    int32_t series;                  /* -1 when none */
+    int32_t dicomdir;                /* the siaara_grouping_add_dicomdir call, -1 when none */
+    int32_t record;                  /* the DICOMDIR record's index, -1 when none */
+} siaara_grouping_issue;
+
+/* Text fields (siaara_grouping_text_get): which exist at which level.
+ *   PATIENT:  PATIENT_ID, PATIENT_NAME (of the patient's first file; NOT_REQUESTED without
+ *             include_patient_fields)
+ *   STUDY:    STUDY_UID, STUDY_DATE (of the study's first file)
+ *   SERIES:   SERIES_UID, MODALITY, SERIES_DESCRIPTION (of the series' first file)
+ *   INSTANCE: all but SUBJECT (NAME: the caller's name of its file)
+ *   ISSUE:    NAME (the file's name, ABSENT when the issue has no file), SUBJECT (the UID or File
+ *             ID the issue is about, ABSENT when none) */
+enum {
+    SIAARA_GFIELD_NAME = 0,
+    SIAARA_GFIELD_SOP_CLASS_UID = 1,
+    SIAARA_GFIELD_SOP_INSTANCE_UID = 2,
+    SIAARA_GFIELD_STUDY_UID = 3,
+    SIAARA_GFIELD_SERIES_UID = 4,
+    SIAARA_GFIELD_MODALITY = 5,
+    SIAARA_GFIELD_STUDY_DATE = 6,
+    SIAARA_GFIELD_SERIES_DESCRIPTION = 7,
+    SIAARA_GFIELD_PATIENT_NAME = 8,
+    SIAARA_GFIELD_PATIENT_ID = 9,
+    SIAARA_GFIELD_SUBJECT = 10
+};
+/* siaara_grouping_text.status */
+enum {
+    SIAARA_GTEXT_ABSENT = 0,         /* not in the file (or empty) */
+    SIAARA_GTEXT_OK = 1,             /* stored and display are set */
+    SIAARA_GTEXT_TOO_LONG = 2,       /* longer than its cap: not kept */
+    SIAARA_GTEXT_NOT_A_UID = 3,      /* a UID field whose value is not a valid UID: kept, not used for grouping */
+    SIAARA_GTEXT_NOT_REQUESTED = 4,  /* patient fields without include_patient_fields */
+    SIAARA_GTEXT_NOT_KEPT = 5        /* a name not kept because max_result_bytes was reached */
+};
+typedef struct siaara_grouping_text {
+    uint32_t struct_size;            /* set to sizeof(siaara_grouping_text) */
+    int32_t status;                  /* SIAARA_GTEXT_* */
+    const char* stored;              /* OK and NOT_A_UID: the value exactly as stored (UTF-8, NUL-terminated;
+                                        may itself contain NUL: use stored_len); else NULL */
+    size_t stored_len;
+    const char* display;             /* the display-safe copy (NUL-terminated), or NULL with stored */
+    size_t display_len;
+} siaara_grouping_text;
+
+/* The result, by index (see the levels above). Each fills *out (struct_size set, at least the
+ * size of the first version of the struct; a larger struct_size is accepted and only the known
+ * fields are written). SIAARA_ERR_INVALID_ARGUMENT for an index out of range, for a field that
+ * does not exist at the level, or before siaara_grouping_result. */
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_patient(const siaara_grouping* grouping, uint32_t index,
+                                                             siaara_grouped_patient* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_study(const siaara_grouping* grouping, uint32_t index,
+                                                           siaara_grouped_study* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_series(const siaara_grouping* grouping, uint32_t index,
+                                                            siaara_grouped_series* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_instance(const siaara_grouping* grouping, uint32_t index,
+                                                              siaara_grouped_instance* out);
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_issue_get(const siaara_grouping* grouping, uint32_t index,
+                                                               siaara_grouping_issue* out);
+/* Text `field` (SIAARA_GFIELD_*) of entry `index` at `level` (SIAARA_GLEVEL_*). The pointers are
+ * valid as the top of this section says. */
+SIAARA_API siaara_status SIAARA_CALL siaara_grouping_text_get(const siaara_grouping* grouping, int32_t level,
+                                                              uint32_t index, int32_t field,
+                                                              siaara_grouping_text* out);
+
 #ifdef __cplusplus
 }
 #endif

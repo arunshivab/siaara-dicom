@@ -313,6 +313,9 @@ struct DicomFile {
     std::uint32_t read_loss = 0;          // ReadLoss bits
     std::uint64_t read_loss_offset = 0;   // offset of the first loss (parsed-stream offset)
     std::uint64_t bytes_not_read = 0;     // input bytes in no element (skipped or after a header-only stop)
+    // Deflated transfer syntaxes: the size the data set inflated to (the whole stream is inflated,
+    // also for a header-only read); 0 otherwise.
+    std::uint64_t inflated_size = 0;
     bool complete() const noexcept { return read_loss == 0; }
     // False for the deflated transfer syntax, where Element::offset counts in the inflated stream.
     bool offsets_are_file_offsets = true;
