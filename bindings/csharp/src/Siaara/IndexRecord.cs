@@ -111,6 +111,11 @@ public enum IndexRecordContents
     Referenced = C.SIAARA_IDXF_REFERENCED,
     /// <summary>PixelDataOffset / PixelDataLength are valid file offsets.</summary>
     PixelOffset = C.SIAARA_IDXF_PIXEL_OFFSET,
+    /// <summary>Store: the instance arrived incomplete and was kept exactly as received.</summary>
+    Incomplete = C.SIAARA_IDXF_INCOMPLETE,
+    /// <summary>Store: added by a receive path and indexed with the network read options (no recovery of
+    /// damaged lengths); a rebuild re-reads the file the same way.</summary>
+    Network = C.SIAARA_IDXF_NETWORK,
 }
 
 /// <summary>A point or direction in patient coordinates (LPS, mm).</summary>

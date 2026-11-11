@@ -118,6 +118,7 @@ internal static class C
     public const int SIAARA_IDXF_REFERENCED = 1 << 9;
     public const int SIAARA_IDXF_PIXEL_OFFSET = 1 << 10;
     public const int SIAARA_IDXF_INCOMPLETE = 1 << 11;
+    public const int SIAARA_IDXF_NETWORK = 1 << 12;
     public const int SIAARA_LEVEL_PATIENT = 0;
     public const int SIAARA_LEVEL_STUDY = 1;
     public const int SIAARA_LEVEL_SERIES = 2;

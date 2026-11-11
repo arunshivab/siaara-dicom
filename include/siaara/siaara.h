@@ -560,8 +560,13 @@ enum {
     SIAARA_IDXF_SLICE_THICKNESS = 1 << 8,
     SIAARA_IDXF_REFERENCED = 1 << 9,      /* store: indexed in place, not copied */
     SIAARA_IDXF_PIXEL_OFFSET = 1 << 10,   /* pixel_data_offset / _length are valid file offsets */
-    SIAARA_IDXF_INCOMPLETE = 1 << 11      /* store: the instance arrived incomplete and was kept exactly as received
+    SIAARA_IDXF_INCOMPLETE = 1 << 11,     /* store: the instance arrived incomplete and was kept exactly as received
                                              (SIAARA_INCOMPLETE_ACCEPT_AS_RECEIVED, or released from quarantine) */
+    SIAARA_IDXF_NETWORK = 1 << 12         /* store: the instance was added by a receive path (C-STORE, C-GET, STOW-RS,
+                                             WADO-RS retrieve-to-store) and indexed with the network read options
+                                             (no recovery of damaged lengths). A rebuild or verify that re-reads
+                                             the file reads it the same way again and keeps this flag and
+                                             SIAARA_IDXF_INCOMPLETE. */
 };
 
 enum {

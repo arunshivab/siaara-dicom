@@ -404,3 +404,73 @@ TEST_CASE("web/ rc1 R-163 WADO client, parts to file, retrieve-to-store and STOW
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+// Round 6, R-194: rebuild and verify re-read stored files. A file is read again the way it was
+// read when it was added (the index remembers: store::kNetworkInput); a file the index does not
+// know is read with the network read options unless StoreOptions says otherwise.
+TEST_CASE("net2: rc2 R-194 a rebuild re-reads a received instance with the network read options, a local import with the local ones") {
+    const auto dir = fresh_dir("rebuild");
+    const std::vector<std::uint8_t> late = ge_part10(true);  // the UIDs are read either way; Rows only with the recovery
+    const auto flags_of = [](const store::Store& st) -> std::uint32_t {
+        auto r = st.instance(kSop);
+        return r ? r->flags : 0xFFFFFFFFu;
+    };
+    {
+        // Received: indexed without the recovery, flagged incomplete by the receiver.
+        siaara_store* store = open_store(dir / "received");
+        REQUIRE(store != nullptr);
+        REQUIRE(store->store->add_buffer(Bytes::copy_of(late.data(), late.size()), store::DuplicatePolicy::Keep, store::kIncompleteRead,
+                                         store::network_extract_options()));
+        CHECK_EQ(indexed_rows(store), 0u);
+        CHECK((flags_of(*store->store) & store::kNetworkInput) != 0);
+        CHECK((flags_of(*store->store) & store::kIncompleteRead) != 0);
+        REQUIRE(store->store->rebuild());
+        CHECK_EQ(indexed_rows(store), 0u);  // not "recovered" by the rebuild
+        CHECK((flags_of(*store->store) & store::kNetworkInput) != 0);
+        CHECK((flags_of(*store->store) & store::kIncompleteRead) != 0);
+        // A deep verify reads it the same way: nothing to repair, the flags stay.
+        auto rep = store->store->verify(true, true);
+        REQUIRE(rep);
+        CHECK_EQ(rep->content_mismatch, 0u);
+        CHECK_EQ(indexed_rows(store), 0u);
+        CHECK((flags_of(*store->store) & (store::kNetworkInput | store::kIncompleteRead)) == (store::kNetworkInput | store::kIncompleteRead));
+        siaara_store_free(store);
+        // After closing and opening again (snapshot and journal) the flag is still there.
+        store = open_store(dir / "received");
+        REQUIRE(store != nullptr);
+        CHECK((flags_of(*store->store) & store::kNetworkInput) != 0);
+        REQUIRE(store->store->rebuild());
+        CHECK_EQ(indexed_rows(store), 0u);
+        siaara_store_free(store);
+    }
+    {
+        // A local import keeps the local default through a rebuild.
+        siaara_store* store = open_store(dir / "local");
+        REQUIRE(store != nullptr);
+        REQUIRE(siaara_store_add_memory(store, late.data(), late.size(), SIAARA_DUP_KEEP, nullptr) == SIAARA_OK);
+        CHECK_EQ(indexed_rows(store), 2u);
+        CHECK((flags_of(*store->store) & store::kNetworkInput) == 0);
+        REQUIRE(store->store->rebuild());
+        CHECK_EQ(indexed_rows(store), 2u);
+        CHECK((flags_of(*store->store) & store::kNetworkInput) == 0);
+        siaara_store_free(store);
+    }
+    // A file under data/ that the index does not know: the network read options by default.
+    static_assert(store::StoreOptions::kDefaultReindexUnknownAsNetworkInput);
+    for (const bool as_network : {true, false}) {
+        const std::filesystem::path root = dir / (as_network ? "unknown_net" : "unknown_local");
+        store::StoreOptions so;
+        CHECK(so.reindex_unknown_as_network_input);
+        so.reindex_unknown_as_network_input = as_network;
+        auto st = store::Store::open(root.string(), so);
+        REQUIRE(st);
+        write_bytes(root / "data" / "by-hand.dcm", late);
+        REQUIRE((*st)->rebuild());
+        auto r = (*st)->instance(kSop);
+        REQUIRE(r);
+        CHECK_EQ(r->rows, as_network ? 0u : 2u);
+        CHECK(((r->flags & store::kNetworkInput) != 0) == as_network);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}

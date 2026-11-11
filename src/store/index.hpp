@@ -53,6 +53,10 @@ constexpr std::uint32_t kPixelOffsetKnown  = 1u << 10;  // pixel_data_offset is 
 // store: the instance arrived incomplete (truncated, bytes skipped, recovered) and was kept exactly
 // as received - by IncompletePolicy::AcceptAsReceived or released from quarantine (R-116).
 constexpr std::uint32_t kIncompleteRead    = 1u << 11;
+// store: the instance was added by a receive path and indexed with network_extract_options()
+// (ExtractOptions::network_input). Kept so that a rebuild / verify that re-reads the stored file
+// reads it the way it was read when it arrived (R-194), not with the local-file defaults.
+constexpr std::uint32_t kNetworkInput      = 1u << 12;
 
 enum class Level : std::int32_t { Patient = 0, Study = 1, Series = 2, Instance = 3 };
 

@@ -1031,6 +1031,7 @@ struct Store::Impl {
                                  std::uint32_t extra_flags = 0, const ExtractOptions& xo = {}) {
         IndexRecord rec;
         if (Status s = extract_index(src, rec, xo); !s) return s;
+        if (xo.network_input) extra_flags |= kNetworkInput;  // how it was read: a rebuild reads it so again (R-194)
         rec.flags |= extra_flags;
         Bytes data = src;
         if (mode == AddMode::Copy && !(rec.flags & kHadPreamble)) {
@@ -1144,6 +1145,7 @@ struct Store::Impl {
             return x;
         }
         rec.flags |= extra_flags;
+        if (xo.network_input) rec.flags |= kNetworkInput;
         const std::string uid = rec[Str::SopInstanceUid];
         rec.added_time = now_seconds();
         rec[Str::FilePath].clear();  // derived from the UID
@@ -1256,6 +1258,11 @@ struct Store::Impl {
         return todo.size();
     }
 
+    // Was an instance with these index flags read with the network read options when it was added?
+    // (kIncompleteRead alone: a store written before kNetworkInput existed - only receive paths
+    // and the quarantine set it.)
+    static bool reindex_as_network(std::uint32_t flags) noexcept { return (flags & (kNetworkInput | kIncompleteRead)) != 0; }
+
     // Builds a state from every file under data/ plus the referenced files of `old`.
     State scan_state(const State& old, const Store::Progress* progress = nullptr, bool* stopped = nullptr) {
         State fresh;
@@ -1263,6 +1270,10 @@ struct Store::Impl {
         std::error_code ec;
         const auto opts = fs::directory_options::skip_permission_denied;
         std::uint64_t done = 0;
+        // R-194: how each copied instance was read when it was added, by its place under data/.
+        std::unordered_map<std::string, std::uint32_t> known;
+        for (const auto& [uid, in] : old.instances)
+            if (!(in->flags & kReferenced)) known.emplace(in->stored_path(), in->flags);
         for (fs::recursive_directory_iterator it(data_dir, opts, ec), end; !ec && it != end; it.increment(ec)) {
             std::error_code ec2;
             if (!it->is_regular_file(ec2)) continue;
@@ -1273,8 +1284,14 @@ struct Store::Impl {
                 return fresh;
             }
             IndexRecord r;
-            if (!extract_index_file(to_utf8(p), r) || r[Str::SopInstanceUid].empty()) continue;
-            r[Str::FilePath] = rel_generic(p, root);
+            const std::string rel = rel_generic(p, root);
+            const auto was = known.find(rel);
+            ExtractOptions xo;
+            xo.network_input = was != known.end() ? reindex_as_network(was->second) : opt.reindex_unknown_as_network_input;
+            if (!extract_index_file(to_utf8(p), r, xo) || r[Str::SopInstanceUid].empty()) continue;
+            if (xo.network_input) r.flags |= kNetworkInput;
+            if (was != known.end()) r.flags |= was->second & kIncompleteRead;  // what only the receiver knew
+            r[Str::FilePath] = rel;
             if (r[Str::FilePath] == instance_relative_path(r[Str::SopInstanceUid])) r[Str::FilePath].clear();
             r.added_time = now_seconds();
             fresh.apply_add(r, true);
@@ -1719,6 +1736,7 @@ Result<VerifyReport> Store::verify(bool deep, bool repair, const Progress& progr
         fs::path path;
         std::uint64_t size;
         bool referenced;
+        std::uint32_t flags;
     };
     std::vector<Item> items;
     std::unordered_set<std::string> expected;  // generic relative paths of copied instances
@@ -1726,7 +1744,7 @@ Result<VerifyReport> Store::verify(bool deep, bool repair, const Progress& progr
         std::shared_lock<std::shared_mutex> g(impl_->rw);
         items.reserve(impl_->st.instances.size());
         for (const auto& [uid, in] : impl_->st.instances) {
-            items.push_back({in->uid, impl_->abs_path(*in), in->file_size, (in->flags & kReferenced) != 0});
+            items.push_back({in->uid, impl_->abs_path(*in), in->file_size, (in->flags & kReferenced) != 0, in->flags});
             if (!(in->flags & kReferenced)) expected.insert(in->stored_path());
         }
     }
@@ -1748,7 +1766,11 @@ Result<VerifyReport> Store::verify(bool deep, bool repair, const Progress& progr
         if (size_bad) ++rep.size_mismatch;
         if (deep || size_bad) {
             IndexRecord r;
-            const Status s = extract_index_file(to_utf8(it.path), r);
+            // R-194: the file is read again the way it was read when it was added.
+            ExtractOptions xo;
+            xo.network_input = !it.referenced && Impl::reindex_as_network(it.flags);
+            const Status s = extract_index_file(to_utf8(it.path), r, xo);
+            if (s) r.flags |= it.flags & (kNetworkInput | kIncompleteRead);
             if (!s || r[Str::SopInstanceUid] != it.uid) {
                 if (deep && !size_bad) ++rep.content_mismatch;
                 bad.push_back(it.uid);

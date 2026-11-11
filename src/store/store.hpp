@@ -95,6 +95,14 @@ struct StoreOptions {
     // "STORE_PERMISSIONS_WIDE: ..."). Windows: not checked (the DACL is inherited or owner-only
     // as created).
     bool tighten_permissions = true;
+    // R-194: rebuild(), verify() and rebuild_if_corrupt re-read stored files to index them again.
+    // A file the index knows is read the way it was read when it was added (kNetworkInput: with
+    // the network read options, no recovery of damaged lengths; otherwise the local defaults).
+    // A file under data/ the index does not know (the index was unreadable, or the file was put
+    // there by hand) has no such record: true (default) reads it with the network read options -
+    // nothing is guessed about bytes of unknown origin - false with the local defaults.
+    static constexpr bool kDefaultReindexUnknownAsNetworkInput = true;
+    bool reindex_unknown_as_network_input = kDefaultReindexUnknownAsNetworkInput;
 };
 
 enum class DuplicatePolicy { Keep, Replace };
