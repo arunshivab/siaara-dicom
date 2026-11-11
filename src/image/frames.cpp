@@ -799,6 +799,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
     if (!plan.convert) {
         codec::FrameInfo fi = info_.frame_info();
         fi.memory_budget = codec_budget;
+        fi.max_scans = opt_.max_scans;
         st = run_codec(codec_, data, fi, out, opt_.lenient, opt_.jpeg_replicate_chroma, index, warnings);
     } else {
         const std::uint64_t tb = plan.temp.frame_bytes();
@@ -820,6 +821,7 @@ Status FrameReader::decode_encapsulated(std::uint32_t index, std::span<std::uint
         }
         codec::FrameInfo fi = plan.temp;
         fi.memory_budget = codec_budget;
+        fi.max_scans = opt_.max_scans;
         st = run_codec(codec_, data, fi, tmp, true, opt_.jpeg_replicate_chroma, index, warnings);
         if (st) return convert_frame(plan, info_, tmp, out, index);
     }

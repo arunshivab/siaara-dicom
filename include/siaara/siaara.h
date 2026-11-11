@@ -127,6 +127,10 @@ typedef struct siaara_read_options {
      *   frame_memory_budget: memory the frame functions of THIS file handle may use for decoded
      *     pixels and codec working memory (siaara_frame_decode, siaara_render_rgba8,
      *     siaara_frame_open, siaara_file_pixel_value, frame warnings). Default 4 GiB.
+     *     siaara_frame_render (and siaara_frame_map_point with a presentation state) is held to
+     *     it too: a render works at image resolution with 4 bytes per pixel whatever Bits
+     *     Allocated is, and that, its masks and the decoded frame the frame handle holds must
+     *     fit the budget together, else SIAARA_ERR_LIMIT_EXCEEDED before anything is allocated.
      *   max_frame_bytes: the largest decoded frame (rows x columns x samples x bytes per sample)
      *     those functions accept; a larger frame is SIAARA_ERR_LIMIT_EXCEEDED before anything is
      *     decoded. Default: no limit other than frame_memory_budget.
@@ -135,6 +139,21 @@ typedef struct siaara_read_options {
     uint64_t max_elements;
     uint64_t frame_memory_budget;
     uint64_t max_frame_bytes;
+    /* Read only when struct_size covers them. Two more limits of the frame functions of THIS file
+     * handle (they belong to the handle like the two above); 0 keeps the library default.
+     *   max_scans: the most JPEG scans decoded for one frame. A progressive JPEG may have
+     *     hundreds of legal scans, and each is a pass over the whole frame: the number of scans
+     *     multiplies the decode time. A frame with more is SIAARA_ERR_LIMIT_EXCEEDED. Default
+     *     1000 (codec::FrameInfo::kDefaultMaxScans); 64 is plenty for real images and is what
+     *     the attachment preview uses.
+     *   max_crop_factor: lenient decoding crops a codestream that is larger than Rows x Columns
+     *     only when it is at most this many times larger per axis; a larger one is
+     *     SIAARA_ERR_MALFORMED. Default 2 (image::FrameOptions::kDefaultMaxCropFactor); 1 = a
+     *     codestream must have the size the data set states (nothing is decoded to be cropped).
+     * There is no bound on decode TIME and a decode cannot be cancelled: decode untrusted input in
+     * a separate process with a kill timer and a memory limit (docs/GETTING_STARTED.md). */
+    uint32_t max_scans;
+    uint32_t max_crop_factor;
 } siaara_read_options;
 enum {
     SIAARA_RECOVER_DEFAULT = 0, /* the library default */

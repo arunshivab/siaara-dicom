@@ -129,6 +129,9 @@ struct siaara_file {
     // max_frame_bytes); 0 = the library default / no limit.
     std::uint64_t frame_memory_budget = 0;
     std::uint64_t max_frame_bytes = 0;
+    // siaara_read_options.max_scans / max_crop_factor; 0 = the library default.
+    std::uint32_t max_scans = 0;
+    std::uint32_t max_crop_factor = 0;
 };
 
 namespace siaara::capi {
@@ -136,6 +139,8 @@ namespace siaara::capi {
 inline image::FrameOptions frame_options(const siaara_file& f) {
     image::FrameOptions o;
     if (f.frame_memory_budget != 0) o.memory_budget = f.frame_memory_budget;
+    if (f.max_scans != 0) o.max_scans = f.max_scans;
+    if (f.max_crop_factor != 0) o.max_crop_factor = f.max_crop_factor;
     return o;
 }
 // Errc::LimitExceeded when a decoded frame of `frame_bytes` is more than the handle accepts.

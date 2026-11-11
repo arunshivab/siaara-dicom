@@ -611,6 +611,8 @@ internal struct siaara_read_options
     public ulong max_elements;
     public ulong frame_memory_budget;
     public ulong max_frame_bytes;
+    public uint max_scans;
+    public uint max_crop_factor;
 }
 
 /// <summary>siaara_read_report (blittable, C layout).</summary>

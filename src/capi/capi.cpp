@@ -148,6 +148,10 @@ siaara_file* new_file(siaara::DicomFile&& f, const siaara_read_options* o) {
         h->frame_memory_budget = o->frame_memory_budget;
         h->max_frame_bytes = o->max_frame_bytes;
     }
+    if (o && o->struct_size >= offsetof(siaara_read_options, max_crop_factor) + sizeof(uint32_t)) {
+        h->max_scans = o->max_scans;
+        h->max_crop_factor = o->max_crop_factor;
+    }
     return h;
 }
 

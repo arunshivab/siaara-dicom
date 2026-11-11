@@ -81,7 +81,12 @@ struct FrameOptions {
     unsigned threads = 0;
     // Lenient mode: a codestream larger than Columns x Rows is decoded and cropped only when it is
     // at most this many times larger per axis; larger ones are Malformed (R-055). 0 = never crop.
-    std::uint32_t max_crop_factor = 2;
+    static constexpr std::uint32_t kDefaultMaxCropFactor = 2;
+    std::uint32_t max_crop_factor = kDefaultMaxCropFactor;
+    // JPEG scans decoded per frame (progressive JPEG: every scan is a pass over the whole frame,
+    // so the number of scans multiplies the decode time); a frame with more is LimitExceeded.
+    // 0 = the codec default, codec::FrameInfo::kDefaultMaxScans (R-192).
+    std::uint32_t max_scans = 0;
     bool lenient = true;  // accept common non-conformances (recorded in warnings())
     // JPEG chroma upsampling: false = triangular interpolation like libjpeg (default), true =
     // sample replication (the toolkit's behaviour before F5).

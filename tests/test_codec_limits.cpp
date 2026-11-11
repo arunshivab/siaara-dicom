@@ -21,6 +21,9 @@
 #include "codec/transcode.hpp"
 #include "core/dataset.hpp"
 #include "core/types.hpp"
+#include "core/writer.hpp"
+#include "image/frames.hpp"
+#include "siaara/siaara.h"
 #include "test.hpp"
 
 using namespace siaara;
@@ -623,4 +626,97 @@ TEST_CASE("codec limits/R-065 J2K quality and rate must be finite") {
     ok.lossless = false;
     ok.rate = 1.5;
     CHECK(j2k::encode(img, fi, ok, out).is_ok());
+}
+
+// Round 6, R-192 / R-201: the scan cap and the crop margin are options of the file handle in the
+// C API (siaara_read_options.max_scans / max_crop_factor); 0 keeps the library defaults.
+namespace {
+Buf part10_with_codestream(std::uint32_t rows, std::uint32_t cols, const char* transfer_syntax, const Buf& codestream) {
+    DicomFile f;
+    f.transfer_syntax = transfer_syntax;
+    Dataset& ds = f.dataset;
+    (void)ds.set_string(tags::SOPClassUID, VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    (void)ds.set_string(tags::SOPInstanceUID, VR::UI, "2.25.192001");
+    (void)ds.set_uint16(tags::SamplesPerPixel, 1);
+    (void)ds.set_string(tags::PhotometricInterpretation, VR::CS, "MONOCHROME2");
+    (void)ds.set_uint16(tags::Rows, static_cast<std::uint16_t>(rows));
+    (void)ds.set_uint16(tags::Columns, static_cast<std::uint16_t>(cols));
+    (void)ds.set_uint16(tags::BitsAllocated, 8);
+    (void)ds.set_uint16(tags::BitsStored, 8);
+    (void)ds.set_uint16(tags::HighBit, 7);
+    (void)ds.set_uint16(tags::PixelRepresentation, 0);
+    Element e;
+    e.tag = tags::PixelData;
+    e.vr = VR::OB;
+    e.undefined_length = true;
+    e.fragments.push_back(Bytes());
+    Buf g = codestream;
+    if (g.size() & 1u) g.push_back(0);
+    e.fragments.push_back(Bytes::copy_of(g.data(), g.size()));
+    ds.put(std::move(e));
+    Buf out;
+    (void)write_part10(f, out);
+    return out;
+}
+
+siaara_status decode_with(const Buf& file_bytes, std::uint32_t max_scans, std::uint32_t max_crop_factor, std::size_t frame_bytes,
+                          bool old_struct = false) {
+    siaara_read_options ro;
+    std::memset(&ro, 0, sizeof ro);
+    ro.struct_size = old_struct ? static_cast<uint32_t>(offsetof(siaara_read_options, max_scans)) : sizeof ro;
+    ro.allow_raw_dataset = 1;
+    ro.max_scans = max_scans;
+    ro.max_crop_factor = max_crop_factor;
+    siaara_file* file = nullptr;
+    if (siaara_file_open_memory(file_bytes.data(), file_bytes.size(), &ro, &file) != SIAARA_OK) return SIAARA_ERR_INTERNAL;
+    Buf out(frame_bytes);
+    size_t need = 0;
+    const siaara_status st = siaara_frame_decode(file, 0, SIAARA_FRAME_NATIVE, out.data(), out.size(), &need);
+    // The limits belong to the handle: a frame handle opened from it is held to them too.
+    siaara_frame* frame = nullptr;
+    const siaara_status fo = siaara_frame_open(file, 0, &frame);
+    siaara_frame_free(frame);
+    siaara_file_free(file);
+    return st == fo ? st : SIAARA_ERR_INTERNAL;
+}
+}  // namespace
+
+TEST_CASE("codec limits/R-192 siaara_read_options.max_scans caps the JPEG scans of the handle's frames") {
+    static_assert(image::FrameOptions{}.max_scans == 0);
+    static_assert(FrameInfo::kDefaultMaxScans == 1000);
+    ProgJpeg j(64, 64);
+    j.dc(0, 2);
+    for (int al = 2; al >= 0; --al) {
+        if (al < 2) j.dc(al + 1, al);
+        for (int k = 1; k <= 63; k += 9) j.ac(k, k + 8, al == 2 ? 0 : al + 1, al);
+    }
+    j.eoi();  // 3 DC + 21 AC = 24 scans
+    const Buf file = part10_with_codestream(64, 64, "1.2.840.10008.1.2.4.51", j.b);
+    REQUIRE(!file.empty());
+    CHECK(decode_with(file, 0, 0, 64 * 64) == SIAARA_OK);   // the library default (1000)
+    CHECK(decode_with(file, 64, 0, 64 * 64) == SIAARA_OK);  // what the attachment preview uses
+    CHECK(decode_with(file, 24, 0, 64 * 64) == SIAARA_OK);
+    CHECK(decode_with(file, 23, 0, 64 * 64) == SIAARA_ERR_LIMIT_EXCEEDED);
+    CHECK(decode_with(file, 1, 0, 64 * 64) == SIAARA_ERR_LIMIT_EXCEEDED);
+    // An older caller's struct (without the fields): the values in it are not read.
+    CHECK(decode_with(file, 1, 0, 64 * 64, true) == SIAARA_OK);
+}
+
+TEST_CASE("codec limits/R-201 siaara_read_options.max_crop_factor: 1 refuses a codestream larger than the image") {
+    static_assert(image::FrameOptions::kDefaultMaxCropFactor == 2);
+    static_assert(image::FrameOptions{}.max_crop_factor == image::FrameOptions::kDefaultMaxCropFactor);
+    const FrameInfo coded = gray(30, 32);
+    Buf img(static_cast<std::size_t>(coded.frame_bytes()), 9);
+    EncodeParams p;
+    Buf jls;
+    REQUIRE(encode_jpegls(img, coded, p, jls).is_ok());
+    // The data set states 16 x 16; the codestream is 30 x 32.
+    const Buf larger = part10_with_codestream(16, 16, "1.2.840.10008.1.2.4.80", jls);
+    CHECK(decode_with(larger, 0, 0, 16 * 16) == SIAARA_OK);  // the default margin of 2: decoded and cropped
+    CHECK(decode_with(larger, 0, 2, 16 * 16) == SIAARA_OK);
+    CHECK(decode_with(larger, 0, 1, 16 * 16) == SIAARA_ERR_MALFORMED);
+    CHECK(decode_with(larger, 0, 1, 16 * 16, true) == SIAARA_OK);
+    // A codestream of the stated size is fine with 1.
+    const Buf exact = part10_with_codestream(30, 32, "1.2.840.10008.1.2.4.80", jls);
+    CHECK(decode_with(exact, 0, 1, 30 * 32) == SIAARA_OK);
 }

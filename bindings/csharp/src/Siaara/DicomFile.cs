@@ -72,6 +72,15 @@ public sealed record DicomReadOptions
     /// 0 = no limit other than <see cref="FrameMemoryBudget"/>.</summary>
     public long MaxFrameBytes { get; init; }
 
+    /// <summary>Untrusted input: the most JPEG scans decoded for one frame of the opened file (a progressive JPEG
+    /// may have hundreds of legal scans, each a pass over the whole frame); a frame with more is refused.
+    /// 0 = library default (1000).</summary>
+    public int MaxScans { get; init; }
+
+    /// <summary>Untrusted input: a codestream larger than Rows x Columns is decoded and cropped only when it is at
+    /// most this many times larger per axis; 1 = it must have the stated size. 0 = library default (2).</summary>
+    public int MaxCropFactor { get; init; }
+
     internal siaara_read_options ToNative() => new()
     {
         struct_size = StructSize.Of<siaara_read_options>(),
@@ -87,6 +96,8 @@ public sealed record DicomReadOptions
         max_elements = (ulong)Math.Max(0, MaxElements),
         frame_memory_budget = (ulong)Math.Max(0, FrameMemoryBudget),
         max_frame_bytes = (ulong)Math.Max(0, MaxFrameBytes),
+        max_scans = (uint)Math.Max(0, MaxScans),
+        max_crop_factor = (uint)Math.Max(0, MaxCropFactor),
     };
 }
 

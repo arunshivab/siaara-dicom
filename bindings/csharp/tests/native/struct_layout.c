@@ -21,6 +21,8 @@ int main(void) {
     printf("F siaara_read_options max_elements %u\n", (unsigned)offsetof(siaara_read_options, max_elements));
     printf("F siaara_read_options frame_memory_budget %u\n", (unsigned)offsetof(siaara_read_options, frame_memory_budget));
     printf("F siaara_read_options max_frame_bytes %u\n", (unsigned)offsetof(siaara_read_options, max_frame_bytes));
+    printf("F siaara_read_options max_scans %u\n", (unsigned)offsetof(siaara_read_options, max_scans));
+    printf("F siaara_read_options max_crop_factor %u\n", (unsigned)offsetof(siaara_read_options, max_crop_factor));
     printf("S siaara_read_report %u\n", (unsigned)sizeof(siaara_read_report));
     printf("F siaara_read_report struct_size %u\n", (unsigned)offsetof(siaara_read_report, struct_size));
     printf("F siaara_read_report loss %u\n", (unsigned)offsetof(siaara_read_report, loss));
