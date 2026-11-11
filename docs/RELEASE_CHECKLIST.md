@@ -87,6 +87,10 @@ None of these is decided by the tooling. Each has a default that applies if noth
 
 ## F. After publishing
 
+- [ ] The `publish-package` workflow ran (it starts when the release is published) and is green;
+      `Siaara` X.Y.Z is listed under the owner's Packages. Visibility and access of the package
+      checked (docs/RELEASING.md, "The package feed"). One of the owner's products restores it
+      from `https://nuget.pkg.github.com/<owner>/index.json`.
 - [ ] Download the published assets once more from the release page and keep a copy with
       `SHA256SUMS` outside GitHub (the owner's archive).
 - [ ] **Make the repository private** (decision A2), after saving: the attestation

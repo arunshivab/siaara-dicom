@@ -15,7 +15,9 @@ The package has **no package dependencies**; the toolkit has no third-party depe
 
 ## Use
 
-Put the `.nupkg` in a folder and name that folder as a package source (`nuget.config`):
+From the GitHub Packages feed of the owner (`https://nuget.pkg.github.com/arunshivab/index.json`,
+a token with `read:packages`; see docs/GETTING_STARTED.md, section 6), or from a folder: put the
+`.nupkg` in a folder and name that folder as a package source (`nuget.config`):
 
 ```xml
 <configuration>

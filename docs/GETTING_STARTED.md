@@ -206,8 +206,35 @@ Things to know:
 ## 6. C# (.NET 10)
 
 The package `Siaara` holds the managed assemblies and the native library for win-x64, win-x86,
-win-arm64, linux-x64, linux-arm64, osx-x64 and osx-arm64. It has no dependencies, so a folder
-with the `.nupkg` is all the "feed" you need - nothing is fetched from nuget.org.
+win-arm64, linux-x64, linux-arm64, osx-x64 and osx-arm64. It has no dependencies. There are two
+ways to get it; the package is the same file either way.
+
+**From the GitHub Packages feed** (how the owner's products get it). Every published release
+is on the feed of the repository's owner. `nuget.config` next to your solution:
+
+```xml
+<configuration>
+  <packageSources>
+    <add key="siaara" value="https://nuget.pkg.github.com/arunshivab/index.json" />
+  </packageSources>
+  <packageSourceMapping>
+    <packageSource key="siaara"><package pattern="Siaara" /></packageSource>
+    <packageSource key="nuget.org"><package pattern="*" /></packageSource>
+  </packageSourceMapping>
+</configuration>
+```
+
+The feed asks for a GitHub account that may read the package and a personal access token with
+the `read:packages` scope. Keep the token out of the repository: give it once per machine
+
+    dotnet nuget update source siaara --username <github user> --password <token> --store-password-in-clear-text --configfile <your user-level NuGet.Config>
+
+or, in a build pipeline, through the environment (`NuGetPackageSourceCredentials_siaara` =
+`Username=<github user>;Password=<token>`). The source mapping makes sure `Siaara` can only
+come from this feed, and nothing else can come from it. Then reference the package (step 3).
+
+**From a folder** (no account, no network): a folder with the `.nupkg` is all the "feed" you
+need - nothing is fetched from nuget.org.
 
 1. Put `Siaara.<version>.nupkg` in a folder, for example `packages/` next to your solution.
 2. Name that folder as a package source (`examples/csharp/nuget.config`):
@@ -288,12 +315,38 @@ Things to know:
 A DICOM file that arrives from outside - a mail attachment, an upload - is **untrusted bytes**.
 To show it (a caption and a small picture) without letting it take the server's memory or time,
 open it from memory with every limit set explicitly, decode a fixed number of frames, and render
-at a fixed size. The two example programs do exactly that and are run by the test suite:
+at a fixed size.
 
-- C#: `examples/csharp/AttachmentPreview/Program.cs` (`AttachmentPreview.Create(bytes, limits)`)
-- C: `examples/c/attachment_preview.h` (`preview_attachment`) and `attachment_preview.c`
+**In C# this is one call of the package** - there is nothing to copy into your product:
 
-The steps, in C# (the C calls are in brackets):
+```csharp
+using Siaara;
+
+DicomPreview p = DicomAttachmentPreview.Create(attachmentBytes);          // recommended limits
+// or: DicomAttachmentPreview.Create(attachmentBytes, DicomPreviewOptions.Recommended with { MaxBox = 256 });
+
+switch (p.Outcome)
+{
+    case DicomPreviewOutcome.Ok:                       // p.Image: frame 0; p.Strip: a few frames of a multi-frame file
+        byte[] png = p.Image!.ToPng();                 // or ToJpeg()
+        break;
+    case DicomPreviewOutcome.NotDicom:    break;       // a plain attachment
+    default:                              break;       // NoPixelData, Unsupported, TooLarge, Damaged: p.Reason says why
+}
+// Caption: p.Modality, p.StudyDate, p.SeriesDescription, p.Rows, p.Columns, p.Frames, p.TransferSyntaxName.
+// p.Incomplete: the file was cut off or damaged - say so next to the picture.
+// Patient's Name and ID are NOT in the preview. On request only:
+(string Name, string Id)? patient = DicomAttachmentPreview.ReadPatientFields(attachmentBytes);
+```
+
+`Create` never throws for bad input. `DicomPreviewOptions` carries every limit of the table
+below plus how the picture is drawn (`MaxBox`, `MaxStripFrames`, `StripBox`,
+`MaxCaptionLength`, `Interpolation`, `VoiMode`, `Background`); its defaults are the recommended
+values. `examples/csharp/AttachmentPreview` shows it on five kinds of attachment. In C the same
+is `examples/c/attachment_preview.h` (`preview_attachment`), a header to compile into your
+program. Both are run by the test suite.
+
+What the call does, step by step, with the public API (the C calls are in brackets):
 
 ```csharp
 // 1. Not DICOM at all? A Part 10 file has "DICM" at offset 128. Nothing else is parsed.
@@ -344,7 +397,7 @@ The recommended settings and what each protects against:
 | `FrameMemoryBudget` (`frame_memory_budget`) | 256 MiB | a JPEG 2000 / JPEG-LS / JPEG stream that claims huge dimensions or many components |
 | frames decoded | frame 0, plus at most 8 for a strip | a file that claims a million frames: frames are decoded one at a time, only the ones you ask for |
 | output size | 512 x 512 (strip tiles 128 x 128) | the size of what you produce and encode, whatever the file claims |
-| patient identifiers | not read | personal data in a preview nobody asked for; `PatientFields` / `preview_patient_fields` read them on request |
+| patient identifiers | not read | personal data in a preview nobody asked for; `ReadPatientFields` / `preview_patient_fields` read them on request |
 
 What you get back, and what to show:
 

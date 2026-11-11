@@ -179,7 +179,8 @@ Open from memory with explicit limits, decode a fixed number of frames, render a
 encode PNG / JPEG - or say plainly why there is no picture. The recommended settings and what
 each protects against are in
 [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md#7-showing-a-dicom-attachment-safely-untrusted-input);
-the programs are [`examples/csharp/AttachmentPreview`](examples/csharp/AttachmentPreview) and
+in C# it is one call of the package, `DicomAttachmentPreview.Create(bytes)`
+([`examples/csharp/AttachmentPreview`](examples/csharp/AttachmentPreview)); in C it is
 [`examples/c/attachment_preview.h`](examples/c/attachment_preview.h).
 
 ## Command-line tools

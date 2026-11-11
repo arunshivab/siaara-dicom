@@ -17,7 +17,11 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   (`find_package(siaara)`), pkg-config file, ten command-line tools.
 - C# bindings for .NET 10 as one NuGet package (`Siaara`) carrying the native library for
   win-x64, win-x86, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64; no package
-  dependencies; trimmable and NativeAOT compatible.
+  dependencies; trimmable and NativeAOT compatible. Published releases are on the owner's
+  GitHub Packages feed.
+- A preview of untrusted DICOM bytes (a mail attachment, an upload) is part of the C# package:
+  `DicomAttachmentPreview.Create` gives a caption and a small picture, or the reason there is
+  none, within explicit limits (`DicomPreviewOptions`).
 - Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 12+ (universal).
 - Zero third-party dependencies. Reproducible archives, an SPDX 2.3 SBOM per archive, SHA-256
   checksums, build provenance attestation.

@@ -1,0 +1,78 @@
+name: publish-package
+
+# Puts the NuGet package of a release on the GitHub Packages feed of this repository's owner
+#     https://nuget.pkg.github.com/<owner>/index.json
+# from which the products that use the toolkit restore it (docs/GETTING_STARTED.md, section 4).
+#
+# It runs when a maintainer PUBLISHES a release (the release workflow only creates a draft), so the
+# review of the draft is the gate: nothing reaches the feed before that. The package is not built
+# again here: the Siaara.<version>.nupkg attached to the release is downloaded, checked against
+# the release's SHA256SUMS and pushed as it is. A version on the feed cannot be replaced; a wrong
+# one has to be deleted by hand first (docs/RELEASING.md).
+#
+# Manual run (workflow_dispatch) for an existing release: give its tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag of an existing, published release (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  publish:
+    name: publish to GitHub Packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read       # read the release and its files
+      packages: write      # push to the feed
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
+        with:
+          global-json-file: global.json
+      - name: The tag is a release tag
+        run: |
+          case "$RELEASE_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "not a release tag: $RELEASE_TAG"; exit 1 ;;
+          esac
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+      - name: Download the package and the checksums of the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dist
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern "Siaara.$VERSION.nupkg" --pattern SHA256SUMS
+          ls -l dist
+      - name: The package is the one the release lists
+        run: |
+          cd dist
+          grep " Siaara.$VERSION.nupkg\$" SHA256SUMS > package.sha256
+          test -s package.sha256
+          sha256sum -c package.sha256
+      - name: The package is whole (every runtime, licence, readme, documentation)
+        run: python3 tools/release/check_nupkg.py "dist/Siaara.$VERSION.nupkg" --version "$VERSION" --require-all-rids
+      - name: Push to the feed
+        env:
+          NUGET_TOKEN: ${{ github.token }}
+        run: |
+          dotnet nuget push "dist/Siaara.$VERSION.nupkg" \
+            --source "https://nuget.pkg.github.com/${GITHUB_REPOSITORY_OWNER}/index.json" \
+            --api-key "$NUGET_TOKEN"

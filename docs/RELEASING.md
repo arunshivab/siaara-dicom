@@ -164,6 +164,25 @@ The `draft-release` job merges the checksum files into `SHA256SUMS` (archives, S
 NuGet package), verifies them, takes the release notes from the topmost section of `CHANGELOG.md`
 and runs `gh release create --draft --verify-tag` with every file attached.
 
+## The package feed (GitHub Packages)
+
+`.github/workflows/publish-package.yml` runs when a maintainer **publishes** the draft release.
+It downloads `Siaara.<version>.nupkg` and `SHA256SUMS` from that release, checks the package
+against the checksum and with `check_nupkg.py --require-all-rids`, and pushes it unchanged to
+`https://nuget.pkg.github.com/<owner>/index.json`. Nothing reaches the feed before the draft was
+reviewed and published. It can also be run by hand for an existing release (`workflow_dispatch`,
+input: the tag).
+
+- A package version on the feed cannot be overwritten. A wrong one is deleted on the package's
+  page (owner only) before the corrected one is pushed - and a version that a product already
+  restored should get a new number instead.
+- The package belongs to the owner's account and is tied to this repository by the repository
+  URL inside it. Who may read it is set on the package's page (Package settings: visibility,
+  "Manage access"); check it after the first push and after the repository's visibility changes.
+- Consumers need a personal access token with `read:packages` (docs/GETTING_STARTED.md,
+  section 6). Storage and data transfer of private packages count against the account's
+  GitHub Packages allowance.
+
 ## Verifying a release
 
     sha256sum -c SHA256SUMS

@@ -10,6 +10,10 @@
     <Title>SIAARA DICOM Toolkit</Title>
     <Description>SIAARA DICOM Toolkit for .NET: Part 10 files, pixel data and codecs, character sets, DIMSE services (SCU and SCP), DICOMweb, local store, de-identification. Managed bindings over the native library, which is in this package under runtimes/&lt;rid&gt;/native. No package dependencies.</Description>
     <PackageTags>dicom;medical-imaging;pacs;dicomweb</PackageTags>
+    <!-- The feed of the package is GitHub Packages (.github/workflows/publish-package.yml): the
+         repository URL in the package is what ties it to this repository and its access rights. -->
+    <RepositoryUrl>https://github.com/arunshivab/siaara-dicom</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <PackageOutputPath>$(MSBuildThisFileDirectory)../../artifacts/packages</PackageOutputPath>
     <!-- Proprietary: the licence is the LICENSE file of the repository, shipped in the package.
          There is no SPDX expression for it, so PackageLicenseExpression is not used. -->
