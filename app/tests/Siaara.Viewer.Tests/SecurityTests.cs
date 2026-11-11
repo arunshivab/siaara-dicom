@@ -571,7 +571,8 @@ internal static partial class SecurityTests
             var ids = new OpaqueIds();
             string id = ids.For("1.2.840.99.1");
             T.Eq(id.Length, 32);
-            T.Check(id.All(char.IsAsciiHexDigit) && !id.Contains("840", StringComparison.Ordinal));
+            // (A random hex id may contain any digits, also by chance "840": what matters is that it has no dot, so no UID.)
+            T.Check(id.All(char.IsAsciiHexDigit) && !id.Contains('.', StringComparison.Ordinal));
             T.Eq(ids.For("1.2.840.99.1"), id);
             T.Check(ids.For("1.2.840.99.2") != id);
             T.Eq(ids.Resolve(id), "1.2.840.99.1");
