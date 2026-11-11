@@ -444,7 +444,7 @@ What you get back, and what to show:
 | not DICOM | no "DICM" header | a plain attachment |
 | no image | SR, RT Structure Set, encapsulated PDF, DICOMDIR and other objects without pixel data | the caption |
 | cannot preview | pixel data the toolkit does not decode: MPEG-2 / MPEG-4 / HEVC video, JPEG XL - the reason names the transfer syntax | the caption and the reason |
-| too large | a limit above was reached; nothing was decoded | the caption if there is one |
+| too large | a limit above was reached; there is no picture | the caption if there is one |
 | damaged | DICOM, but the file or its pixel data cannot be read | the caption if there is one |
 
 Things to know:
@@ -463,12 +463,16 @@ Things to know:
   (`tests/test_rc1_preview_alloc.cpp`: mutated and truncated files, decompression and deflate
   bombs, a million claimed frames, element and nesting bombs, the huge 1-bit and 8-bit frames)
   holds each preview to a memory budget; it cannot promise a time.
-- **What the memory limit of the worker has to allow**: reading a deflated file needs up to three
-  times its inflated size while it inflates, and never more than twice `MaxInflatedSize` (the
-  buffer grows by doubling; measured with the recommended 128 MiB: 187 MiB for a data set of
-  63 MiB, 227 MiB for one of 100 MiB and for a deflate bomb that is refused at the limit). After
-  that comes `FrameMemoryBudget` for a frame. About 600 MiB is a safe limit for the recommended
-  settings.
+- **What the memory limit of the worker has to allow**: while a deflated file inflates, the
+  bytes in use are at most twice `MaxInflatedSize`, but the memory the process holds is higher,
+  because the freed growth steps of the buffer stay in the process heap: about three times the
+  limit (measured on Linux with the recommended 128 MiB: about 380 MiB resident, both for a data
+  set of 127 MiB and for a deflate bomb that is refused at the limit). After that comes
+  `FrameMemoryBudget` for a frame. Give the worker about 1 GiB with the recommended settings
+  (the C path alone peaked at 385 MiB; the .NET runtime needs room on top).
+- A limit in `DicomPreviewOptions` must be greater than zero: `Create` throws
+  `ArgumentOutOfRangeException` for a zeroed or negative limit instead of reading without it.
+  `TransferSyntaxUid` in the result is digits and dots or empty, whatever the file says.
 - The caption fields are text from the file. Escape them before they go into HTML
   (`DicomAttachmentPreview.HtmlEscape`).
 - Colour, palette colour, signed and 12 / 16-bit images, MONOCHROME1 and the file's window are

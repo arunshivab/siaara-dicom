@@ -23,7 +23,7 @@ public enum DicomPreviewOutcome
     NoPixelData,
     /// <summary>Pixel data the toolkit cannot decode: video, JPEG XL ... (Reason names it).</summary>
     Unsupported,
-    /// <summary>A limit was reached: nothing was decoded (Reason names it).</summary>
+    /// <summary>A limit was reached: there is no picture (Reason names the limit).</summary>
     TooLarge,
     /// <summary>DICOM, but the file or its pixel data cannot be read.</summary>
     Damaged,
@@ -46,8 +46,9 @@ public sealed record DicomPreviewOptions
     /// <summary>Most elements and sequence items read (millions of tiny elements). Default 200,000.</summary>
     public long MaxElements { get; init; } = 200_000;
     /// <summary>Largest inflated size of a deflated data set (a deflate bomb). Default 128 MiB. While a data set
-    /// inflates, the memory in use is up to three times its inflated size and at most twice this limit (measured
-    /// with 128 MiB: 187 MiB for 63 MiB of data, 227 MiB when the limit is reached).</summary>
+    /// inflates, the process can hold about three times this limit (measured with 128 MiB on Linux: about 380 MiB
+    /// resident, both for 127 MiB of data and for a deflate bomb refused at the limit; freed growth steps stay in
+    /// the process heap). Give the preview worker about 1 GiB.</summary>
     public long MaxInflatedSize { get; init; } = 128L << 20;
     /// <summary>Largest decoded frame (huge Rows x Columns): a larger one is refused before anything is decoded. Default 64 MiB.</summary>
     public long MaxFrameBytes { get; init; } = 64L << 20;
@@ -102,7 +103,50 @@ public sealed record DicomPreviewOptions
     /// <summary>The read options these limits stand for: the toolkit's preset for untrusted input. Every limit is
     /// set explicitly: nothing is left to defaults meant for trusted local files. Use it for your own reads of
     /// untrusted bytes too (<c>DicomFile.Open(bytes, DicomPreviewOptions.Recommended.ToReadOptions())</c>).</summary>
-    public DicomReadOptions ToReadOptions(bool headerOnly = false) => new()
+    /// <exception cref="ArgumentOutOfRangeException">A limit is zero or negative. (To the library below, 0
+    /// means "the default for trusted files"; a zeroed limit must not silently become that.)</exception>
+    public DicomReadOptions ToReadOptions(bool headerOnly = false)
+    {
+        Validate();
+        return ReadOptionsUnchecked(headerOnly);
+    }
+
+    /// <summary>Throws <see cref="ArgumentOutOfRangeException"/> when a limit is zero or negative.
+    /// <c>MaxStripFrames</c> may be 0 (no strip) and <c>MaxCaptionLength</c> may be 0 (empty captions).</summary>
+    public void Validate()
+    {
+        Positive(MaxAttachmentBytes, nameof(MaxAttachmentBytes));
+        Positive(MaxBox, nameof(MaxBox));
+        Positive(StripBox, nameof(StripBox));
+        Positive(MaxDepth, nameof(MaxDepth));
+        Positive(MaxElements, nameof(MaxElements));
+        Positive(MaxInflatedSize, nameof(MaxInflatedSize));
+        Positive(MaxFrameBytes, nameof(MaxFrameBytes));
+        Positive(FrameMemoryBudget, nameof(FrameMemoryBudget));
+        Positive(MaxPixels, nameof(MaxPixels));
+        Positive(MaxTotalPixels, nameof(MaxTotalPixels));
+        Positive(MaxScans, nameof(MaxScans));
+        Positive(MaxCropFactor, nameof(MaxCropFactor));
+        Positive(MaxValueBytes, nameof(MaxValueBytes));
+        if (MaxStripFrames < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxStripFrames), MaxStripFrames, "a preview limit cannot be negative");
+        }
+        if (MaxCaptionLength < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxCaptionLength), MaxCaptionLength, "a preview limit cannot be negative");
+        }
+    }
+
+    private static void Positive(long value, string name)
+    {
+        if (value <= 0)
+        {
+            throw new ArgumentOutOfRangeException(name, value, "a preview limit must be greater than zero");
+        }
+    }
+
+    private DicomReadOptions ReadOptionsUnchecked(bool headerOnly) => new()
     {
         AllowRawDataset = false,          // Part 10 only
         Strict = false,                   // lenient: real-world files are rarely perfect ...
@@ -180,6 +224,7 @@ public static class DicomAttachmentPreview
     public static DicomPreview Create(ReadOnlySpan<byte> data, DicomPreviewOptions? options = null)
     {
         DicomPreviewOptions limits = options ?? DicomPreviewOptions.Recommended;
+        limits.Validate();  // the caller's options, not the input: a zeroed limit is an error, not "no limit"
         if (data.Length > limits.MaxAttachmentBytes)
         {
             return new DicomPreview { Outcome = DicomPreviewOutcome.TooLarge, Reason = "the attachment is larger than the preview limit" };
@@ -199,6 +244,30 @@ public static class DicomAttachmentPreview
         {
             return new DicomPreview { Outcome = Classify(e, opening: true), Reason = e.NativeMessage };
         }
+        catch (Exception e) when (e is OverflowException or ArgumentException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            // Whatever the bytes are, the answer is an outcome and never an exception.
+            return new DicomPreview { Outcome = DicomPreviewOutcome.Damaged, Reason = "the file could not be previewed" };
+        }
+    }
+
+    /// <summary>A transfer syntax UID as far as it is one: digits and dots, at most 64 characters; else "". The
+    /// file meta is text from the file like any other, and a field called "UID" is the one most likely to be
+    /// trusted.</summary>
+    private static string CleanUid(string? uid)
+    {
+        if (string.IsNullOrEmpty(uid) || uid.Length > 64)
+        {
+            return "";
+        }
+        foreach (char c in uid)
+        {
+            if (c != '.' && (c < '0' || c > '9'))
+            {
+                return "";
+            }
+        }
+        return uid;
     }
 
     private static DicomPreview FromFile(DicomFile file, DicomPreviewOptions limits)
@@ -208,7 +277,7 @@ public static class DicomAttachmentPreview
             DicomReadReport report = file.ReadReport;
             // Safe header fields only.
             DicomDataset ds = file.Dataset;
-            string ts = file.TransferSyntaxUid;
+            string ts = CleanUid(file.TransferSyntaxUid);
             var preview = new DicomPreview
             {
                 Incomplete = !report.IsComplete,
@@ -217,7 +286,7 @@ public static class DicomAttachmentPreview
                 StudyDate = Text(ds, DicomTags.StudyDate, limits),
                 SeriesDescription = Text(ds, DicomTags.SeriesDescription, limits),
                 TransferSyntaxUid = ts,
-                TransferSyntaxName = TransferSyntaxInfo.Get(ts)?.Name ?? "",
+                TransferSyntaxName = ts.Length == 0 ? "" : TransferSyntaxInfo.Get(ts)?.Name ?? "",
             };
             try
             {
@@ -257,6 +326,7 @@ public static class DicomAttachmentPreview
     public static (string Name, string Id)? ReadPatientFields(ReadOnlySpan<byte> data, DicomPreviewOptions? options = null)
     {
         DicomPreviewOptions limits = options ?? DicomPreviewOptions.Recommended;
+        limits.Validate();
         if (data.Length > limits.MaxAttachmentBytes || data.Length < 132 || !data.Slice(128, 4).SequenceEqual("DICM"u8))
         {
             return null;
@@ -420,7 +490,12 @@ public static class DicomAttachmentPreview
             return preview;
         }
         int tw = done[0].Width, th = done[0].Height;
-        var strip = new byte[tw * tiles * th * 4];  // tiles not reached stay transparent
+        long stripBytes = (long)tw * tiles * th * 4;
+        if (stripBytes <= 0 || stripBytes > limits.FrameMemoryBudget || stripBytes > int.MaxValue)
+        {
+            return preview;  // a strip that does not fit the budget is left out; the main picture stays
+        }
+        var strip = new byte[stripBytes];  // tiles not reached stay transparent
         for (int t = 0; t < done.Count; t++)
         {
             for (int y = 0; y < th; y++)

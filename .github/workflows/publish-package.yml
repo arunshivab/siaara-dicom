@@ -48,10 +48,11 @@ jobs:
           global-json-file: global.json
       - name: The tag is a release tag
         run: |
-          case "$RELEASE_TAG" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "not a release tag: $RELEASE_TAG"; exit 1 ;;
-          esac
+          # One line, exactly vX.Y.Z or vX.Y.Z-rc.N: nothing else may reach GITHUB_ENV.
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?' \
+             || [ "$(printf '%s' "$RELEASE_TAG" | wc -l)" != "0" ]; then
+            echo "not a release tag"; exit 1
+          fi
           echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
       - name: Download the package and the checksums of the release
         env:
@@ -64,7 +65,8 @@ jobs:
       - name: The package is the one the release lists
         run: |
           cd dist
-          grep " Siaara.$VERSION.nupkg\$" SHA256SUMS > package.sha256
+          grep -F " Siaara.$VERSION.nupkg" SHA256SUMS > package.sha256
+          test "$(wc -l < package.sha256)" = "1"
           test -s package.sha256
           sha256sum -c package.sha256
       - name: The package is whole (every runtime, licence, readme, documentation)

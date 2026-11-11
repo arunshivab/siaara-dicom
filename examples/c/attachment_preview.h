@@ -98,7 +98,7 @@ enum {
     PREVIEW_NOT_DICOM = 1,     /* the bytes are not a DICOM Part 10 file */
     PREVIEW_NO_PIXEL_DATA = 2, /* a DICOM object without an image: SR, RT Structure Set, encapsulated PDF, DICOMDIR ... */
     PREVIEW_UNSUPPORTED = 3,   /* pixel data the toolkit cannot decode: video, JPEG XL ... (reason names it) */
-    PREVIEW_TOO_LARGE = 4,     /* a limit was reached: nothing was decoded (reason names it) */
+    PREVIEW_TOO_LARGE = 4,     /* a limit was reached: no picture (reason names it) */
     PREVIEW_DAMAGED = 5        /* DICOM, but the file or its pixel data cannot be read */
 };
 
@@ -350,6 +350,17 @@ static int preview_attachment(const uint8_t* data, size_t size, const preview_li
     preview_text(ds, 0x0008103Eu, lim, out->series_description, sizeof out->series_description); /* Series Description */
     if (siaara_file_transfer_syntax(file, out->transfer_syntax, sizeof out->transfer_syntax, &needed) != SIAARA_OK)
         out->transfer_syntax[0] = '\0';
+    /* The file meta is text from the file like any other: a UID is digits and dots, at most 64, or nothing. */
+    {
+        size_t i = 0;
+        for (; out->transfer_syntax[i] != '\0'; ++i) {
+            const char c = out->transfer_syntax[i];
+            if (i >= 64 || (c != '.' && (c < '0' || c > '9'))) {
+                out->transfer_syntax[0] = '\0';
+                break;
+            }
+        }
+    }
     memset(&tsi, 0, sizeof tsi);
     tsi.struct_size = sizeof tsi;
     if (siaara_transfer_syntax_info_get(out->transfer_syntax, strlen(out->transfer_syntax), &tsi) == SIAARA_OK && tsi.name)

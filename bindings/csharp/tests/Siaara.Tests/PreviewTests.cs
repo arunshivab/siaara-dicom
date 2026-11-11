@@ -267,6 +267,65 @@ internal static class PreviewTests
             CheckEq(DicomAttachmentPreview.HtmlEscape("<a href=\"x\">&</a>"), "&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;");
         });
 
+        Case("preview: a zeroed limit is an error, not 'no limit'; the transfer syntax is a UID or empty; a huge strip is left out", () =>
+        {
+            byte[] data = MultiFrame();
+            DicomPreviewOptions o = DicomPreviewOptions.Recommended;
+            DicomPreviewOptions[] bad =
+            {
+                o with { MaxElements = 0 }, o with { MaxInflatedSize = 0 }, o with { FrameMemoryBudget = 0 },
+                o with { MaxScans = 0 }, o with { MaxCropFactor = 0 }, o with { MaxDepth = 0 },
+                o with { MaxPixels = 0 }, o with { MaxFrameBytes = -1 }, o with { MaxTotalPixels = 0 },
+                o with { MaxValueBytes = 0 }, o with { MaxBox = 0 }, o with { StripBox = 0 },
+                o with { MaxAttachmentBytes = 0 }, o with { MaxStripFrames = -1 }, o with { MaxCaptionLength = -1 },
+            };
+            foreach (DicomPreviewOptions b in bad)
+            {
+                bool threw = false;
+                try
+                {
+                    DicomAttachmentPreview.Create(data, b);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    threw = true;
+                }
+                Check(threw);
+                threw = false;
+                try
+                {
+                    DicomAttachmentPreview.ReadPatientFields(data, b);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    threw = true;
+                }
+                Check(threw);
+            }
+            // 0 is a value of these two: no strip, empty captions.
+            DicomPreview quiet = DicomAttachmentPreview.Create(data, o with { MaxStripFrames = 0, MaxCaptionLength = 0 });
+            CheckEq(quiet.Outcome, DicomPreviewOutcome.Ok);
+            Check(quiet.Strip is null);
+            CheckEq(quiet.SeriesDescription, "");
+
+            // A file meta whose Transfer Syntax UID is markup of the same length: never passed on.
+            byte[] uid = Encoding.ASCII.GetBytes("1.2.840.10008.1.2.1\0");
+            byte[] evil = Encoding.ASCII.GetBytes("1.2<img src=x on=a>\0");
+            CheckEq(uid.Length, evil.Length);
+            byte[] hostile = (byte[])data.Clone();
+            int at = hostile.AsSpan().IndexOf(uid);
+            Require(at > 132);
+            evil.CopyTo(hostile, at);
+            DicomPreview h = DicomAttachmentPreview.Create(hostile);
+            CheckEq(h.TransferSyntaxUid, "");
+            CheckEq(h.TransferSyntaxName, "");
+            CheckEq(DicomAttachmentPreview.Create(data).TransferSyntaxUid, "1.2.840.10008.1.2.1");
+
+            // Strip settings whose size does not fit an array or the budget: the strip is left out, no exception.
+            DicomPreview wide = DicomAttachmentPreview.Create(data, o with { MaxStripFrames = int.MaxValue, StripBox = int.MaxValue });
+            CheckEq(wide.Outcome, DicomPreviewOutcome.Ok);
+        });
+
         Case("preview: patient identifiers only on request", () =>
         {
             byte[] data = MultiFrame();
