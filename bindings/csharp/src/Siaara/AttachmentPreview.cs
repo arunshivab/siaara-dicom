@@ -45,7 +45,9 @@ public sealed record DicomPreviewOptions
     public int MaxDepth { get; init; } = 16;
     /// <summary>Most elements and sequence items read (millions of tiny elements). Default 200,000.</summary>
     public long MaxElements { get; init; } = 200_000;
-    /// <summary>Largest inflated size of a deflated data set (a deflate bomb). Default 128 MiB.</summary>
+    /// <summary>Largest inflated size of a deflated data set (a deflate bomb). Default 128 MiB. While a data set
+    /// inflates, the memory in use is up to three times its inflated size and at most twice this limit (measured
+    /// with 128 MiB: 187 MiB for 63 MiB of data, 227 MiB when the limit is reached).</summary>
     public long MaxInflatedSize { get; init; } = 128L << 20;
     /// <summary>Largest decoded frame (huge Rows x Columns): a larger one is refused before anything is decoded. Default 64 MiB.</summary>
     public long MaxFrameBytes { get; init; } = 64L << 20;

@@ -125,8 +125,11 @@ Stated plainly, so that nobody finds them by surprise.
   (`max_scans` / `MaxScans` caps the scans; the preview uses 64). Previews and any other decode
   of untrusted input must run in a **separate process with a kill timer and a memory limit**;
   a thread cannot be abandoned. (A cancel token and a deadline for decodes are planned.)
-- **Inflating needs up to twice `max_inflated_size`** while a deflated data set is read (the
-  output buffer grows by doubling); size the memory limit of a preview worker for it.
+- **Inflating needs up to three times the inflated size, and up to twice `max_inflated_size`**,
+  while a deflated data set is read: the output buffer grows by doubling, and the old and the
+  new buffer exist together for a moment. Measured with a limit of 128 MiB: 187 MiB for a data
+  set of 63 MiB, 227 MiB for one of 100 MiB or for a stream that is refused at the limit. Size
+  the memory limit of a preview worker for it.
 - **A header-only open reads the whole file in the default open mode.** With
   `SIAARA_OPEN_AUTO`, `stop_before_pixel_data` still brings a file of up to 256 MiB into memory
   before it is parsed. For header-only scans of your own files use `SIAARA_OPEN_MAP`.

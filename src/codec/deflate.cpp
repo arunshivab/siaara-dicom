@@ -348,6 +348,10 @@ private:
         if (!checked_add(max_out_, kSlack, cap_limit)) cap_limit = UINT64_MAX;
         want = std::max(want, std::min(grown, cap_limit));
         try {
+            // Exactly `want`: a bare resize() lets the vector round the new capacity up to twice
+            // its size, past the cap. While it grows the old and the new buffer exist together:
+            // at most 3 x the output so far, and never more than 2 x (max_out_ + kSlack).
+            out_.reserve(static_cast<std::size_t>(want));
             out_.resize(static_cast<std::size_t>(want));
         } catch (const std::bad_alloc&) {
             return Status(Errc::OutOfMemory, "deflate: cannot allocate output buffer");

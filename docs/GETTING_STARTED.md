@@ -463,9 +463,12 @@ Things to know:
   (`tests/test_rc1_preview_alloc.cpp`: mutated and truncated files, decompression and deflate
   bombs, a million claimed frames, element and nesting bombs, the huge 1-bit and 8-bit frames)
   holds each preview to a memory budget; it cannot promise a time.
-- **What the memory limit of the worker has to allow**: reading a deflated file needs up to twice
-  `MaxInflatedSize` while it inflates (256 MiB with the recommended value), then
-  `FrameMemoryBudget` for a frame. About 600 MiB is a safe limit for the recommended settings.
+- **What the memory limit of the worker has to allow**: reading a deflated file needs up to three
+  times its inflated size while it inflates, and never more than twice `MaxInflatedSize` (the
+  buffer grows by doubling; measured with the recommended 128 MiB: 187 MiB for a data set of
+  63 MiB, 227 MiB for one of 100 MiB and for a deflate bomb that is refused at the limit). After
+  that comes `FrameMemoryBudget` for a frame. About 600 MiB is a safe limit for the recommended
+  settings.
 - The caption fields are text from the file. Escape them before they go into HTML
   (`DicomAttachmentPreview.HtmlEscape`).
 - Colour, palette colour, signed and 12 / 16-bit images, MONOCHROME1 and the file's window are

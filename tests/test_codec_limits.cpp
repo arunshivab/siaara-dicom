@@ -720,3 +720,39 @@ TEST_CASE("codec limits/R-201 siaara_read_options.max_crop_factor: 1 refuses a c
     const Buf exact = part10_with_codestream(30, 32, "1.2.840.10008.1.2.4.80", jls);
     CHECK(decode_with(exact, 0, 1, 30 * 32) == SIAARA_OK);
 }
+
+// Testing verdict T4: what inflating costs. The output buffer grows by doubling, and while it
+// grows the old and the new buffer exist together: up to 3 x the inflated size, and - the bound
+// that matters for untrusted input - never more than 2 x the limit (it was 2.3 x: the vector
+// rounded the last step up past the limit).
+TEST_CASE("codec limits/T4 inflating stays below twice max_output, whatever the stream inflates to") {
+    constexpr std::size_t kLimit = std::size_t{24} << 20;
+    for (const std::size_t mb : {std::size_t{11}, std::size_t{19}, std::size_t{24}, std::size_t{25}, std::size_t{200}}) {
+        Buf packed;
+        {
+            const Buf zeros(mb << 20, 0);
+            REQUIRE(deflate_raw(zeros.data(), zeros.size(), 6, packed).is_ok());
+        }
+        Buf out;
+        Status s;
+        std::size_t peak = 0;
+        bool refused = true;
+        {
+            siaara_test::AllocGuard guard(2 * kLimit + (std::size_t{1} << 20));
+            s = inflate_raw(packed.data(), packed.size(), kLimit, out);
+            peak = guard.peak();
+            refused = guard.refused();
+        }
+        std::printf("  inflate %zu MiB of zeros (%zu bytes deflated), limit 24 MiB: %s, peak %.1f MiB\n", mb, packed.size(),
+                    s.is_ok() ? "ok" : "refused", static_cast<double>(peak) / (1 << 20));
+        CHECK(!refused);
+        CHECK(peak < 2 * kLimit + (std::size_t{1} << 20));
+        if (mb <= 24) {
+            CHECK(s.is_ok());
+            CHECK_EQ(out.size(), mb << 20);
+            CHECK(peak <= 3 * (mb << 20) + (std::size_t{1} << 20));
+        } else {
+            CHECK_EQ(s.code, Errc::LimitExceeded);
+        }
+    }
+}
