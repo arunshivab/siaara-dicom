@@ -627,8 +627,9 @@ TEST_CASE("rc2 R-196: stale temporary files of an interrupted quarantine write a
         return p;
     };
     const std::vector<std::uint8_t> a = small_part10("2.25.196001");
-    CHECK_EQ(store::QuarantineLimits{}.stale_temp_after_minutes, store::kDefaultQuarantineStaleTempMinutes);
-    CHECK_EQ(store::kDefaultQuarantineStaleTempMinutes, 60);
+    static_assert(store::kDefaultQuarantineStaleTempMinutes == 60);
+    const store::QuarantineLimits defaults;
+    CHECK_EQ(defaults.stale_temp_after_minutes, store::kDefaultQuarantineStaleTempMinutes);
     {
         // The option off: nothing is touched.
         const auto old_file = touch(".siaara-tmp-0123456789abcdef.part", 600);

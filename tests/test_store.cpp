@@ -739,8 +739,9 @@ TEST_CASE("store: verify finds missing, changed and orphan files; repair fixes t
         fs::last_write_time(root / "data" / "00" / "00" / "x.dcm.123.siaara-tmp",
                             fs::file_time_type::clock::now() - std::chrono::hours(3), tec);
         store_synth::write_bytes(root / "data" / "incoming.dcm.456.siaara-tmp", {1});
-        CHECK_EQ(StoreOptions{}.stale_temp_after_minutes, StoreOptions::kDefaultStaleTempMinutes);
-        CHECK_EQ(StoreOptions::kDefaultStaleTempMinutes, 60);
+        static_assert(StoreOptions::kDefaultStaleTempMinutes == 60);
+        const StoreOptions defaults;
+        CHECK_EQ(defaults.stale_temp_after_minutes, StoreOptions::kDefaultStaleTempMinutes);
     }
     rep = st->verify(false, false);
     REQUIRE(rep.is_ok());
