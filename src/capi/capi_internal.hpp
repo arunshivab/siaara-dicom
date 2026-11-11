@@ -3,7 +3,9 @@
 // and capi_misc.cpp hold the additions for the viewer / PACS application (branch wip-capi).
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -39,6 +41,21 @@ void fill_dict_entry(const dict::Entry& e, siaara_dict_entry* out);
 bool pixel_value_sized(const siaara_pixel_value* out) noexcept;
 void fill_pixel_value(const modules::PixelValue& v, uint32_t frame, uint32_t column, uint32_t row, uint32_t sample,
                       siaara_pixel_value* out);
+
+// Options structs that grow (security note R-081). A caller built against an older siaara.h
+// passes the struct_size of the version it knows: every struct_size from the size of the first
+// published version (first_size) upward is accepted, and only the fields the caller's size covers
+// are read. sized_options copies the caller's struct_size bytes (at most sizeof(T)) into a zeroed
+// T, so a field the caller's struct does not have reads as 0, which every appended field defines
+// as its default. Returns false (nothing copied) when in->struct_size < first_size.
+template <class T>
+bool sized_options(const T* in, std::size_t first_size, T& out) noexcept {
+    out = T{};
+    if (!in || in->struct_size < first_size) return false;
+    std::memcpy(&out, in, std::min<std::size_t>(in->struct_size, sizeof(T)));
+    out.struct_size = static_cast<std::uint32_t>(sizeof(T));
+    return true;
+}
 
 // Number of live C API handles (siaara_debug_live_handles). Each handle struct holds one
 // LiveHandle member, so every allocation and free is counted without touching the functions.

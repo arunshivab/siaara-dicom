@@ -893,23 +893,42 @@ typedef struct siaara_dicomdir_entry {
     int32_t parent;                /* parent record index, -1 at the root */
     uint32_t depth;
     int32_t in_use;
-    siaara_status file_status;     /* OK, SIAARA_ERR_REJECTED (unsafe File ID) or _NOT_FOUND */
+    siaara_status file_status;     /* OK, SIAARA_ERR_REJECTED (unsafe File ID) or _NOT_FOUND
+                                      (siaara_dicomdir_read_memory: OK or _REJECTED only) */
     uint64_t offset;               /* file offset of the record */
 } siaara_dicomdir_entry;
 
 /* keys holds the record's keys plus those inherited from its ancestors; SIAARA_IDX_RECORD_TYPE,
- * and SIAARA_IDX_FILE_PATH = resolved absolute path of the referenced file (if any).
+ * and SIAARA_IDX_FILE_PATH = resolved absolute path of the referenced file (if any;
+ * siaara_dicomdir_read). siaara_dicomdir_read_memory puts the Referenced File ID there instead,
+ * as text: its components joined with '/' (for example "DICOM/P0000001/S0000001/I0000001"),
+ * never resolved to a path. entry, keys and strings are valid during the call only.
  * Return 0 to continue, non-zero to stop (SIAARA_ERR_CANCELLED). */
 typedef int32_t (SIAARA_CALL* siaara_dicomdir_callback)(void* user, const siaara_dicomdir_entry* entry,
                                                         const siaara_index_record* keys, const char* strings);
 
 typedef struct siaara_dicomdir_read_options {
-    uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_read_options) */
+    uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_read_options); the size of the
+                                      first version (20 bytes, without max_records and max_bytes)
+                                      is accepted too: fields past struct_size keep their defaults */
     int32_t include_inactive;      /* 0/1 */
-    int32_t resolve_files;         /* 0/1, default 1 */
-    int32_t case_insensitive;      /* 0/1, default 1 */
+    int32_t resolve_files;         /* 0/1, default 1 (siaara_dicomdir_read only) */
+    int32_t case_insensitive;      /* 0/1, default 1 (siaara_dicomdir_read only) */
     uint32_t max_depth;            /* 0 = default (16) */
+    uint32_t reserved0;            /* set to 0 */
+    /* Appended; read only when struct_size covers them.
+     *   max_records: the most records the DICOMDIR may hold and the most record visits the walk
+     *     of its links may make (a link refused because it leads to a record already visited
+     *     counts too); more is SIAARA_ERR_LIMIT_EXCEEDED. siaara_dicomdir_read: 0 = no limit.
+     *     siaara_dicomdir_read_memory: 0 = SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS.
+     *   max_bytes: the largest DICOMDIR, in bytes; a larger one is SIAARA_ERR_LIMIT_EXCEEDED before
+     *     it is parsed. siaara_dicomdir_read: 0 = no limit. siaara_dicomdir_read_memory: 0 =
+     *     SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES. */
+    uint64_t max_records;
+    uint64_t max_bytes;
 } siaara_dicomdir_read_options;
+#define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS 100000u
+#define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES 67108864u /* 64 MiB */
 
 typedef struct siaara_dicomdir_summary {
     uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_summary) */
@@ -928,6 +947,28 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* utf8_path,
                                                           const siaara_dicomdir_read_options* options,
                                                           siaara_dicomdir_callback cb, void* user,
                                                           siaara_dicomdir_summary* summary);
+
+/* A DICOMDIR held in memory (for example a member of a ZIP that came by mail): `size` bytes at
+ * `data`, only read during the call. Never touches the disk. The bytes are UNTRUSTED input and are
+ * read with the attachment preview's limits: Part 10 only (preamble and "DICM"), no overlong-length
+ * recovery, sequence nesting 16, 200,000 elements and items, a deflated data set inflates to at
+ * most 128 MiB (more is SIAARA_ERR_LIMIT_EXCEEDED), and the record limits of `options`
+ * (max_records, max_bytes: their defaults apply when 0 or when options is NULL). Note that
+ * 200,000 elements bound a DICOMDIR to some 20,000 records before max_records is reached.
+ * Record links are followed only to offsets where a record starts; a record reached a second
+ * time (a cycle, or a record two parents point at) is not visited again (a warning), and the
+ * hierarchy is cut at max_depth.
+ * Referenced File IDs are never resolved: the File ID comes as text in SIAARA_IDX_FILE_PATH
+ * (components joined with '/'), with file_status SIAARA_OK when it is well formed (PS3.10 8.5:
+ * 1 to 8 components of upper-case A-Z, 0-9 and '_') and SIAARA_ERR_REJECTED otherwise ("..",
+ * an absolute path, a drive letter, more than 8 components, any other character). There is no
+ * SIAARA_ERR_NOT_FOUND. summary->files counts the well-formed File IDs, rejected_paths the
+ * others; missing_files stays 0. resolve_files and case_insensitive are not used. options and
+ * summary may be NULL. */
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read_memory(const uint8_t* data, size_t size,
+                                                                 const siaara_dicomdir_read_options* options,
+                                                                 siaara_dicomdir_callback cb, void* user,
+                                                                 siaara_dicomdir_summary* summary);
 
 enum { SIAARA_PROFILE_GENERAL_CD = 0, SIAARA_PROFILE_GENERAL_USB = 1 };
 

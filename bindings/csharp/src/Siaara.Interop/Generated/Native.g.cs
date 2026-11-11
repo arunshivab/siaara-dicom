@@ -14,6 +14,8 @@ internal static class C
     public const int SIAARA_INDEX_MAX_STRINGS = 32;
     public const uint SIAARA_AREA_SENDER_SHARE_DEFAULT = 0u;
     public const uint SIAARA_QUERY_NO_TOTAL = 1u;
+    public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS = 100000u;
+    public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES = 67108864u;
     public const uint SIAARA_DEID_ALL_FRAMES = 0xFFFFFFFFu;
     public const uint SIAARA_SORT_EXPAND_FRAMES = 1u;
     public const int SIAARA_OFFSET_TABLE_AUTO = 0;
@@ -899,6 +901,9 @@ internal struct siaara_dicomdir_read_options
     public int resolve_files;
     public int case_insensitive;
     public uint max_depth;
+    public uint reserved0;
+    public ulong max_records;
+    public ulong max_bytes;
 }
 
 /// <summary>siaara_dicomdir_summary (blittable, C layout).</summary>
@@ -2260,6 +2265,10 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dicomdir_read(byte* utf8_path, nuint path_len, siaara_dicomdir_read_options* options, delegate* unmanaged[Cdecl]<void*, siaara_dicomdir_entry*, siaara_index_record*, byte*, int> cb, void* user, siaara_dicomdir_summary* summary);
 
+    [LibraryImport(Library, EntryPoint = "siaara_dicomdir_read_memory")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_dicomdir_read_memory(byte* data, nuint size, siaara_dicomdir_read_options* options, delegate* unmanaged[Cdecl]<void*, siaara_dicomdir_entry*, siaara_index_record*, byte*, int> cb, void* user, siaara_dicomdir_summary* summary);
+
     [LibraryImport(Library, EntryPoint = "siaara_dicomdir_write")]
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_dicomdir_write(byte* utf8_root, nuint root_len, byte** files, nuint* lens, nuint count, siaara_dicomdir_write_options* options, uint* warnings);
@@ -3582,6 +3591,14 @@ internal static unsafe class Native
         fixed (siaara_dicomdir_read_options* p_options = &options)
         fixed (siaara_dicomdir_summary* p_summary = &summary)
             return Raw.siaara_dicomdir_read((byte*)p_utf8_path, (nuint)utf8_path.Length, p_options, (delegate* unmanaged[Cdecl]<void*, siaara_dicomdir_entry*, siaara_index_record*, byte*, int>)cb, (void*)user, p_summary);
+    }
+
+    internal static int siaara_dicomdir_read_memory(ReadOnlySpan<byte> data, in siaara_dicomdir_read_options options, nint cb, nint user, ref siaara_dicomdir_summary summary)
+    {
+        fixed (byte* p_data = data)
+        fixed (siaara_dicomdir_read_options* p_options = &options)
+        fixed (siaara_dicomdir_summary* p_summary = &summary)
+            return Raw.siaara_dicomdir_read_memory((byte*)p_data, (nuint)data.Length, p_options, (delegate* unmanaged[Cdecl]<void*, siaara_dicomdir_entry*, siaara_index_record*, byte*, int>)cb, (void*)user, p_summary);
     }
 
     internal static int siaara_dicomdir_write(ReadOnlySpan<byte> utf8_root, ReadOnlySpan<nint> files, ReadOnlySpan<nuint> lens, nuint count, in siaara_dicomdir_write_options options, out uint warnings)

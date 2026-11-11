@@ -726,6 +726,7 @@ void seeds_dicomdir() {
     std::ifstream in(media / "DICOMDIR", std::ios::binary);
     std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     emit("dicomdir", "dicomdir3.bin", bytes);
+    emit("dicomdir_memory", "dicomdir3.bin", bytes);
     in.close();
     fs::remove_all(root);
 }

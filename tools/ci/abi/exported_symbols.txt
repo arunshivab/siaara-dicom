@@ -41,6 +41,7 @@ siaara_debug_live_handles
 siaara_deid_replacement_uid
 siaara_deidentify
 siaara_dicomdir_read
+siaara_dicomdir_read_memory
 siaara_dicomdir_write
 siaara_dicomdir_write_ex
 siaara_dict_count
