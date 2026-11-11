@@ -369,7 +369,8 @@ string html = "<figcaption>" + DicomAttachmentPreview.HtmlEscape(p.SeriesDescrip
 ```
 
 (`preview_html_escape` in the C example; `DicomAttachmentPreview.CaptionText` cleans any other
-text from a file the same way.)
+text from a file the same way.) The cleaning is the library's (`siaara_text_display_safe`), in C#
+and in the C example alike: bytes that are not UTF-8 become U+FFFD.
 
 What the call does, step by step, with the public API (the C calls are in brackets):
 
@@ -556,7 +557,8 @@ What it does:
   bidirectional overrides, zero-width and other format characters are removed, bytes that are
   not UTF-8 become U+FFFD. The ZIP member's name is returned exactly as given, with its own
   display-safe copy (a name like `scan<U+202E>gpj.exe` shows as `scangpj.exe`). The same cleaner
-  is `siaara_text_display_safe` in C, and what `DicomAttachmentPreview.CaptionText` uses in C#.
+  is `siaara_text_display_safe` in C (the C preview example uses it), and what
+  `DicomAttachmentPreview.CaptionText` uses in C#.
   A value longer than its cap (UIDs 64 characters, other text 1,024 bytes) is not kept and is
   reported `TooLong`: never cut and passed on as if whole.
 - **Grouping keys**: a UID groups only when it is valid - `UidValidation` `Strict` (default,

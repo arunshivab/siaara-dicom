@@ -40,7 +40,9 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   version (20 bytes) as before.
 - The display-safe text cleaner of the preview is in the library: `siaara_text_display_safe`
   (controls and line separators a space, format characters removed, malformed UTF-8 U+FFFD).
-  `DicomAttachmentPreview.CaptionText` uses it (its results are unchanged).
+  `DicomAttachmentPreview.CaptionText` uses it (its results are unchanged), and so does the C
+  preview example (`examples/c/attachment_preview.h`), where a byte that is not UTF-8 now becomes
+  U+FFFD instead of '?'.
 - Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 14+ (universal).
 - Zero third-party dependencies. Reproducible archives, an SPDX 2.3 SBOM per archive, SHA-256
   checksums, build provenance attestation.

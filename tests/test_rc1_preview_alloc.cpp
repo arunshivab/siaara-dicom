@@ -857,14 +857,19 @@ TEST_CASE("rc2 R-193: a caption value of many megabytes is not decoded") {
 TEST_CASE("rc2 R-199: captions lose control and format characters; text is escaped for HTML") {
     // C0, DEL, C1 (U+0085), the line separator: a space each. RIGHT-TO-LEFT OVERRIDE (U+202E),
     // ZERO WIDTH SPACE (U+200B), the byte order mark (U+FEFF), a tag character (U+E0041): removed.
-    // Bytes that are not UTF-8: '?'. Everything else stays, four-byte characters included.
-    char text[] = "A\x01" "B\x7F" "C\xC2\x85" "D\xE2\x80\xA8" "E\xE2\x80\xAE" "gpj.exe\xE2\x80\x8B" "F\xEF\xBB\xBF"
-                  "G\xF3\xA0\x81\x81" "H\xFF" "I\xC3" " \xC3\xA9\xE0\xAE\x85\xF0\x9F\x98\x80" "\xE0\x80\x80" "Z";
-    preview_clean_text(text);
-    CHECK(std::string(text) == "A B C D Egpj.exeFGH?I? \xC3\xA9\xE0\xAE\x85\xF0\x9F\x98\x80???Z");
-    char empty[] = "";
-    preview_clean_text(empty);
+    // Bytes that are not UTF-8: U+FFFD each. Everything else stays, four-byte characters included.
+    char text[64] = "A\x01" "B\x7F" "C\xC2\x85" "D\xE2\x80\xA8" "E\xE2\x80\xAE" "gpj.exe\xE2\x80\x8B" "F\xEF\xBB\xBF"
+                    "G\xF3\xA0\x81\x81" "H\xFF" "I\xC3" " \xC3\xA9\xE0\xAE\x85\xF0\x9F\x98\x80" "\xE0\x80\x80" "Z";
+    preview_clean_caption(text, sizeof text);
+    CHECK(std::string(text) == "A B C D Egpj.exeFGH\xEF\xBF\xBDI\xEF\xBF\xBD \xC3\xA9\xE0\xAE\x85\xF0\x9F\x98\x80"
+                               "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBDZ");
+    char empty[4] = "";
+    preview_clean_caption(empty, sizeof empty);
     CHECK(empty[0] == '\0');
+    // A cleaned copy longer than the buffer is cut at a character boundary.
+    char small[6] = "a\xFF\xFF";
+    preview_clean_caption(small, sizeof small);
+    CHECK(std::string(small) == "a\xEF\xBF\xBD");
     // Through the preview: the caption of a file whose Series Description carries an override.
     ImageSpec s;
     DicomFile f = image_file(s);
@@ -893,46 +898,4 @@ TEST_CASE("rc2 R-199: captions lose control and format characters; text is escap
     CHECK(std::string(tiny) == "ab&amp;");
     CHECK_EQ(preview_html_escape("abc&d", tiny, sizeof tiny), std::size_t{3});
     CHECK(std::string(tiny) == "abc");
-}
-
-TEST_CASE("display text: the library's display-safe cleaner equals the C example's preview_clean_text on well-formed UTF-8") {
-    // examples/c/attachment_preview.h keeps its own cleaner for now: it writes '?' for a byte that
-    // is not UTF-8, the library U+FFFD (the approved rule). On well-formed UTF-8 (all the preview
-    // ever cleans: siaara_dataset_get_utf8 output) the two are the same for every code point.
-    for (std::uint32_t c = 1; c <= 0x10FFFF; ++c) {
-        if (c >= 0xD800 && c <= 0xDFFF) continue;
-        char u[8] = {0};
-        if (c < 0x80) {
-            u[0] = static_cast<char>(c);
-        } else if (c < 0x800) {
-            u[0] = static_cast<char>(0xC0 | (c >> 6));
-            u[1] = static_cast<char>(0x80 | (c & 0x3F));
-        } else if (c < 0x10000) {
-            u[0] = static_cast<char>(0xE0 | (c >> 12));
-            u[1] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-            u[2] = static_cast<char>(0x80 | (c & 0x3F));
-        } else {
-            u[0] = static_cast<char>(0xF0 | (c >> 18));
-            u[1] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
-            u[2] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-            u[3] = static_cast<char>(0x80 | (c & 0x3F));
-        }
-        char lib[16];
-        size_t needed = 0;
-        const size_t len = std::strlen(u);
-        if (siaara_text_display_safe(u, len, lib, sizeof lib, &needed) != SIAARA_OK) {
-            CHECK(false);
-            continue;
-        }
-        preview_clean_text(u);
-        if (std::strcmp(u, lib) != 0) CHECK(std::strcmp(u, lib) == 0);
-    }
-    // where they differ: a byte that is not UTF-8
-    char bad[] = "a\xFF" "b";
-    char lib[16];
-    size_t needed = 0;
-    CHECK_EQ(siaara_text_display_safe(bad, 3, lib, sizeof lib, &needed), SIAARA_OK);
-    CHECK(std::string(lib) == "a\xEF\xBF\xBD" "b");
-    preview_clean_text(bad);
-    CHECK(std::string(bad) == "a?b");
 }

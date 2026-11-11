@@ -15,7 +15,8 @@
  *     the whole preview (max_total_pixels);
  *   - the picture is rendered at a bounded size (max_box), whatever Rows and Columns claim;
  *   - a caption value longer than max_value_bytes is not decoded at all; control and format
- *     characters (bidirectional overrides, zero-width characters) are taken out of captions;
+ *     characters (bidirectional overrides, zero-width characters) are taken out of captions with
+ *     the library's display-safe cleaner (siaara_text_display_safe);
  *   - no patient identifier is read unless the caller asks (preview_patient_fields()).
  *
  * The limits bound MEMORY and the amount of work. They do not bound TIME: a decode has no
@@ -141,64 +142,27 @@ static int preview_stop(preview_result* r, int outcome, const char* reason) {
     return outcome;
 }
 
-/* Is code point c a Unicode format character (category Cf: soft hyphen, Arabic number signs,
- * zero-width characters, bidirectional marks, embeddings, overrides and isolates, the byte order
- * mark, interlinear annotation and tag characters ...)? The ranges of Unicode 16. */
-static int preview_is_format(uint32_t c) {
-    static const uint32_t ranges[][2] = {
-        {0x00AD, 0x00AD},   {0x0600, 0x0605},   {0x061C, 0x061C},   {0x06DD, 0x06DD},   {0x070F, 0x070F},
-        {0x0890, 0x0891},   {0x08E2, 0x08E2},   {0x180E, 0x180E},   {0x200B, 0x200F},   {0x202A, 0x202E},
-        {0x2060, 0x2064},   {0x2066, 0x206F},   {0xFEFF, 0xFEFF},   {0xFFF9, 0xFFFB},   {0x110BD, 0x110BD},
-        {0x110CD, 0x110CD}, {0x13430, 0x1343F}, {0x1BCA0, 0x1BCA3}, {0x1D173, 0x1D17A}, {0xE0001, 0xE0001},
-        {0xE0020, 0xE007F}};
-    size_t i;
-    for (i = 0; i < sizeof ranges / sizeof ranges[0]; ++i)
-        if (c >= ranges[i][0] && c <= ranges[i][1]) return 1;
-    return 0;
-}
-
-/* Caption text made safe to show as plain text, in place: control characters (C0, DEL, C1) and
- * the line / paragraph separators become a space, format characters are removed, bytes that are
- * not UTF-8 become '?'. The text never grows. It is still text from the file: escape it before
- * it goes into HTML. */
-static void preview_clean_text(char* text) {
-    const unsigned char* in = (const unsigned char*)text;
-    char* out = text;
-    while (*in != 0) {
-        uint32_t c = *in;
-        size_t n = 1, k;
-        if (c >= 0xF0) {
-            n = c <= 0xF4 ? 4 : 0;
-            c &= 0x07;
-        } else if (c >= 0xE0) {
-            n = 3;
-            c &= 0x0F;
-        } else if (c >= 0xC2) {
-            n = 2;
-            c &= 0x1F;
-        } else if (c >= 0x80) {
-            n = 0;
-        }
-        for (k = 1; k < n; ++k) {
-            if ((in[k] & 0xC0) != 0x80) {
-                n = 0; /* also stops at the terminating NUL */
-                break;
-            }
-            c = (c << 6) | (in[k] & 0x3Fu);
-        }
-        if (n == 0 || (n == 3 && c < 0x800) || (n == 4 && (c < 0x10000 || c > 0x10FFFF)) || (c >= 0xD800 && c <= 0xDFFF)) {
-            *out++ = '?';
-            ++in;
-            continue;
-        }
-        if (c < 0x20 || (c >= 0x7F && c <= 0x9F) || c == 0x2028 || c == 0x2029) {
-            *out++ = ' ';
-        } else if (!preview_is_format(c)) {
-            for (k = 0; k < n; ++k) *out++ = (char)in[k];
-        }
-        in += n;
+/* Caption text made safe to show as plain text, in place, with the library's cleaner
+ * (siaara_text_display_safe): control characters (C0, DEL, C1) and the line / paragraph
+ * separators become a space, format characters (bidirectional overrides, zero-width characters,
+ * the byte order mark ...) are removed, bytes that are not UTF-8 become U+FFFD. `text` holds
+ * cap bytes; a cleaned copy that does not fit is cut at a character boundary. It is still text
+ * from the file: escape it before it goes into HTML. */
+static void preview_clean_caption(char* text, size_t cap) {
+    const size_t len = strlen(text);
+    size_t needed = 0;
+    char* clean = (char*)malloc(len * 3 + 1); /* never more than 3 x the input */
+    if (!clean) {
+        text[0] = '\0';
+        return;
     }
-    *out = '\0';
+    if (siaara_text_display_safe(text, len, clean, len * 3 + 1, &needed) != SIAARA_OK) {
+        text[0] = '\0';
+    } else {
+        /* siaara_text_display_safe cuts at a character boundary itself; copy what fits */
+        (void)siaara_text_display_safe(clean, needed, text, cap, &needed);
+    }
+    free(clean);
 }
 
 /* A text attribute as UTF-8 for a caption; "" when absent, when it does not fit `cap`, or when its
@@ -211,7 +175,7 @@ static void preview_text(const siaara_dataset* ds, uint32_t tag, const preview_l
     if (siaara_dataset_get_raw(ds, tag, &raw, &stored) != SIAARA_OK || stored > lim->max_value_bytes) return;
     if (siaara_dataset_get_utf8(ds, tag, 0, out, cap, &needed) != SIAARA_OK) out[0] = '\0';
     if (lim->strip_control_and_format) {
-        preview_clean_text(out);
+        preview_clean_caption(out, cap);
     } else {
         for (i = 0; out[i] != '\0'; ++i)
             if ((unsigned char)out[i] < 0x20 || out[i] == 0x7F) out[i] = ' ';
