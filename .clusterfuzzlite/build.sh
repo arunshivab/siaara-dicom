@@ -10,7 +10,9 @@ cmake -S . -B build-oss -G Ninja \
   -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
   -DSIAARA_LIB_FUZZING_ENGINE="$LIB_FUZZING_ENGINE" \
   -DSIAARA_BUILD_TESTS=OFF -DSIAARA_BUILD_TOOLS=OFF -DSIAARA_WERROR=OFF
-targets=$(sed -n '/set(SIAARA_FUZZ_TARGETS$/,/)/p' fuzz/CMakeLists.txt | tr -d '()' | sed 's/set\|SIAARA_FUZZ_TARGETS//g')
+# The lines of set(SIAARA_FUZZ_TARGETS ...) without the first one; names are never edited
+# (removing the word "set" everywhere once turned the target charset into char).
+targets=$(sed -n '/set(SIAARA_FUZZ_TARGETS$/,/)/p' fuzz/CMakeLists.txt | sed '1d' | tr -d '()')
 for t in $targets; do
   cmake --build build-oss --target "fuzz_$t"
   cp "build-oss/fuzz/fuzz_$t" "$OUT/"
