@@ -1047,11 +1047,8 @@ struct Store::Impl {
             if (Status s = extract_index(data, rec, xo); !s) return s;
             rec.flags |= extra_flags;
         }
+        if (Status s = check_record(rec); !s) return s;
         const std::string uid = rec[Str::SopInstanceUid];
-        if (uid.empty()) return Status(Errc::Malformed, "instance has no SOP Instance UID");
-        if (uid.size() > 1024) return Status(Errc::Malformed, "SOP Instance UID is too long");
-        if (rec[Str::SopClassUid] == kMediaStorageDirectoryUid)
-            return Status(Errc::Rejected, "a DICOMDIR is not an instance");
         rec.added_time = now_seconds();
         if (mode == AddMode::Reference) {
             rec.flags |= kReferenced;
@@ -1081,6 +1078,88 @@ struct Store::Impl {
                 return s;
             }
         }
+        return commit_add(rec, uid, policy, tmp, final_path);
+    }
+
+    // What every added instance must have, whatever way its bytes came.
+    static Status check_record(const IndexRecord& rec) {
+        const std::string& uid = rec[Str::SopInstanceUid];
+        if (uid.empty()) return Status(Errc::Malformed, "instance has no SOP Instance UID");
+        if (uid.size() > 1024) return Status(Errc::Malformed, "SOP Instance UID is too long");
+        if (rec[Str::SopClassUid] == kMediaStorageDirectoryUid)
+            return Status(Errc::Rejected, "a DICOMDIR is not an instance");
+        return Status::ok();
+    }
+
+    // R-190: an instance whose Part 10 bytes exist in pieces (the file meta built for a received
+    // C-STORE data set, then the data set as received - possibly a mapped spool file of many
+    // GiB). Nothing of the instance's size is allocated: the pieces are streamed to the store's
+    // temporary file in chunks of at most io::kWriteChunk bytes, that file is mapped to read the
+    // index keys (exactly what add_buffer reads from one buffer), unmapped, and renamed into
+    // place. The bytes written are the pieces, unchanged, in order.
+    Result<AddOutcome> add_parts(const io::Slice* parts, std::size_t count, DuplicatePolicy policy,
+                                 std::uint32_t extra_flags, const ExtractOptions& xo, const std::string& uid_hint) {
+        std::uint64_t total = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (parts[i].size != 0 && !parts[i].data) return Status(Errc::InvalidArgument, "a part has no bytes");
+            total += parts[i].size;
+        }
+        if (count == 0 || parts[0].size < 132 || !has_part10_header(parts[0].data, parts[0].size))
+            return Status(Errc::InvalidArgument, "the first part must start a Part 10 file (preamble and file meta)");
+        // The same early answer add_buffer gives for a UID the store already has; without it a
+        // duplicate would be written out in full before it is dropped. The hint is only a
+        // shortcut: the UID that counts is read from the bytes below.
+        if (policy == DuplicatePolicy::Keep && !uid_hint.empty()) {
+            std::shared_lock<std::shared_mutex> g(rw);
+            if (st.instances.count(uid_hint)) return AddOutcome::KeptExisting;
+        }
+        if (Status q = check_disk_limits(total); !q) return q;
+        // The final folder depends on the UID, which is read from the written bytes: the
+        // temporary file goes to the data folder (same volume, so the rename stays atomic).
+        std::error_code ec;
+        const fs::path tmp = temp_name_for(data_dir / "incoming.dcm");
+        {
+            auto f = OsFile::open(tmp, OsFile::Mode::CreateExclusive, opt.file_mode);
+            if (!f) return f.take_error();
+            Status s;
+            for (std::size_t i = 0; s && i < count; ++i)
+                for (std::size_t off = 0; s && off < parts[i].size;) {
+                    const std::size_t n = std::min(io::kWriteChunk, parts[i].size - off);
+                    s = f->append(parts[i].data + off, n);
+                    off += n;
+                }
+            if (s && opt.durable) s = f->sync();
+            f->close();
+            if (!s) {
+                fs::remove(tmp, ec);
+                return s;
+            }
+        }
+        IndexRecord rec;
+        Status x = extract_index_file(to_utf8(tmp), rec, xo);  // maps, reads the keys, unmaps
+        if (x && rec.file_size != total) x = Status(Errc::IoError, "the instance was not written completely");
+        if (x) x = check_record(rec);
+        if (!x) {
+            fs::remove(tmp, ec);
+            return x;
+        }
+        rec.flags |= extra_flags;
+        const std::string uid = rec[Str::SopInstanceUid];
+        rec.added_time = now_seconds();
+        rec[Str::FilePath].clear();  // derived from the UID
+        const fs::path final_path = root / u8path(instance_relative_path(uid));
+        if (Status d = create_private_dirs(final_path.parent_path(), opt.file_mode); !d) {
+            fs::remove(tmp, ec);
+            return Status(Errc::IoError, "cannot create data folder");
+        }
+        return commit_add(rec, uid, policy, tmp, final_path);
+    }
+
+    // The second half of every add: under the writer lock the temporary file (when there is one)
+    // is renamed into place, the record journalled and applied, the event sent.
+    Result<AddOutcome> commit_add(const IndexRecord& rec, const std::string& uid, DuplicatePolicy policy,
+                                  const fs::path& tmp, const fs::path& final_path) {
+        std::error_code ec;
         std::vector<Event> events;
         AddOutcome outcome = AddOutcome::Added;
         {
@@ -1315,6 +1394,11 @@ Result<AddOutcome> Store::add_file(const std::string& utf8_path, DuplicatePolicy
 Result<AddOutcome> Store::add_buffer(const Bytes& data, DuplicatePolicy policy, std::uint32_t extra_flags,
                                      const ExtractOptions& read) {
     return impl_->add_bytes(data, policy, AddMode::Copy, {}, extra_flags & kIncompleteRead, read);
+}
+
+Result<AddOutcome> Store::add_parts(const io::Slice* parts, std::size_t count, DuplicatePolicy policy,
+                                    std::uint32_t extra_flags, const ExtractOptions& read, const std::string& uid_hint) {
+    return impl_->add_parts(parts, count, policy, extra_flags & kIncompleteRead, read, uid_hint);
 }
 
 Result<std::size_t> Store::add_records(const std::vector<IndexRecord>& records) {

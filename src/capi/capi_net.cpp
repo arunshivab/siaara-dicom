@@ -345,15 +345,20 @@ std::string join_path(const std::string& dir, const std::string& name) {
 // Adds a received instance to a store and / or folder. Returns the DIMSE status to answer.
 // The duplicate policy applies to the folder too (R-072): with Keep an existing <UID>.dcm is left
 // as it is (no check-then-write race) and `kept_existing` is set; the peer still gets Success.
+// R-190: the instance is never built in memory. The file is the file meta (a few hundred bytes,
+// encoded here) followed by the data set exactly as received (rq.raw: a buffer below the spool
+// threshold, a mapped spool file above it); both pieces are streamed to the folder and into the
+// store, so the memory used does not depend on the size of the data set.
 std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st::DuplicatePolicy policy,
                             const std::string& folder, int32_t* outcome, std::string& error,
                             bool* kept_existing) {
     if (kept_existing) *kept_existing = false;
-    std::vector<std::uint8_t> bytes;
-    if (Status s = net::encode_received_part10(rq, bytes); !s) {
+    std::vector<std::uint8_t> meta;
+    if (Status s = net::encode_received_meta(rq, meta); !s) {
         error = s.message;
         return 0xC000;  // cannot understand
     }
+    const siaara::io::Slice parts[2] = {{meta.data(), meta.size()}, {rq.raw.data(), rq.raw.size()}};
     if (!folder.empty()) {
         if (!uid_filename_ok(rq.sop_instance_uid)) {
             error = "SOP Instance UID is not usable as a file name";
@@ -362,7 +367,9 @@ std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st
         const std::string path = join_path(folder, rq.sop_instance_uid + ".dcm");
         const auto mode = policy == st::DuplicatePolicy::Keep ? siaara::io::WriteMode::NoReplace
                                                               : siaara::io::WriteMode::Replace;
-        if (Status s = siaara::io::write_file_atomic(path, bytes.data(), bytes.size(), mode); !s) {
+        const Status s = siaara::io::write_parts_atomic(
+            path, parts, 2, {}, [&]() -> siaara::Result<std::string> { return path; }, mode);
+        if (!s) {
             if (s.code != Errc::Rejected) {
                 error = s.message;
                 return 0xA700;  // out of resources
@@ -375,8 +382,8 @@ std::uint16_t keep_instance(const net::StoreRequest& rq, siaara_store* store, st
     }
     if (store) {
         // An instance accepted although incomplete is flagged in the index (SIAARA_IDXF_INCOMPLETE).
-        auto r = store->store->add_buffer(bytes_of(std::move(bytes)), policy, rq.read_loss != 0 ? st::kIncompleteRead : 0u,
-                                          st::network_extract_options());
+        auto r = store->store->add_parts(parts, 2, policy, rq.read_loss != 0 ? st::kIncompleteRead : 0u,
+                                         st::network_extract_options(), rq.sop_instance_uid);
         if (!r) {
             error = r.error().message;
             return 0xA700;

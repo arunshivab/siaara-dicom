@@ -2,10 +2,13 @@
 // caps before any copy and streamed to disk, never held whole in memory), R-165 (room reserved
 // under the lock, sender share, free-space floor), R-166 (bytes without a record are kept and
 // listed), R-167 (one release at a time; the stored SOP Instance UID is returned).
+// Round 6, R-190: a COMPLETE spooled data set that is accepted is streamed into the store and the
+// folder as well (the same heap bound on the accepted path).
 // Uses the allocation guard (alloc_guard.hpp), so this file is left out of TSan builds.
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -419,5 +422,193 @@ TEST_CASE("rc1 R-167: two releases of one item - one stores it and returns the U
     CHECK_EQ(old_rec.record_missing, 0x5A5A5A5A);
     siaara_store_free(store);
     std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+namespace {
+
+// A complete, valid data set of kBig bytes in explicit VR little endian (a few header elements,
+// then Pixel Data filling the rest) as a mapped file with a hole: a spooled C-STORE data set.
+Bytes big_dataset_mapping(const std::filesystem::path& dir, const std::string& sop) {
+    std::vector<std::uint8_t> head;
+    const auto put16 = [&](std::uint32_t v) {
+        head.push_back(static_cast<std::uint8_t>(v & 0xFFu));
+        head.push_back(static_cast<std::uint8_t>((v >> 8) & 0xFFu));
+    };
+    const auto text = [&](std::uint32_t group, std::uint32_t element, const char* vr, std::string v) {
+        if (v.size() % 2) v.push_back(vr[0] == 'U' && vr[1] == 'I' ? '\0' : ' ');
+        put16(group);
+        put16(element);
+        head.push_back(static_cast<std::uint8_t>(vr[0]));
+        head.push_back(static_cast<std::uint8_t>(vr[1]));
+        put16(static_cast<std::uint32_t>(v.size()));
+        head.insert(head.end(), v.begin(), v.end());
+    };
+    const auto us = [&](std::uint32_t group, std::uint32_t element, std::uint32_t v) {
+        put16(group);
+        put16(element);
+        head.push_back('U');
+        head.push_back('S');
+        put16(2);
+        put16(v);
+    };
+    text(0x0008, 0x0016, "UI", "1.2.840.10008.5.1.4.1.1.7");
+    text(0x0008, 0x0018, "UI", sop);
+    text(0x0008, 0x0060, "CS", "OT");
+    text(0x0020, 0x000D, "UI", "2.25.190900");
+    text(0x0020, 0x000E, "UI", "2.25.190901");
+    us(0x0028, 0x0002, 1);
+    text(0x0028, 0x0004, "CS", "MONOCHROME2");
+    us(0x0028, 0x0010, 1);
+    us(0x0028, 0x0011, 1);
+    us(0x0028, 0x0100, 8);
+    us(0x0028, 0x0101, 8);
+    us(0x0028, 0x0102, 7);
+    us(0x0028, 0x0103, 0);
+    // (7FE0,0010) OB, reserved, 32-bit length: everything up to the end of the data set.
+    put16(0x7FE0);
+    put16(0x0010);
+    head.push_back('O');
+    head.push_back('B');
+    put16(0);
+    const std::size_t pixel_bytes = kBig - head.size() - 4;
+    put16(static_cast<std::uint32_t>(pixel_bytes & 0xFFFFu));
+    put16(static_cast<std::uint32_t>((pixel_bytes >> 16) & 0xFFFFu));
+    const std::filesystem::path p = dir / ("spooled-" + sop + ".bin");
+    {
+        std::ofstream f(p, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(head.data()), static_cast<std::streamsize>(head.size()));
+        f.seekp(static_cast<std::streamoff>(kBig - 1));
+        f.put('\x7f');
+    }
+    auto m = io::map_file(p.string(), false);
+    return m ? *m : Bytes{};
+}
+
+net::StoreRequest complete_request(const Bytes& raw, const std::string& sop) {
+    net::StoreRequest rq;
+    rq.calling_ae = "BIG_AE";
+    rq.sop_class_uid = "1.2.840.10008.5.1.4.1.1.7";
+    rq.sop_instance_uid = sop;
+    rq.transfer_syntax = "1.2.840.10008.1.2.1";
+    rq.raw = raw;
+    return rq;
+}
+
+// True when the file is `meta` followed by `raw`, byte for byte.
+bool file_is(const std::string& path, const std::vector<std::uint8_t>& meta, const Bytes& raw) {
+    auto on_disk = io::map_file(path, false);
+    if (!on_disk || on_disk->size() != meta.size() + raw.size()) return false;
+    return std::memcmp(on_disk->data(), meta.data(), meta.size()) == 0 &&
+           std::memcmp(on_disk->data() + meta.size(), raw.data(), raw.size()) == 0;
+}
+
+}  // namespace
+
+TEST_CASE("rc2 R-190: an accepted spooled data set is streamed into the store, within a small heap budget") {
+    const auto dir = fresh_dir("accept_store");
+    siaara_store* store = open_store(dir / "store");
+    REQUIRE(store != nullptr);
+    const std::string sop = "2.25.190001";
+    const Bytes raw = big_dataset_mapping(dir, sop);
+    REQUIRE(raw.size() == kBig);
+    const net::StoreRequest rq = complete_request(raw, sop);
+    std::uint16_t status = 0xFFFF, again = 0xFFFF, replaced = 0xFFFF;
+    int32_t outcome = -1, outcome_again = -1, outcome_replaced = -1;
+    std::string err;
+    std::size_t peak = 0;
+    bool refused = true;
+    {
+        siaara_test::AllocGuard guard(kBudget);
+        status = capi::dimse::keep_instance(rq, store, store::DuplicatePolicy::Keep, std::string(), &outcome, err);
+        // The same instance again: kept (nothing written), then replaced - both within the budget.
+        again = capi::dimse::keep_instance(rq, store, store::DuplicatePolicy::Keep, std::string(), &outcome_again, err);
+        replaced = capi::dimse::keep_instance(rq, store, store::DuplicatePolicy::Replace, std::string(), &outcome_replaced, err);
+        peak = guard.peak();
+        refused = guard.refused();
+    }
+    CHECK_EQ(status, 0);
+    CHECK_EQ(again, 0);
+    CHECK_EQ(replaced, 0);
+    CHECK(err.empty());
+    CHECK_EQ(outcome, SIAARA_ADD_ADDED);
+    CHECK_EQ(outcome_again, SIAARA_ADD_KEPT_EXISTING);
+    CHECK_EQ(outcome_replaced, SIAARA_ADD_REPLACED);
+    CHECK(!refused);
+    CHECK(peak < kBudget);
+    std::printf("  48 MiB data set into the store (added, kept, replaced): peak heap %zu bytes\n", peak);
+    // The stored file is the file meta followed by the bytes as received, and it is indexed as a
+    // buffer of the same bytes would be (size, pixel data offset, keys).
+    std::vector<std::uint8_t> meta;
+    REQUIRE(net::encode_received_meta(rq, meta));
+    auto rec = store->store->instance(sop);
+    REQUIRE(rec);
+    CHECK_EQ(rec->file_size, meta.size() + kBig);
+    CHECK((*rec)[store::Str::SopClassUid] == "1.2.840.10008.5.1.4.1.1.7");
+    CHECK((*rec)[store::Str::StudyInstanceUid] == "2.25.190900");
+    CHECK((*rec)[store::Str::Modality] == "OT");
+    CHECK((rec->flags & store::kHasPixelData) != 0);
+    CHECK((rec->flags & store::kPixelOffsetKnown) != 0);
+    CHECK((rec->flags & store::kIncompleteRead) == 0);
+    CHECK_EQ(rec->pixel_data_offset + rec->pixel_data_length, meta.size() + kBig);
+    auto list = store->store->instances_of("2.25.190901");
+    REQUIRE(list);
+    REQUIRE(list->size() == 1);
+    CHECK(file_is((*list)[0][store::Str::FilePath], meta, raw));
+    // No temporary file stays in the data folder.
+    std::size_t leftovers = 0;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(dir / "store" / "data", ec), end; !ec && it != end; it.increment(ec))
+        if (it->is_regular_file() && it->path().extension() != ".dcm") ++leftovers;
+    CHECK_EQ(leftovers, 0u);
+    // An instance accepted although incomplete keeps its flag on this path too.
+    const std::string sop2 = "2.25.190002";
+    const Bytes raw2 = big_dataset_mapping(dir, sop2);
+    net::StoreRequest rq2 = complete_request(raw2, sop2);
+    rq2.read_loss = 1;
+    CHECK_EQ(capi::dimse::keep_instance(rq2, store, store::DuplicatePolicy::Keep, std::string(), nullptr, err), 0);
+    auto rec2 = store->store->instance(sop2);
+    REQUIRE(rec2);
+    CHECK((rec2->flags & store::kIncompleteRead) != 0);
+    siaara_store_free(store);
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("rc2 R-190: an accepted spooled data set is streamed into the folder, within a small heap budget") {
+    const auto dir = fresh_dir("accept_folder");
+    const std::filesystem::path folder = dir / "inbox";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    const std::string sop = "2.25.190003";
+    const Bytes raw = big_dataset_mapping(dir, sop);
+    REQUIRE(raw.size() == kBig);
+    const net::StoreRequest rq = complete_request(raw, sop);
+    std::uint16_t status = 0xFFFF, again = 0xFFFF;
+    int32_t outcome = -1, outcome_again = -1;
+    bool kept = true, kept_again = false;
+    std::string err;
+    std::size_t peak = 0;
+    bool refused = true;
+    {
+        siaara_test::AllocGuard guard(kBudget);
+        status = capi::dimse::keep_instance(rq, nullptr, store::DuplicatePolicy::Keep, folder.string(), &outcome, err, &kept);
+        again = capi::dimse::keep_instance(rq, nullptr, store::DuplicatePolicy::Keep, folder.string(), &outcome_again, err, &kept_again);
+        peak = guard.peak();
+        refused = guard.refused();
+    }
+    CHECK_EQ(status, 0);
+    CHECK_EQ(again, 0);
+    CHECK(err.empty());
+    CHECK_EQ(outcome, SIAARA_ADD_ADDED);
+    CHECK_EQ(outcome_again, SIAARA_ADD_KEPT_EXISTING);
+    CHECK(!kept);
+    CHECK(kept_again);
+    CHECK(!refused);
+    CHECK(peak < kBudget);
+    std::printf("  48 MiB data set into the folder (added, kept): peak heap %zu bytes\n", peak);
+    std::vector<std::uint8_t> meta;
+    REQUIRE(net::encode_received_meta(rq, meta));
+    CHECK(file_is((folder / (sop + ".dcm")).string(), meta, raw));
+    CHECK_EQ(files_in(folder), 1u);  // the instance, no temporary file
     std::filesystem::remove_all(dir, ec);
 }

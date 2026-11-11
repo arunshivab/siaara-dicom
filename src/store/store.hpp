@@ -65,6 +65,7 @@
 #include <string>
 #include <vector>
 
+#include "core/io.hpp"
 #include "core/status.hpp"
 #include "core/types.hpp"
 #include "store/index.hpp"
@@ -175,6 +176,17 @@ public:
     // (no overlong-length recovery, R-163); a local import keeps the default.
     Result<AddOutcome> add_buffer(const Bytes& data, DuplicatePolicy policy = DuplicatePolicy::Keep,
                                   std::uint32_t extra_flags = 0, const ExtractOptions& read = {});
+
+    // As add_buffer for a Part 10 file that exists in pieces (R-190): parts[0] starts with the
+    // preamble, "DICM" and the file meta; the pieces together are the file. They are streamed
+    // into the store (io::kWriteChunk bytes at a time) and indexed from the written file, so
+    // nothing of the instance's size is ever allocated: a spooled C-STORE data set of many GiB is
+    // stored with the memory of a small one. `uid_hint` (may be empty): the SOP Instance UID the
+    // caller expects; with DuplicatePolicy::Keep an instance the store already has under that
+    // UID is answered KeptExisting before anything is written.
+    Result<AddOutcome> add_parts(const io::Slice* parts, std::size_t count, DuplicatePolicy policy = DuplicatePolicy::Keep,
+                                 std::uint32_t extra_flags = 0, const ExtractOptions& read = {},
+                                 const std::string& uid_hint = {});
 
     // Bulk-indexes records of files kept in place (as AddMode::Reference, without reading the
     // files): each record needs SopInstanceUid, SeriesInstanceUid, StudyInstanceUid and an
