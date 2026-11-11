@@ -164,6 +164,18 @@ The `draft-release` job merges the checksum files into `SHA256SUMS` (archives, S
 NuGet package), verifies them, takes the release notes from the topmost section of `CHANGELOG.md`
 and runs `gh release create --draft --verify-tag` with every file attached.
 
+## Release candidates (a rehearsal of the workflow)
+
+A tag `vX.Y.Z-rc.N` (X.Y.Z being the version of `CMakeLists.txt`, N from 1) runs the same
+`release` workflow. Nothing is edited for it: the binaries are the X.Y.Z binaries and report
+X.Y.Z; the archives, the SBOMs and the NuGet package carry the label `X.Y.Z-rc.N`
+(`Siaara.X.Y.Z-rc.N.nupkg`; assembly and file versions stay X.Y.Z); the draft is marked as a
+**pre-release** and its notes say it is a rehearsal and not for production use. Publishing that
+draft pushes the pre-release package to the feed like any other. NuGet orders `X.Y.Z-rc.N` before
+`X.Y.Z`, and a consumer gets a pre-release only by naming it. Use the next N for another
+rehearsal; never reuse a number. `tools/release/version.py --check-tag` accepts exactly
+`vX.Y.Z` and `vX.Y.Z-rc.N`.
+
 ## The package feed (GitHub Packages)
 
 `.github/workflows/publish-package.yml` runs when a maintainer **publishes** the draft release.
@@ -176,9 +188,25 @@ input: the tag).
 - A package version on the feed cannot be overwritten. A wrong one is deleted on the package's
   page (owner only) before the corrected one is pushed - and a version that a product already
   restored should get a new number instead.
-- The package belongs to the owner's account and is tied to this repository by the repository
-  URL inside it. Who may read it is set on the package's page (Package settings: visibility,
-  "Manage access"); check it after the first push and after the repository's visibility changes.
+- The package belongs to the owner's account and is linked to this repository by the repository
+  URL inside it. What GitHub's documentation says (read 2026-11-11; "Working with the NuGet
+  registry", "Configuring a package's access control and visibility", "About permissions for
+  GitHub Packages", "Deleting and restoring a package"):
+  - The NuGet registry has granular permissions: the package is scoped to the account, not to
+    the repository.
+  - **A newly published package is private**, also when the linked repository is public. A
+    package linked to a repository inherits the repository's *access permissions*, but **not its
+    visibility**. So the repository going private does not change the package, and the package
+    does not become public because the repository is.
+  - Reading a private package needs an account with read access to it and a personal access
+    token (classic) with `read:packages`. Installing needs a token even for public packages.
+  - Visibility is changed only by hand (Package settings, "Danger Zone", "Change visibility").
+    Leave it private. Older versions of the documentation warn that a package made public
+    cannot be made private again; treat making it public as irreversible.
+  - A version can be deleted by an admin of the package (the package's page, the version's
+    "Delete"), and restored within 30 days as long as the same version was not published again.
+  Still to be confirmed on the package's own page after the first push: that it shows
+  "Private", and who is listed under "Manage access".
 - Consumers need a personal access token with `read:packages` (docs/GETTING_STARTED.md,
   section 6). Storage and data transfer of private packages count against the account's
   GitHub Packages allowance.

@@ -8,6 +8,10 @@ name: release
 # a DRAFT GitHub release with everything attached. See docs/RELEASING.md and
 # docs/RELEASE_CHECKLIST.md.
 #
+# A release candidate tag (vX.Y.Z-rc.N, X.Y.Z being the version of CMakeLists.txt) runs the same
+# workflow as a rehearsal: the binaries are the X.Y.Z binaries, the archives and the NuGet package
+# carry the label X.Y.Z-rc.N, and the draft is marked as a pre-release.
+#
 # The binaries and the NuGet package are NOT code signed (first release: internal consumers).
 # docs/RELEASE_CHECKLIST.md says what changes when signing certificates exist.
 
@@ -58,11 +62,15 @@ jobs:
       - name: Version, commit and SOURCE_DATE_EPOCH
         # The version has one source: the project(siaara VERSION x.y.z) line of CMakeLists.txt.
         # The tag must name it; the built library is checked against it after the install.
+        # VERSION is that version (what the binaries report). LABEL is the tag without its "v":
+        # the same for a release, "x.y.z-rc.N" for a release candidate; it names the archives,
+        # the SBOMs and the NuGet package.
         run: |
           py=python3; command -v python3 >/dev/null || py=python
           version=$($py tools/release/version.py)
           $py tools/release/version.py --check-tag "$GITHUB_REF_NAME"
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "LABEL=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - name: Install 32-bit toolchain
@@ -94,10 +102,10 @@ jobs:
           lipo -archs build/libsiaara.dylib | grep -q x86_64
           lipo -archs build/libsiaara.dylib | grep -q arm64
       - name: Install
-        run: cmake --install build --config Release --prefix "stage/siaara-$VERSION-${{ matrix.platform }}"
+        run: cmake --install build --config Release --prefix "stage/siaara-$LABEL-${{ matrix.platform }}"
       - name: The installed package works with find_package(siaara) and has the tagged version
         run: |
-          prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="$PWD/stage/siaara-$LABEL-${{ matrix.platform }}"
           cmake -S tests/package -B build-consumer ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DSIAARA_EXPECT_VERSION="$VERSION"
           cmake --build build-consumer --config Release
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -112,7 +120,7 @@ jobs:
           fi
       - name: The shipped examples build against the installed package and run
         run: |
-          prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="$PWD/stage/siaara-$LABEL-${{ matrix.platform }}"
           cmake -S examples -B build-examples ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build build-examples --config Release
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -125,22 +133,22 @@ jobs:
       - name: The installed pkg-config file works (Linux x64 and ARM64)
         if: runner.os == 'Linux' && !matrix.multilib
         run: |
-          prefix="$PWD/stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="$PWD/stage/siaara-$LABEL-${{ matrix.platform }}"
           export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
           test "$(pkg-config --modversion siaara)" = "$VERSION"
           cc -std=c11 tests/package/main.c $(pkg-config --cflags --libs siaara) -o build-consumer/consumer_pkgconfig
           LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_pkgconfig
       - name: Runtime dependencies of the shipped binaries
         run: |
-          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="stage/siaara-$LABEL-${{ matrix.platform }}"
           python3 tools/ci/check_binaries.py deps --profile release $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib' ! -name '*.pc')
       - name: Hardening of the shipped binaries
         run: |
-          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="stage/siaara-$LABEL-${{ matrix.platform }}"
           python3 tools/ci/check_binaries.py hardening ${{ matrix.hardening }} $(find "$prefix/bin" "$prefix/lib" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.so*' -o -name '*.dylib' -o -perm -u+x \) ! -name '*.cmake' ! -name '*.a' ! -name '*.lib' ! -name '*.pc')
       - name: Exported symbols match the ABI baseline
         run: |
-          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="stage/siaara-$LABEL-${{ matrix.platform }}"
           lib=$(find "$prefix" -type f \( -name 'libsiaara.so' -o -name 'libsiaara.dylib' -o -name 'siaara.dll' \) | head -1)
           python3 tools/ci/check_binaries.py symbols --header include/siaara/siaara.h "$lib"
       - name: Native library for the NuGet package (runtimes/<rid>/native)
@@ -148,7 +156,7 @@ jobs:
         # both osx-x64 and osx-arm64 (the file that was tested; no lipo -thin).
         if: matrix.rid != ''
         run: |
-          prefix="stage/siaara-$VERSION-${{ matrix.platform }}"
+          prefix="stage/siaara-$LABEL-${{ matrix.platform }}"
           lib=$(find "$prefix" -type f \( -name 'libsiaara.so' -o -name 'libsiaara.dylib' -o -name 'siaara.dll' \) | head -1)
           for rid in ${{ matrix.rid }}; do
             mkdir -p "native/$rid"
@@ -157,10 +165,10 @@ jobs:
           find native -type f
       - name: Package (archive, SBOM, checksums)
         run: >
-          python3 tools/release/package.py --stage "stage/siaara-$VERSION-${{ matrix.platform }}"
-          --version "$VERSION" --platform ${{ matrix.platform }} --commit "$COMMIT" --out dist
+          python3 tools/release/package.py --stage "stage/siaara-$LABEL-${{ matrix.platform }}"
+          --version "$LABEL" --platform ${{ matrix.platform }} --commit "$COMMIT" --out dist
       - name: The archive holds what a release must hold, and nothing else
-        run: python3 tools/release/check_archive.py dist/siaara-$VERSION-${{ matrix.platform }}.* --platform ${{ matrix.platform }}
+        run: python3 tools/release/check_archive.py dist/siaara-$LABEL-${{ matrix.platform }}.* --platform ${{ matrix.platform }}
       - name: Attest build provenance
         # Attestations need a public repository or GitHub Enterprise Cloud: on a private repository
         # without it this step reports the failure but does not stop the release.
@@ -207,6 +215,8 @@ jobs:
           version=$(python3 tools/release/version.py)
           python3 tools/release/version.py --check-tag "$GITHUB_REF_NAME"
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "LABEL=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "SUFFIX=$(python3 tools/release/version.py --tag-suffix "$GITHUB_REF_NAME")" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
@@ -223,13 +233,13 @@ jobs:
           NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           dotnet pack bindings/csharp/src/Siaara -c Release -o dist \
-            -p:ContinuousIntegrationBuild=true -p:SiaaraNativeArtifactsDir="$PWD/native"
+            -p:ContinuousIntegrationBuild=true -p:SiaaraNativeArtifactsDir="$PWD/native" -p:VersionSuffix="$SUFFIX"
           ls -l dist
           echo "fetched for the build:"; ls "$NUGET_PACKAGES"
           extra=$(ls "$NUGET_PACKAGES" | grep -v '^microsoft.net.illink.tasks$' || true)
           if [ -n "$extra" ]; then echo "packages fetched that are not the SDK's ILLink analyzer pack: $extra"; exit 1; fi
       - name: The package holds every runtime, the licence, the readme and the XML documentation
-        run: python3 tools/release/check_nupkg.py "dist/Siaara.$VERSION.nupkg" --version "$VERSION" --require-all-rids
+        run: python3 tools/release/check_nupkg.py "dist/Siaara.$LABEL.nupkg" --version "$LABEL" --require-all-rids
       - name: A consumer restores it from a local folder feed, builds and runs (offline, linux-x64)
         env:
           # Env keys are case-insensitive to GitHub (a duplicate rejects the whole workflow), so the
@@ -239,12 +249,12 @@ jobs:
           NO_PROXY: ""
         run: |
           export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY" no_proxy=""
-          python3 tools/release/check_nupkg.py "dist/Siaara.$VERSION.nupkg" --version "$VERSION" --consumer-test "$RUNNER_TEMP/nupkg-consumer"
+          python3 tools/release/check_nupkg.py "dist/Siaara.$LABEL.nupkg" --version "$LABEL" --consumer-test "$RUNNER_TEMP/nupkg-consumer"
       - name: Checksum
         run: |
           cd dist
-          sha256sum "Siaara.$VERSION.nupkg" > "Siaara.$VERSION.nupkg.sha256"
-          cat "Siaara.$VERSION.nupkg.sha256"
+          sha256sum "Siaara.$LABEL.nupkg" > "Siaara.$LABEL.nupkg.sha256"
+          cat "Siaara.$LABEL.nupkg.sha256"
       - name: Attest build provenance
         continue-on-error: ${{ github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
@@ -286,7 +296,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-rc.*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
             --title "SIAARA DICOM Toolkit ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md \
             dist/*

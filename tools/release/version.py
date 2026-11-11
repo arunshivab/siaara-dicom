@@ -6,7 +6,8 @@ CMakeLists.txt. Everything else is derived from it (docs/RELEASING.md lists what
 
     python3 tools/release/version.py                      prints x.y.z
     python3 tools/release/version.py --implementation-version-name     prints SIAARA_xyz
-    python3 tools/release/version.py --check-tag v1.2.3   exit 1 unless the tag is v<version>
+    python3 tools/release/version.py --check-tag v1.2.3   exit 1 unless the tag is v<version> or v<version>-rc.N
+    python3 tools/release/version.py --tag-suffix v1.2.3-rc.1   prints rc.1 (nothing for a release tag)
     python3 tools/release/version.py --check              checks the derived places (ctest: version_single_source)
     python3 tools/release/version.py --release-notes x.y.z [--commit SHA] [--repository owner/name]
                                                           the CHANGELOG.md section of x.y.z as release notes
@@ -30,6 +31,14 @@ def version():
     if not m:
         sys.exit("version.py: no project(siaara VERSION x.y.z ...) line in CMakeLists.txt")
     return m.group(1), m.group(2), m.group(3)
+
+
+def tag_suffix(tag, dotted):
+    """'' for the release tag v<version>, 'rc.N' for a release candidate tag v<version>-rc.N, None otherwise."""
+    if tag == "v" + dotted:
+        return ""
+    m = re.fullmatch(re.escape("v" + dotted) + r"-(rc\.[1-9][0-9]*)", tag)
+    return m.group(1) if m else None
 
 
 def implementation_version_name(v):
@@ -69,10 +78,15 @@ def check():
 
 def release_notes(want, commit, repository):
     text = read("CHANGELOG.md")
-    m = re.search(r"^## (?:\[?%s\]?|First release)[ \t]*\n(.*?)(?=^## |\Z)" % re.escape(want), text, re.M | re.S)
+    base = want.split("-", 1)[0]  # a release candidate x.y.z-rc.N carries the notes of x.y.z
+    m = re.search(r"^## (?:\[?%s\]?|First release)[ \t]*\n(.*?)(?=^## |\Z)" % re.escape(base), text, re.M | re.S)
     if not m or m.start() != re.search(r"^## ", text, re.M).start():
-        sys.exit("version.py: the topmost section of CHANGELOG.md is not '## %s' (or '## First release')" % want)
-    out = ["Draft release of SIAARA DICOM Toolkit %s%s." % (want, (", built from commit %s" % commit) if commit else ""), "",
+        sys.exit("version.py: the topmost section of CHANGELOG.md is not '## %s' (or '## First release')" % base)
+    out = ["Draft release of SIAARA DICOM Toolkit %s%s." % (want, (", built from commit %s" % commit) if commit else ""), ""]
+    if base != want:
+        out += ["**Release candidate: a rehearsal of the release workflow and a package to integrate against. "
+                "Not reviewed as a release; not for production use.** The binaries report version %s." % base, ""]
+    out += [
            "Assets: one archive per platform (`siaara-%s-<platform>.tar.gz` / `.zip`) with its SPDX 2.3 SBOM, the NuGet "
            "package `Siaara.%s.nupkg` (managed assemblies and the native library of every runtime), and `SHA256SUMS`." % (want, want),
            "The binaries and the package are not code signed. Licence: proprietary, see `LICENSE` in every archive and in the package.",
@@ -88,6 +102,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--implementation-version-name", action="store_true")
     ap.add_argument("--check-tag")
+    ap.add_argument("--tag-suffix")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--release-notes")
     ap.add_argument("--commit", default="")
@@ -99,11 +114,15 @@ def main():
         return check()
     if args.release_notes:
         return release_notes(args.release_notes, args.commit, args.repository)
-    if args.check_tag:
-        if args.check_tag != "v" + dotted:
-            print("Tag %s does not name the version of CMakeLists.txt (%s): expected v%s" % (args.check_tag, dotted, dotted),
-                  file=sys.stderr)
+    if args.check_tag or args.tag_suffix:
+        tag = args.check_tag or args.tag_suffix
+        suffix = tag_suffix(tag, dotted)
+        if suffix is None:
+            print("Tag %s does not name the version of CMakeLists.txt (%s): expected v%s or v%s-rc.N"
+                  % (tag, dotted, dotted, dotted), file=sys.stderr)
             return 1
+        if args.tag_suffix:
+            print(suffix)
         return 0
     print(implementation_version_name(v) if args.implementation_version_name else dotted)
     return 0

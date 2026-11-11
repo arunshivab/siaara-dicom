@@ -21,10 +21,12 @@
   </PropertyGroup>
 
   <!-- Version: read from the project(siaara VERSION x.y.z) line of the top-level CMakeLists.txt,
-       the single source of the toolkit version (docs/RELEASING.md). Never set a version here. -->
+       the single source of the toolkit version (docs/RELEASING.md). Never set a version here.
+       A release candidate build passes -p:VersionSuffix=rc.N: the package is then x.y.z-rc.N, the
+       assembly and file versions stay x.y.z. -->
   <PropertyGroup>
     <SiaaraCMakeListsText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../CMakeLists.txt'))</SiaaraCMakeListsText>
-    <Version>$([System.Text.RegularExpressions.Regex]::Match($(SiaaraCMakeListsText), 'project\(siaara VERSION ([0-9]+\.[0-9]+\.[0-9]+)').Groups.get_Item(1).Value)</Version>
+    <VersionPrefix>$([System.Text.RegularExpressions.Regex]::Match($(SiaaraCMakeListsText), 'project\(siaara VERSION ([0-9]+\.[0-9]+\.[0-9]+)').Groups.get_Item(1).Value)</VersionPrefix>
     <SiaaraCMakeListsText></SiaaraCMakeListsText>
   </PropertyGroup>
 
