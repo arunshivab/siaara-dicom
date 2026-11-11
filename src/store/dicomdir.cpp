@@ -83,7 +83,7 @@ std::string_view record_type_for(std::string_view uid) noexcept {
 bool file_id_well_formed(const std::vector<std::string>& components) noexcept {
     if (components.empty() || components.size() > kFileIdMaxComponents) return false;
     for (const auto& c : components) {
-        if (c.empty()) return false;
+        if (c.empty() || c.size() > kFileIdMaxComponentChars) return false;
         for (char ch : c)
             if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
     }

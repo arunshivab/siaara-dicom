@@ -20,12 +20,17 @@ int32_t SIAARA_CALL on_record(void* user, const siaara_dicomdir_entry* e, const 
     FUZZ_REQUIRE(e->file_status == SIAARA_OK || e->file_status == SIAARA_ERR_REJECTED);
     const std::string id(strings + keys->str_offset[SIAARA_IDX_FILE_PATH], keys->str_length[SIAARA_IDX_FILE_PATH]);
     if (e->file_status == SIAARA_OK && !id.empty()) {
-        // A well-formed File ID: 1 to 8 components of A-Z 0-9 _ joined with '/', never a path.
-        std::size_t parts = 1;
+        // A well-formed File ID: 1 to 8 components of 1 to 8 of A-Z 0-9 _ joined with '/', never a path.
+        std::size_t parts = 1, run = 0;
         FUZZ_REQUIRE(id.front() != '/' && id.back() != '/');
         for (char c : id) {
-            if (c == '/') ++parts;
-            else FUZZ_REQUIRE((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+            if (c == '/') {
+                ++parts;
+                run = 0;
+            } else {
+                FUZZ_REQUIRE((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+                FUZZ_REQUIRE(++run <= 8);
+            }
         }
         FUZZ_REQUIRE(parts <= 8);
         FUZZ_REQUIRE(id.find("//") == std::string::npos);

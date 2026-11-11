@@ -211,7 +211,8 @@ TEST_CASE("dicomdir memory: File IDs from bytes - well formed or rejected, never
         {"..\\..\\ETC\\PASSWD", false}, {"\\ABS\\IM", false},      {"C:\\WINDOWS\\X", false},
         {"X1\\X2\\X3\\X4\\X5\\X6\\X7\\X8\\X9", false},             {"dicom\\im1", false},
         {"DICOM\\IM 1", false},        {"DICOM/IM1", false},      {"DICOM\\IM.1", false},
-        {std::string("A\0B", 3), false}, {"DICOM\\\\IM", false},
+        {std::string("A\0B", 3), false}, {"DICOM\\\\IM", false},  {"DICOM\\ABCDEFGHI", false},
+        {"ABCDEFGH\\X", true},
     };
     for (const auto& [id, good] : ids) {
         Dataset im;
@@ -239,8 +240,8 @@ TEST_CASE("dicomdir memory: File IDs from bytes - well formed or rejected, never
     }
     CHECK(v[0].file_text == "DICOM/IM1");
     CHECK(v[3].file_text == "../../ETC/PASSWD");  // the text as stored, components joined: never a path
-    CHECK_EQ(s.files, 3u);
-    CHECK_EQ(s.rejected_paths, static_cast<uint32_t>(ids.size() - 3));
+    CHECK_EQ(s.files, 4u);
+    CHECK_EQ(s.rejected_paths, static_cast<uint32_t>(ids.size() - 4));
     CHECK_EQ(s.missing_files, 0u);
     CHECK(store::file_id_well_formed({"A"}));
     CHECK(!store::file_id_well_formed({}));

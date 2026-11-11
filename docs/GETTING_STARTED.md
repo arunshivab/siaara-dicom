@@ -565,8 +565,8 @@ What it does:
   folder does not matter. Listed-but-missing, present-but-unlisted and a File ID that two names
   match are issues. The DICOMDIR is read from bytes (`Dicomdir.Read(ReadOnlySpan<byte>, ...)`,
   `siaara_dicomdir_read_memory`): File IDs come as text and are never resolved to a path; an
-  unsafe one (`..`, absolute, a drive letter, more than 8 components, characters outside
-  PS3.10's set) is `Rejected`.
+  unsafe one (`..`, absolute, a drive letter, more than 8 components, a component longer than
+  8 characters, characters outside PS3.10's set) is `Rejected`.
 
 The limits (`DicomGroupingOptions`, `siaara_grouping_options`; C: 0 takes the default, C#: a zero
 or negative limit throws `ArgumentOutOfRangeException`):

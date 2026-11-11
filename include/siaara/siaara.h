@@ -960,8 +960,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* utf8_path,
  * hierarchy is cut at max_depth.
  * Referenced File IDs are never resolved: the File ID comes as text in SIAARA_IDX_FILE_PATH
  * (components joined with '/'), with file_status SIAARA_OK when it is well formed (PS3.10 8.5:
- * 1 to 8 components of upper-case A-Z, 0-9 and '_') and SIAARA_ERR_REJECTED otherwise ("..",
- * an absolute path, a drive letter, more than 8 components, any other character). There is no
+ * 1 to 8 components of 1 to 8 characters each, upper-case A-Z, 0-9 and '_') and
+ * SIAARA_ERR_REJECTED otherwise ("..", an absolute path, a drive letter, more than 8 components,
+ * a component longer than 8 characters, any other character). There is no
  * SIAARA_ERR_NOT_FOUND. summary->files counts the well-formed File IDs, rejected_paths the
  * others; missing_files stays 0. resolve_files and case_insensitive are not used. options and
  * summary may be NULL. */

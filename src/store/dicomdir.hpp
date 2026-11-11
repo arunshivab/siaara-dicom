@@ -92,12 +92,13 @@ Result<DicomdirSummary> read_dicomdir(const std::string& utf8_path, const Dicomd
 Result<DicomdirSummary> read_dicomdir_memory(const std::uint8_t* data, std::size_t size, const DicomdirCallback& cb,
                                              const DicomdirReadOptions& opt = {});
 
-// Most components of a well-formed File ID (PS3.10 8.5).
+// Most components of a well-formed File ID, and most characters of one component (PS3.10 8.5).
 inline constexpr std::size_t kFileIdMaxComponents = 8;
+inline constexpr std::size_t kFileIdMaxComponentChars = 8;
 // Is a Referenced File ID (its components, split_file_id) well formed by PS3.10 8.5: 1 to
-// kFileIdMaxComponents components, each non-empty and made of the File ID characters (upper-case
-// A-Z, digits 0-9 and underscore) only? Rules out "..", absolute paths, drive letters and every
-// separator.
+// kFileIdMaxComponents components, each of 1 to kFileIdMaxComponentChars characters, made of the
+// File ID characters (upper-case A-Z, digits 0-9 and underscore) only? Rules out "..", absolute
+// paths, drive letters, every separator and over-long components.
 bool file_id_well_formed(const std::vector<std::string>& components) noexcept;
 
 enum class MediaProfile {

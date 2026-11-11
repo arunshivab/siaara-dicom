@@ -146,8 +146,8 @@ public static class Dicomdir
     /// record limits of <paramref name="options"/> (<see cref="DicomdirReadOptions.MaxRecords"/>,
     /// <see cref="DicomdirReadOptions.MaxBytes"/>: their defaults apply when 0). Referenced File IDs are never
     /// resolved: <see cref="DicomdirRecord.FileId"/> has the File ID as text and <see cref="DicomdirRecord.FileStatus"/>
-    /// is Ok (well formed) or Rejected ("..", absolute, a drive letter, more than 8 components, characters outside
-    /// PS3.10's set).</summary>
+    /// is Ok (well formed) or Rejected ("..", absolute, a drive letter, more than 8 components, a component longer
+    /// than 8 characters, characters outside PS3.10's set).</summary>
     /// <param name="data">The DICOMDIR's bytes (only read during the call).</param>
     /// <param name="onRecord">Called per record.</param>
     /// <param name="options">Options, or null. ResolveFiles and CaseInsensitive are not used.</param>
