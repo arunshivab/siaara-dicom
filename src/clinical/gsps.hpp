@@ -158,6 +158,11 @@ struct PsRenderOptions {
     // graphic annotations; beyond it the render fails with LimitExceeded (R-056). 0 = default.
     std::uint64_t max_draw_work = 0;
     static constexpr std::uint64_t kDefaultMaxDrawWork = std::uint64_t{1} << 27;
+    // The most bytes the rendered output (displayed area, 4 bytes per pixel) may take; a larger
+    // one is LimitExceeded before it is allocated (R-191). 0 = kDefaultMaxOutputBytes: only the
+    // renderer's own bound of 2^28 pixels applies.
+    std::uint64_t max_output_bytes = 0;
+    static constexpr std::uint64_t kDefaultMaxOutputBytes = 0;
 };
 
 struct PlacedText {

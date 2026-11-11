@@ -171,10 +171,53 @@ struct Source {
     std::optional<cl::PsRendered> ps;  // set when a presentation state was applied
 };
 
+// R-191: what a render of this frame allocates besides the caller's output buffer, in bytes, at
+// image resolution: the RGBA of the whole frame (4 bytes per pixel, whatever Bits Allocated is: a
+// 1-bit frame of 64 MiB is 537 million pixels), the gray copy of it for a GRAY8 output, the RGB
+// scratch of a colour frame, one byte per pixel each for the shutter and the overlay masks, and
+// the value table of the grayscale / palette path. With a presentation state: its own decode of
+// the frame and both masks as well (the size of the displayed area is charged where it is known,
+// through PsRenderOptions::max_output_bytes). 0 when the sum does not fit 64 bits.
+std::uint64_t render_working_bytes(const siaara_frame& f, const Parsed& p) {
+    const img::PixelInfo& pi = f.img->info();
+    const std::uint64_t n = pi.pixels();
+    std::uint64_t sum = 0;
+    const auto add = [&sum](std::uint64_t a, std::uint64_t times) {
+        std::uint64_t part = 0;
+        if (sum == UINT64_MAX || !siaara::checked_mul(a, times, part) || part > UINT64_MAX - sum) sum = UINT64_MAX;
+        else sum += part;
+    };
+    add(n, 4);
+    if (p.gray8) add(n, 1);
+    const bool gray_or_palette = pi.is_monochrome() || pi.photometric == img::Photometric::PaletteColor;
+    if (!gray_or_palette) add(img::rgb_frame_bytes(pi), 1);
+    if (gray_or_palette && pi.kind == img::SampleKind::Integer && pi.bits_stored <= 16 && pi.samples_per_pixel == 1)
+        add(std::uint64_t{4} << pi.bits_stored, 1);
+    if (p.ps) {
+        add(f.img->frames().frame_bytes(), 1);
+        add(n, 2);
+    } else {
+        if (p.rp.shutters && f.img->shutters().any()) add(n, 1);
+        if (p.rp.overlays && !f.img->overlays().empty()) add(n, 1);
+    }
+    return sum == UINT64_MAX ? 0 : sum;
+}
+
+// The frame functions of a file handle are held to its frame_memory_budget (siaara_read_options;
+// the library default when the handle has none). The decoded frame the handle already holds
+// counts too: a render never needs more than the budget, whatever Rows and Columns claim.
 siaara_status render_source(const siaara_frame& f, const Parsed& p, Source& s) {
+    const std::uint64_t budget = f.img->frames().options().memory_budget;
+    const std::uint64_t work = render_working_bytes(f, p);
+    const std::uint64_t held = f.pixels.size();
+    if (work == 0 || work > SIZE_MAX || held > budget || work > budget - held)
+        return fail(Errc::LimitExceeded,
+                    "rendering this frame needs more memory than the frame_memory_budget of its file handle "
+                    "(4 bytes per pixel at image resolution, besides the decoded frame)");
     if (p.ps) {
         cl::PsRenderOptions po;
         po.overlay_color = p.rp.overlay_rgba;
+        po.max_output_bytes = std::max<std::uint64_t>(budget - held - work, 1);
         auto r = cl::render_with_presentation_state(*f.img, p.ps->ps, f.index, f.sop_uid, po);
         if (!r) return fail(r.error());
         cl::PsRendered done = std::move(r).value();

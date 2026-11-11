@@ -678,6 +678,8 @@ Result<PsRendered> render_with_presentation_state(const image::Image& img, const
         return Status(Errc::LimitExceeded, "displayed area too large or empty");
     out.width = static_cast<std::uint32_t>(ow);
     out.height = static_cast<std::uint32_t>(oh);
+    if (opt.max_output_bytes != 0 && std::uint64_t{out.width} * out.height * 4 > opt.max_output_bytes)
+        return Status(Errc::LimitExceeded, "displayed area exceeds the memory budget of the render");
     out.rgba.assign(static_cast<std::size_t>(out.width) * out.height * 4, 0);
     for (std::uint32_t oy = 0; oy < out.height; ++oy)
         for (std::uint32_t ox = 0; ox < out.width; ++ox) {
