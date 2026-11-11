@@ -262,5 +262,25 @@ TEST_CASE("rc1 R-160: C API open_mode - default AUTO, READ with a size limit, ol
     o.struct_size = static_cast<uint32_t>(offsetof(siaara_read_options, open_mode));
     REQUIRE(siaara_file_open(path.c_str(), path.size(), &o, &f) == SIAARA_OK);
     siaara_file_free(f);
+    // Testing verdict T3: a value that is none of SIAARA_OPEN_* is an argument error (from the
+    // memory open too), not silently the default; the three constants are accepted.
+    std::memset(&o, 0, sizeof o);
+    o.struct_size = sizeof o;
+    o.allow_raw_dataset = 1;
+    for (const int32_t bad : {7, 3, -1, 77}) {
+        o.open_mode = bad;
+        f = nullptr;
+        CHECK(siaara_file_open(path.c_str(), path.size(), &o, &f) == SIAARA_ERR_INVALID_ARGUMENT);
+        CHECK(f == nullptr);
+        CHECK(siaara_file_open_memory(whole.data(), whole.size(), &o, &f) == SIAARA_ERR_INVALID_ARGUMENT);
+        CHECK(f == nullptr);
+    }
+    for (const int32_t good : {SIAARA_OPEN_AUTO, SIAARA_OPEN_MAP, SIAARA_OPEN_READ}) {
+        o.open_mode = good;
+        REQUIRE(siaara_file_open(path.c_str(), path.size(), &o, &f) == SIAARA_OK);
+        siaara_file_free(f);
+        REQUIRE(siaara_file_open_memory(whole.data(), whole.size(), &o, &f) == SIAARA_OK);
+        siaara_file_free(f);
+    }
     std::filesystem::remove_all(dir, ec);
 }

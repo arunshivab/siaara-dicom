@@ -110,7 +110,8 @@ typedef struct siaara_read_options {
      *   SIAARA_OPEN_READ: always owned memory. A file larger than open_read_max_bytes is
      *     SIAARA_ERR_LIMIT_EXCEEDED (nothing is read); a failed allocation SIAARA_ERR_OUT_OF_MEMORY.
      * Values, zero-copy accessors, the read report and keep-as-read saves are identical in all
-     * three modes. */
+     * three modes. Any other value is SIAARA_ERR_INVALID_ARGUMENT (also from
+     * siaara_file_open_memory, which otherwise ignores the field). */
     int32_t open_mode;
     uint32_t reserved0;              /* set to 0 */
     uint64_t open_read_threshold;    /* SIAARA_OPEN_AUTO: 0 = default, 256 MiB */

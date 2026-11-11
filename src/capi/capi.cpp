@@ -109,6 +109,17 @@ siaara_status copy_out(std::string_view s, char* buf, size_t cap, size_t* needed
     return ok();
 }
 
+// Testing verdict T3: an enum-valued field with a value that is none of its constants is an
+// argument error, not silently the default. (recover_overlong_lengths keeps its documented rule:
+// an unknown value is the library default.)
+Status check_read_options(const siaara_read_options* o) {
+    if (!o) return Status::ok();
+    if (o->struct_size >= offsetof(siaara_read_options, open_read_max_bytes) + sizeof(uint64_t) &&
+        o->open_mode != SIAARA_OPEN_AUTO && o->open_mode != SIAARA_OPEN_MAP && o->open_mode != SIAARA_OPEN_READ)
+        return Status(Errc::InvalidArgument, "open_mode: SIAARA_OPEN_AUTO, SIAARA_OPEN_MAP or SIAARA_OPEN_READ");
+    return Status::ok();
+}
+
 siaara::ReadOptions to_options(const siaara_read_options* o) {
     siaara::ReadOptions r;
     if (!o || o->struct_size < sizeof(uint32_t) * 5) return r;
@@ -121,7 +132,7 @@ siaara::ReadOptions to_options(const siaara_read_options* o) {
         if (o->recover_overlong_lengths == SIAARA_RECOVER_ON) r.recover_overlong_lengths = true;
         else if (o->recover_overlong_lengths == SIAARA_RECOVER_OFF) r.recover_overlong_lengths = false;
     }
-    // R-160. An unknown open_mode keeps the default (the safest of the three for small files).
+    // R-160. (An unknown open_mode never gets here: check_read_options refuses it.)
     if (o->struct_size >= offsetof(siaara_read_options, open_read_max_bytes) + sizeof(uint64_t)) {
         if (o->open_mode == SIAARA_OPEN_MAP) r.open_mode = siaara::io::OpenMode::Map;
         else if (o->open_mode == SIAARA_OPEN_READ) r.open_mode = siaara::io::OpenMode::Read;
@@ -288,6 +299,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open(const char* path, size_t p
     return guarded([&]() -> siaara_status {
         if (!path || !out) return fail(Errc::InvalidArgument, "path and out must not be NULL");
         *out = nullptr;
+        if (Status v = check_read_options(options); !v) return fail(v);
         auto r = siaara::read_file(std::string(path, path_len), to_options(options));
         if (!r) return fail(r.error());
         *out = new_file(std::move(r).value(), options);
@@ -301,6 +313,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_file_open_memory(const uint8_t* data
     return guarded([&]() -> siaara_status {
         if ((!data && size) || !out) return fail(Errc::InvalidArgument, "data and out must not be NULL");
         *out = nullptr;
+        if (Status v = check_read_options(options); !v) return fail(v);
         auto r = siaara::read_part10(siaara::Bytes::copy_of(data, size), to_options(options));
         if (!r) return fail(r.error());
         *out = new_file(std::move(r).value(), options);
