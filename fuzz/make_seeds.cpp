@@ -5,6 +5,7 @@
 // Writes small, valid inputs for every target into <output-folder>/<target>/, made with the
 // toolkit's own writers and encoders, in the input layout each harness in fuzz/targets/ expects.
 // fuzz/make_seeds.py runs this and adds the pydicom test files on top (not committed).
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -726,8 +727,40 @@ void seeds_dicomdir() {
     std::ifstream in(media / "DICOMDIR", std::ios::binary);
     std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     emit("dicomdir", "dicomdir3.bin", bytes);
+    emit("dicomdir_memory", "dicomdir3.bin", bytes);
     in.close();
+    // grouping: the media as a ZIP would carry it (a wrapping folder), the DICOMDIR first, one file twice.
+    std::vector<std::uint8_t> g{0};
+    auto entry = [&g](std::uint8_t kind, const std::string& name, const std::vector<std::uint8_t>& b) {
+        g.push_back(kind);
+        g.push_back(static_cast<std::uint8_t>(name.size()));
+        g.insert(g.end(), name.begin(), name.end());
+        for (int k = 0; k < 4; ++k) g.push_back(static_cast<std::uint8_t>(b.size() >> (8 * k)));
+        g.insert(g.end(), b.begin(), b.end());
+    };
+    entry(1, "CD/DICOMDIR", bytes);
+    std::vector<fs::path> members;
+    for (const auto& e : fs::recursive_directory_iterator(media / "DICOM"))
+        if (e.is_regular_file()) members.push_back(e.path());
+    std::sort(members.begin(), members.end());
+    for (const auto& m : members) {
+        std::ifstream mf(m, std::ios::binary);
+        std::vector<std::uint8_t> b((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+        entry(0, "CD/" + fs::relative(m, media).generic_string(), b);
+        if (&m == &members.front()) entry(0, "cd\\dicom\\copy", b);
+    }
+    emit("grouping", "media3.bin", g);
+    g[0] = 0x41;  // small budgets, instance-number order
+    emit("grouping", "media3_small.bin", g);
     fs::remove_all(root);
+}
+
+void seeds_display_text() {
+    emit("display_text", "plain.txt", std::string_view("Doe^Jane CT Chest 20200115"));
+    emit("display_text", "controls.txt", std::string_view("a\x01" "b\x7f" "c\xc2\x85" "d\xe2\x80\xa8" "e\te\r\n"));
+    emit("display_text", "format.txt", std::string_view("scan\xe2\x80\xae" "gpj.exe\xe2\x80\x8b\xef\xbb\xbf\xf3\xa0\x81\x81\xd8\x80"));
+    emit("display_text", "bad_utf8.txt", std::string_view("\xff\xc3 \xe0\x80\x80\xed\xa0\x80\xf4\x90\x80\x80\xc0\xaf"));
+    emit("display_text", "scripts.txt", std::string_view("M\xc3\xbcller \xe0\xae\xa4\xe0\xae\xae\xe0\xae\xbf\xe0\xae\xb4\xe0\xaf\x8d \xf0\x9f\x98\x80"));
 }
 
 // Converts a store index file (16-byte header, then frames of length/CRC/type/payload) into the
@@ -1030,6 +1063,7 @@ int main(int argc, char** argv) {
     seeds_multipart();
     seeds_json_xml();
     seeds_dicomdir();
+    seeds_display_text();
     seeds_store();
     seeds_deid();
     seeds_clinical();

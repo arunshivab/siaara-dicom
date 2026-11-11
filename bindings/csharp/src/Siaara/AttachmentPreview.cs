@@ -6,7 +6,6 @@
 // docs/GETTING_STARTED.md, "Showing a DICOM attachment safely (untrusted input)".
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Text;
 using Siaara.Volumes;
 
@@ -379,37 +378,18 @@ public static class DicomAttachmentPreview
     {
         ArgumentNullException.ThrowIfNull(value);
         int max = Math.Max(0, maxLength);
-        var sb = new StringBuilder(Math.Min(value.Length, max));
-        for (int i = 0; i < value.Length && sb.Length < max;)
+        // The library's cleaner (siaara_text_display_safe), the one C and C++ use too, then the cut.
+        string text = strip ? DisplayText.Safe(value) : value;
+        if (text.Length <= max)
         {
-            if (!Rune.TryGetRuneAt(value, i, out Rune rune))
-            {
-                // A lone surrogate.
-                sb.Append(strip ? '\uFFFD' : value[i]);
-                i++;
-                continue;
-            }
-            i += rune.Utf16SequenceLength;
-            if (strip)
-            {
-                switch (Rune.GetUnicodeCategory(rune))
-                {
-                    case UnicodeCategory.Control:
-                    case UnicodeCategory.LineSeparator:
-                    case UnicodeCategory.ParagraphSeparator:
-                        sb.Append(' ');
-                        continue;
-                    case UnicodeCategory.Format:
-                        continue;
-                }
-            }
-            if (sb.Length + rune.Utf16SequenceLength > max)
-            {
-                break;  // never half a surrogate pair
-            }
-            sb.Append(rune.ToString());
+            return text;
         }
-        return sb.ToString();
+        int n = max;
+        if (n > 0 && char.IsHighSurrogate(text[n - 1]) && char.IsLowSurrogate(text[n]))
+        {
+            n--;  // never half a surrogate pair
+        }
+        return text[..n];
     }
 
     /// <summary>Text escaped for HTML element content and quoted attribute values: &amp;, &lt;, &gt;, the double

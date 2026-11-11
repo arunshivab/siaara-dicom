@@ -889,6 +889,7 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
         const std::uint8_t* q = store->data();
         Bytes inflated(std::shared_ptr<const void>(store, store.get()), q, store->size());
         out.offsets_are_file_offsets = false;
+        out.inflated_size = store->size();
         Parser p(inflated, opt, &out.warnings);
         Status s = p.parse(out.dataset, *syn, inflated.size(), false, 0);
         propagate_inherited_charset(out.dataset);  // F15: items know the character set in force

@@ -41,6 +41,7 @@ siaara_debug_live_handles
 siaara_deid_replacement_uid
 siaara_deidentify
 siaara_dicomdir_read
+siaara_dicomdir_read_memory
 siaara_dicomdir_write
 siaara_dicomdir_write_ex
 siaara_dict_count
@@ -110,6 +111,17 @@ siaara_get_by_path
 siaara_get_doubles_by_path
 siaara_gpu_devices
 siaara_gpu_select
+siaara_grouping_add_dicomdir
+siaara_grouping_add_file
+siaara_grouping_create
+siaara_grouping_free
+siaara_grouping_instance
+siaara_grouping_issue_get
+siaara_grouping_patient
+siaara_grouping_result
+siaara_grouping_series
+siaara_grouping_study
+siaara_grouping_text_get
 siaara_last_error_message
 siaara_module_attribute_get
 siaara_module_count
@@ -197,6 +209,7 @@ siaara_store_set_callback
 siaara_store_stats_get
 siaara_store_verify
 siaara_store_verify_ex
+siaara_text_display_safe
 siaara_tls_available
 siaara_transfer_syntax_info_get
 siaara_validate_json

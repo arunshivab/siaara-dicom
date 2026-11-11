@@ -540,3 +540,43 @@ TEST_CASE("dicomdir: missing Type 1 record keys are written empty and warned abo
     const auto v = read_all(td / "m" / "DICOMDIR");
     CHECK_EQ(count_type(v, "RT DOSE"), 1u);
 }
+
+TEST_CASE("dicomdir: the path reader on the shared parser - valid media read as before, limits only when asked") {
+    // The path reader and siaara_dicomdir_read_memory share one record walk. On valid media the
+    // path reader's records are what the round-trip tests above expect, with or without the new
+    // limits set to 0 (no limit), and the same as with generous limits; the reader from bytes
+    // gives the same keys (File ID text in place of the resolved path).
+    TempDir td("siaara-ddshared");
+    const auto files = make_set(td / "src");
+    REQUIRE(write_dicomdir((td / "m").string(), files, {}).is_ok());
+    const fs::path dd = td / "m" / "DICOMDIR";
+    DicomdirSummary s0, s1;
+    const auto base = read_all(dd, &s0);
+    DicomdirReadOptions limited;
+    limited.max_records = base.size();
+    limited.max_bytes = fs::file_size(dd);
+    const auto same = read_all(dd, &s1, limited);
+    REQUIRE(base.size() == 20u);
+    REQUIRE(same.size() == base.size());
+    CHECK(s0.files == s1.files && s0.records == s1.records && s0.warnings == s1.warnings && s0.unreachable == 0u);
+    const auto bytes = store_synth::read_bytes(dd);
+    std::vector<DicomdirRecord> mem;
+    auto r = read_dicomdir_memory(bytes.data(), bytes.size(), [&](const DicomdirRecord& rec) {
+        mem.push_back(rec);
+        return true;
+    });
+    REQUIRE(r.is_ok());
+    REQUIRE(mem.size() == base.size());
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        CHECK(base[i].index == same[i].index && base[i].parent == same[i].parent && base[i].depth == same[i].depth);
+        CHECK(base[i].offset == same[i].offset && base[i].file_id == same[i].file_id);
+        CHECK(base[i].file_id == mem[i].file_id && base[i].offset == mem[i].offset && base[i].depth == mem[i].depth);
+        for (std::size_t k = 0; k < kStrCount; ++k) {
+            CHECK(base[i].keys.s[k] == same[i].keys.s[k]);
+            if (static_cast<Str>(k) != Str::FilePath) CHECK(base[i].keys.s[k] == mem[i].keys.s[k]);
+        }
+        if (!base[i].file_id.empty()) CHECK(fs::equivalent(base[i].keys[Str::FilePath], td / "m" / mem[i].keys[Str::FilePath]));
+    }
+    limited.max_records = base.size() - 1;
+    CHECK(read_dicomdir(dd.string(), nullptr, limited).error().code == Errc::LimitExceeded);
+}

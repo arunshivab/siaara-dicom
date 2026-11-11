@@ -69,10 +69,16 @@ if(TARGET siaara AND NOT SIAARA_SANITIZE AND CMAKE_SIZEOF_VOID_P EQUAL 8)
                        --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/csharp-artifacts-preview
                        -p:SiaaraFromSource=true -p:SiaaraNativeLibrary=$<TARGET_FILE:siaara>
                        -- ${_work}/csharp-preview)
-      set_tests_properties(example_csharp_quickstart example_csharp_attachment_preview PROPERTIES TIMEOUT 900
-                           ENVIRONMENT "DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1")
-      set_tests_properties(example_csharp_attachment_preview PROPERTIES DEPENDS example_csharp_quickstart
-                           RESOURCE_LOCK siaara_dotnet_build)
+      # A ZIP (with a DICOMDIR) from a mail grouped into patient / study / series, in C#.
+      add_test(NAME example_csharp_study_grouping
+               COMMAND ${SIAARA_DOTNET} run -c Release --project ${CMAKE_CURRENT_SOURCE_DIR}/csharp/StudyGrouping
+                       --artifacts-path ${CMAKE_CURRENT_BINARY_DIR}/csharp-artifacts-grouping
+                       -p:SiaaraFromSource=true -p:SiaaraNativeLibrary=$<TARGET_FILE:siaara>
+                       -- ${_work}/csharp-grouping)
+      set_tests_properties(example_csharp_quickstart example_csharp_attachment_preview example_csharp_study_grouping
+                           PROPERTIES TIMEOUT 900 ENVIRONMENT "DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1")
+      set_tests_properties(example_csharp_attachment_preview example_csharp_study_grouping PROPERTIES
+                           DEPENDS example_csharp_quickstart RESOURCE_LOCK siaara_dotnet_build)
       set_tests_properties(example_csharp_quickstart PROPERTIES RESOURCE_LOCK siaara_dotnet_build)
     endif()
   endif()

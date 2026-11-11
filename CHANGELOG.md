@@ -25,6 +25,22 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   read of untrusted bytes). Captions lose control and format characters;
   `DicomAttachmentPreview.HtmlEscape` escapes them for a page. It bounds memory, not time: see
   the known limitations.
+- Grouping of files that arrived together (the members of a ZIP from a mail, with or without a
+  DICOMDIR): `DicomStudyGrouping` in C#, `siaara_grouping_*` in C. Patient / study / series,
+  each series ordered along the slice normal (or by Instance Number, or as added), duplicates,
+  ungrouped files and inconsistencies reported, and the DICOMDIR's File IDs set against the
+  members' names. From bytes in memory, read with the preview's untrusted limits and held to
+  budgets for the grouping as a whole; every value returned as stored with a display-safe copy
+  next to it; Patient's Name and ID only when asked for. It shows what the files claim, not
+  proof: run it in the preview's worker process.
+- A DICOMDIR can be read from bytes (`siaara_dicomdir_read_memory`, `Dicomdir.Read(ReadOnlySpan<byte>,
+  ...)`): never touches the disk, File IDs as text (well formed or rejected), record and size
+  limits on by default. The path reader keeps its behaviour; the same limits are options there
+  (`max_records`, `max_bytes`; 0 = no limit), and it accepts the options struct of its first
+  version (20 bytes) as before.
+- The display-safe text cleaner of the preview is in the library: `siaara_text_display_safe`
+  (controls and line separators a space, format characters removed, malformed UTF-8 U+FFFD).
+  `DicomAttachmentPreview.CaptionText` uses it (its results are unchanged).
 - Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 14+ (universal).
 - Zero third-party dependencies. Reproducible archives, an SPDX 2.3 SBOM per archive, SHA-256
   checksums, build provenance attestation.

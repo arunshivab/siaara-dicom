@@ -1108,6 +1108,7 @@ static_assert(static_cast<std::size_t>(SIAARA_IDX_COUNT) == siaara::store::kStrC
 static_assert(SIAARA_INDEX_MAX_STRINGS >= SIAARA_IDX_COUNT, "string ids");
 static_assert(sizeof(siaara_store_stats) == 96, "siaara_store_stats layout");
 static_assert(sizeof(siaara_dicomdir_entry) == 32, "siaara_dicomdir_entry layout");
+static_assert(sizeof(siaara_dicomdir_read_options) == 40, "siaara_dicomdir_read_options layout");
 
 struct siaara_store_result {
     std::vector<siaara::store::IndexRecord> rows;
@@ -1181,6 +1182,57 @@ siaara_status result_out(siaara::Result<std::vector<st::IndexRecord>> r, siaara_
     res->rows = std::move(r).value();
     res->total = res->rows.size();
     *out = res;
+    return ok();
+}
+
+// siaara_dicomdir_read and siaara_dicomdir_read_memory: options (R-081: struct_size from the first
+// version's 20 bytes upward), the callback adapter and the summary. `read` runs the reader.
+template <class Read>
+siaara_status dicomdir_read_common(const siaara_dicomdir_read_options* options, siaara_dicomdir_callback cb, void* user,
+                                   siaara_dicomdir_summary* summary, Read&& read) {
+    constexpr std::size_t kFirstSize = offsetof(siaara_dicomdir_read_options, max_depth) + sizeof(uint32_t);
+    static_assert(kFirstSize == 20, "the first published siaara_dicomdir_read_options");
+    if (summary && summary->struct_size < sizeof(siaara_dicomdir_summary))
+        return fail(Errc::InvalidArgument, "summary must be set up with struct_size");
+    st::DicomdirReadOptions o;
+    if (options) {
+        siaara_dicomdir_read_options in;
+        if (!siaara::capi::sized_options(options, kFirstSize, in))
+            return fail(Errc::InvalidArgument, "options must be set up with struct_size");
+        o.include_inactive = in.include_inactive != 0;
+        o.resolve_files = in.resolve_files != 0;
+        o.case_insensitive = in.case_insensitive != 0;
+        if (in.max_depth) o.max_depth = in.max_depth;
+        o.max_records = in.max_records;
+        o.max_bytes = in.max_bytes;
+    }
+    auto r = read([&](const st::DicomdirRecord& d) {
+        if (!cb) return true;
+        siaara_dicomdir_entry e{};
+        e.struct_size = sizeof e;
+        e.index = static_cast<uint32_t>(d.index);
+        e.parent = static_cast<int32_t>(d.parent);
+        e.depth = d.depth;
+        e.in_use = d.in_use ? 1 : 0;
+        e.file_status = static_cast<siaara_status>(d.file_status.code);
+        e.offset = d.offset;
+        siaara_index_record rec{};
+        rec.struct_size = sizeof rec;
+        const std::string tab = fill_index_record(d.keys, &rec);
+        return cb(user, &e, &rec, tab.c_str()) == 0;
+    }, o);
+    if (!r) return fail(r.error());
+    if (summary) {
+        auto c = [](std::size_t v) { return static_cast<uint32_t>(std::min<std::size_t>(v, UINT32_MAX)); };
+        summary->records = c(r->records);
+        summary->reported = c(r->reported);
+        summary->files = c(r->files);
+        summary->missing_files = c(r->missing_files);
+        summary->rejected_paths = c(r->rejected_paths);
+        summary->unreachable = c(r->unreachable);
+        summary->sequential_fallback = r->sequential_fallback ? 1 : 0;
+        summary->warnings = c(r->warnings.size());
+    }
     return ok();
 }
 
@@ -1548,45 +1600,21 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* path, size
                                                           siaara_dicomdir_summary* summary) {
     return guarded([&]() -> siaara_status {
         if (!path) return fail(Errc::InvalidArgument, "path must not be NULL");
-        if (summary && summary->struct_size < sizeof(siaara_dicomdir_summary))
-            return fail(Errc::InvalidArgument, "summary must be set up with struct_size");
-        st::DicomdirReadOptions o;
-        if (options) {
-            if (options->struct_size < sizeof(siaara_dicomdir_read_options))
-                return fail(Errc::InvalidArgument, "options must be set up with struct_size");
-            o.include_inactive = options->include_inactive != 0;
-            o.resolve_files = options->resolve_files != 0;
-            o.case_insensitive = options->case_insensitive != 0;
-            if (options->max_depth) o.max_depth = options->max_depth;
-        }
-        auto r = st::read_dicomdir(std::string(path, path_len), [&](const st::DicomdirRecord& d) {
-            if (!cb) return true;
-            siaara_dicomdir_entry e{};
-            e.struct_size = sizeof e;
-            e.index = static_cast<uint32_t>(d.index);
-            e.parent = static_cast<int32_t>(d.parent);
-            e.depth = d.depth;
-            e.in_use = d.in_use ? 1 : 0;
-            e.file_status = static_cast<siaara_status>(d.file_status.code);
-            e.offset = d.offset;
-            siaara_index_record rec{};
-            rec.struct_size = sizeof rec;
-            const std::string tab = fill_index_record(d.keys, &rec);
-            return cb(user, &e, &rec, tab.c_str()) == 0;
-        }, o);
-        if (!r) return fail(r.error());
-        if (summary) {
-            auto c = [](std::size_t v) { return static_cast<uint32_t>(std::min<std::size_t>(v, UINT32_MAX)); };
-            summary->records = c(r->records);
-            summary->reported = c(r->reported);
-            summary->files = c(r->files);
-            summary->missing_files = c(r->missing_files);
-            summary->rejected_paths = c(r->rejected_paths);
-            summary->unreachable = c(r->unreachable);
-            summary->sequential_fallback = r->sequential_fallback ? 1 : 0;
-            summary->warnings = c(r->warnings.size());
-        }
-        return ok();
+        return dicomdir_read_common(options, cb, user, summary, [&](const st::DicomdirCallback& each, const st::DicomdirReadOptions& o) {
+            return st::read_dicomdir(std::string(path, path_len), each, o);
+        });
+    });
+}
+
+SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read_memory(const uint8_t* data, size_t size,
+                                                                 const siaara_dicomdir_read_options* options,
+                                                                 siaara_dicomdir_callback cb, void* user,
+                                                                 siaara_dicomdir_summary* summary) {
+    return guarded([&]() -> siaara_status {
+        if (!data && size) return fail(Errc::InvalidArgument, "data must not be NULL");
+        return dicomdir_read_common(options, cb, user, summary, [&](const st::DicomdirCallback& each, const st::DicomdirReadOptions& o) {
+            return st::read_dicomdir_memory(data, size, each, o);
+        });
     });
 }
 
