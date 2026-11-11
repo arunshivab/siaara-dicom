@@ -25,7 +25,7 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   read of untrusted bytes). Captions lose control and format characters;
   `DicomAttachmentPreview.HtmlEscape` escapes them for a page. It bounds memory, not time: see
   the known limitations.
-- Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 12+ (universal).
+- Platforms: Windows (x64, x86, ARM64), Linux glibc (x64, x86, ARM64), macOS 14+ (universal).
 - Zero third-party dependencies. Reproducible archives, an SPDX 2.3 SBOM per archive, SHA-256
   checksums, build provenance attestation.
 

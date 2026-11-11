@@ -51,7 +51,7 @@ jobs:
           - { platform: windows-x64,     os: windows-2022,     rid: "win-x64",            hardening: "",                   cmake: "-A x64" }
           - { platform: windows-x86,     os: windows-2022,     rid: "win-x86",            hardening: "",                   cmake: "-A Win32" }
           - { platform: windows-arm64,   os: "${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}", rid: "win-arm64", hardening: "", cmake: "-A ARM64" }
-          - { platform: macos-universal, os: macos-15,         rid: "osx-x64 osx-arm64",  hardening: "",                   cmake: "-DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0" }
+          - { platform: macos-universal, os: macos-15,         rid: "osx-x64 osx-arm64",  hardening: "",                   cmake: "-DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0" }
     defaults:
       run:
         shell: bash

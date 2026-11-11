@@ -7,7 +7,7 @@ the operating system's own TLS stack.
 
 | | |
 |---|---|
-| Platforms | Windows (x64, x86, ARM64), Linux (x64, x86, ARM64; glibc), macOS 12+ (x64, ARM64, universal) |
+| Platforms | Windows (x64, x86, ARM64), Linux (x64, x86, ARM64; glibc), macOS 14+ (x64, ARM64, universal) |
 | Interfaces | C API (shared and static library, CMake package, pkg-config); C# / .NET 10 (NuGet package `Siaara` with the native library for every .NET runtime) |
 | Files | Part 10 read and write with byte-for-byte fidelity, lenient reading with a report of everything unusual, DICOM JSON and XML, validation against the IOD, repair |
 | Pixel data | Uncompressed, RLE, JPEG (baseline, extended, lossless), JPEG-LS, JPEG 2000, HTJ2K, Deflate: decode, encode and transcode; rendering (LUTs, window, palettes, overlays, presentation states), 3D volumes and MPR |

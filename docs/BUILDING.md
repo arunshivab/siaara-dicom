@@ -10,6 +10,10 @@ runtime (checked in CI, see "Release gates" below).
 | Windows | MSVC 2022 | x64, x86 (`-A Win32`), arm64 (`-A ARM64`) |
 | macOS 15 | Apple Clang | arm64, x64, universal (`CMAKE_OSX_ARCHITECTURES="x86_64;arm64"`) |
 
+macOS builds target macOS 14 or later (`-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0` in CI and in the release):
+the library formats decimal numbers with floating-point `std::to_chars`, which Apple's C++ library
+has from macOS 13.3, and .NET 10 supports macOS 14 and later.
+
 ## Quick start
 
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

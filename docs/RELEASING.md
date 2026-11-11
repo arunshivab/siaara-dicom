@@ -53,7 +53,7 @@ they were written with.
 ## What the workflow does, per platform
 
 Platforms: linux-x64, linux-x86, linux-arm64, windows-x64, windows-x86, windows-arm64,
-macos-universal (`CMAKE_OSX_ARCHITECTURES="x86_64;arm64"`, deployment target 12.0).
+macos-universal (`CMAKE_OSX_ARCHITECTURES="x86_64;arm64"`, deployment target 14.0).
 
 1. Checks that the tag is `v` + the version of `CMakeLists.txt`.
 2. Sets `SOURCE_DATE_EPOCH` to the commit time.
