@@ -481,6 +481,118 @@ Things to know:
 - A cut-off file is flagged (`ReadReport`), never shown as if whole. Its picture is shown when
   the first frame is all there; uncompressed pixel data that ends early has no picture.
 
+## 7a. Grouping a ZIP or a DICOMDIR (untrusted input)
+
+A mail that carries a study usually carries it as a ZIP: a folder of DICOM files from a CD or a
+PACS export, often with a DICOMDIR, sometimes inside a wrapping folder, in no particular order.
+`DicomStudyGrouping` (C: `siaara_grouping_*`) turns those members into patient / study / series,
+orders each series for scrolling, and sets what the DICOMDIR lists against what is in the ZIP -
+all from bytes in memory. Nothing is unpacked to disk and no file's bytes are kept: each member
+is read header-only while it is added.
+
+> **The grouping shows what the files claim, not proof that they belong together** or to the
+> patient they name. **Run it in the same separate worker process as the attachment preview**
+> (section 7), with the same kill timer and memory limit: reading headers has no time bound.
+
+**C#** (the work is in the package; `examples/csharp/StudyGrouping` is a complete program):
+
+```csharp
+using var grouping = new DicomStudyGrouping();           // DicomGroupingOptions.Recommended
+using var zip = new ZipArchive(new MemoryStream(attachment), ZipArchiveMode.Read);
+foreach (ZipArchiveEntry e in zip.Entries.Take(DicomGroupingOptions.DefaultMaxFiles))
+{
+    if (e.Length > DicomGroupingOptions.DefaultMaxFileBytes || e.FullName.EndsWith('/')) continue;
+    byte[] data = ReadAll(e);
+    if (Path.GetFileName(e.FullName).Equals("DICOMDIR", StringComparison.OrdinalIgnoreCase))
+        grouping.AddDicomdir(data);                       // optional
+    else
+        grouping.Add(e.FullName, data);                   // never throws for bad bytes
+}
+DicomGroupingResult r = grouping.Result;
+foreach (DicomGroupedSeries s in r.Series)                // each series in scrolling order
+    foreach (DicomGroupedInstance i in s.Instances)
+        Show(DicomAttachmentPreview.HtmlEscape(i.Name.Display), i.Position, i.SortKey);
+foreach (DicomGroupingIssue issue in r.Issues)            // skipped, ungrouped, duplicates, conflicts,
+    Report(issue.Kind, issue.Name.Display, issue.Subject.Display);  // listed-but-missing, unlisted
+```
+
+**C** (index-based getters; text by field, see `siaara.h`, "grouping"):
+
+```c
+siaara_grouping* g = NULL;
+siaara_grouping_create(NULL, &g);                         /* NULL: every default */
+siaara_grouping_add_file(g, name, name_len, data, size);  /* per ZIP member; SIAARA_OK for bad bytes too */
+siaara_grouping_add_dicomdir(g, dicomdir, dicomdir_size); /* optional */
+siaara_grouping_summary sum = {sizeof sum};
+siaara_grouping_result(g, &sum);
+for (uint32_t k = 0; k < sum.series; ++k) {
+    siaara_grouped_series s = {sizeof s};
+    siaara_grouping_series(g, k, &s);
+    for (uint32_t i = s.first_instance; i < s.first_instance + s.instance_count; ++i) {
+        siaara_grouping_text name = {sizeof name};
+        siaara_grouping_text_get(g, SIAARA_GLEVEL_INSTANCE, i, SIAARA_GFIELD_NAME, &name);
+        /* name.display: the display-safe copy; name.stored: the name exactly as given */
+    }
+}
+siaara_grouping_free(g);                                  /* every pointer handed out ends here */
+```
+
+What it does:
+- **Order within a series** (`Order`, `order`): by the position along the slice normal (the
+  default) - Image Position (Patient) projected on row x column of Image Orientation (Patient)
+  of the series' first file - so an oblique series and Instance Numbers that contradict the
+  positions still scroll in space order. A file whose position is missing, not finite, or whose
+  orientation differs from the series' by more than `OrientationTolerance` (default 1e-4 per
+  direction cosine) comes after, by Slice Location, then by Instance Number, then as added; the
+  instance's `SortKey` says which. By Instance Number or as added are options. Sorts are stable.
+- **Text**: every value comes exactly as stored (decoded from its character set, padding
+  removed) and next to it a display-safe copy: controls and line separators become a space,
+  bidirectional overrides, zero-width and other format characters are removed, bytes that are
+  not UTF-8 become U+FFFD. The ZIP member's name is returned exactly as given, with its own
+  display-safe copy (a name like `scan<U+202E>gpj.exe` shows as `scangpj.exe`). The same cleaner
+  is `siaara_text_display_safe` in C, and what `DicomAttachmentPreview.CaptionText` uses in C#.
+  A value longer than its cap (UIDs 64 characters, other text 1,024 bytes) is not kept and is
+  reported `TooLong`: never cut and passed on as if whole.
+- **Grouping keys**: a UID groups only when it is a valid UID (1 to 64 digits and dots).
+  Patients are told apart by Patient ID; Patient's Name and Patient ID are **not returned**
+  unless `IncludePatientFields` is set. A Study UID under two Patient IDs gives two studies and
+  an issue each; a series whose files disagree on Modality or Rows x Columns is reported.
+- **Duplicates** (the same SOP Instance UID twice): both kept, the second marked (default), or
+  only the first kept (`Duplicates = KeepFirst`); an issue names the second either way.
+- **DICOMDIR against the ZIP**: the member's name is split on `/` and `\`, `.` components are
+  dropped and ASCII letters compared in any case (`MatchCaseInsensitive`); a File ID of N
+  components matches the name's last N components (`MatchByTrailingComponents`), so a wrapping
+  folder does not matter. Listed-but-missing, present-but-unlisted and a File ID that two names
+  match are issues. The DICOMDIR is read from bytes (`Dicomdir.Read(ReadOnlySpan<byte>, ...)`,
+  `siaara_dicomdir_read_memory`): File IDs come as text and are never resolved to a path; an
+  unsafe one (`..`, absolute, a drive letter, more than 8 components, characters outside
+  PS3.10's set) is `Rejected`.
+
+The limits (`DicomGroupingOptions`, `siaara_grouping_options`; C: 0 takes the default, C#: a zero
+or negative limit throws `ArgumentOutOfRangeException`):
+
+| Option | Default | Protects against |
+|---|---|---|
+| `MaxFiles` / `max_files` | 10,000 | a ZIP of millions of members |
+| `MaxFileBytes` / `max_file_bytes` | 64 MiB | one huge member |
+| `MaxTotalBytes` / `max_total_bytes` | 2 GiB | the sum of all members read |
+| `MaxTotalInflated` / `max_total_inflated` | 2 GiB | many deflated members that each stay under the per-file limit |
+| `MaxResultBytes` / `max_result_bytes` | 64 MiB | text kept: stored values plus display copies |
+| `MaxUidChars` / `max_uid_chars` | 64 | a UID of megabytes |
+| `MaxTextBytes` / `max_text_bytes` | 1,024 | long names and descriptions |
+| `MaxDepth`, `MaxElements`, `MaxInflatedSize`, `MaxValueBytes` | 16, 200,000, 128 MiB, 65,536 | the preview's read limits, per file |
+
+Once a total budget is reached, every later file is recorded as skipped for it; names of skipped
+files are kept while the text budget allows. Each `Add` is one entry of small fixed size
+whatever happens, so cap the number of members you pass as you cap the attachment's size. The
+fixed part of a kept file is about 2.5 kB on top of its text (10,000 small files: about 25 MiB of
+heap in the tests).
+
+`Dicomdir.Read(path, ...)` and `siaara_dicomdir_read` read a DICOMDIR on disk exactly as before;
+the record limits (`MaxRecords`, `MaxBytes`) are options there with 0 = no limit, and on by
+default only for the reader from bytes (100,000 records, 64 MiB). The reader from bytes uses the
+preview's element limit too (200,000), which a DICOMDIR of about 20,000 records reaches first.
+
 ## 8. The command-line tools
 
     siaara-dump image.dcm                        # elements, with private names from the dictionary
