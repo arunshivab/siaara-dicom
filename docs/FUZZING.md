@@ -32,6 +32,7 @@ Without libFuzzer (GCC, MSVC, or Clang without the runtime) `fuzz_<target>` is a
 | `json`, `xml` | JSON and XML parsers | JSON: write(parse(x)) is stable and valid UTF-8 |
 | `dicom_json`, `dicom_xml` | DICOM JSON and Native XML model readers | accepted documents written back read again |
 | `dicomdir` | DICOMDIR reader (written to a scratch file) | record depth within the limit |
+| `display_text` | display-safe text cleaner (`siaara_text_display_safe`) | output is UTF-8 without controls, separators or format characters, at most 3 x the input, cleaning again changes nothing, a cut copy ends on a character |
 | `store_journal` | store snapshot load and journal replay at `Store::open` (records framed with valid CRCs by the harness) | after compaction, reopening gives the same counts |
 | `deid` | de-identifier on a parsed file with PHI planted at the top level and in sequence items | the planted marker never appears in the output |
 | `clinical` | SR, SEG (and SEG frame masks), RT Structure Set and presentation state readers | |

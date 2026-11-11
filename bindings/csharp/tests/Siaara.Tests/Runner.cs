@@ -186,6 +186,7 @@ internal static class Program
             NetworkTests.Register();
             Network2Tests.Register();
             PreviewTests.Register();
+            DisplayTextTests.Register();
             EncoderTests.Register();
             PrivateDictionaryTests.Register();
             NamedTests.Register();

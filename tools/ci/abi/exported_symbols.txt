@@ -197,6 +197,7 @@ siaara_store_set_callback
 siaara_store_stats_get
 siaara_store_verify
 siaara_store_verify_ex
+siaara_text_display_safe
 siaara_tls_available
 siaara_transfer_syntax_info_get
 siaara_validate_json

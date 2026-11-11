@@ -730,6 +730,14 @@ void seeds_dicomdir() {
     fs::remove_all(root);
 }
 
+void seeds_display_text() {
+    emit("display_text", "plain.txt", std::string_view("Doe^Jane CT Chest 20200115"));
+    emit("display_text", "controls.txt", std::string_view("a\x01" "b\x7f" "c\xc2\x85" "d\xe2\x80\xa8" "e\te\r\n"));
+    emit("display_text", "format.txt", std::string_view("scan\xe2\x80\xae" "gpj.exe\xe2\x80\x8b\xef\xbb\xbf\xf3\xa0\x81\x81\xd8\x80"));
+    emit("display_text", "bad_utf8.txt", std::string_view("\xff\xc3 \xe0\x80\x80\xed\xa0\x80\xf4\x90\x80\x80\xc0\xaf"));
+    emit("display_text", "scripts.txt", std::string_view("M\xc3\xbcller \xe0\xae\xa4\xe0\xae\xae\xe0\xae\xbf\xe0\xae\xb4\xe0\xaf\x8d \xf0\x9f\x98\x80"));
+}
+
 // Converts a store index file (16-byte header, then frames of length/CRC/type/payload) into the
 // store_journal harness layout.
 void frames_to_records(const fs::path& p, std::vector<std::uint8_t>& out, std::size_t* count) {
@@ -1030,6 +1038,7 @@ int main(int argc, char** argv) {
     seeds_multipart();
     seeds_json_xml();
     seeds_dicomdir();
+    seeds_display_text();
     seeds_store();
     seeds_deid();
     seeds_clinical();

@@ -3303,6 +3303,20 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_stow_ex(siaara_web_client* clien
                                                         const char* study_uid,
                                                         const siaara_web_stow_options* options);
 
+/* ---------------------------------------------------------------- display-safe text (appended) */
+/* The display-safe copy of `len` bytes of text at `text` (string buffer rules: buf / cap /
+ * needed): C0 controls, DEL and C1 controls (U+0000..U+001F, U+007F..U+009F) and the line and
+ * paragraph separators (U+2028, U+2029) become a space; Unicode format characters (general
+ * category Cf of Unicode 16: bidirectional marks, embeddings, overrides and isolates, zero-width
+ * characters, the byte order mark, tag characters ...) are removed; every byte that is not part
+ * of a well-formed UTF-8 sequence becomes U+FFFD (one per byte; an encoded surrogate, an overlong
+ * form or a value above U+10FFFF is not well formed). Everything else is kept. The copy is never
+ * longer than 3 x len bytes, and never longer than len for well-formed UTF-8. Make it NEXT TO the
+ * text, never instead of it, and still escape it before it goes into HTML. text may be NULL when
+ * len is 0. Thread safety: any thread. */
+SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, size_t len, char* buf, size_t cap,
+                                                              size_t* needed);
+
 #ifdef __cplusplus
 }
 #endif

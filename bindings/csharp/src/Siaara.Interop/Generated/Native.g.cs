@@ -2968,6 +2968,10 @@ internal static unsafe partial class Raw
     [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
     internal static partial int siaara_web_stow_ex(nint client, nint file, byte* study_uid, siaara_web_stow_options* options);
 
+    [LibraryImport(Library, EntryPoint = "siaara_text_display_safe")]
+    [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+    internal static partial int siaara_text_display_safe(byte* text, nuint len, byte* buf, nuint cap, nuint* needed);
+
 }
 
 /// <summary>Safe overloads of every C function: spans instead of pointer + length, ref/in/out
@@ -5004,6 +5008,15 @@ internal static unsafe class Native
         fixed (byte* p_study_uid = study_uid)
         fixed (siaara_web_stow_options* p_options = &options)
             return Raw.siaara_web_stow_ex(client, file, (byte*)p_study_uid, p_options);
+    }
+
+    internal static int siaara_text_display_safe(ReadOnlySpan<byte> text, Span<byte> buf, out nuint needed)
+    {
+        needed = default;
+        fixed (byte* p_text = text)
+        fixed (byte* p_buf = buf)
+        fixed (nuint* p_needed = &needed)
+            return Raw.siaara_text_display_safe((byte*)p_text, (nuint)text.Length, (byte*)p_buf, (nuint)buf.Length, p_needed);
     }
 
 }
