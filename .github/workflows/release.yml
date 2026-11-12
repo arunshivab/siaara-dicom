@@ -1,11 +1,16 @@
 name: release
 
-# On a version tag (v*): build Release for every platform of the CI matrix, run the full test
+# On a version tag (v*): first a gate (the tagged commit is on main and ci.yml passed on it); then
+# build Release for every platform of the CI matrix, run the full test
 # suite on each, install, check the installed package with find_package(siaara) and pkg-config,
 # check the runtime dependencies and hardening, package it reproducibly (archive + SPDX 2.3 SBOM +
 # SHA-256), attest the build provenance; then collect the native libraries of every platform into
 # ONE NuGet package (Siaara.<version>.nupkg, runtimes/<rid>/native) and test it offline; and create
-# a DRAFT GitHub release with everything attached. See docs/RELEASING.md and
+# a DRAFT GitHub release with everything attached (a re-run refreshes that draft; a published
+# release is never touched). The macOS universal archive is also tested natively on an Intel Mac
+# (macos-intel-test). Provenance that survives the repository going private: the Sigstore bundle
+# of every attestation and an SSH signature (secret SIAARA_RELEASE_SIGNING_KEY) of the archives,
+# SHA256SUMS and the NuGet package are attached to the release. See docs/RELEASING.md and
 # docs/RELEASE_CHECKLIST.md.
 #
 # A release candidate tag (vX.Y.Z-rc.N, X.Y.Z being the version of CMakeLists.txt) runs the same
@@ -27,8 +32,43 @@ env:
   DOTNET_NOLOGO: "1"
 
 jobs:
+  gate:
+    # RL-02 / R-217: nothing is built for a tag unless the tagged commit is on main and the ci
+    # workflow passed on exactly that commit.
+    name: gate (on main, CI green)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read        # gh run list
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: The tagged commit is on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main: only a commit of main may be released"
+            exit 1
+          fi
+          echo "$GITHUB_SHA is on main"
+      - name: The ci workflow passed on that exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ok=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --json conclusion,status \
+                 --jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length')
+          if [ "${ok:-0}" -lt 1 ]; then
+            echo "::error::no successful, completed run of ci.yml on $GITHUB_SHA: wait for CI to be green on that commit (or re-run it), then re-run this workflow"
+            gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" || true
+            exit 1
+          fi
+          echo "ci.yml passed on $GITHUB_SHA ($ok successful run(s))"
+
   build:
     name: ${{ matrix.platform }}
+    needs: gate
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
@@ -36,7 +76,9 @@ jobs:
       id-token: write      # build provenance attestation (Sigstore)
       attestations: write
     strategy:
-      fail-fast: true
+      # RL-01: every platform runs to the end, so one run shows every failing platform. The release
+      # is still blocked: nuget and draft-release need every leg.
+      fail-fast: false
       matrix:
         # rid: the .NET runtime identifier(s) this platform's shared library is packed under in the
         # NuGet package (none for linux-x86: .NET has no 32-bit x86 Linux runtime).
@@ -62,14 +104,15 @@ jobs:
       - name: Version, commit and SOURCE_DATE_EPOCH
         # The version has one source: the project(siaara VERSION x.y.z) line of CMakeLists.txt.
         # The tag must name it; the built library is checked against it after the install.
-        # VERSION is that version (what the binaries report). LABEL is the tag without its "v":
+        # SIAARA_VERSION is that version (what the binaries report). LABEL is the tag without its "v":
         # the same for a release, "x.y.z-rc.N" for a release candidate; it names the archives,
-        # the SBOMs and the NuGet package.
+        # the SBOMs and the NuGet package. (Not "VERSION": MSBuild reads environment variables as
+        # properties, case-insensitively, and $(Version) would override the rc VersionSuffix.)
         run: |
           py=python3; command -v python3 >/dev/null || py=python
           version=$($py tools/release/version.py)
           $py tools/release/version.py --check-tag "$GITHUB_REF_NAME"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "SIAARA_VERSION=$version" >> "$GITHUB_ENV"
           echo "LABEL=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -97,45 +140,24 @@ jobs:
           if arch -x86_64 /usr/bin/true 2>/dev/null; then
             arch -x86_64 build/tests/siaara_tests --data tests/data
           else
-            echo "::warning::Rosetta is not available on this runner; only the arm64 slice was tested"
+            echo "::error::Rosetta is not available on this runner: the x86_64 slice cannot be tested"
+            exit 1
           fi
           lipo -archs build/libsiaara.dylib | grep -q x86_64
           lipo -archs build/libsiaara.dylib | grep -q arm64
       - name: Install
         run: cmake --install build --config Release --prefix "stage/siaara-$LABEL-${{ matrix.platform }}"
       - name: The installed package works with find_package(siaara) and has the tagged version
-        run: |
-          prefix="$PWD/stage/siaara-$LABEL-${{ matrix.platform }}"
-          cmake -S tests/package -B build-consumer ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DSIAARA_EXPECT_VERSION="$VERSION"
-          cmake --build build-consumer --config Release
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            PATH="$prefix/bin:$PATH" build-consumer/Release/consumer_shared.exe
-            build-consumer/Release/consumer_static.exe
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            DYLD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_shared
-            build-consumer/consumer_static
-          else
-            LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_shared
-            build-consumer/consumer_static
-          fi
+        # tools/release/check_installed.sh: the same check runs in macos-intel-test.
+        run: bash tools/release/check_installed.sh consumer "$PWD/stage/siaara-$LABEL-${{ matrix.platform }}" "$SIAARA_VERSION" ${{ matrix.cmake }}
       - name: The shipped examples build against the installed package and run
-        run: |
-          prefix="$PWD/stage/siaara-$LABEL-${{ matrix.platform }}"
-          cmake -S examples -B build-examples ${{ matrix.cmake }} -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-          cmake --build build-examples --config Release
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            PATH="$prefix/bin:$PATH" ctest --test-dir build-examples -C Release --output-on-failure --no-tests=error
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            DYLD_LIBRARY_PATH="$prefix/lib" ctest --test-dir build-examples -C Release --output-on-failure --no-tests=error
-          else
-            LD_LIBRARY_PATH="$prefix/lib" ctest --test-dir build-examples -C Release --output-on-failure --no-tests=error
-          fi
+        run: bash tools/release/check_installed.sh examples "$PWD/stage/siaara-$LABEL-${{ matrix.platform }}" ${{ matrix.cmake }}
       - name: The installed pkg-config file works (Linux x64 and ARM64)
         if: runner.os == 'Linux' && !matrix.multilib
         run: |
           prefix="$PWD/stage/siaara-$LABEL-${{ matrix.platform }}"
           export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
-          test "$(pkg-config --modversion siaara)" = "$VERSION"
+          test "$(pkg-config --modversion siaara)" = "$SIAARA_VERSION"
           cc -std=c11 tests/package/main.c $(pkg-config --cflags --libs siaara) -o build-consumer/consumer_pkgconfig
           LD_LIBRARY_PATH="$prefix/lib" build-consumer/consumer_pkgconfig
       - name: Runtime dependencies of the shipped binaries
@@ -172,6 +194,7 @@ jobs:
       - name: Attest build provenance
         # Attestations need a public repository or GitHub Enterprise Cloud: on a private repository
         # without it this step reports the failure but does not stop the release.
+        id: attest
         continue-on-error: ${{ github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
@@ -179,6 +202,20 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.spdx.json
+      - name: Attestation bundle next to the archive (verifiable offline, also once the repository is private)
+        # RL-05 / R-209 / RL-06. One bundle covers the archive and its SBOM.
+        env:
+          ATTEST_OUTCOME: ${{ steps.attest.outcome }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          out="dist/siaara-$LABEL-${{ matrix.platform }}.sigstore.json"
+          if [ "$ATTEST_OUTCOME" = "success" ] && [ -n "$BUNDLE" ] && [ -s "$BUNDLE" ]; then
+            cp "$BUNDLE" "$out"
+            python3 -c "import json, sys; json.load(open(sys.argv[1], encoding='utf-8'))" "$out"
+            echo "attestation bundle: $out"
+          else
+            echo "::warning::no build provenance attestation was made for siaara-$LABEL-${{ matrix.platform }} (attest step: $ATTEST_OUTCOME); the release notes will say so"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: dist-${{ matrix.platform }}
@@ -191,12 +228,55 @@ jobs:
           path: native/
           if-no-files-found: error
 
+  macos-intel-test:
+    # RL-03: the macOS universal archive, unpacked as a consumer gets it, on an Intel Mac: the
+    # x86_64 slice runs natively (the build leg runs it under Rosetta). Same checks as the build
+    # leg runs on its installed tree (tools/release/check_installed.sh), built for x86_64 only.
+    name: macos-x64 (Intel) on the universal archive
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 1
+      - name: Version
+        run: |
+          version=$(python3 tools/release/version.py)
+          python3 tools/release/version.py --check-tag "$GITHUB_REF_NAME"
+          { echo "SIAARA_VERSION=$version"; echo "LABEL=${GITHUB_REF_NAME#v}"; } >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: dist-macos-universal
+          path: dist
+      - name: Unpack the archive (checksum first; the runner is an Intel Mac)
+        run: |
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "::error::macos-15-intel runner is $(uname -m), not x86_64"; exit 1
+          fi
+          (cd dist && shasum -a 256 -c "siaara-$LABEL-macos-universal.sha256")
+          mkdir unpacked
+          tar -xzf "dist/siaara-$LABEL-macos-universal.tar.gz" -C unpacked
+          lib="unpacked/siaara-$LABEL-macos-universal/lib/libsiaara.dylib"
+          lipo -archs "$lib"
+          lipo -archs "$lib" | grep -q x86_64
+          echo "PREFIX=$PWD/unpacked/siaara-$LABEL-macos-universal" >> "$GITHUB_ENV"
+      - name: The unpacked package works with find_package(siaara) and has the tagged version (x86_64)
+        run: bash tools/release/check_installed.sh consumer "$PREFIX" "$SIAARA_VERSION" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+      - name: The shipped examples build against the unpacked package and run (x86_64)
+        run: bash tools/release/check_installed.sh examples "$PREFIX" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+
   nuget:
     # ONE NuGet package for .NET consumers: the managed assemblies (built here, once) and the
     # native library of every platform job under runtimes/<rid>/native. The package has no
     # dependencies, and a consumer restores it without any feed (tested below, offline).
     name: nuget
-    needs: build
+    needs: [build, macos-intel-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -211,10 +291,12 @@ jobs:
         with:
           global-json-file: global.json   # the exact SDK, pinned in the repository
       - name: Version and SOURCE_DATE_EPOCH
+        # SIAARA_VERSION, never VERSION: dotnet pack below reads the environment as MSBuild
+        # properties, and VERSION=x.y.z would set $(Version) and drop the rc VersionSuffix.
         run: |
           version=$(python3 tools/release/version.py)
           python3 tools/release/version.py --check-tag "$GITHUB_REF_NAME"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "SIAARA_VERSION=$version" >> "$GITHUB_ENV"
           echo "LABEL=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "SUFFIX=$(python3 tools/release/version.py --tag-suffix "$GITHUB_REF_NAME")" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -235,6 +317,11 @@ jobs:
           dotnet pack bindings/csharp/src/Siaara -c Release -o dist \
             -p:ContinuousIntegrationBuild=true -p:SiaaraNativeArtifactsDir="$PWD/native" -p:VersionSuffix="$SUFFIX"
           ls -l dist
+          if [ ! -f "dist/Siaara.$LABEL.nupkg" ]; then
+            echo "::error::dotnet pack did not produce dist/Siaara.$LABEL.nupkg (package version wrong? an environment variable named like an MSBuild property, such as VERSION, overrides VersionSuffix)"
+            ls -l dist
+            exit 1
+          fi
           echo "fetched for the build:"; ls "$NUGET_PACKAGES"
           extra=$(ls "$NUGET_PACKAGES" | grep -v '^microsoft.net.illink.tasks$' || true)
           if [ -n "$extra" ]; then echo "packages fetched that are not the SDK's ILLink analyzer pack: $extra"; exit 1; fi
@@ -255,11 +342,40 @@ jobs:
           cd dist
           sha256sum "Siaara.$LABEL.nupkg" > "Siaara.$LABEL.nupkg.sha256"
           cat "Siaara.$LABEL.nupkg.sha256"
+      - name: SSH release signature of the package (secret SIAARA_RELEASE_SIGNING_KEY)
+        # RL-05 / R-209: a signature that anyone holding the public line of .github/release-signers
+        # can check, with or without GitHub. Without the secret: a warning, no signature.
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.SIAARA_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then echo "::warning::SIAARA_RELEASE_SIGNING_KEY is not set: no SSH signature"; exit 0; fi
+          umask 077; key="$RUNNER_TEMP/release_key"; printf '%s\n' "$RELEASE_SIGNING_KEY" | tr -d '\r' > "$key"
+          rm -f "dist/Siaara.$LABEL.nupkg.sig"
+          ssh-keygen -Y sign -f "$key" -n siaara-release "dist/Siaara.$LABEL.nupkg"; rm -f "$key"
+          if [ ! -f .github/release-signers ]; then
+            echo "::warning::.github/release-signers is not in the repository: the signature was made but not verified"
+            exit 0
+          fi
+          ssh-keygen -Y verify -f .github/release-signers -I release@siaara -n siaara-release -s "dist/Siaara.$LABEL.nupkg.sig" < "dist/Siaara.$LABEL.nupkg"
       - name: Attest build provenance
+        id: attest
         continue-on-error: ${{ github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: dist/*.nupkg
+      - name: Attestation bundle next to the package (verifiable offline, also once the repository is private)
+        env:
+          ATTEST_OUTCOME: ${{ steps.attest.outcome }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          out="dist/Siaara.$LABEL.nupkg.sigstore.json"
+          if [ "$ATTEST_OUTCOME" = "success" ] && [ -n "$BUNDLE" ] && [ -s "$BUNDLE" ]; then
+            cp "$BUNDLE" "$out"
+            python3 -c "import json, sys; json.load(open(sys.argv[1], encoding='utf-8'))" "$out"
+            echo "attestation bundle: $out"
+          else
+            echo "::warning::no build provenance attestation was made for Siaara.$LABEL.nupkg (attest step: $ATTEST_OUTCOME); the release notes will say so"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: dist-nuget
@@ -267,11 +383,11 @@ jobs:
           if-no-files-found: error
 
   draft-release:
-    needs: [build, nuget]
+    needs: [build, nuget, macos-intel-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: write      # create the draft release
+      contents: write      # create or refresh the draft release
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -288,17 +404,89 @@ jobs:
           sha256sum -c SHA256SUMS
           rm -f *.sha256
           ls -l
-      - name: Release notes from CHANGELOG.md
+      - name: SSH release signatures of the archives and SHA256SUMS (secret SIAARA_RELEASE_SIGNING_KEY)
+        # The package was signed in the nuget job; SHA256SUMS exists only here, so the archives and
+        # SHA256SUMS are signed here. Without the secret: a warning, no signatures.
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.SIAARA_RELEASE_SIGNING_KEY }}
         run: |
-          python3 tools/release/version.py --release-notes "${GITHUB_REF_NAME#v}" --commit "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" > release-notes.md
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then echo "::warning::SIAARA_RELEASE_SIGNING_KEY is not set: no SSH signature"; exit 0; fi
+          umask 077; key="$RUNNER_TEMP/release_key"; printf '%s\n' "$RELEASE_SIGNING_KEY" | tr -d '\r' > "$key"
+          trap 'rm -f "$key"' EXIT
+          verify=1
+          if [ ! -f .github/release-signers ]; then
+            echo "::warning::.github/release-signers is not in the repository: the signatures are made but not verified"
+            verify=0
+          fi
+          shopt -s nullglob
+          for f in dist/siaara-*.tar.gz dist/siaara-*.zip dist/SHA256SUMS; do
+            rm -f "$f.sig"   # ssh-keygen would ask before overwriting one
+            ssh-keygen -Y sign -f "$key" -n siaara-release "$f"
+            if [ "$verify" = 1 ]; then
+              ssh-keygen -Y verify -f .github/release-signers -I release@siaara -n siaara-release -s "$f.sig" < "$f"
+            fi
+          done
+      - name: Release notes from CHANGELOG.md, with the provenance and signature status
+        # RL-06: when an attestation could not be made (private repository without GitHub Enterprise
+        # Cloud) or a file is not SSH-signed, the notes say so near the top.
+        run: |
+          python3 tools/release/version.py --release-notes "${GITHUB_REF_NAME#v}" --commit "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" > notes-base.md
+          label="${GITHUB_REF_NAME#v}"
+          shopt -s nullglob
+          no_bundle=() no_sig=()
+          for a in dist/siaara-*.tar.gz dist/siaara-*.zip; do
+            base=$(basename "$a"); base=${base%.tar.gz}; base=${base%.zip}
+            [ -f "dist/$base.sigstore.json" ] || no_bundle+=("$(basename "$a")")
+            [ -f "$a.sig" ] || no_sig+=("$(basename "$a")")
+          done
+          [ -f "dist/Siaara.$label.nupkg.sigstore.json" ] || no_bundle+=("Siaara.$label.nupkg")
+          [ -f "dist/Siaara.$label.nupkg.sig" ] || no_sig+=("Siaara.$label.nupkg")
+          [ -f dist/SHA256SUMS.sig ] || no_sig+=("SHA256SUMS")
+          {
+            echo "**Provenance and signatures.** Attached, except where listed below: a Sigstore attestation bundle (\`*.sigstore.json\`) for each archive (it also covers its SBOM) and for the NuGet package, and an SSH signature (\`*.sig\`, namespace \`siaara-release\`, signer \`release@siaara\`) of each archive, \`SHA256SUMS\` and the package; how to check them: docs/RELEASING.md, \"Verifying a release\"."
+            if [ ${#no_bundle[@]} -gt 0 ]; then
+              echo
+              echo "**No build provenance attestation was made for:** ${no_bundle[*]} (the attestation step failed or is not available: private repository without GitHub Enterprise Cloud)."
+            fi
+            if [ ${#no_sig[@]} -gt 0 ]; then
+              echo
+              echo "**Not SSH-signed:** ${no_sig[*]} (the secret SIAARA_RELEASE_SIGNING_KEY was not set)."
+            fi
+            echo
+          } > notes-provenance.md
+          if [ ${#no_bundle[@]} -gt 0 ]; then echo "::warning::no attestation for: ${no_bundle[*]}"; fi
+          if [ ${#no_sig[@]} -gt 0 ]; then echo "::warning::no SSH signature for: ${no_sig[*]}"; fi
+          # The first paragraph of the notes (the "Draft release of ..." line) stays first.
+          awk 'NR==FNR { prov = prov $0 "\n"; next } { print } FNR==2 && !done { printf "%s", prov; done=1 }' \
+            notes-provenance.md notes-base.md > release-notes.md
           cat release-notes.md
-      - name: Create the draft release
+      - name: Create the draft release, or refresh the draft of an earlier run
+        # RL-04. A release for the tag that is still a draft: re-upload every file (replacing those
+        # of the same name) and replace the notes. A published release: nothing is touched, the job
+        # fails. No release: create the draft.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prerelease=""
-          case "$GITHUB_REF_NAME" in *-rc.*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
-            --title "SIAARA DICOM Toolkit ${GITHUB_REF_NAME#v}" \
-            --notes-file release-notes.md \
-            dist/*
+          set +e
+          state=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> view.err)
+          rc=$?
+          set -e
+          if [ "$rc" = 0 ] && [ "$state" = "true" ]; then
+            echo "A draft release for $GITHUB_REF_NAME exists: refreshing its files and notes"
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist/*
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
+          elif [ "$rc" = 0 ]; then
+            echo "::error::the release $GITHUB_REF_NAME is already published: it is not changed. A published release is never replaced; release a new version (or the next -rc.N)."
+            exit 1
+          elif grep -qi "release not found" view.err; then
+            prerelease=""
+            case "$GITHUB_REF_NAME" in *-rc.*) prerelease="--prerelease" ;; esac
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
+              --title "SIAARA DICOM Toolkit ${GITHUB_REF_NAME#v}" \
+              --notes-file release-notes.md \
+              dist/*
+          else
+            cat view.err
+            echo "::error::could not find out whether a release for $GITHUB_REF_NAME exists"
+            exit 1
+          fi

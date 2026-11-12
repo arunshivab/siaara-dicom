@@ -10,7 +10,15 @@ name: publish-package
 # the release's SHA256SUMS and pushed as it is. A version on the feed cannot be replaced; a wrong
 # one has to be deleted by hand first (docs/RELEASING.md).
 #
-# Manual run (workflow_dispatch) for an existing release: give its tag.
+# Before the push the package's provenance is verified: its Sigstore attestation bundle (attached
+# to the release; or, while the repository is public, the attestation stored on GitHub) and/or its
+# SSH release signature against .github/release-signers of the tagged commit. At least one must
+# verify, or nothing is pushed.
+#
+# Release candidates (vX.Y.Z-rc.N, a pre-release) reach the feed only by a deliberate manual run
+# (RL-13): publishing an rc draft does not push it. Manual run (workflow_dispatch) for an existing
+# release, rc or not: give its tag, for example
+#     gh workflow run publish-package.yml -R arunshivab/siaara-dicom -f tag=v0.1.0-rc.1
 
 on:
   release:
@@ -18,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag of an existing, published release (vX.Y.Z)"
+        description: "Tag of an existing, published release (vX.Y.Z or vX.Y.Z-rc.N)"
         required: true
         type: string
 
@@ -32,49 +40,103 @@ env:
 jobs:
   publish:
     name: publish to GitHub Packages
+    # RL-13: a published pre-release (rc) does not go to the feed by itself; a manual run does.
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read       # read the release and its files
       packages: write      # push to the feed
+      attestations: read   # gh attestation verify
     env:
       RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          fetch-depth: 1
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
-        with:
-          global-json-file: global.json
       - name: The tag is a release tag
+        # Before the checkout: the tag names the ref that is checked out.
         run: |
           # One line, exactly vX.Y.Z or vX.Y.Z-rc.N: nothing else may reach GITHUB_ENV.
           if ! printf '%s' "$RELEASE_TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?' \
              || [ "$(printf '%s' "$RELEASE_TAG" | wc -l)" != "0" ]; then
             echo "not a release tag"; exit 1
           fi
-          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
-      - name: Download the package and the checksums of the release
+          # SIAARA_VERSION, never VERSION: dotnet reads the environment as MSBuild properties.
+          echo "SIAARA_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 1
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1 (tag v4)
+        with:
+          global-json-file: global.json
+      - name: Download the package, the checksums and the provenance files of the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir dist
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
-            --pattern "Siaara.$VERSION.nupkg" --pattern SHA256SUMS
+            --pattern "Siaara.$SIAARA_VERSION.nupkg" --pattern SHA256SUMS
+          # Optional: the attestation bundle and the SSH signature (the verify step needs one).
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern "Siaara.$SIAARA_VERSION.nupkg.sigstore.json" || true
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern "Siaara.$SIAARA_VERSION.nupkg.sig" || true
           ls -l dist
       - name: The package is the one the release lists
         run: |
           cd dist
-          grep -F " Siaara.$VERSION.nupkg" SHA256SUMS > package.sha256
+          grep -F " Siaara.$SIAARA_VERSION.nupkg" SHA256SUMS > package.sha256
           test "$(wc -l < package.sha256)" = "1"
           test -s package.sha256
           sha256sum -c package.sha256
-      - name: The package is whole (every runtime, licence, readme, documentation)
-        run: python3 tools/release/check_nupkg.py "dist/Siaara.$VERSION.nupkg" --version "$VERSION" --require-all-rids
+      - name: The package is whole (every runtime, licence, readme, documentation, nothing else)
+        run: python3 tools/release/check_nupkg.py "dist/Siaara.$SIAARA_VERSION.nupkg" --version "$SIAARA_VERSION" --require-all-rids
+      - name: The package's provenance verifies (attestation and/or SSH release signature)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          pkg="dist/Siaara.$SIAARA_VERSION.nupkg"
+          common=(--repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref "refs/tags/$RELEASE_TAG" --deny-self-hosted-runners)
+          ok=0
+          if [ -f "$pkg.sigstore.json" ]; then
+            echo "attestation: the bundle attached to the release"
+            gh attestation verify "$pkg" --bundle "$pkg.sigstore.json" "${common[@]}"
+            ok=1
+          elif [ "$REPO_PRIVATE" != "true" ]; then
+            echo "attestation: no bundle attached; the attestation stored on GitHub"
+            gh attestation verify "$pkg" "${common[@]}"
+            ok=1
+          else
+            echo "attestation: no bundle attached and the repository is private: not checked"
+          fi
+          if [ -f "$pkg.sig" ] && [ -f .github/release-signers ]; then
+            echo "SSH release signature against .github/release-signers of $RELEASE_TAG"
+            ssh-keygen -Y verify -f .github/release-signers -I release@siaara -n siaara-release -s "$pkg.sig" < "$pkg"
+            ok=1
+          elif [ -f "$pkg.sig" ]; then
+            echo "::warning::$pkg.sig is attached but .github/release-signers is not in $RELEASE_TAG: the signature is not checked"
+          else
+            echo "SSH release signature: none attached"
+          fi
+          if [ "$ok" != 1 ]; then
+            echo "::error::neither an attestation nor an SSH release signature of $pkg could be verified: nothing is pushed (docs/RELEASING.md, \"Verifying a release\")"
+            exit 1
+          fi
       - name: Push to the feed
         env:
           NUGET_TOKEN: ${{ github.token }}
         run: |
-          dotnet nuget push "dist/Siaara.$VERSION.nupkg" \
+          set +e
+          dotnet nuget push "dist/Siaara.$SIAARA_VERSION.nupkg" \
             --source "https://nuget.pkg.github.com/${GITHUB_REPOSITORY_OWNER}/index.json" \
-            --api-key "$NUGET_TOKEN"
+            --api-key "$NUGET_TOKEN" > push.log 2>&1
+          rc=$?
+          set -e
+          cat push.log
+          if [ "$rc" != 0 ]; then
+            # RL-11: a version on the feed cannot be replaced.
+            if grep -qiE '409|conflict|already exists' push.log; then
+              echo "::error::Siaara $SIAARA_VERSION is already on the feed, a version can't be replaced; delete it by hand first (docs/RELEASING.md, \"The package feed\")"
+            fi
+            exit "$rc"
+          fi
