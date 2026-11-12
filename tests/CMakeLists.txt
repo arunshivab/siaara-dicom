@@ -89,6 +89,9 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND)
   add_test(NAME capi_guarded
            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/check_capi_guarded.py ${PROJECT_SOURCE_DIR})
+  # R-218: the NuGet package content allow-list of tools/release/check_nupkg.py.
+  add_test(NAME release_check_nupkg
+           COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/release/test_check_nupkg.py)
 endif()
 if(Python3_FOUND AND EXISTS "${SIAARA_NEMA_PART15}" AND EXISTS "${SIAARA_NEMA_PART16}")
   add_test(NAME deid_table_matches_generator

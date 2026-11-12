@@ -7,6 +7,9 @@
 Content check: the managed assemblies and their XML documentation in lib/net10.0, LICENSE and
 README.md, the nuspec (id, version, authors, licence file, NO dependency), and the native library
 under runtimes/<rid>/native for the runtimes present (--require-all-rids: all seven).
+Allow-list (R-218): the package may hold ONLY those files, an icon.png, and the OPC metadata that
+NuGet writes ([Content_Types].xml, _rels/.rels, package/services/metadata/core-properties/
+<32 hex digits>.psmdcp). Any other entry fails the check and is named.
 Consumer test: copies examples/csharp/QuickStart into the work folder with a nuget.config whose
 only source is a local folder holding the package, then restores, builds and runs it with a fresh
 package cache. The caller makes the network unusable (dead proxy) to prove nothing is fetched; the
@@ -22,20 +25,46 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
+MANAGED = ("lib/net10.0/Siaara.dll", "lib/net10.0/Siaara.Interop.dll", "lib/net10.0/Siaara.xml")
+REQUIRED = MANAGED + ("LICENSE", "README.md", "Siaara.nuspec")
+OPTIONAL = ("icon.png", "[Content_Types].xml", "_rels/.rels")
+PSMDCP = re.compile(r"package/services/metadata/core-properties/[0-9a-f]{32}\.psmdcp")
 RIDS = {"linux-x64": "libsiaara.so", "linux-arm64": "libsiaara.so", "win-x64": "siaara.dll", "win-x86": "siaara.dll",
         "win-arm64": "siaara.dll", "osx-x64": "libsiaara.dylib", "osx-arm64": "libsiaara.dylib"}
+
+
+def allowed_names():
+    """Every file name the package may hold, apart from the .psmdcp metadata file (PSMDCP)."""
+    return set(REQUIRED) | set(OPTIONAL) | {"runtimes/%s/native/%s" % (r, l) for r, l in RIDS.items()}
+
+
+def unexpected_entries(names):
+    """The entries of the package that are not on the allow-list, sorted. A directory entry (name
+    ending in "/") is allowed only when it is a folder of an allowed file."""
+    allowed = allowed_names()
+    folders = set()
+    for n in allowed | {"package/services/metadata/core-properties/x"}:
+        parts = n.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            folders.add("/".join(parts[:i]) + "/")
+    bad = []
+    for n in names:
+        if n in allowed or PSMDCP.fullmatch(n) or n in folders:
+            continue
+        bad.append(n)
+    return sorted(bad)
 
 
 def check_content(path, version, require_all, listing):
     problems = []
     with zipfile.ZipFile(path) as z:
-        names = {i.filename: i.file_size for i in z.infolist()}
+        entries = z.infolist()
+        names = {i.filename: i.file_size for i in entries}
         nuspec = z.read("Siaara.nuspec").decode("utf-8") if "Siaara.nuspec" in names else ""
     if listing:
         for n in sorted(names):
             print("%10d  %s" % (names[n], n))
-    for n in ("lib/net10.0/Siaara.dll", "lib/net10.0/Siaara.Interop.dll", "lib/net10.0/Siaara.xml", "LICENSE", "README.md",
-              "Siaara.nuspec"):
+    for n in REQUIRED:
         if n not in names:
             problems.append("missing: " + n)
     present = []
@@ -47,9 +76,12 @@ def check_content(path, version, require_all, listing):
             problems.append("missing native library: " + n)
     if not present:
         problems.append("no native library under runtimes/")
-    for n in names:
-        if n.startswith("runtimes/") and not any(n == "runtimes/%s/native/%s" % (r, l) for r, l in RIDS.items()):
-            problems.append("unexpected file under runtimes/: " + n)
+    if len(entries) != len(names):
+        problems.append("the package has duplicate entries")
+    for n in unexpected_entries(names):
+        problems.append("file not on the package allow-list: " + n)
+    if sum(1 for n in names if PSMDCP.fullmatch(n)) > 1:
+        problems.append("more than one package/services/metadata/core-properties/*.psmdcp")
 
     def tag(t):
         m = re.search(r"<%s[^>]*>([^<]*)</%s>" % (t, t), nuspec)
