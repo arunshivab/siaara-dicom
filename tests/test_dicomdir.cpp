@@ -240,7 +240,7 @@ TEST_CASE("dicomdir: write then read round trip") {
                 CHECK(c.size() <= 8);
                 for (char ch : c) CHECK((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'));
             }
-            if (type == "IMAGE" && r.keys[Str::PatientId] == "PA") CHECK(r.keys.flags & kHasInstanceNumber);
+            if (type == "IMAGE" && r.keys[Str::PatientId] == "PA") CHECK(r.keys.node->flags & kHasInstanceNumber);
         }
     }
     CHECK_EQ(seen.size(), 9u);
@@ -572,8 +572,8 @@ TEST_CASE("dicomdir: the path reader on the shared parser - valid media read as 
         CHECK(base[i].offset == same[i].offset && base[i].file_id == same[i].file_id);
         CHECK(base[i].file_id == mem[i].file_id && base[i].offset == mem[i].offset && base[i].depth == mem[i].depth);
         for (std::size_t k = 0; k < kStrCount; ++k) {
-            CHECK(base[i].keys.s[k] == same[i].keys.s[k]);
-            if (static_cast<Str>(k) != Str::FilePath) CHECK(base[i].keys.s[k] == mem[i].keys.s[k]);
+            CHECK(base[i].keys[static_cast<Str>(k)] == same[i].keys[static_cast<Str>(k)]);
+            if (static_cast<Str>(k) != Str::FilePath) CHECK(base[i].keys[static_cast<Str>(k)] == mem[i].keys[static_cast<Str>(k)]);
         }
         if (!base[i].file_id.empty()) CHECK(fs::equivalent(base[i].keys[Str::FilePath], td / "m" / mem[i].keys[Str::FilePath]));
     }

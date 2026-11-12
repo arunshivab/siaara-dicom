@@ -2,6 +2,7 @@
 // reader, the record links (cycles, shared children, depth, links into a record), the record and
 // size limits, File IDs as text (well formed or rejected), and the options struct that grew (R-081).
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -239,7 +240,9 @@ TEST_CASE("dicomdir memory: File IDs from bytes - well formed or rejected, never
         if (!ids[i].second) CHECK_EQ(v[i].file_status, SIAARA_ERR_REJECTED);
     }
     CHECK(v[0].file_text == "DICOM/IM1");
-    CHECK(v[3].file_text == "../../ETC/PASSWD");  // the text as stored, components joined: never a path
+    // A rejected File ID's text is the value exactly as stored: '\\' separators, padding kept.
+    CHECK(v[3].file_text == "..\\..\\ETC\\PASSWD");
+    CHECK(v[7].file_text == "dicom\\im1 ");
     CHECK_EQ(s.files, 4u);
     CHECK_EQ(s.rejected_paths, static_cast<uint32_t>(ids.size() - 4));
     CHECK_EQ(s.missing_files, 0u);
@@ -248,3 +251,125 @@ TEST_CASE("dicomdir memory: File IDs from bytes - well formed or rejected, never
     CHECK(!store::file_id_well_formed({""}));
 }
 
+
+TEST_CASE("dicomdir memory: R-222 a value longer than max_value_bytes is left out, never cut; inherited keys are shared, not copied") {
+    // A PATIENT record with a 4 MB Patient ID and 3,000 IMAGE records under it (sequence order).
+    DicomFile f;
+    f.transfer_syntax = std::string(ts::ExplicitVRLittleEndian);
+    (void)f.meta.set_string(tags::MediaStorageSOPClassUID, VR::UI, store::kMediaStorageDirectoryUid);
+    (void)f.meta.set_string(tags::MediaStorageSOPInstanceUID, VR::UI, "1.2.3.4.5");
+    (void)f.dataset.set_uint32(0x00041200, 0);
+    Element seq;
+    seq.tag = 0x00041220;
+    seq.vr = VR::SQ;
+    auto rec = [](const char* type) {
+        Dataset d;
+        (void)d.set_uint32(0x00041400, 0);
+        (void)d.set_uint16(0x00041410, 0xFFFF);
+        (void)d.set_uint32(0x00041420, 0);
+        (void)d.set_string(0x00041430, VR::CS, type);
+        return d;
+    };
+    const std::string huge(4u << 20, 'P');
+    Dataset p = rec("PATIENT");
+    (void)p.set_bytes(0x00100020, VR::LO, Bytes::from_string(huge));
+    seq.items.push_back(p);
+    constexpr std::size_t kImages = 3000;
+    for (std::size_t i = 0; i < kImages; ++i) {
+        Dataset im = rec("IMAGE");
+        (void)im.set_string(0x00041500, VR::CS, "DICOM\\IM");
+        seq.items.push_back(im);
+    }
+    f.dataset.put(std::move(seq));
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(write_part10(f, bytes).is_ok());
+    struct Count {
+        std::size_t records = 0, long_id = 0;
+    };
+    auto on = [](void* user, const siaara_dicomdir_entry*, const siaara_index_record* k, const char*) -> int32_t {
+        auto* c = static_cast<Count*>(user);
+        ++c->records;
+        if (k->str_length[SIAARA_IDX_PATIENT_ID] == (4u << 20)) ++c->long_id;
+        return 0;
+    };
+    siaara_dicomdir_summary sum;
+    std::memset(&sum, 0, sizeof sum);
+    sum.struct_size = sizeof sum;
+    {  // the default cap (64 KiB): the 4 MB value is left out and reported
+        Count c;
+        const auto t0 = std::chrono::steady_clock::now();
+        CHECK_EQ(siaara_dicomdir_read_memory(bytes.data(), bytes.size(), nullptr, on, &c, &sum), SIAARA_OK);
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        CHECK_EQ(c.records, kImages + 1);
+        CHECK_EQ(c.long_id, 0u);
+        CHECK(sum.warnings >= 1u);
+        CHECK(s < 10.0);
+        std::printf("  4 MB value, %zu records, default cap: %.2f s\n", kImages + 1, s);
+    }
+    {  // a cap above it: the value is kept and every record inherits it - by reference, so it is fast
+        siaara_dicomdir_read_options o = dd_options();
+        o.max_value_bytes = 8u << 20;
+        Count c;
+        const auto t0 = std::chrono::steady_clock::now();
+        CHECK_EQ(siaara_dicomdir_read_memory(bytes.data(), bytes.size(), &o, on, &c, &sum), SIAARA_OK);
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        CHECK_EQ(c.records, kImages + 1);
+        CHECK_EQ(c.long_id, kImages + 1);
+        CHECK(s < 10.0);
+        std::printf("  4 MB value inherited by %zu records: %.2f s\n", kImages, s);
+    }
+    {  // C++: the keys of a record reference its parent's; the value is never cut
+        store::DicomdirReadOptions o;
+        o.max_value_bytes = 1024;
+        std::size_t n = 0;
+        auto r = store::read_dicomdir_memory(bytes.data(), bytes.size(), [&](const store::DicomdirRecord& d) {
+            CHECK(d.keys[store::Str::PatientId].empty());
+            if (d.parent >= 0) CHECK(d.keys.node->parent() != nullptr);
+            ++n;
+            return true;
+        }, o);
+        CHECK(r.is_ok());
+        CHECK_EQ(n, kImages + 1);
+    }
+    // The path reader: no cap by default (its behaviour before), the cap when asked.
+    store_synth::TempDir td("siaara-ddcap");
+    const fs::path dd = td / "DICOMDIR";
+    store_synth::write_bytes(dd, bytes);
+    std::size_t kept = 0;
+    auto r = store::read_dicomdir(dd.string(), [&](const store::DicomdirRecord& d) {
+        if (d.keys[store::Str::PatientId].size() == huge.size()) ++kept;
+        return true;
+    });
+    CHECK(r.is_ok());
+    CHECK_EQ(kept, kImages + 1);
+}
+
+TEST_CASE("dicomdir memory: testing P3-2 - not a Media Storage Directory is refused; a cut record is dropped; an incomplete read warns") {
+    store_synth::TempDir td("siaara-ddp32");
+    make_media(td / "src", td / "m", 1);
+    const std::vector<std::uint8_t> orig = store_synth::read_bytes(td / "m" / "DICOMDIR");
+    std::vector<DirRec> all;
+    REQUIRE(read_mem(orig, all) == SIAARA_OK);
+    REQUIRE(all.size() == 15u);
+    {  // another Media Storage SOP Class
+        auto b = orig;
+        const std::string cls(store::kMediaStorageDirectoryUid);
+        auto it = std::search(b.begin(), b.end(), cls.begin(), cls.end());
+        REQUIRE(it != b.end());
+        *(it + static_cast<std::ptrdiff_t>(cls.size()) - 2) = '9';  // 1.2.840.10008.1.3.10 -> 1.2.840.10008.1.3.90
+        std::vector<DirRec> v;
+        CHECK_EQ(read_mem(b, v), SIAARA_ERR_REJECTED);
+        CHECK(v.empty());
+    }
+    {  // cut inside the last record: it is dropped, the rest is read, warnings say so
+        std::uint64_t last = 0;
+        for (const auto& r : all) last = std::max(last, r.offset);
+        std::vector<std::uint8_t> b(orig.begin(), orig.begin() + static_cast<std::ptrdiff_t>(last + 40));
+        std::vector<DirRec> v;
+        siaara_dicomdir_summary s;
+        CHECK_EQ(read_mem(b, v, &s), SIAARA_OK);
+        CHECK(v.size() < all.size());
+        for (const auto& r : v) CHECK(r.offset != last);
+        CHECK(s.warnings >= 2u);  // the incomplete read, the dropped record
+    }
+}

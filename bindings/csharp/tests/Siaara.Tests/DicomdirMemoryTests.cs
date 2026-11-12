@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using static Siaara.Tests.T;
 
 namespace Siaara.Tests;
@@ -58,6 +59,14 @@ internal static class DicomdirMemoryTests
             Throws<SiaaraException>(() => Dicomdir.ReadAll(dd, new DicomdirReadOptions { MaxRecords = 5 }));
             CheckEq(DicomdirReadOptions.MemoryDefaultMaxRecords, 100_000L);
             CheckEq(DicomdirReadOptions.MemoryDefaultMaxBytes, 64L << 20);
+            CheckEq(DicomdirReadOptions.MemoryDefaultMaxValueBytes, 65_536L);
+            Throws<ArgumentOutOfRangeException>(() => Dicomdir.ReadAll(bytes, new DicomdirReadOptions { MaxValueBytes = -1 }));
+            // a cap below the Referenced File IDs (about 30 bytes): the File IDs are rejected, not cut
+            var capped = Dicomdir.ReadAll(bytes, new DicomdirReadOptions { MaxValueBytes = 8 });
+            Check(capped.Where(x => x.Keys.GetString(IndexField.RecordType) == "IMAGE").All(x => x.FileStatus == SiaaraErrorCode.Rejected));
+            // a cut DICOMDIR: the last record is dropped, the rest is read
+            var cut = Dicomdir.ReadAll(bytes.AsSpan(0, (int)byMem.Max(x => x.Offset) + 40));
+            Check(cut.Count < byMem.Count);
         });
 
     }

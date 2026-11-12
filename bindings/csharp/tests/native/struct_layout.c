@@ -230,6 +230,7 @@ int main(void) {
     printf("F siaara_dicomdir_read_options reserved0 %u\n", (unsigned)offsetof(siaara_dicomdir_read_options, reserved0));
     printf("F siaara_dicomdir_read_options max_records %u\n", (unsigned)offsetof(siaara_dicomdir_read_options, max_records));
     printf("F siaara_dicomdir_read_options max_bytes %u\n", (unsigned)offsetof(siaara_dicomdir_read_options, max_bytes));
+    printf("F siaara_dicomdir_read_options max_value_bytes %u\n", (unsigned)offsetof(siaara_dicomdir_read_options, max_value_bytes));
     printf("S siaara_dicomdir_summary %u\n", (unsigned)sizeof(siaara_dicomdir_summary));
     printf("F siaara_dicomdir_summary struct_size %u\n", (unsigned)offsetof(siaara_dicomdir_summary, struct_size));
     printf("F siaara_dicomdir_summary records %u\n", (unsigned)offsetof(siaara_dicomdir_summary, records));

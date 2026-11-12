@@ -150,12 +150,19 @@ TEST_CASE("grouping heap: a DICOMDIR at max_records is read within a fixed heap;
     std::size_t n = 0;
     CHECK_EQ(siaara_dicomdir_read_memory(dd.data(), dd.size(), &o, count_records, &n, nullptr), SIAARA_ERR_LIMIT_EXCEEDED);
     CHECK_EQ(n, 0u);  // refused before any record is reported
-    // With the default max_records (100,000) the untrusted element limit comes first: 40,000
-    // records (240,000 elements) are refused cleanly.
-    const std::vector<std::uint8_t> big = dicomdir_of(40000);
+    // R-223: the element limit is sized from max_records, so the documented default of 100,000
+    // records reads (600,000 elements here); one more record is refused by max_records.
+    const std::vector<std::uint8_t> big = dicomdir_of(100000);
     {
-        siaara_test::AllocGuard guard(96 * kMiB);
-        CHECK_EQ(siaara_dicomdir_read_memory(big.data(), big.size(), nullptr, count_records, &n, nullptr), SIAARA_ERR_LIMIT_EXCEEDED);
+        siaara_test::AllocGuard guard(512 * kMiB);
+        n = 0;
+        CHECK_EQ(siaara_dicomdir_read_memory(big.data(), big.size(), nullptr, count_records, &n, nullptr), SIAARA_OK);
+        CHECK_EQ(n, 100000u);
         CHECK(!guard.refused());
+        std::printf("  DICOMDIR of 100,000 records: heap peak %.1f MiB\n", static_cast<double>(guard.peak()) / kMiB);
     }
+    const std::vector<std::uint8_t> over = dicomdir_of(100001);
+    n = 0;
+    CHECK_EQ(siaara_dicomdir_read_memory(over.data(), over.size(), nullptr, count_records, &n, nullptr), SIAARA_ERR_LIMIT_EXCEEDED);
+    CHECK_EQ(n, 0u);
 }

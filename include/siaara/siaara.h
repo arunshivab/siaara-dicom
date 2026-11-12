@@ -926,9 +926,17 @@ typedef struct siaara_dicomdir_read_options {
      *     SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES. */
     uint64_t max_records;
     uint64_t max_bytes;
+    /* Appended; read only when struct_size covers it (the 20- and 40-byte versions are accepted).
+     *   max_value_bytes: a value longer than this, in bytes as stored, is left out of the record's
+     *     keys (its key is empty and not inherited) and reported as a warning, never cut; a longer
+     *     Referenced File ID makes the File ID SIAARA_ERR_REJECTED (FILE_PATH empty).
+     *     siaara_dicomdir_read: 0 = no limit. siaara_dicomdir_read_memory: 0 =
+     *     SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES. */
+    uint64_t max_value_bytes;
 } siaara_dicomdir_read_options;
 #define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS 100000u
 #define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES 67108864u /* 64 MiB */
+#define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES 65536u /* 64 KiB */
 
 typedef struct siaara_dicomdir_summary {
     uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_summary) */
@@ -951,18 +959,28 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* utf8_path,
 /* A DICOMDIR held in memory (for example a member of a ZIP that came by mail): `size` bytes at
  * `data`, only read during the call. Never touches the disk. The bytes are UNTRUSTED input and are
  * read with the attachment preview's limits: Part 10 only (preamble and "DICM"), no overlong-length
- * recovery, sequence nesting 16, 200,000 elements and items, a deflated data set inflates to at
- * most 128 MiB (more is SIAARA_ERR_LIMIT_EXCEEDED), and the record limits of `options`
- * (max_records, max_bytes: their defaults apply when 0 or when options is NULL). Note that
- * 200,000 elements bound a DICOMDIR to some 20,000 records before max_records is reached.
+ * recovery, sequence nesting 16, a deflated data set inflates to at most 128 MiB (more is
+ * SIAARA_ERR_LIMIT_EXCEEDED), the record limits of `options` (max_records, max_bytes,
+ * max_value_bytes: their defaults apply when 0 or when options is NULL), and an element limit of
+ * 16 elements and items per allowed record, at least 200,000 (so max_records records can be read).
+ * A file whose Media Storage SOP Class is not 1.2.840.10008.1.3.10 is refused
+ * (SIAARA_ERR_REJECTED). An input read incompletely is a warning; when it ends inside the
+ * Directory Record Sequence, the last record is dropped (a warning), never passed on with a cut
+ * value. Every record's keys hold its own and its ancestors' keys; the ancestors' strings are not
+ * copied for each record (the string table of a record may hold strings of its ancestors and of
+ * earlier records at other offsets: use the offsets).
  * Record links are followed only to offsets where a record starts; a record reached a second
  * time (a cycle, or a record two parents point at) is not visited again (a warning), and the
  * hierarchy is cut at max_depth.
- * Referenced File IDs are never resolved: the File ID comes as text in SIAARA_IDX_FILE_PATH
- * (components joined with '/'), with file_status SIAARA_OK when it is well formed (PS3.10 8.5:
+ * Referenced File IDs are never resolved: the File ID comes as text in SIAARA_IDX_FILE_PATH, with
+ * file_status SIAARA_OK when it is well formed (PS3.10 8.5:
  * 1 to 8 components of 1 to 8 characters each, upper-case A-Z, 0-9 and '_') and
  * SIAARA_ERR_REJECTED otherwise ("..", an absolute path, a drive letter, more than 8 components,
- * a component longer than 8 characters, any other character). There is no
+ * a component longer than 8 characters, any other character). A well-formed File ID's text is its
+ * components joined with '/', padding removed; a rejected one's text is the value exactly as
+ * stored (components separated by '\\', padding kept). Neither is display-safe: pass it through
+ * siaara_text_display_safe before showing it. A REJECTED listing is an unsafe entry in the
+ * sender's DICOMDIR, not a missing file. There is no
  * SIAARA_ERR_NOT_FOUND. summary->files counts the well-formed File IDs, rejected_paths the
  * others; missing_files stays 0. resolve_files and case_insensitive are not used. options and
  * summary may be NULL. */

@@ -112,6 +112,38 @@ void read_keys(const Dataset& ds, const charset::CharacterSet& cs, IndexRecord& 
 
 std::string element_text(const Dataset& ds, Tag tag, const charset::CharacterSet& cs) { return text(ds, tag, cs); }
 
+std::uint64_t read_present_keys(const Dataset& ds, const charset::CharacterSet& cs, IndexRecord& out,
+                                std::uint64_t max_value_bytes, std::size_t* too_long) {
+    std::uint64_t present = 0;
+    auto fits = [&](Tag tag) {
+        const Element* e = ds.find(tag);
+        return !max_value_bytes || !e || e->value.size() <= max_value_bytes;
+    };
+    for (const auto& k : kKeys) {
+        if (!ds.contains(k.tag)) continue;
+        present |= std::uint64_t{1} << static_cast<unsigned>(k.key);
+        if (fits(k.tag)) {
+            out[k.key] = text(ds, k.tag, cs);
+        } else {
+            out[k.key].clear();  // left out, never cut
+            if (too_long) ++*too_long;
+        }
+    }
+    if (fits(t::SeriesNumber))
+        if (auto v = ds.get_int(t::SeriesNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
+            out.series_number = static_cast<std::int32_t>(*v);
+            out.flags |= kHasSeriesNumber;
+        }
+    if (fits(t::InstanceNumber))
+        if (auto v = ds.get_int(t::InstanceNumber); v && *v >= INT32_MIN && *v <= INT32_MAX) {
+            out.instance_number = static_cast<std::int32_t>(*v);
+            out.flags |= kHasInstanceNumber;
+        }
+    for (Tag tag : {t::SeriesNumber, t::InstanceNumber})
+        if (ds.contains(tag) && !fits(tag) && too_long) ++*too_long;
+    return present;
+}
+
 bool looks_like_dicom(const std::uint8_t* p, std::size_t n, bool allow_raw) noexcept {
     if (has_part10_header(p, n)) return true;
     if (!allow_raw || n < 8) return false;

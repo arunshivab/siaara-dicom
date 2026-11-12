@@ -291,6 +291,7 @@ internal static class StructLayouts
             r.Add("F siaara_dicomdir_read_options reserved0 " + Offset(ref s, ref s.reserved0).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dicomdir_read_options max_records " + Offset(ref s, ref s.max_records).ToString(System.Globalization.CultureInfo.InvariantCulture));
             r.Add("F siaara_dicomdir_read_options max_bytes " + Offset(ref s, ref s.max_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            r.Add("F siaara_dicomdir_read_options max_value_bytes " + Offset(ref s, ref s.max_value_bytes).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         {
             var s = default(siaara_dicomdir_summary);

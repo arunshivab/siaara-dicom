@@ -16,6 +16,7 @@ internal static class C
     public const uint SIAARA_QUERY_NO_TOTAL = 1u;
     public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS = 100000u;
     public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES = 67108864u;
+    public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES = 65536u;
     public const uint SIAARA_DEID_ALL_FRAMES = 0xFFFFFFFFu;
     public const uint SIAARA_SORT_EXPAND_FRAMES = 1u;
     public const int SIAARA_OFFSET_TABLE_AUTO = 0;
@@ -1009,6 +1010,7 @@ internal struct siaara_dicomdir_read_options
     public uint reserved0;
     public ulong max_records;
     public ulong max_bytes;
+    public ulong max_value_bytes;
 }
 
 /// <summary>siaara_dicomdir_summary (blittable, C layout).</summary>
