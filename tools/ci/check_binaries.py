@@ -75,12 +75,19 @@ def dependencies(path, osname):
         return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out)
     if osname == "macos":
         out = run(["otool", "-L", path])
-        lines = out.splitlines()[1:]
-        deps = [ln.strip().split(" (")[0] for ln in lines if ln.strip()]
-        # A dylib lists its own install name first.
-        install_name = run(["otool", "-D", path]).splitlines()[1:]
-        own = install_name[0].strip() if install_name else None
-        return [d for d in deps if d != own]
+        # Dependency lines are indented. The other lines are headers: "<path>:" for a thin
+        # binary, and "<path> (architecture x86_64):" once per slice for a universal one.
+        deps = []
+        for ln in out.splitlines():
+            if not ln[:1].isspace() or not ln.strip():
+                continue
+            d = ln.strip().split(" (")[0]
+            if d not in deps:
+                deps.append(d)
+        # A dylib lists its own install name first (in every slice).
+        own = {ln.strip() for ln in run(["otool", "-D", path]).splitlines()
+               if ln[:1].isspace() or not ln.rstrip().endswith(":")}
+        return [d for d in deps if d not in own]
     if osname == "windows":
         out = run([dumpbin(), "/nologo", "/dependents", path])
         deps = []
@@ -105,7 +112,14 @@ def exported_symbols(path, osname):
         return sorted({ln.split()[0].split("@")[0] for ln in out.splitlines() if ln.strip()})
     if osname == "macos":
         out = run(["nm", "-gU", "-j", path])
-        return sorted({s[1:] if s.startswith("_") else s for s in out.split()})
+        # A universal binary lists each slice after a "<path> (for architecture ...):" header.
+        names = set()
+        for ln in out.splitlines():
+            s = ln.strip()
+            if not s or s.endswith(":"):
+                continue
+            names.add(s[1:] if s.startswith("_") else s)
+        return sorted(names)
     if osname == "windows":
         out = run([dumpbin(), "/nologo", "/exports", path])
         names = set()
@@ -306,7 +320,11 @@ def hardening_problems(path, osname, fortify, cfi=True):
             problems.append("not /CETCOMPAT")
     elif osname == "macos":
         out = run(["otool", "-hv", path])
-        if "EXECUTE" in out and "PIE" not in out:
+        # One header row per slice of a universal binary: every executable slice must be PIE.
+        rows = [ln for ln in out.splitlines() if "MH_MAGIC" in ln]
+        if not rows:
+            problems.append("no Mach-O header in otool -hv output")
+        if any("EXECUTE" in r and "PIE" not in r for r in rows):
             problems.append("executable is not PIE")
         if "ALLOW_STACK_EXECUTION" in out:
             problems.append("stack execution allowed")
