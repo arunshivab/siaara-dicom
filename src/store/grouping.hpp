@@ -198,8 +198,10 @@ enum class IssueKind : std::int32_t {
     PresentUnlisted = 8,       // an instance whose name matches no DICOMDIR File ID
     AmbiguousMatch = 9,        // a File ID two or more names match: one issue per name
     UnsafeName = 10,           // a name with a ".." component, absolute, or with a drive letter: never matched
+    DicomdirDamaged = 11,      // a DICOMDIR read incompletely or with warnings: reason DamagedReason, subject the first warning
 };
-enum class SkipReason : std::int32_t { None = 0, NotDicom = 1, Unreadable = 2, FileLimit = 3, TotalBudget = 4 };
+enum class DamagedReason : std::int32_t { None = 0, Incomplete = 1, Warnings = 2 };
+enum class SkipReason : std::int32_t { None = 0, NotDicom = 1, Unreadable = 2, FileLimit = 3, TotalBudget = 4, NotADicomdir = 5 };
 enum class Limit : std::int32_t {
     None = 0, MaxFiles = 1, FileBytes = 2, TotalBytes = 3, TotalInflated = 4, ResultBytes = 5,
     ReadLimits = 6,     // nesting depth or elements of one file
@@ -303,6 +305,8 @@ private:
         SkipReason skip = SkipReason::None;
         Limit limit = Limit::None;
         Errc status = Errc::Ok;
+        DamagedReason damaged = DamagedReason::None;
+        GroupText first_warning;
     };
 
     bool keep_text(GroupText& t, std::string_view stored, std::uint64_t& cost) const;

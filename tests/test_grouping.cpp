@@ -939,3 +939,77 @@ TEST_CASE("grouping: series order in a study - as added (default) or by Series N
         CHECK(bad == nullptr);
     }
 }
+
+TEST_CASE("grouping: R-221 what failed reads inflated counts against max_total_inflated; the total budget is reached") {
+    // A deflated file that inflates to about 14 kB and then fails the element limit.
+    Ct d;
+    d.sop = "1.2.13.1";
+    DicomFile f = ct_file(d);
+    f.transfer_syntax = std::string(ts::DeflatedExplicitVRLittleEndian);
+    for (int i = 0; i < 200; ++i) (void)f.dataset.set_string(0x00091000u + static_cast<std::uint32_t>(i), VR::LO, std::string(60, 'z'));
+    const auto deflated = grouping_synth::bytes_of(f);
+    siaara_grouping_options o = grouping_synth::options();
+    o.max_inflated_size = 16 * 1024;   // per file: the file stays under it ...
+    o.max_elements = 50;               // ... and then fails the element limit
+    o.max_total_inflated = 140 * 1024; // about 10 such files
+    Grouping g(&o);
+    for (int i = 0; i < 20; ++i) CHECK_EQ(g.add("d" + std::to_string(i), deflated), SIAARA_OK);
+    const siaara_grouping_summary s = g.result();
+    CHECK_EQ(s.instances, 0u);
+    CHECK_EQ(s.skipped, 20u);
+    CHECK_EQ(s.budget_reached, static_cast<uint32_t>(SIAARA_GLIMIT_TOTAL_INFLATED));
+    CHECK(s.total_inflated > 100u * 1024u && s.total_inflated <= o.max_total_inflated);
+    const auto issues = g.issues(s.issues);
+    std::size_t read_limit = 0, total = 0;
+    for (const auto& is : issues) {
+        if (is.limit == SIAARA_GLIMIT_READ_LIMITS) ++read_limit;
+        if (is.reason == SIAARA_GSKIP_TOTAL_BUDGET && is.limit == SIAARA_GLIMIT_TOTAL_INFLATED) ++total;
+    }
+    CHECK(read_limit >= 5u);
+    CHECK(total >= 1u);
+    CHECK_EQ(read_limit + total, 20u);
+}
+
+TEST_CASE("grouping: testing P3-2 - a damaged DICOMDIR is an issue; one of another SOP Class is refused; a rejected File ID as stored") {
+    store_synth::TempDir td("siaara-gp32");
+    make_media(td / "src", td / "m", 1);
+    const std::vector<std::uint8_t> orig = store_synth::read_bytes(td / "m" / "DICOMDIR");
+    std::vector<DirRec> all;
+    REQUIRE(read_mem(orig, all) == SIAARA_OK);
+    std::uint64_t last = 0;
+    for (const auto& r : all) last = std::max(last, r.offset);
+    {
+        Grouping g;
+        CHECK_EQ(g.add_dicomdir(std::vector<std::uint8_t>(orig.begin(), orig.begin() + static_cast<std::ptrdiff_t>(last + 40))), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        const auto issues = g.issues(s.issues);
+        REQUIRE(count_kind(issues, SIAARA_GISSUE_DICOMDIR_DAMAGED) == 1u);
+        for (uint32_t i = 0; i < issues.size(); ++i)
+            if (issues[i].kind == SIAARA_GISSUE_DICOMDIR_DAMAGED) {
+                CHECK_EQ(issues[i].reason, SIAARA_GDAMAGED_INCOMPLETE);
+                CHECK_EQ(issues[i].dicomdir, 0);
+                CHECK(!g.stored(SIAARA_GLEVEL_ISSUE, i, SIAARA_GFIELD_SUBJECT).empty());
+            }
+        CHECK_EQ(s.listed_missing, 7u);  // the cut record is not listed
+    }
+    {
+        auto b = orig;
+        const std::string cls(store::kMediaStorageDirectoryUid);
+        auto it = std::search(b.begin(), b.end(), cls.begin(), cls.end());
+        REQUIRE(it != b.end());
+        *(it + static_cast<std::ptrdiff_t>(cls.size()) - 2) = '9';
+        Grouping g;
+        CHECK_EQ(g.add_dicomdir(b), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        const auto issues = g.issues(s.issues);
+        REQUIRE(issues.size() == 1u);
+        CHECK_EQ(issues[0].kind, SIAARA_GISSUE_DICOMDIR_SKIPPED);
+        CHECK_EQ(issues[0].reason, SIAARA_GSKIP_NOT_A_DICOMDIR);
+    }
+    {  // a clean DICOMDIR raises no damaged issue
+        Grouping g;
+        CHECK_EQ(g.add_dicomdir(orig), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        CHECK_EQ(count_kind(g.issues(s.issues), SIAARA_GISSUE_DICOMDIR_DAMAGED), 0u);
+    }
+}

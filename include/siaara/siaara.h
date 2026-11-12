@@ -3394,7 +3394,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, 
  * patient they name.
  *
  * Text: every text value is returned exactly as stored (decoded from its character set to UTF-8,
- * padding removed, as siaara_dataset_get_utf8 returns all its values) and, next to it, a
+ * padding removed, as siaara_dataset_get_utf8 returns all its values: bytes that are not
+ * characters of the character set in force become U+FFFD in the stored copy too, the bytes
+ * themselves are in the file) and, next to it, a
  * display-safe copy (siaara_text_display_safe). A value longer than its cap (UIDs max_uid_chars,
  * other text max_text_bytes, any stored value max_value_bytes) is NOT kept: its status is
  * SIAARA_GTEXT_TOO_LONG; it is never cut and passed on as if whole. A UID is used for grouping
@@ -3436,7 +3438,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, 
  *     siaara_grouped_instance.sort_key says which key placed each file, and
  *     siaara_grouped_series.order_rule the rule of the whole series (SIAARA_GSERIES_ORDER_*).
  *   SIAARA_GROUP_ORDER_INSTANCE_NUMBER: by Instance Number, files without one after, as added.
- *   SIAARA_GROUP_ORDER_AS_ADDED.
+ *   SIAARA_GROUP_ORDER_AS_ADDED: purely the order the files were added in (position_fallback and
+ *     tie_break do not apply).
  * Equal keys (a time series, diffusion, a test bolus at one position) are ordered by tie_break:
  * SIAARA_GROUP_TIE_INSTANCE_NUMBER (default: files with an Instance Number first, by it),
  * SIAARA_GROUP_TIE_AS_ADDED, or SIAARA_GROUP_TIE_ACQUISITION_TIME (Acquisition Time (0008,0032),
@@ -3552,7 +3555,8 @@ typedef struct siaara_grouping_options {
  * letters are compared ASCII-only case-folded (match_case_insensitive), and a File ID of N
  * components matches the last N components of the name (match_by_trailing_components; off: the
  * whole name). Only well-formed File IDs of records in use are matched; a name that matches a File
- * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH). A name
+ * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH; a file not
+ * kept as a duplicate under SIAARA_GROUP_DUPLICATES_KEEP_FIRST still has its name, and counts). A name
  * with a ".." component, an absolute name (a leading '/' or '\') and a name with a drive letter
  * ("C:") is never matched, and is reported (SIAARA_GISSUE_UNSAFE_NAME, whether or not a DICOMDIR
  * was added). Several DICOMDIRs may be added (at most max_dicomdirs): their records accumulate,
@@ -3712,18 +3716,26 @@ enum {
     SIAARA_GISSUE_SERIES_SIZE_CONFLICT = 5,    /* series: instance's Rows x Columns differ from other_instance's */
     SIAARA_GISSUE_DICOMDIR_SKIPPED = 6,        /* a DICOMDIR not read: reason, limit, status */
     SIAARA_GISSUE_LISTED_MISSING = 7,          /* a DICOMDIR File ID no name matches; subject: the File ID; status
-                                                  SIAARA_ERR_REJECTED when the File ID is not well formed */
+                                                  SIAARA_ERR_REJECTED when the File ID is not well formed (the subject
+                                                  is then the value exactly as stored: an unsafe entry in the sender's
+                                                  DICOMDIR, not a missing file) */
     SIAARA_GISSUE_PRESENT_UNLISTED = 8,        /* instance whose name matches no DICOMDIR File ID (only when a
                                                   DICOMDIR was read) */
     SIAARA_GISSUE_AMBIGUOUS_MATCH = 9,         /* a File ID that two or more names match: one issue per name */
-    SIAARA_GISSUE_UNSAFE_NAME = 10             /* a name with "..", absolute, or with a drive letter: never matched */
+    SIAARA_GISSUE_UNSAFE_NAME = 10,            /* a name with "..", absolute, or with a drive letter: never matched */
+    SIAARA_GISSUE_DICOMDIR_DAMAGED = 11        /* a DICOMDIR read incompletely (reason INCOMPLETE) or with warnings
+                                                  (reason WARNINGS: cycles, links to nowhere, values too long, records
+                                                  dropped ...); subject: the first warning; its records are used */
 };
 enum {
     SIAARA_GSKIP_NOT_DICOM = 1,      /* not a DICOM Part 10 file (no preamble and "DICM") */
     SIAARA_GSKIP_UNREADABLE = 2,     /* DICOM that cannot be read (status says why) */
     SIAARA_GSKIP_FILE_LIMIT = 3,     /* over a limit of one file (limit says which) */
-    SIAARA_GSKIP_TOTAL_BUDGET = 4    /* over a budget of the grouping (limit says which) */
+    SIAARA_GSKIP_TOTAL_BUDGET = 4,   /* over a budget of the grouping (limit says which) */
+    SIAARA_GSKIP_NOT_A_DICOMDIR = 5  /* a DICOMDIR whose Media Storage SOP Class is not 1.2.840.10008.1.3.10 */
 };
+/* siaara_grouping_issue.reason of SIAARA_GISSUE_DICOMDIR_DAMAGED */
+enum { SIAARA_GDAMAGED_INCOMPLETE = 1, SIAARA_GDAMAGED_WARNINGS = 2 };
 enum {
     SIAARA_GLIMIT_NONE = 0,
     SIAARA_GLIMIT_MAX_FILES = 1,

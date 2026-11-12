@@ -546,10 +546,14 @@ internal static class C
     public const int SIAARA_GISSUE_PRESENT_UNLISTED = 8;
     public const int SIAARA_GISSUE_AMBIGUOUS_MATCH = 9;
     public const int SIAARA_GISSUE_UNSAFE_NAME = 10;
+    public const int SIAARA_GISSUE_DICOMDIR_DAMAGED = 11;
     public const int SIAARA_GSKIP_NOT_DICOM = 1;
     public const int SIAARA_GSKIP_UNREADABLE = 2;
     public const int SIAARA_GSKIP_FILE_LIMIT = 3;
     public const int SIAARA_GSKIP_TOTAL_BUDGET = 4;
+    public const int SIAARA_GSKIP_NOT_A_DICOMDIR = 5;
+    public const int SIAARA_GDAMAGED_INCOMPLETE = 1;
+    public const int SIAARA_GDAMAGED_WARNINGS = 2;
     public const int SIAARA_GLIMIT_NONE = 0;
     public const int SIAARA_GLIMIT_MAX_FILES = 1;
     public const int SIAARA_GLIMIT_FILE_BYTES = 2;

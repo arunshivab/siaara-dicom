@@ -243,25 +243,27 @@ void Grouping::add_file(std::string_view name, const std::uint8_t* data, std::si
     ReadOptions ro = untrusted_read_options(opt_.max_depth, opt_.max_elements, opt_.max_inflated_size, true);
     ro.max_inflated_size = std::max<std::uint64_t>(1, std::min(left, opt_.max_inflated_size));
     const Bytes bytes(std::shared_ptr<const void>{}, data, size);
+    ReadStats stats;
+    ro.stats = &stats;
     auto file = read_part10(bytes, ro);
+    // R-221: what was inflated counts against the total on every outcome, a failed read too.
+    summary_.total_inflated += stats.inflated_size;
+    if (summary_.total_inflated >= opt_.max_total_inflated) budget(Limit::TotalInflated);
     if (!file) {
         const Status& e = file.error();
-        if (e.code == Errc::NotDicom) return skip(f, SkipReason::NotDicom, Limit::None, e.code);
-        if (e.code == Errc::LimitExceeded) {
-            // The inflater's own message names it (codec/deflate.cpp); any other limit is the
-            // nesting depth or the element / item count of this file.
-            if (e.message.rfind("deflate:", 0) == 0) {
-                if (total_caps) {
-                    budget(Limit::TotalInflated);
-                    return skip(f, SkipReason::TotalBudget, Limit::TotalInflated, e.code);
-                }
-                return skip(f, SkipReason::FileLimit, Limit::InflatedSize, e.code);
+        if (stats.inflate_limit_reached) {
+            // The cap of this read was what is left of the total: the total budget; else the per-file limit.
+            if (total_caps) {
+                budget(Limit::TotalInflated);
+                return skip(f, SkipReason::TotalBudget, Limit::TotalInflated, e.code);
             }
-            return skip(f, SkipReason::FileLimit, Limit::ReadLimits, e.code);
+            return skip(f, SkipReason::FileLimit, Limit::InflatedSize, e.code);
         }
+        if (e.code == Errc::NotDicom) return skip(f, SkipReason::NotDicom, Limit::None, e.code);
+        // Any other limit is the nesting depth or the element / item count of this file.
+        if (e.code == Errc::LimitExceeded) return skip(f, SkipReason::FileLimit, Limit::ReadLimits, e.code);
         return skip(f, SkipReason::Unreadable, Limit::None, e.code);
     }
-    summary_.total_inflated += file->inflated_size;
     const Dataset& ds = file->dataset;
     // A Part 10 header and nothing after it (or nothing that could be read): skipped, not ungrouped.
     if (ds.empty())
@@ -434,15 +436,16 @@ void Grouping::add_dicomdir(const std::uint8_t* data, std::size_t size) {
     std::uint64_t cost = 0;
     DicomdirReadOptions o;
     o.max_bytes = opt_.max_file_bytes;
+    o.max_value_bytes = opt_.max_value_bytes;
     auto r = read_dicomdir_memory(data, size, [&](const DicomdirRecord& rec) {
-        if (rec.file_id.empty()) return true;
+        if (rec.file_id.empty() && rec.file_status.is_ok()) return true;
         DicomdirEntry e;
         e.dicomdir = dd;
         e.record = static_cast<std::uint32_t>(rec.index);
         e.file_status = rec.file_status.code;
         e.components = rec.file_id.size();
         const std::string& text = rec.keys[Str::FilePath];
-        if (text.size() > opt_.max_text_bytes) {
+        if (text.size() > opt_.max_text_bytes || (rec.file_id.empty() && text.empty())) {
             e.file_id.status = TextStatus::TooLong;
         } else {
             keep_text(e.file_id, text, cost);
@@ -458,11 +461,21 @@ void Grouping::add_dicomdir(const std::uint8_t* data, std::size_t size) {
     if (!r) {
         const Errc c = r.error().code;
         if (c == Errc::NotDicom) return fail(SkipReason::NotDicom, Limit::None, c);
+        if (c == Errc::Rejected) return fail(SkipReason::NotADicomdir, Limit::None, c);  // not the Media Storage Directory SOP Class
         if (c == Errc::LimitExceeded) {
             const bool records = r.error().message.find("records") != std::string::npos;
             return fail(SkipReason::FileLimit, records ? Limit::DicomdirRecords : Limit::ReadLimits, c);
         }
         return fail(SkipReason::Unreadable, Limit::None, c);
+    }
+    if (r->incomplete || !r->warnings.empty()) {
+        Dicomdir& d = dicomdirs_[dd];
+        d.damaged = r->incomplete ? DamagedReason::Incomplete : DamagedReason::Warnings;
+        const std::string& w = r->warnings.empty() ? std::string() : r->warnings.front();
+        if (!w.empty() && w.size() <= opt_.max_text_bytes) {
+            keep_text(d.first_warning, w, cost);
+            d.first_warning.status = TextStatus::Ok;
+        }
     }
     summary_.result_bytes += cost;
     for (auto& e : got) entries_.push_back(std::move(e));
@@ -711,6 +724,14 @@ void Grouping::build() {
         g.limit = dd.limit;
         g.status = dd.status;
         g.dicomdir = static_cast<std::int32_t>(d);
+    }
+    for (std::uint32_t d = 0; d < dicomdirs_.size(); ++d) {
+        const Dicomdir& dd = dicomdirs_[d];
+        if (dd.skip != SkipReason::None || dd.damaged == DamagedReason::None) continue;
+        GroupingIssue& g = issue(IssueKind::DicomdirDamaged);
+        g.reason = static_cast<std::int32_t>(dd.damaged);
+        g.dicomdir = static_cast<std::int32_t>(d);
+        if (dd.first_warning.status == TextStatus::Ok) g.subject = &dd.first_warning;
     }
     // ---- ungrouped
     for (std::uint32_t i : ungrouped) {

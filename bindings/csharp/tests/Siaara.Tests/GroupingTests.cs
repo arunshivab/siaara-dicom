@@ -203,6 +203,11 @@ internal static class GroupingTests
             two.AddDicomdir(dd);
             DicomGroupingIssue missing = two.Result.Issues.Single(i => i.Kind == DicomGroupingIssueKind.ListedMissing);
             CheckEq(string.Join(",", missing.ListedBy), "0,1");
+            using var damaged = new DicomStudyGrouping();
+            damaged.AddDicomdir(dd.AsSpan(0, dd.Length - 10));
+            DicomGroupingIssue d = damaged.Result.Issues.Single(i => i.Kind == DicomGroupingIssueKind.DicomdirDamaged);
+            CheckEq(d.DamagedReason, DicomdirDamagedReason.Incomplete);
+            Check(!string.IsNullOrEmpty(d.Subject.Display));
         });
 
         Case("grouping: series order in a study, as added (default) or by Series Number", () =>

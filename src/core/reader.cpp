@@ -879,13 +879,19 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
 
     if (info && info->codec == Codec::Deflate) {
         auto store = std::make_shared<std::vector<std::uint8_t>>();
-        if (Status s = codec::inflate_raw(data.data() + start, data.size() - start,
-                                          opt.max_inflated_size > SIZE_MAX
-                                              ? SIZE_MAX
-                                              : static_cast<std::size_t>(opt.max_inflated_size),
-                                          *store);
-            !s)
-            return s;
+        Status inflated_status = codec::inflate_raw(data.data() + start, data.size() - start,
+                                                    opt.max_inflated_size > SIZE_MAX
+                                                        ? SIZE_MAX
+                                                        : static_cast<std::size_t>(opt.max_inflated_size),
+                                                    *store);
+        if (opt.stats) {
+            opt.stats->inflated_size = store->size();
+            if (!inflated_status && inflated_status.code == Errc::LimitExceeded) {
+                opt.stats->inflate_limit_reached = true;
+                opt.stats->inflated_size = std::max<std::uint64_t>(store->size(), opt.max_inflated_size);
+            }
+        }
+        if (!inflated_status) return inflated_status;
         const std::uint8_t* q = store->data();
         Bytes inflated(std::shared_ptr<const void>(store, store.get()), q, store->size());
         out.offsets_are_file_offsets = false;
