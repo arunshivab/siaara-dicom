@@ -15,10 +15,17 @@ None of these is decided by the tooling. Each has a default that applies if noth
 | 3 | **Vendor conformance-statement data** under `data/private-tags/` (about 51 MB: rows extracted from 2,914 vendor PDF documents, with document names and page numbers). Two separate questions: (i) does it stay in the repository while that is public; (ii) does it go into the release packages. The dictionary *compiled from it* (names, VRs, VMs per private creator) is in the library in any case | (i) keep / remove from the public history; (ii) `package.py --include-private-tag-sources` to ship it, default not shipped | (i) stays in the repository; (ii) **not** in any package |
 | 4 | **Code signing** | sign now (needs certificates, see G), or ship unsigned | **unsigned** (first release; the consumers are the owner's own products) |
 | 5 | Whether the release may be published while a gate of section B is open | name the gate and the reason in the release notes | no |
+| 6 | **SSH release signing key** (RELEASING.md, "The SSH release signature") | create it, add the secret `SIAARA_RELEASE_SIGNING_KEY` and commit `.github/release-signers` before tagging; or release without SSH signatures | without the key the release has no `.sig` files, the notes say so, and on a private repository without attestations `publish-package` refuses to push |
 
 ## B. Gates on the commit to be tagged
 
-- [ ] The commit is on `main` and is the commit CI ran on (compare the SHA).
+- [ ] The commit is on `main` and is the commit CI ran on (compare the SHA). The release
+      workflow's `gate` job enforces both (on `main`; a completed, successful `ci.yml` run on
+      exactly that SHA) and stops the release otherwise; a run of CI cancelled by a later push
+      does not count.
+- [ ] Signing key (decision A6): `gh secret list -R arunshivab/siaara-dicom` lists
+      `SIAARA_RELEASE_SIGNING_KEY`, and `.github/release-signers` is in this commit (not only the
+      `.example`).
 - [ ] **CI is green on that commit**: every job of `ci.yml` (all platforms and compilers,
       ASan + UBSan, TSan, fuzz smoke, dependency allow-list and hardening, exported symbols /
       ABI baseline, clang-tidy, the `csharp` job on three operating systems), `codeql.yml`, and
@@ -57,16 +64,33 @@ None of these is decided by the tooling. Each has a default that applies if noth
 ## D. Tag and build
 
 - [ ] `git tag -a vX.Y.Z -m "SIAARA DICOM Toolkit X.Y.Z"` on the green commit; `git push origin vX.Y.Z`.
-- [ ] The `release` workflow runs: seven platform jobs, `nuget`, `draft-release`. All green.
-      A red platform job stops everything (`fail-fast`): fix on `main`, delete the tag and the
-      draft, start again from B with a new commit. Never move a tag that a published release used.
+- [ ] The `release` workflow runs: `gate`, seven platform jobs, `macos-intel-test` (the macOS
+      universal archive unpacked and tested on an Intel Mac), `nuget`, `draft-release`. All green.
+      The platform jobs do not cancel each other (`fail-fast: false`), so the run shows every
+      failing platform; `nuget` and `draft-release` do not run unless all of them pass.
+- [ ] A failure that is not the code (a runner problem): "Re-run failed jobs" on the same run.
+      The draft of the earlier attempt is refreshed (files replaced, notes rewritten), not
+      duplicated. A failure of the code: fix on `main`, delete the tag and the draft, start again
+      from B with a new commit (or, for a rehearsal, the next `-rc.N`). Never move a tag that a
+      published release used; a re-run against an already **published** release fails and
+      changes nothing.
+- [ ] No `::warning::` about a missing attestation or a missing SSH signature, or each one is
+      expected (private repository without Enterprise Cloud; no key yet) and is stated in the
+      notes (the workflow writes it there).
 
 ## E. Check the draft release
 
 - [ ] Assets present: 7 archives (`linux-x64`, `linux-x86`, `linux-arm64`, `windows-x64`,
       `windows-x86`, `windows-arm64`, `macos-universal`), 7 `.spdx.json`, `Siaara.X.Y.Z.nupkg`,
-      `SHA256SUMS` (15 lines).
+      `SHA256SUMS` (15 lines); and, unless the notes say otherwise, 7 archive bundles
+      `siaara-X.Y.Z-<platform>.sigstore.json`, `Siaara.X.Y.Z.nupkg.sigstore.json`, and the SSH
+      signatures: 7 `<archive>.sig`, `Siaara.X.Y.Z.nupkg.sig`, `SHA256SUMS.sig` (RELEASING.md,
+      the table under "The draft release"). Nothing left over from an earlier attempt that this
+      run did not produce.
 - [ ] `sha256sum -c SHA256SUMS` on downloaded copies.
+- [ ] **SSH signatures** verified by hand on downloaded copies against the owner's own copy of
+      the `release-signers` line, at least `SHA256SUMS.sig` and `Siaara.X.Y.Z.nupkg.sig`
+      (commands: RELEASING.md, "Verifying a release").
 - [ ] One archive unpacked and looked at: `LICENSE`, `README.md`, `CHANGELOG.md`, `docs/`,
       `examples/`, header, libraries, tools; nothing from `data/` (unless decision A3 says so).
       `tools/release/check_archive.py --list` prints the content.
@@ -78,23 +102,39 @@ None of these is decided by the tooling. Each has a default that applies if noth
 - [ ] **NuGet package**: `python3 tools/release/check_nupkg.py Siaara.X.Y.Z.nupkg --version X.Y.Z
       --require-all-rids --list`; then restored and run from a local folder feed in one of the
       owner's products on Windows (the workflow tested linux-x64 only).
-- [ ] **Attestation**: `gh attestation verify <archive> --repo <owner>/<repository>` succeeds
-      (public repository), or the workflow log shows the documented "attestation not available"
-      note (private repository without Enterprise Cloud). Record which.
+- [ ] **Attestation**: `gh attestation verify <archive> --bundle <archive bundle>.sigstore.json
+      --repo arunshivab/siaara-dicom --signer-workflow
+      arunshivab/siaara-dicom/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`
+      succeeds for one archive and for the package (and, while the repository is public, also
+      without `--bundle`); or the notes and the log say that no attestation could be made
+      (private repository without Enterprise Cloud). Record which.
 - [ ] **Code signing status** recorded in the release notes: *not signed* (decision A4). The
       generated notes say so; do not remove the sentence.
-- [ ] Release notes read through; publish the draft.
+- [ ] Release notes read through, including the "Provenance and signatures" paragraph; publish
+      the draft.
 
 ## F. After publishing
 
-- [ ] The `publish-package` workflow ran (it starts when the release is published) and is green;
+- [ ] **Release (vX.Y.Z):** the `publish-package` workflow ran (it starts when the release is
+      published) and is green. Its log shows the provenance check passed (attestation and/or SSH
+      signature) before the push;
+      **release candidate (vX.Y.Z-rc.N):** publishing the pre-release does not push it (RL-13);
+      when the rc should be on the feed, run by hand
+      `gh workflow run publish-package.yml -R arunshivab/siaara-dicom -f tag=v0.1.0-rc.1`
+      (with that rc's tag) and check that it is green.
+      A "already on the feed, a version can't be replaced" error: the version was pushed before;
+      delete it on the package's page first only if it was never restored by a product
+      (RELEASING.md, "The package feed"), otherwise use a new number.
+- [ ] The package is on the feed:
       `Siaara` X.Y.Z is listed under the owner's Packages. Visibility and access of the package
       checked (docs/RELEASING.md, "The package feed"). One of the owner's products restores it
       from `https://nuget.pkg.github.com/<owner>/index.json`.
 - [ ] Download the published assets once more from the release page and keep a copy with
-      `SHA256SUMS` outside GitHub (the owner's archive).
+      `SHA256SUMS`, the `.sigstore.json` bundles, the `.sig` files and the `release-signers`
+      line outside GitHub (the owner's archive): with them the release can be verified after the
+      repository is private.
 - [ ] **Make the repository private** (decision A2), after saving: the attestation
-      verification output for each asset (it cannot be re-verified by outsiders afterwards), the
+      verification output for each asset (outsiders can then verify only with the attached bundles), the
       workflow run logs, and the CodeQL / fuzzing results. Check afterwards that Actions still
       run (minutes are billed on private repositories; the ARM64 runners in particular), that
       `SECURITY.md`'s private reporting link still fits, and that forks, if any, are dealt with.
@@ -114,7 +154,7 @@ packaging, so the signed files are the packaged and attested ones):
 | Windows | `siaara.dll`, every `siaara-*.exe` | Authenticode (`signtool`, SHA-256, RFC 3161 timestamp), an OV or EV code-signing certificate held in an HSM or a cloud signing service (private keys of new certificates are not exportable) | Removes SmartScreen / "unknown publisher" warnings; signing changes the files, so it must come before `package.py`, the SBOM and the checksums |
 | macOS | `libsiaara.dylib`, the tools | `codesign` with a Developer ID Application certificate, hardened runtime; **notarization** of the archive (`notarytool`) | Without it Gatekeeper quarantines downloaded binaries; today's binaries carry only the linker's ad-hoc signature |
 | NuGet | `Siaara.X.Y.Z.nupkg` | `dotnet nuget sign` with a code-signing certificate and timestamp | Consumers can then require signed packages (`signatureValidationMode=require`) |
-| Linux | archives | a detached signature of `SHA256SUMS` (for example `cosign sign-blob` or GPG) | The attestation already covers provenance; this adds a publisher signature |
+| Linux | archives | done without certificates: the SSH release signature of every archive and of `SHA256SUMS` (RELEASING.md) | The attestation covers provenance; the SSH signature is the publisher signature |
 
 Also: store the certificates' secrets as GitHub environment secrets with required reviewers on
 the `release` environment; re-check reproducibility (signatures carry timestamps: the *unsigned*
