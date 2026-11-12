@@ -40,7 +40,7 @@ internal static class DisplayText
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
         }
     }
 }

@@ -12,6 +12,13 @@
  *    freed, unless the function says otherwise (e.g. raw values and items, below).
  *  - Thread safety: a siaara_file and the data sets borrowed from it may be read from many threads
  *    at once; writes need exclusive access.
+ *  - Structs with struct_size (R-229, R-230). Fields named reserved* must be set to 0 by the caller
+ *    in an input struct; the library ignores them, and writes 0 to them in an output struct. An
+ *    options struct may grow: fields appended later are read only when the caller's struct_size
+ *    covers them (an older, smaller struct gets their defaults), and the smallest struct_size
+ *    accepted is that of the struct's first published version, as each struct states. An output
+ *    struct accepts a struct_size larger than the library knows (a newer caller); only the fields
+ *    the library knows are written, and struct_size is left as the caller set it.
  */
 #ifndef SIAARA_SIAARA_H
 #define SIAARA_SIAARA_H
@@ -2140,8 +2147,9 @@ typedef struct siaara_scp_options {
                                         (0008,0016)/(0008,0018) of the data set; 0: store it under the data set's
                                         UIDs (event uid_mismatch, command UIDs reported) */
     uint32_t reserved0;              /* set to 0 */
-    /* Data sets larger than spool_threshold are received to disk, so memory per association stays
-     * below it (at most max_associations x spool_threshold in all). */
+    /* Data sets larger than spool_threshold are received to disk. Memory per association can
+     * still reach about 2 x spool_threshold (release 0.1.0; to be fixed in 0.1.1), so plan for
+     * about 2 x max_associations x spool_threshold in all. */
     const char* spool_directory;     /* NULL: a private per-user folder under the system temp folder */
     uint64_t spool_threshold;        /* 0 = 16 MiB */
     uint64_t spool_max_total_bytes;  /* all spool files together; 0 = no cap. Over it: 0xA700 */

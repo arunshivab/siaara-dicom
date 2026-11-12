@@ -50,15 +50,24 @@ internal static class Program
         using (var zip = new ZipArchive(new MemoryStream(zipBytes), ZipArchiveMode.Read))
         {
             int members = 0;
+            long total = 0;
             foreach (ZipArchiveEntry entry in zip.Entries)
             {
-                // Cap what you pass, as you cap the attachment's size: members and the size of each.
-                if (++members > options.MaxFiles || entry.Length > options.MaxFileBytes || entry.FullName.EndsWith('/'))
+                // Cap what you pass, as you cap the attachment's size: members, the size of each and
+                // the sum. The sizes a ZIP states are claims: read through a capped stream and stop
+                // at the cap, never reading a member whole first.
+                if (++members > options.MaxFiles || entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\'))
                 {
                     continue;
                 }
-                byte[] data = Read(entry);
-                if (Path.GetFileName(entry.FullName).Equals("DICOMDIR", StringComparison.OrdinalIgnoreCase))
+                byte[]? data = ReadCapped(entry, Math.Min(options.MaxFileBytes, options.MaxTotalBytes - total));
+                if (data is null)
+                {
+                    Console.WriteLine($"  skipped (larger than the limits): {DicomAttachmentPreview.CaptionText(entry.FullName, 200)}");
+                    continue;
+                }
+                total += data.Length;
+                if (LastComponent(entry.FullName).Equals("DICOMDIR", StringComparison.OrdinalIgnoreCase))
                 {
                     grouping.AddDicomdir(data);
                 }
@@ -94,12 +103,31 @@ internal static class Program
         return r;
     }
 
-    private static byte[] Read(ZipArchiveEntry entry)
+    // The member's bytes, or null when it has more than `cap` bytes: at most cap + 1 bytes are ever read.
+    private static byte[]? ReadCapped(ZipArchiveEntry entry, long cap)
     {
+        if (cap < 0 || entry.Length > cap)
+        {
+            return null;
+        }
         using Stream s = entry.Open();
         using var m = new MemoryStream();
-        s.CopyTo(m);
-        return m.ToArray();
+        var buffer = new byte[81920];
+        long left = cap + 1;
+        int n;
+        while (left > 0 && (n = s.Read(buffer, 0, (int)Math.Min(buffer.Length, left))) > 0)
+        {
+            m.Write(buffer, 0, n);
+            left -= n;
+        }
+        return m.Length > cap ? null : m.ToArray();
+    }
+
+    // A ZIP member's name may use '/' or '\' between folders.
+    private static string LastComponent(string name)
+    {
+        int cut = name.LastIndexOfAny(new[] { '/', '\\' });
+        return cut < 0 ? name : name[(cut + 1)..];
     }
 
     // A ZIP as a mail client might make it from a CD: a wrapping folder, the DICOMDIR, the slices
