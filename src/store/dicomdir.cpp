@@ -300,18 +300,24 @@ Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, c
         }
         visited[i] = true;
         DicomdirRecord r = make(i, f.parent, f.depth, f.inherited);
-        const auto next = fits(items[i], dt::OffsetNext) ? items[i].get_int(dt::OffsetNext) : std::nullopt;
-        const auto lower = fits(items[i], dt::OffsetLower) ? items[i].get_int(dt::OffsetLower) : std::nullopt;
-        if (next && *next > 0) stack.push_back({static_cast<std::uint64_t>(*next), f.depth, f.parent, f.inherited});
+        // A link value longer than max_value_bytes is not read (0: no link).
+        auto link = [&](Tag tag) -> std::int64_t {
+            if (!fits(items[i], tag)) return 0;
+            const auto v = items[i].get_int(tag);
+            return v ? *v : 0;
+        };
+        const std::int64_t next = link(dt::OffsetNext);
+        const std::int64_t lower = link(dt::OffsetLower);
+        if (next > 0) stack.push_back({static_cast<std::uint64_t>(next), f.depth, f.parent, f.inherited});
         if (!r.in_use && !opt.include_inactive) continue;
         ++sum.reported;
         if (cb && !cb(r)) return Status(Errc::Cancelled, "cancelled by the callback");
-        if (lower && *lower > 0) {
+        if (lower > 0) {
             if (f.depth + 1 >= opt.max_depth) {
                 sum.warnings.push_back("record hierarchy deeper than the limit; lower levels skipped");
                 continue;
             }
-            stack.push_back({static_cast<std::uint64_t>(*lower), f.depth + 1, static_cast<std::int64_t>(i), r.keys.node});
+            stack.push_back({static_cast<std::uint64_t>(lower), f.depth + 1, static_cast<std::int64_t>(i), r.keys.node});
         }
     }
     for (std::size_t i = 0; i < visited.size(); ++i)
