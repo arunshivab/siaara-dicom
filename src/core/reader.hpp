@@ -19,8 +19,8 @@ inline constexpr bool kRecoverOverlongLengthsDefault = true;
 
 // What a read did, reported on success AND on failure (ReadOptions::stats).
 struct ReadStats {
-    // Deflated transfer syntaxes: bytes the data set inflated to before the read ended, whatever
-    // the outcome (a read refused at max_inflated_size reports at least max_inflated_size).
+    // Deflated transfer syntaxes: bytes the data set inflated to before the read ended, counted
+    // exactly whatever the outcome (success, a truncated or corrupt stream, max_inflated_size).
     std::uint64_t inflated_size = 0;
     bool inflate_limit_reached = false;  // inflating stopped at max_inflated_size
 };

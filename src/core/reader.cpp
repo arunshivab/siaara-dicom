@@ -879,17 +879,17 @@ Status parse_body(const Bytes& data, std::size_t start, std::string_view ts_uid,
 
     if (info && info->codec == Codec::Deflate) {
         auto store = std::make_shared<std::vector<std::uint8_t>>();
+        std::size_t produced = 0;
         Status inflated_status = codec::inflate_raw(data.data() + start, data.size() - start,
                                                     opt.max_inflated_size > SIZE_MAX
                                                         ? SIZE_MAX
                                                         : static_cast<std::size_t>(opt.max_inflated_size),
-                                                    *store);
+                                                    *store, nullptr, &produced);
+        // R-221 / R-238: what was inflated, counted exactly, on every outcome (a truncated or
+        // corrupt stream and the size cap included: the store is emptied then, the count is not).
         if (opt.stats) {
-            opt.stats->inflated_size = store->size();
-            if (!inflated_status && inflated_status.code == Errc::LimitExceeded) {
-                opt.stats->inflate_limit_reached = true;
-                opt.stats->inflated_size = std::max<std::uint64_t>(store->size(), opt.max_inflated_size);
-            }
+            opt.stats->inflated_size = produced;
+            opt.stats->inflate_limit_reached = !inflated_status && inflated_status.code == Errc::LimitExceeded;
         }
         if (!inflated_status) return inflated_status;
         const std::uint8_t* q = store->data();

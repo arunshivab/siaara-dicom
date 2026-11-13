@@ -879,3 +879,25 @@ TEST_CASE("deflate: Deflated Image Frame Compression frames decode (1-bit, not b
     REQUIRE(fr2.is_ok());
     CHECK(!fr2->decode(0).is_ok());
 }
+
+TEST_CASE("deflate: R-238 inflate_raw reports what it produced on every outcome") {
+    std::vector<std::uint8_t> plain(200000);
+    for (std::size_t i = 0; i < plain.size(); ++i) plain[i] = static_cast<std::uint8_t>((i * 2654435761u) >> 13);
+    std::vector<std::uint8_t> z;
+    REQUIRE(siaara::codec::deflate_raw(plain.data(), plain.size(), 6, z).is_ok());
+    std::vector<std::uint8_t> out;
+    std::size_t produced = 7;
+    REQUIRE(siaara::codec::inflate_raw(z.data(), z.size(), plain.size(), out, nullptr, &produced).is_ok());
+    CHECK_EQ(produced, plain.size());
+    // cut near the end: fails, out emptied, produced is what was inflated before the end
+    CHECK(!siaara::codec::inflate_raw(z.data(), z.size() - 64, plain.size(), out, nullptr, &produced).is_ok());
+    CHECK(out.empty());
+    CHECK(produced > plain.size() / 2 && produced < plain.size());
+    // the size cap: produced is at most the cap, counted, not assumed
+    const siaara::Status capped = siaara::codec::inflate_raw(z.data(), z.size(), 1000, out, nullptr, &produced);
+    CHECK(capped.code == siaara::Errc::LimitExceeded);
+    CHECK(produced <= 1000u);
+    // nothing to inflate
+    CHECK(!siaara::codec::inflate_raw(nullptr, 3, 10, out, nullptr, &produced).is_ok());
+    CHECK_EQ(produced, 0u);
+}

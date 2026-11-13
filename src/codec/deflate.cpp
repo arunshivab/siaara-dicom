@@ -320,6 +320,9 @@ public:
         return Status::ok();
     }
 
+    // Bytes of output produced so far (what run() reached, on success or failure).
+    std::size_t produced() const noexcept { return opos_; }
+
 private:
     std::uint64_t offset() const noexcept { return static_cast<std::uint64_t>(br_.p - begin_); }
     Status truncated() const { return Status(Errc::Truncated, "deflate: stream truncated", offset()); }
@@ -978,9 +981,10 @@ private:
 }  // namespace
 
 Status inflate_raw(const std::uint8_t* in, std::size_t in_size, std::size_t max_output,
-                   std::vector<std::uint8_t>& out, std::size_t* consumed) {
+                   std::vector<std::uint8_t>& out, std::size_t* consumed, std::size_t* produced) {
     out.clear();
     if (consumed) *consumed = 0;
+    if (produced) *produced = 0;
     if (!in && in_size) return Status(Errc::InvalidArgument, "deflate: null input");
     static const std::uint8_t kEmpty = 0;
     if (!in) in = &kEmpty;
@@ -991,6 +995,7 @@ Status inflate_raw(const std::uint8_t* in, std::size_t in_size, std::size_t max_
         return Status(Errc::OutOfMemory, "deflate: cannot allocate decoder state");
     }
     Status s = inf->run(consumed);
+    if (produced) *produced = inf->produced();  // taken before the output is emptied
     if (!s) out.clear();
     return s;
 }

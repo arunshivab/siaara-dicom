@@ -1013,3 +1013,65 @@ TEST_CASE("grouping: testing P3-2 - a damaged DICOMDIR is an issue; one of anoth
         CHECK_EQ(count_kind(g.issues(s.issues), SIAARA_GISSUE_DICOMDIR_DAMAGED), 0u);
     }
 }
+
+TEST_CASE("grouping: R-238 a deflated stream cut short or corrupt at its end is charged what it inflated") {
+    // About 95 kB inflated, of values that do not repeat (so the stream is long and its end
+    // carries little of the output).
+    Ct d;
+    d.sop = "1.2.14.1";
+    DicomFile f = ct_file(d);
+    f.transfer_syntax = std::string(ts::DeflatedExplicitVRLittleEndian);
+    for (std::uint32_t i = 0; i < 2000; ++i) {
+        std::string v;
+        for (std::uint32_t k = 0; k < 8; ++k) v += std::to_string((i * 2654435761u + k * 40503u) % 100000u);
+        (void)f.dataset.set_string(0x00091000u + i, VR::LO, v.substr(0, 64));
+    }
+    const auto whole = grouping_synth::bytes_of(f);
+    REQUIRE(whole.size() > 4096);
+    std::vector<std::uint8_t> cut(whole.begin(), whole.end() - 64);
+    std::vector<std::uint8_t> corrupt = whole;
+    for (std::size_t i = corrupt.size() - 16; i < corrupt.size(); ++i) corrupt[i] = 0xFF;
+    // What one whole file inflates to, from a grouping that reads it.
+    std::uint64_t one = 0;
+    {
+        Grouping g;
+        CHECK_EQ(g.add("whole", whole), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        CHECK_EQ(s.instances, 1u);
+        one = s.total_inflated;
+        CHECK(one > 64u * 1024u);
+    }
+    for (const auto* bad : {&cut, &corrupt}) {
+        {  // one copy: not readable, and charged nearly the whole inflated size (counted exactly, not the cap)
+            Grouping g;
+            CHECK_EQ(g.add("bad", *bad), SIAARA_OK);
+            const siaara_grouping_summary s = g.result();
+            CHECK_EQ(s.instances, 0u);
+            // A cut stream may decode a few bytes more than the whole one before the end of the
+            // input is noticed (the bit reader runs on past the end): those were produced too.
+            CHECK(s.total_inflated > one / 2 && s.total_inflated <= one + 1024u);
+        }
+        siaara_grouping_options o = grouping_synth::options();
+        o.max_total_inflated = 8 * one;  // about 8 such files
+        Grouping g(&o);
+        for (int i = 0; i < 20; ++i) CHECK_EQ(g.add("bad" + std::to_string(i), *bad), SIAARA_OK);
+        const siaara_grouping_summary s = g.result();
+        CHECK_EQ(s.instances, 0u);
+        CHECK_EQ(s.budget_reached, static_cast<uint32_t>(SIAARA_GLIMIT_TOTAL_INFLATED));
+        CHECK(s.total_inflated <= o.max_total_inflated);
+        std::size_t total = 0;
+        for (const auto& is : g.issues(s.issues))
+            if (is.reason == SIAARA_GSKIP_TOTAL_BUDGET && is.limit == SIAARA_GLIMIT_TOTAL_INFLATED) ++total;
+        CHECK(total >= 5u);
+    }
+    {  // plain (not deflated) files are charged nothing
+        Grouping g;
+        Ct p;
+        p.sop = "1.2.14.2";
+        CHECK_EQ(g.add("plain", ct(p)), SIAARA_OK);
+        std::vector<std::uint8_t> plain_cut = ct(p);
+        plain_cut.resize(plain_cut.size() - 7);
+        CHECK_EQ(g.add("plain-cut", plain_cut), SIAARA_OK);
+        CHECK_EQ(g.result().total_inflated, 0u);
+    }
+}
