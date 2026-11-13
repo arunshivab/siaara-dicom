@@ -21,7 +21,9 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -29,6 +31,35 @@
 #include "store/index.hpp"
 
 namespace siaara::store {
+
+// The keys of a directory record: its own, and those inherited from its ancestors by reference
+// (an ancestor's keys are never copied into each record: R-222). A key is the record's own when
+// the record has it (or for RecordType, FilePath and the three Referenced UIDs, always: they are
+// never inherited); otherwise it is its parent's.
+class DicomdirKeys {
+public:
+    // The key as the record has it: own, else inherited; "" when none.
+    const std::string& operator[](Str k) const noexcept;
+    bool owns(Str k) const noexcept { return (own_mask >> static_cast<unsigned>(k)) & 1u; }
+    const DicomdirKeys* parent() const noexcept { return parent_.get(); }
+    // Every key and the numbers as one record (a copy: for callers that need one).
+    IndexRecord flatten() const;
+
+    // Numbers, resolved: Series Number own or inherited, Instance Number own only.
+    std::uint32_t flags = 0;
+    std::int32_t series_number = 0, instance_number = 0;
+
+    std::array<std::string, kStrCount> own{};  // own keys (where owns(k))
+    std::uint64_t own_mask = 0;
+    std::shared_ptr<const DicomdirKeys> parent_;
+};
+
+// What DicomdirRecord::keys holds: a shared reference to the record's keys.
+struct DicomdirKeysRef {
+    std::shared_ptr<const DicomdirKeys> node;
+    const std::string& operator[](Str k) const noexcept;
+    IndexRecord flatten() const { return node ? node->flatten() : IndexRecord{}; }
+};
 
 struct DicomdirRecord {
     std::size_t index = 0;        // position in the Directory Record Sequence
@@ -38,15 +69,21 @@ struct DicomdirRecord {
     bool in_use = true;           // Record In-use Flag (0004,1410) != 0
     std::vector<std::string> file_id;  // Referenced File ID components as stored (may be unsafe)
     Status file_status;           // Ok, or Rejected (unsafe File ID) / NotFound (no such file)
-    // own + inherited keys; RecordType; FilePath = resolved path (read_dicomdir) or the File ID
-    // as text, components joined with '/' (read_dicomdir_memory; never a path)
-    IndexRecord keys;
+    // own + inherited keys (shared, see DicomdirKeys); RecordType; FilePath = resolved path
+    // (read_dicomdir) or the File ID as text (read_dicomdir_memory, never a path: a well-formed
+    // one has its components joined with '/', padding removed; a rejected one is the value exactly
+    // as stored, components separated by '\\', padding kept)
+    DicomdirKeysRef keys;
 };
 
 // Defaults of the limits of read_dicomdir_memory (0 in DicomdirReadOptions means these there;
 // read_dicomdir takes 0 as "no limit", its behaviour before the limits existed).
 inline constexpr std::uint64_t kDicomdirMemoryDefaultMaxRecords = 100'000;
 inline constexpr std::uint64_t kDicomdirMemoryDefaultMaxBytes = std::uint64_t{64} << 20;
+inline constexpr std::uint64_t kDicomdirMemoryDefaultMaxValueBytes = 65'536;
+// read_dicomdir_memory's element limit: this many per allowed record, and never fewer than
+// kUntrustedMaxElements (R-223), so that max_records records can be read.
+inline constexpr std::uint64_t kDicomdirElementsPerRecord = 16;
 
 
 struct DicomdirReadOptions {
@@ -62,6 +99,10 @@ struct DicomdirReadOptions {
     // Size of the DICOMDIR in bytes: a larger one is Errc::LimitExceeded before it is parsed.
     // 0: no limit (read_dicomdir), or kDicomdirMemoryDefaultMaxBytes (read_dicomdir_memory).
     std::uint64_t max_bytes = 0;
+    // A value longer than this (bytes as stored) is left out of the record's keys and reported (a
+    // warning), never cut; a longer Referenced File ID makes the File ID rejected. 0: no limit
+    // (read_dicomdir), or kDicomdirMemoryDefaultMaxValueBytes (read_dicomdir_memory).
+    std::uint64_t max_value_bytes = 0;
 };
 
 struct DicomdirSummary {
@@ -73,6 +114,7 @@ struct DicomdirSummary {
     std::size_t rejected_paths = 0;
     std::size_t unreachable = 0;     // records no link leads to
     bool sequential_fallback = false;
+    bool incomplete = false;         // read_dicomdir_memory: the input was not read completely (truncated, bytes skipped)
     std::vector<std::string> warnings;  // never contain patient data
 };
 

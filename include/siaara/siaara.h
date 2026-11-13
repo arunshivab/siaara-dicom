@@ -12,6 +12,13 @@
  *    freed, unless the function says otherwise (e.g. raw values and items, below).
  *  - Thread safety: a siaara_file and the data sets borrowed from it may be read from many threads
  *    at once; writes need exclusive access.
+ *  - Structs with struct_size (R-229, R-230). Fields named reserved* must be set to 0 by the caller
+ *    in an input struct; the library ignores them, and writes 0 to them in an output struct. An
+ *    options struct may grow: fields appended later are read only when the caller's struct_size
+ *    covers them (an older, smaller struct gets their defaults), and the smallest struct_size
+ *    accepted is that of the struct's first published version, as each struct states. An output
+ *    struct accepts a struct_size larger than the library knows (a newer caller); only the fields
+ *    the library knows are written, and struct_size is left as the caller set it.
  */
 #ifndef SIAARA_SIAARA_H
 #define SIAARA_SIAARA_H
@@ -926,9 +933,17 @@ typedef struct siaara_dicomdir_read_options {
      *     SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES. */
     uint64_t max_records;
     uint64_t max_bytes;
+    /* Appended; read only when struct_size covers it (the 20- and 40-byte versions are accepted).
+     *   max_value_bytes: a value longer than this, in bytes as stored, is left out of the record's
+     *     keys (its key is empty and not inherited) and reported as a warning, never cut; a longer
+     *     Referenced File ID makes the File ID SIAARA_ERR_REJECTED (FILE_PATH empty).
+     *     siaara_dicomdir_read: 0 = no limit. siaara_dicomdir_read_memory: 0 =
+     *     SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES. */
+    uint64_t max_value_bytes;
 } siaara_dicomdir_read_options;
 #define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS 100000u
 #define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES 67108864u /* 64 MiB */
+#define SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES 65536u /* 64 KiB */
 
 typedef struct siaara_dicomdir_summary {
     uint32_t struct_size;          /* set to sizeof(siaara_dicomdir_summary) */
@@ -951,18 +966,28 @@ SIAARA_API siaara_status SIAARA_CALL siaara_dicomdir_read(const char* utf8_path,
 /* A DICOMDIR held in memory (for example a member of a ZIP that came by mail): `size` bytes at
  * `data`, only read during the call. Never touches the disk. The bytes are UNTRUSTED input and are
  * read with the attachment preview's limits: Part 10 only (preamble and "DICM"), no overlong-length
- * recovery, sequence nesting 16, 200,000 elements and items, a deflated data set inflates to at
- * most 128 MiB (more is SIAARA_ERR_LIMIT_EXCEEDED), and the record limits of `options`
- * (max_records, max_bytes: their defaults apply when 0 or when options is NULL). Note that
- * 200,000 elements bound a DICOMDIR to some 20,000 records before max_records is reached.
+ * recovery, sequence nesting 16, a deflated data set inflates to at most 128 MiB (more is
+ * SIAARA_ERR_LIMIT_EXCEEDED), the record limits of `options` (max_records, max_bytes,
+ * max_value_bytes: their defaults apply when 0 or when options is NULL), and an element limit of
+ * 16 elements and items per allowed record, at least 200,000 (so max_records records can be read).
+ * A file whose Media Storage SOP Class is not 1.2.840.10008.1.3.10 is refused
+ * (SIAARA_ERR_REJECTED). An input read incompletely is a warning; when it ends inside the
+ * Directory Record Sequence, the last record is dropped (a warning), never passed on with a cut
+ * value. Every record's keys hold its own and its ancestors' keys; the ancestors' strings are not
+ * copied for each record (the string table of a record may hold strings of its ancestors and of
+ * earlier records at other offsets: use the offsets).
  * Record links are followed only to offsets where a record starts; a record reached a second
  * time (a cycle, or a record two parents point at) is not visited again (a warning), and the
  * hierarchy is cut at max_depth.
- * Referenced File IDs are never resolved: the File ID comes as text in SIAARA_IDX_FILE_PATH
- * (components joined with '/'), with file_status SIAARA_OK when it is well formed (PS3.10 8.5:
+ * Referenced File IDs are never resolved: the File ID comes as text in SIAARA_IDX_FILE_PATH, with
+ * file_status SIAARA_OK when it is well formed (PS3.10 8.5:
  * 1 to 8 components of 1 to 8 characters each, upper-case A-Z, 0-9 and '_') and
  * SIAARA_ERR_REJECTED otherwise ("..", an absolute path, a drive letter, more than 8 components,
- * a component longer than 8 characters, any other character). There is no
+ * a component longer than 8 characters, any other character). A well-formed File ID's text is its
+ * components joined with '/', padding removed; a rejected one's text is the value exactly as
+ * stored (components separated by '\\', padding kept). Neither is display-safe: pass it through
+ * siaara_text_display_safe before showing it. A REJECTED listing is an unsafe entry in the
+ * sender's DICOMDIR, not a missing file. There is no
  * SIAARA_ERR_NOT_FOUND. summary->files counts the well-formed File IDs, rejected_paths the
  * others; missing_files stays 0. resolve_files and case_insensitive are not used. options and
  * summary may be NULL. */
@@ -2122,8 +2147,9 @@ typedef struct siaara_scp_options {
                                         (0008,0016)/(0008,0018) of the data set; 0: store it under the data set's
                                         UIDs (event uid_mismatch, command UIDs reported) */
     uint32_t reserved0;              /* set to 0 */
-    /* Data sets larger than spool_threshold are received to disk, so memory per association stays
-     * below it (at most max_associations x spool_threshold in all). */
+    /* Data sets larger than spool_threshold are received to disk. Memory per association can
+     * still reach about 2 x spool_threshold (release 0.1.0; to be fixed in 0.1.1), so plan for
+     * about 2 x max_associations x spool_threshold in all. */
     const char* spool_directory;     /* NULL: a private per-user folder under the system temp folder */
     uint64_t spool_threshold;        /* 0 = 16 MiB */
     uint64_t spool_max_total_bytes;  /* all spool files together; 0 = no cap. Over it: 0xA700 */
@@ -3376,7 +3402,9 @@ SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, 
  * patient they name.
  *
  * Text: every text value is returned exactly as stored (decoded from its character set to UTF-8,
- * padding removed, as siaara_dataset_get_utf8 returns all its values) and, next to it, a
+ * padding removed, as siaara_dataset_get_utf8 returns all its values: bytes that are not
+ * characters of the character set in force become U+FFFD in the stored copy too, the bytes
+ * themselves are in the file) and, next to it, a
  * display-safe copy (siaara_text_display_safe). A value longer than its cap (UIDs max_uid_chars,
  * other text max_text_bytes, any stored value max_value_bytes) is NOT kept: its status is
  * SIAARA_GTEXT_TOO_LONG; it is never cut and passed on as if whole. A UID is used for grouping
@@ -3418,7 +3446,8 @@ SIAARA_API siaara_status SIAARA_CALL siaara_text_display_safe(const char* text, 
  *     siaara_grouped_instance.sort_key says which key placed each file, and
  *     siaara_grouped_series.order_rule the rule of the whole series (SIAARA_GSERIES_ORDER_*).
  *   SIAARA_GROUP_ORDER_INSTANCE_NUMBER: by Instance Number, files without one after, as added.
- *   SIAARA_GROUP_ORDER_AS_ADDED.
+ *   SIAARA_GROUP_ORDER_AS_ADDED: purely the order the files were added in (position_fallback and
+ *     tie_break do not apply).
  * Equal keys (a time series, diffusion, a test bolus at one position) are ordered by tie_break:
  * SIAARA_GROUP_TIE_INSTANCE_NUMBER (default: files with an Instance Number first, by it),
  * SIAARA_GROUP_TIE_AS_ADDED, or SIAARA_GROUP_TIE_ACQUISITION_TIME (Acquisition Time (0008,0032),
@@ -3534,7 +3563,8 @@ typedef struct siaara_grouping_options {
  * letters are compared ASCII-only case-folded (match_case_insensitive), and a File ID of N
  * components matches the last N components of the name (match_by_trailing_components; off: the
  * whole name). Only well-formed File IDs of records in use are matched; a name that matches a File
- * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH). A name
+ * ID another name matches too is reported for each name (SIAARA_GISSUE_AMBIGUOUS_MATCH; a file not
+ * kept as a duplicate under SIAARA_GROUP_DUPLICATES_KEEP_FIRST still has its name, and counts). A name
  * with a ".." component, an absolute name (a leading '/' or '\') and a name with a drive letter
  * ("C:") is never matched, and is reported (SIAARA_GISSUE_UNSAFE_NAME, whether or not a DICOMDIR
  * was added). Several DICOMDIRs may be added (at most max_dicomdirs): their records accumulate,
@@ -3694,18 +3724,26 @@ enum {
     SIAARA_GISSUE_SERIES_SIZE_CONFLICT = 5,    /* series: instance's Rows x Columns differ from other_instance's */
     SIAARA_GISSUE_DICOMDIR_SKIPPED = 6,        /* a DICOMDIR not read: reason, limit, status */
     SIAARA_GISSUE_LISTED_MISSING = 7,          /* a DICOMDIR File ID no name matches; subject: the File ID; status
-                                                  SIAARA_ERR_REJECTED when the File ID is not well formed */
+                                                  SIAARA_ERR_REJECTED when the File ID is not well formed (the subject
+                                                  is then the value exactly as stored: an unsafe entry in the sender's
+                                                  DICOMDIR, not a missing file) */
     SIAARA_GISSUE_PRESENT_UNLISTED = 8,        /* instance whose name matches no DICOMDIR File ID (only when a
                                                   DICOMDIR was read) */
     SIAARA_GISSUE_AMBIGUOUS_MATCH = 9,         /* a File ID that two or more names match: one issue per name */
-    SIAARA_GISSUE_UNSAFE_NAME = 10             /* a name with "..", absolute, or with a drive letter: never matched */
+    SIAARA_GISSUE_UNSAFE_NAME = 10,            /* a name with "..", absolute, or with a drive letter: never matched */
+    SIAARA_GISSUE_DICOMDIR_DAMAGED = 11        /* a DICOMDIR read incompletely (reason INCOMPLETE) or with warnings
+                                                  (reason WARNINGS: cycles, links to nowhere, values too long, records
+                                                  dropped ...); subject: the first warning; its records are used */
 };
 enum {
     SIAARA_GSKIP_NOT_DICOM = 1,      /* not a DICOM Part 10 file (no preamble and "DICM") */
     SIAARA_GSKIP_UNREADABLE = 2,     /* DICOM that cannot be read (status says why) */
     SIAARA_GSKIP_FILE_LIMIT = 3,     /* over a limit of one file (limit says which) */
-    SIAARA_GSKIP_TOTAL_BUDGET = 4    /* over a budget of the grouping (limit says which) */
+    SIAARA_GSKIP_TOTAL_BUDGET = 4,   /* over a budget of the grouping (limit says which) */
+    SIAARA_GSKIP_NOT_A_DICOMDIR = 5  /* a DICOMDIR whose Media Storage SOP Class is not 1.2.840.10008.1.3.10 */
 };
+/* siaara_grouping_issue.reason of SIAARA_GISSUE_DICOMDIR_DAMAGED */
+enum { SIAARA_GDAMAGED_INCOMPLETE = 1, SIAARA_GDAMAGED_WARNINGS = 2 };
 enum {
     SIAARA_GLIMIT_NONE = 0,
     SIAARA_GLIMIT_MAX_FILES = 1,

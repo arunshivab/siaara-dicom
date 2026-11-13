@@ -17,6 +17,14 @@ namespace siaara {
 // callers that ask for it do. Strict reads never apply it.
 inline constexpr bool kRecoverOverlongLengthsDefault = true;
 
+// What a read did, reported on success AND on failure (ReadOptions::stats).
+struct ReadStats {
+    // Deflated transfer syntaxes: bytes the data set inflated to before the read ended, whatever
+    // the outcome (a read refused at max_inflated_size reports at least max_inflated_size).
+    std::uint64_t inflated_size = 0;
+    bool inflate_limit_reached = false;  // inflating stopped at max_inflated_size
+};
+
 struct ReadOptions {
     bool stop_before_pixel_data = false;   // header-only parse
     bool allow_raw_dataset = true;         // accept files without preamble/"DICM"
@@ -54,6 +62,8 @@ struct ReadOptions {
     // before pixel data is decoded (Errc::Truncated), which narrows that window but cannot close
     // it. Values, zero-copy accessors, the read report and keep-as-read saves are the same in
     // all three modes.
+    // When set, filled by read_part10 / read_dataset* on every outcome (R-221). Not owned.
+    ReadStats* stats = nullptr;
     io::OpenMode open_mode = io::kDefaultOpenMode;
     std::uint64_t open_read_threshold = io::kDefaultOpenReadThreshold;
     std::uint64_t open_read_max_bytes = io::kDefaultOpenReadMaxBytes;

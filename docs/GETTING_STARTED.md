@@ -499,14 +499,20 @@ is read header-only while it is added.
 
 ```csharp
 using var grouping = new DicomStudyGrouping();           // DicomGroupingOptions.Recommended
+var limits = DicomGroupingOptions.Recommended;
 using var zip = new ZipArchive(new MemoryStream(attachment), ZipArchiveMode.Read);
-foreach (ZipArchiveEntry e in zip.Entries.Take(DicomGroupingOptions.DefaultMaxFiles))
+long total = 0;
+foreach (ZipArchiveEntry e in zip.Entries.Take(limits.MaxFiles))
 {
-    if (e.Length > DicomGroupingOptions.DefaultMaxFileBytes || e.FullName.EndsWith('/')) continue;
-    byte[] data = ReadAll(e);
-    if (Path.GetFileName(e.FullName).Equals("DICOMDIR", StringComparison.OrdinalIgnoreCase))
+    // The sizes in a ZIP are claims: read through a stream capped at MaxFileBytes + 1 (and what
+    // is left of MaxTotalBytes), and skip the member when it is longer - never read it whole first.
+    byte[]? data = ReadCapped(e, Math.Min(limits.MaxFileBytes, limits.MaxTotalBytes - total));
+    if (data is null) continue;
+    total += data.Length;
+    string last = e.FullName[(e.FullName.LastIndexOfAny(new[] { '/', '\\' }) + 1)..];  // '/' or '\'
+    if (last.Equals("DICOMDIR", StringComparison.OrdinalIgnoreCase))
         grouping.AddDicomdir(data);                       // optional
-    else
+    else if (last.Length > 0)
         grouping.Add(e.FullName, data);                   // never throws for bad bytes
 }
 DicomGroupingResult r = grouping.Result;
@@ -516,6 +522,9 @@ foreach (DicomGroupedSeries s in r.Series)                // each series in scro
 foreach (DicomGroupingIssue issue in r.Issues)            // skipped, ungrouped, duplicates, conflicts,
     Report(issue.Kind, issue.Name.Display, issue.Subject.Display);  // listed-but-missing, unlisted
 ```
+
+`ReadCapped` reads at most cap + 1 bytes from `e.Open()` and returns null when there were more
+(`examples/csharp/StudyGrouping/Program.cs` has it).
 
 **C** (index-based getters; text by field, see `siaara.h`, "grouping"):
 
@@ -577,7 +586,8 @@ What it does:
   under two patients gives two studies and an issue each; a series whose files disagree on
   Modality or Rows x Columns is reported.
 - **Duplicates** (the same SOP Instance UID twice): both kept, the second marked (default), or
-  only the first kept (`Duplicates = KeepFirst`); an issue names the second either way.
+  only the first kept (`Duplicates = KeepFirst`); an issue names the second either way. A
+  file not kept as a duplicate still has its name, and still counts for an ambiguous match.
 - **DICOMDIR against the ZIP**: the member's name is split on `/` and `\`, `.` components are
   dropped and ASCII letters compared in any case (`MatchCaseInsensitive`); a File ID of N
   components matches the name's last N components (`MatchByTrailingComponents`), so a wrapping
@@ -589,7 +599,15 @@ What it does:
   (`ListedBy`). The DICOMDIR is read from bytes (`Dicomdir.Read(ReadOnlySpan<byte>, ...)`,
   `siaara_dicomdir_read_memory`): File IDs come as text and are never resolved to a path; an
   unsafe one (`..`, absolute, a drive letter, more than 8 components, a component longer than
-  8 characters, characters outside PS3.10's set) is `Rejected`.
+  8 characters, characters outside PS3.10's set) is `Rejected`. A well-formed File ID's text is
+  its components joined with `/`, padding removed; a rejected one's text is the value exactly as
+  stored (`\` separators, padding kept). **A REJECTED listing is an unsafe entry in the sender's
+  DICOMDIR, not a missing file.** File ID text is not display-safe: show the grouping's `Display`
+  copy, or pass it through `siaara_text_display_safe`. A DICOMDIR read incompletely or with
+  warnings (cycles, links to nowhere, values too long, a record cut by the end of the input,
+  which is dropped) is reported as `DicomdirDamaged` with the reason and the first warning; its
+  records are still used. A file whose Media Storage SOP Class is not 1.2.840.10008.1.3.10 is
+  not taken as a DICOMDIR (`DicomdirSkipped`, `NotADicomdir`).
 
 The limits (`DicomGroupingOptions`, `siaara_grouping_options`; C: 0 takes the default, C#: a zero
 or negative limit throws `ArgumentOutOfRangeException`):
@@ -613,9 +631,12 @@ fixed part of a kept file is about 2.5 kB on top of its text (10,000 small files
 heap in the tests).
 
 `Dicomdir.Read(path, ...)` and `siaara_dicomdir_read` read a DICOMDIR on disk exactly as before;
-the record limits (`MaxRecords`, `MaxBytes`) are options there with 0 = no limit, and on by
-default only for the reader from bytes (100,000 records, 64 MiB). The reader from bytes uses the
-preview's element limit too (200,000), which a DICOMDIR of about 20,000 records reaches first.
+the record limits (`MaxRecords`, `MaxBytes`, `MaxValueBytes`) are options there with 0 = no
+limit, and on by default only for the reader from bytes (100,000 records, 64 MiB, 64 KiB per
+value). A value longer than `MaxValueBytes` is left out of the record's keys and reported as a
+warning, never cut. The reader from bytes sizes its element limit from `MaxRecords` (16 per
+record, at least 200,000), so 100,000 records do read. A record's inherited keys are shared with
+its ancestors, never copied for each record.
 
 ## 8. The command-line tools
 

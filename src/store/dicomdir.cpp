@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <map>
+#include <memory>
+#include <optional>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -90,17 +93,43 @@ bool file_id_well_formed(const std::vector<std::string>& components) noexcept {
     return true;
 }
 
+const std::string& DicomdirKeys::operator[](Str k) const noexcept {
+    static const std::string kEmpty;
+    for (const DicomdirKeys* n = this; n; n = n->parent_.get())
+        if (n->owns(k)) return n->own[static_cast<std::size_t>(k)];
+    return kEmpty;
+}
+
+IndexRecord DicomdirKeys::flatten() const {
+    IndexRecord r;
+    for (std::size_t k = 0; k < kStrCount; ++k) r.s[k] = (*this)[static_cast<Str>(k)];
+    r.flags = flags;
+    r.series_number = series_number;
+    r.instance_number = instance_number;
+    return r;
+}
+
+const std::string& DicomdirKeysRef::operator[](Str k) const noexcept {
+    static const std::string kEmpty;
+    return node ? (*node)[k] : kEmpty;
+}
+
 namespace {
 
 // What a reader does with a record's Referenced File ID: resolve it on disk (read_dicomdir) or
-// only check it (read_dicomdir_memory).
-using FileIdHandler = std::function<void(DicomdirRecord&, DicomdirSummary&)>;
+// only check it (read_dicomdir_memory). `raw` is the value exactly as stored; `file_path` is the
+// record's FilePath key to fill.
+using FileIdHandler = std::function<void(DicomdirRecord&, std::string_view raw, std::string& file_path, DicomdirSummary&)>;
+
+constexpr std::uint64_t bit(Str k) noexcept { return std::uint64_t{1} << static_cast<unsigned>(k); }
 
 // The record walk shared by both readers. `bytes` is the input `file` was parsed from (record
-// offsets are positions in it). max_records: 0 = no limit.
+// offsets are positions in it). max_records and max_value_bytes: 0 = no limit. untrusted
+// (read_dicomdir_memory): a record cut by the end of the input is dropped and reported.
 Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, const DicomFile& file,
                                       const DicomdirCallback& cb, const DicomdirReadOptions& opt,
-                                      std::uint64_t max_records, const FileIdHandler& on_file_id) {
+                                      std::uint64_t max_records, std::uint64_t max_value_bytes, bool untrusted,
+                                      const FileIdHandler& on_file_id) {
     const Dataset& ds = file.dataset;
     const charset::CharacterSet top_cs = charset::character_set_of(ds);
     sum.file_set_id = element_text(ds, dt::FileSetId, top_cs);
@@ -115,12 +144,21 @@ Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, c
     if (max_records && items.size() > max_records)
         return Status(Errc::LimitExceeded, "the DICOMDIR has more records than the limit of " + std::to_string(max_records));
 
+    // A record cut by the end of the input: when the input ended inside the Directory Record
+    // Sequence, its last item is not whole. It is dropped (never passed on with a cut value).
+    std::vector<bool> dropped(items.size(), false);
+    if (untrusted && (file.read_loss & DicomFile::kReadInputTruncated) && !items.empty() &&
+        !ds.elements().empty() && &ds.elements().back() == seq) {
+        dropped.back() = true;
+        sum.warnings.push_back("the last directory record runs past the end of the input; it was dropped");
+    }
+
     const TransferSyntaxInfo* ts = find_transfer_syntax(file.transfer_syntax);
     const bool explicit_vr = !ts || ts->explicit_vr;
     std::vector<std::uint64_t> off(items.size(), 0);
     std::unordered_map<std::uint64_t, std::size_t> at;
     for (std::size_t i = 0; i < items.size(); ++i) {
-        if (items[i].empty()) continue;
+        if (items[i].empty() || dropped[i]) continue;
         const Element& e0 = items[i].elements().front();
         if (e0.is_sequence() || e0.is_encapsulated() || !in_buffer(bytes, e0.value.data())) continue;
         const std::uint64_t hdr = explicit_vr ? (vr_has_long_length(e0.vr) ? 12u : 8u) : 8u;
@@ -130,30 +168,72 @@ Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, c
         at.emplace(off[i], i);
     }
 
-    // Builds the report for record i.
-    auto make = [&](std::size_t i, std::int64_t parent, std::uint32_t depth, const IndexRecord& inherited) {
+    std::size_t too_long = 0;
+    auto fits = [&](const Dataset& it, Tag tag) {
+        const Element* e = it.find(tag);
+        return !max_value_bytes || !e || e->value.size() <= max_value_bytes;
+    };
+    // Builds the report for record i. Its keys reference the parent's (never copied).
+    using Node = std::shared_ptr<const DicomdirKeys>;
+    auto make = [&](std::size_t i, std::int64_t parent, std::uint32_t depth, const Node& inherited) {
         DicomdirRecord r;
         r.index = i;
         r.parent = parent;
         r.depth = depth;
         r.offset = off[i];
         const Dataset& it = items[i];
-        if (auto u = it.get_int(dt::InUse)) r.in_use = *u != 0;
+        if (fits(it, dt::InUse))
+            if (auto u = it.get_int(dt::InUse)) r.in_use = *u != 0;
         const charset::CharacterSet cs = charset::character_set_of(it, &top_cs);
-        r.keys = inherited;
-        for (Str k : {Str::FilePath, Str::RecordType, Str::SopClassUid, Str::SopInstanceUid, Str::TransferSyntaxUid})
-            r.keys[k].clear();
-        r.keys.flags &= ~kHasInstanceNumber;
-        r.keys.instance_number = 0;
-        read_keys(it, cs, r.keys, true);
-        r.keys[Str::RecordType] = element_text(it, dt::RecordType, cs);
-        if (it.contains(dt::RefSopClass)) r.keys[Str::SopClassUid] = element_text(it, dt::RefSopClass, cs);
-        if (it.contains(dt::RefSopInstance)) r.keys[Str::SopInstanceUid] = element_text(it, dt::RefSopInstance, cs);
-        if (it.contains(dt::RefTransferSyntax)) r.keys[Str::TransferSyntaxUid] = element_text(it, dt::RefTransferSyntax, cs);
-        if (auto v = it.get_raw_string(dt::ReferencedFileId)) {
-            r.file_id = split_file_id(*v);
-            on_file_id(r, sum);
+        auto node = std::make_shared<DicomdirKeys>();
+        node->parent_ = inherited;
+        IndexRecord tmp;
+        if (inherited) {
+            tmp.flags = inherited->flags & ~kHasInstanceNumber;
+            tmp.series_number = inherited->series_number;
         }
+        const std::size_t before = too_long;
+        std::uint64_t mask = read_present_keys(it, cs, tmp, max_value_bytes, &too_long);
+        // Never inherited: always the record's own (possibly empty).
+        for (Str k : {Str::FilePath, Str::RecordType, Str::SopClassUid, Str::SopInstanceUid, Str::TransferSyntaxUid}) {
+            if (!(mask & bit(k))) tmp[k].clear();
+            mask |= bit(k);
+        }
+        auto own_text = [&](Str k, Tag tag) {
+            if (!it.contains(tag)) return;
+            if (fits(it, tag)) {
+                tmp[k] = element_text(it, tag, cs);
+            } else {
+                tmp[k].clear();
+                ++too_long;
+            }
+        };
+        tmp[Str::RecordType].clear();
+        own_text(Str::RecordType, dt::RecordType);
+        own_text(Str::SopClassUid, dt::RefSopClass);
+        own_text(Str::SopInstanceUid, dt::RefSopInstance);
+        own_text(Str::TransferSyntaxUid, dt::RefTransferSyntax);
+        if (auto v = it.get_raw_string(dt::ReferencedFileId)) {
+            if (fits(it, dt::ReferencedFileId)) {
+                r.file_id = split_file_id(*v);
+                on_file_id(r, *v, tmp[Str::FilePath], sum);
+            } else {
+                // Too long to keep: the File ID is not passed on (a component list cannot be cut).
+                r.file_status = Status(Errc::Rejected, "the Referenced File ID is longer than max_value_bytes");
+                ++sum.rejected_paths;
+                ++too_long;
+            }
+        }
+        if (too_long != before)
+            sum.warnings.push_back("record " + std::to_string(i) + ": " + std::to_string(too_long - before) +
+                                   " values longer than max_value_bytes left out");
+        node->flags = tmp.flags;
+        node->series_number = tmp.series_number;
+        node->instance_number = tmp.instance_number;
+        node->own_mask = mask;
+        for (std::size_t k = 0; k < kStrCount; ++k)
+            if (mask & (std::uint64_t{1} << k)) node->own[k] = std::move(tmp.s[k]);
+        r.keys.node = std::move(node);
         return r;
     };
 
@@ -175,22 +255,22 @@ Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, c
         struct Up {
             int rank;
             std::size_t index;
-            IndexRecord keys;
+            Node keys;
         };
         std::vector<Up> stack;
         for (std::size_t i = 0; i < items.size(); ++i) {
+            if (dropped[i]) continue;
             if (Status s = count_visit(); !s) return s;
             const charset::CharacterSet cs = charset::character_set_of(items[i], &top_cs);
-            const int rank = rank_of(element_text(items[i], dt::RecordType, cs));
+            const int rank = rank_of(fits(items[i], dt::RecordType) ? element_text(items[i], dt::RecordType, cs) : std::string());
             while (!stack.empty() && stack.back().rank >= rank) stack.pop_back();
-            static const IndexRecord kEmpty{};
             DicomdirRecord r = make(i, stack.empty() ? -1 : static_cast<std::int64_t>(stack.back().index),
-                                    static_cast<std::uint32_t>(stack.size()), stack.empty() ? kEmpty : stack.back().keys);
+                                    static_cast<std::uint32_t>(stack.size()), stack.empty() ? Node{} : stack.back().keys);
             visited[i] = true;
             if (!r.in_use && !opt.include_inactive) continue;
             ++sum.reported;
             if (cb && !cb(r)) return Status(Errc::Cancelled, "cancelled by the callback");
-            if (rank < 3) stack.push_back({rank, i, std::move(r.keys)});
+            if (rank < 3) stack.push_back({rank, i, r.keys.node});
         }
         return sum;
     }
@@ -199,10 +279,10 @@ Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, c
         std::uint64_t offset;
         std::uint32_t depth;
         std::int64_t parent;
-        IndexRecord inherited;
+        Node inherited;
     };
     std::vector<Frame> stack;
-    if (linked) stack.push_back({static_cast<std::uint64_t>(*root), 0, -1, IndexRecord{}});
+    if (linked) stack.push_back({static_cast<std::uint64_t>(*root), 0, -1, Node{}});
     while (!stack.empty()) {
         Frame f = std::move(stack.back());
         stack.pop_back();
@@ -220,22 +300,28 @@ Result<DicomdirSummary> walk_dicomdir(DicomdirSummary sum, const Bytes& bytes, c
         }
         visited[i] = true;
         DicomdirRecord r = make(i, f.parent, f.depth, f.inherited);
-        const auto next = items[i].get_int(dt::OffsetNext);
-        const auto lower = items[i].get_int(dt::OffsetLower);
-        if (next && *next > 0) stack.push_back({static_cast<std::uint64_t>(*next), f.depth, f.parent, f.inherited});
+        // A link value longer than max_value_bytes is not read (0: no link).
+        auto link = [&](Tag tag) -> std::int64_t {
+            if (!fits(items[i], tag)) return 0;
+            const auto v = items[i].get_int(tag);
+            return v ? *v : 0;
+        };
+        const std::int64_t next = link(dt::OffsetNext);
+        const std::int64_t lower = link(dt::OffsetLower);
+        if (next > 0) stack.push_back({static_cast<std::uint64_t>(next), f.depth, f.parent, f.inherited});
         if (!r.in_use && !opt.include_inactive) continue;
         ++sum.reported;
         if (cb && !cb(r)) return Status(Errc::Cancelled, "cancelled by the callback");
-        if (lower && *lower > 0) {
+        if (lower > 0) {
             if (f.depth + 1 >= opt.max_depth) {
                 sum.warnings.push_back("record hierarchy deeper than the limit; lower levels skipped");
                 continue;
             }
-            stack.push_back({static_cast<std::uint64_t>(*lower), f.depth + 1, static_cast<std::int64_t>(i), std::move(r.keys)});
+            stack.push_back({static_cast<std::uint64_t>(lower), f.depth + 1, static_cast<std::int64_t>(i), r.keys.node});
         }
     }
-    for (bool v : visited)
-        if (!v) ++sum.unreachable;
+    for (std::size_t i = 0; i < visited.size(); ++i)
+        if (!visited[i] && !dropped[i]) ++sum.unreachable;
     if (sum.unreachable) sum.warnings.push_back(std::to_string(sum.unreachable) + " records are not reachable from the root");
     return sum;
 }
@@ -254,12 +340,12 @@ Result<DicomdirSummary> read_dicomdir(const std::string& utf8_path, const Dicomd
     std::error_code ec;
     fs::path dir = fs::absolute(u8path(utf8_path), ec).parent_path();
     if (ec) dir = u8path(utf8_path).parent_path();
-    return walk_dicomdir(std::move(sum), *bytes, *file, cb, opt, opt.max_records,
-                         [&](DicomdirRecord& r, DicomdirSummary& s) {
+    return walk_dicomdir(std::move(sum), *bytes, *file, cb, opt, opt.max_records, opt.max_value_bytes, false,
+                         [&](DicomdirRecord& r, std::string_view, std::string& file_path, DicomdirSummary& s) {
                              if (!opt.resolve_files) return;
                              auto p = resolve_file_id(dir, r.file_id, opt.case_insensitive);
                              if (p) {
-                                 r.keys[Str::FilePath] = to_utf8(*p);
+                                 file_path = to_utf8(*p);
                                  ++s.files;
                              } else {
                                  r.file_status = p.take_error();
@@ -274,23 +360,37 @@ Result<DicomdirSummary> read_dicomdir_memory(const std::uint8_t* data, std::size
     if (!data && size) return Status(Errc::InvalidArgument, "data must not be NULL");
     const std::uint64_t max_bytes = opt.max_bytes ? opt.max_bytes : kDicomdirMemoryDefaultMaxBytes;
     const std::uint64_t max_records = opt.max_records ? opt.max_records : kDicomdirMemoryDefaultMaxRecords;
+    const std::uint64_t max_value_bytes = opt.max_value_bytes ? opt.max_value_bytes : kDicomdirMemoryDefaultMaxValueBytes;
     if (size > max_bytes)
         return Status(Errc::LimitExceeded, "the DICOMDIR is larger than the limit of " + std::to_string(max_bytes) + " bytes");
     // A view of the caller's bytes (no copy): the parsed file and everything taken from it live
-    // only during this call.
+    // only during this call. The element limit allows max_records records (R-223).
     const Bytes bytes(std::shared_ptr<const void>{}, data, size);
-    auto file = read_part10(bytes, untrusted_read_options(0, 0, 0, false));
+    std::uint64_t max_elements = kUntrustedMaxElements;
+    if (max_records <= UINT64_MAX / kDicomdirElementsPerRecord)
+        max_elements = std::max(max_elements, max_records * kDicomdirElementsPerRecord);
+    else
+        max_elements = UINT64_MAX;
+    auto file = read_part10(bytes, untrusted_read_options(0, max_elements, 0, false));
     if (!file) return file.take_error();
-    return walk_dicomdir(DicomdirSummary{}, bytes, *file, cb, opt, max_records, [](DicomdirRecord& r, DicomdirSummary& s) {
-        std::string text;
-        for (const auto& c : r.file_id) {
-            if (!text.empty()) text.push_back('/');
-            text += c;
-        }
-        r.keys[Str::FilePath] = std::move(text);
+    // Refused unless the file meta names the Media Storage Directory SOP Class.
+    if (auto c = file->meta.get_string(tags::MediaStorageSOPClassUID); !c || *c != kMediaStorageDirectoryUid)
+        return Status(Errc::Rejected, "not a DICOMDIR: the Media Storage SOP Class is not 1.2.840.10008.1.3.10");
+    DicomdirSummary first;
+    first.incomplete = (file->read_loss & (DicomFile::kReadBytesSkipped | DicomFile::kReadInputTruncated | DicomFile::kReadRecovered)) != 0;
+    if (first.incomplete)
+        first.warnings.push_back("the DICOMDIR was not read completely (" + std::string(file->warnings.empty() ? "read loss" : file->warnings.front()) + ")");
+    return walk_dicomdir(std::move(first), bytes, *file, cb, opt, max_records, max_value_bytes, true,
+                         [](DicomdirRecord& r, std::string_view raw, std::string& file_path, DicomdirSummary& s) {
         if (file_id_well_formed(r.file_id)) {
+            for (const auto& c : r.file_id) {
+                if (!file_path.empty()) file_path.push_back('/');
+                file_path += c;
+            }
             ++s.files;
         } else {
+            // Exactly as stored: an unsafe entry in the sender's DICOMDIR, not a missing file.
+            file_path.assign(raw.data(), raw.size());
             r.file_status = Status(Errc::Rejected, "the Referenced File ID is not well formed (PS3.10 8.5)");
             ++s.rejected_paths;
         }

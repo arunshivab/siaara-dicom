@@ -45,7 +45,13 @@ static_assert(static_cast<int>(st::TextField::Subject) == SIAARA_GFIELD_SUBJECT 
                   static_cast<int>(st::TextField::IssuerOfPatientId) == SIAARA_GFIELD_ISSUER_OF_PATIENT_ID,
               "text fields");
 static_assert(static_cast<int>(st::SeriesOrder::Mixed) == SIAARA_GSERIES_ORDER_MIXED, "series order rules");
-static_assert(static_cast<int>(st::IssueKind::UnsafeName) == SIAARA_GISSUE_UNSAFE_NAME, "issue kinds");
+static_assert(static_cast<int>(st::IssueKind::UnsafeName) == SIAARA_GISSUE_UNSAFE_NAME &&
+                  static_cast<int>(st::IssueKind::DicomdirDamaged) == SIAARA_GISSUE_DICOMDIR_DAMAGED,
+              "issue kinds");
+static_assert(static_cast<int>(st::SkipReason::NotADicomdir) == SIAARA_GSKIP_NOT_A_DICOMDIR &&
+                  static_cast<int>(st::DamagedReason::Incomplete) == SIAARA_GDAMAGED_INCOMPLETE &&
+                  static_cast<int>(st::DamagedReason::Warnings) == SIAARA_GDAMAGED_WARNINGS,
+              "reasons");
 static_assert(static_cast<int>(st::Limit::MaxDicomdirs) == SIAARA_GLIMIT_MAX_DICOMDIRS, "limits");
 static_assert(st::kGiUnsafeName == SIAARA_GINST_UNSAFE_NAME && st::kGiAcquisitionTime == SIAARA_GINST_ACQUISITION_TIME,
               "instance flags");

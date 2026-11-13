@@ -1093,6 +1093,7 @@ SIAARA_API siaara_status SIAARA_CALL siaara_web_stow_ex(siaara_web_client* clien
 }  // extern "C"
 
 // ---------------------------------------------------------------- index records, store, scan, DICOMDIR (appended)
+#include <array>
 #include <cstddef>
 #include <memory>
 
@@ -1108,7 +1109,7 @@ static_assert(static_cast<std::size_t>(SIAARA_IDX_COUNT) == siaara::store::kStrC
 static_assert(SIAARA_INDEX_MAX_STRINGS >= SIAARA_IDX_COUNT, "string ids");
 static_assert(sizeof(siaara_store_stats) == 96, "siaara_store_stats layout");
 static_assert(sizeof(siaara_dicomdir_entry) == 32, "siaara_dicomdir_entry layout");
-static_assert(sizeof(siaara_dicomdir_read_options) == 40, "siaara_dicomdir_read_options layout");
+static_assert(sizeof(siaara_dicomdir_read_options) == 48, "siaara_dicomdir_read_options layout");
 
 struct siaara_store_result {
     std::vector<siaara::store::IndexRecord> rows;
@@ -1205,7 +1206,18 @@ siaara_status dicomdir_read_common(const siaara_dicomdir_read_options* options, 
         if (in.max_depth) o.max_depth = in.max_depth;
         o.max_records = in.max_records;
         o.max_bytes = in.max_bytes;
+        o.max_value_bytes = in.max_value_bytes;
     }
+    // The key table is built as a stack (R-222): an ancestor's strings are written once and stay
+    // at the front of the table while its descendants are reported (the walk is depth-first), so a
+    // record's table holds only its own strings after them; inherited keys point into the front.
+    struct Level {
+        std::int64_t index;
+        std::size_t end;
+        std::array<uint32_t, st::kStrCount> off{}, len{};
+    };
+    std::vector<Level> levels;
+    std::string tab(1, '\0');
     auto r = read([&](const st::DicomdirRecord& d) {
         if (!cb) return true;
         siaara_dicomdir_entry e{};
@@ -1216,9 +1228,48 @@ siaara_status dicomdir_read_common(const siaara_dicomdir_read_options* options, 
         e.in_use = d.in_use ? 1 : 0;
         e.file_status = static_cast<siaara_status>(d.file_status.code);
         e.offset = d.offset;
+        const st::DicomdirKeys* node = d.keys.node.get();
+        while (!levels.empty() && levels.back().index != d.parent) levels.pop_back();
+        // The parent's level is on the stack when its node is this record's parent node; if not
+        // (never in a walk, kept for safety), the table starts afresh with every key copied.
+        const bool chained = node && !levels.empty() && d.parent >= 0 && node->parent();
+        if (!chained) {
+            levels.clear();
+            tab.assign(1, '\0');
+        }
+        Level lv;
+        lv.index = static_cast<std::int64_t>(d.index);
+        tab.resize(chained ? levels.back().end : 1);
+        for (std::size_t k = 0; k < st::kStrCount; ++k) {
+            const auto key = static_cast<st::Str>(k);
+            const bool own = !node || !chained || node->owns(key);
+            if (!own) {
+                lv.off[k] = levels.back().off[k];
+                lv.len[k] = levels.back().len[k];
+                continue;
+            }
+            const std::string& v = d.keys[key];
+            if (v.empty()) continue;
+            lv.off[k] = static_cast<uint32_t>(tab.size());
+            lv.len[k] = static_cast<uint32_t>(v.size());
+            tab += v;
+            tab.push_back('\0');
+        }
+        lv.end = tab.size();
         siaara_index_record rec{};
         rec.struct_size = sizeof rec;
-        const std::string tab = fill_index_record(d.keys, &rec);
+        st::IndexRecord nums;
+        if (node) {
+            nums.flags = node->flags;
+            nums.series_number = node->series_number;
+            nums.instance_number = node->instance_number;
+        }
+        (void)fill_index_record(nums, &rec);
+        for (std::size_t k = 0; k < st::kStrCount; ++k) {
+            rec.str_offset[k] = lv.off[k];
+            rec.str_length[k] = lv.len[k];
+        }
+        levels.push_back(lv);
         return cb(user, &e, &rec, tab.c_str()) == 0;
     }, o);
     if (!r) return fail(r.error());

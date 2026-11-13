@@ -27,16 +27,23 @@ public sealed record DicomdirReadOptions
     /// <summary>Largest DICOMDIR in bytes; a larger one is <see cref="SiaaraErrorCode.LimitExceeded"/> before it is
     /// parsed. 0: no limit when reading a path, <see cref="MemoryDefaultMaxBytes"/> when reading bytes.</summary>
     public long MaxBytes { get; init; }
+    /// <summary>A value longer than this (bytes as stored) is left out of the record's keys and reported as a warning,
+    /// never cut; a longer Referenced File ID makes the File ID Rejected. 0: no limit when reading a path,
+    /// <see cref="MemoryDefaultMaxValueBytes"/> when reading bytes.</summary>
+    public long MaxValueBytes { get; init; }
 
     /// <summary>Default of <see cref="MaxRecords"/> for a DICOMDIR read from bytes.</summary>
     public const long MemoryDefaultMaxRecords = C.SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS;
     /// <summary>Default of <see cref="MaxBytes"/> for a DICOMDIR read from bytes (64 MiB).</summary>
     public const long MemoryDefaultMaxBytes = C.SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES;
+    /// <summary>Default of <see cref="MaxValueBytes"/> for a DICOMDIR read from bytes (64 KiB).</summary>
+    public const long MemoryDefaultMaxValueBytes = C.SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES;
 
     internal siaara_dicomdir_read_options ToNative()
     {
         ArgumentOutOfRangeException.ThrowIfNegative(MaxRecords);
         ArgumentOutOfRangeException.ThrowIfNegative(MaxBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(MaxValueBytes);
         return new siaara_dicomdir_read_options
         {
             struct_size = StructSize.Of<siaara_dicomdir_read_options>(),
@@ -46,6 +53,7 @@ public sealed record DicomdirReadOptions
             max_depth = (uint)Math.Max(0, MaxDepth),
             max_records = (ulong)MaxRecords,
             max_bytes = (ulong)MaxBytes,
+            max_value_bytes = (ulong)MaxValueBytes,
         };
     }
 }
@@ -57,13 +65,17 @@ public sealed record DicomdirReadOptions
 /// <param name="InUse">Record In-use flag.</param>
 /// <param name="FileStatus">Ok, Rejected (unsafe File ID) or NotFound.</param>
 /// <param name="Offset">File offset of the record.</param>
-/// <param name="Keys">Keys (RecordType, FilePath = resolved absolute path; read from bytes: the File ID as text).</param>
+/// <param name="Keys">Keys (RecordType; FilePath = the resolved absolute path when read from a path, the File ID
+/// text when read from bytes (as <see cref="DicomdirRecord.FileId"/>).</param>
 public sealed record DicomdirRecord(int Index, int Parent, int Depth, bool InUse, SiaaraErrorCode FileStatus, long Offset, DicomIndexRecord Keys)
 {
     /// <summary>Read from bytes (<see cref="Dicomdir.Read(ReadOnlySpan{byte}, Action{DicomdirRecord}, DicomdirReadOptions?)"/>):
-    /// the Referenced File ID as text, its components joined with '/', never resolved to a path (null when the record
-    /// has none). <see cref="FileStatus"/> is Ok when it is well formed and Rejected when not. Read from a path:
-    /// null (<see cref="DicomIndexRecord"/> FilePath has the resolved path).</summary>
+    /// the Referenced File ID as text, never resolved to a path (null when the record has none).
+    /// <see cref="FileStatus"/> is Ok when it is well formed (the text is its components joined with '/', padding
+    /// removed) and Rejected when not (the text is the value exactly as stored: '\' separators, padding kept). A
+    /// Rejected listing is an unsafe entry in the sender's DICOMDIR, not a missing file. The text is not
+    /// display-safe: clean it (the grouping's Display copies are) before showing it. Read from a path: null
+    /// (<see cref="DicomIndexRecord"/> FilePath has the resolved path).</summary>
     public string? FileId { get; init; }
 }
 
@@ -144,7 +156,10 @@ public static class Dicomdir
     /// record. Never touches the disk. The bytes are untrusted input and are read with the attachment preview's
     /// limits (Part 10 only, no overlong-length recovery, nesting 16, 200,000 elements, 128 MiB inflated) and the
     /// record limits of <paramref name="options"/> (<see cref="DicomdirReadOptions.MaxRecords"/>,
-    /// <see cref="DicomdirReadOptions.MaxBytes"/>: their defaults apply when 0). Referenced File IDs are never
+    /// <see cref="DicomdirReadOptions.MaxBytes"/>, <see cref="DicomdirReadOptions.MaxValueBytes"/>: their defaults
+    /// apply when 0); the element limit allows MaxRecords records. A file whose Media Storage SOP Class is not
+    /// 1.2.840.10008.1.3.10 is refused (Rejected); when the input ends inside a record, that record is dropped (a
+    /// warning). Referenced File IDs are never
     /// resolved: <see cref="DicomdirRecord.FileId"/> has the File ID as text and <see cref="DicomdirRecord.FileStatus"/>
     /// is Ok (well formed) or Rejected ("..", absolute, a drive letter, more than 8 components, a component longer
     /// than 8 characters, characters outside PS3.10's set).</summary>

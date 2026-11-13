@@ -420,6 +420,9 @@ public enum DicomGroupingIssueKind
     AmbiguousMatch = C.SIAARA_GISSUE_AMBIGUOUS_MATCH,
     /// <summary>A name with a ".." component, an absolute name or one with a drive letter: never matched to a File ID.</summary>
     UnsafeName = C.SIAARA_GISSUE_UNSAFE_NAME,
+    /// <summary>A DICOMDIR read incompletely or with warnings (<see cref="DicomGroupingIssue.DamagedReason"/>; Subject: the
+    /// first warning). Its records are still used.</summary>
+    DicomdirDamaged = C.SIAARA_GISSUE_DICOMDIR_DAMAGED,
 }
 
 /// <summary>Why a file (or DICOMDIR) was not kept.</summary>
@@ -435,6 +438,19 @@ public enum DicomGroupingSkipReason
     FileLimit = C.SIAARA_GSKIP_FILE_LIMIT,
     /// <summary>Over a budget of the grouping (<see cref="DicomGroupingIssue.Limit"/>).</summary>
     TotalBudget = C.SIAARA_GSKIP_TOTAL_BUDGET,
+    /// <summary>A DICOMDIR whose Media Storage SOP Class is not 1.2.840.10008.1.3.10.</summary>
+    NotADicomdir = C.SIAARA_GSKIP_NOT_A_DICOMDIR,
+}
+
+/// <summary>Why a DICOMDIR is reported damaged.</summary>
+public enum DicomdirDamagedReason
+{
+    /// <summary>Not damaged.</summary>
+    None = 0,
+    /// <summary>It was not read completely (truncated, bytes skipped).</summary>
+    Incomplete = C.SIAARA_GDAMAGED_INCOMPLETE,
+    /// <summary>It was read with warnings (cycles, links to nowhere, values too long, records dropped ...).</summary>
+    Warnings = C.SIAARA_GDAMAGED_WARNINGS,
 }
 
 /// <summary>The limit or budget a skip was for.</summary>
@@ -485,6 +501,8 @@ public sealed record DicomGroupingIssue
     public DicomGroupingSkipReason SkipReason { get; init; }
     /// <summary>Ungrouped: which UID.</summary>
     public DicomGroupingMissingUid MissingUid { get; init; }
+    /// <summary>DicomdirDamaged: why.</summary>
+    public DicomdirDamagedReason DamagedReason { get; init; }
     /// <summary>The limit or budget, for a skip over one.</summary>
     public DicomGroupingLimit Limit { get; init; }
     /// <summary>The read's status (skips) or the File ID's status (ListedMissing).</summary>
@@ -721,6 +739,7 @@ public sealed class DicomStudyGrouping : IDisposable
                 Kind = kind,
                 SkipReason = skip ? (DicomGroupingSkipReason)v.reason : DicomGroupingSkipReason.None,
                 MissingUid = kind == DicomGroupingIssueKind.Ungrouped ? (DicomGroupingMissingUid)v.reason : DicomGroupingMissingUid.None,
+                DamagedReason = kind == DicomGroupingIssueKind.DicomdirDamaged ? (DicomdirDamagedReason)v.reason : DicomdirDamagedReason.None,
                 Limit = (DicomGroupingLimit)v.limit,
                 Status = (SiaaraErrorCode)v.status,
                 File = v.file,

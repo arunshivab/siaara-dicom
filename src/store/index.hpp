@@ -116,6 +116,12 @@ Status extract_index_file(const std::string& utf8_path, IndexRecord& out, const 
 // Fills the key strings (and Series/Instance Number) present in `ds`, decoding text with `cs`.
 // overlay = true leaves keys the data set does not contain untouched.
 void read_keys(const Dataset& ds, const charset::CharacterSet& cs, IndexRecord& out, bool overlay);
+// As read_keys with overlay = true, and returns a mask with bit k set for every key Str(k) the data
+// set has. A value longer than max_value_bytes (0 = no limit) is not decoded: its key is set empty
+// (it is still present: it is left out, never cut) and counted in *too_long (may be null). Series
+// and Instance Number longer than the cap are not read (and counted).
+std::uint64_t read_present_keys(const Dataset& ds, const charset::CharacterSet& cs, IndexRecord& out,
+                                std::uint64_t max_value_bytes, std::size_t* too_long);
 // One element's whole value as UTF-8 (all values, backslash separated), padding removed.
 std::string element_text(const Dataset& ds, Tag tag, const charset::CharacterSet& cs);
 

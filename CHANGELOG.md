@@ -36,9 +36,12 @@ C ABI version 1 (`SIAARA_ABI_VERSION`).
   process.
 - A DICOMDIR can be read from bytes (`siaara_dicomdir_read_memory`, `Dicomdir.Read(ReadOnlySpan<byte>,
   ...)`): never touches the disk, File IDs as text (well formed or rejected), record and size
-  limits on by default. The path reader keeps its behaviour; the same limits are options there
-  (`max_records`, `max_bytes`; 0 = no limit), and it accepts the options struct of its first
-  version (20 bytes) as before.
+  limits on by default (100,000 records, 64 MiB, 64 KiB per value: a longer value is left out
+  and reported, never cut). A file that is not a Media Storage Directory is refused; a damaged one
+  is reported. The path reader keeps its behaviour; the same limits are options there
+  (`max_records`, `max_bytes`, `max_value_bytes`; 0 = no limit), and it accepts the options struct
+  of its first version (20 bytes) as before. Inherited record keys are shared, not copied for
+  every record.
 - The display-safe text cleaner of the preview is in the library: `siaara_text_display_safe`
   (controls and line separators a space, format characters removed, malformed UTF-8 U+FFFD).
   `DicomAttachmentPreview.CaptionText` uses it (its results are unchanged), and so does the C
@@ -118,6 +121,11 @@ Stated plainly, so that nobody finds them by surprise.
 - No audit trail (PS3.15 audit messages) and no user authentication: these are the product's.
 
 **Behaviour to know**
+- **Three memory and reply limits of this release, to be fixed in 0.1.1:**
+  (a) the C-GET SCU and `siaara-storescp` hold received instances in memory (they are not
+  spooled to disk); (b) when decoding fails, a DICOMweb reply can be cut off after its 200 status
+  line has been sent (the client sees a short or broken body, not an error status); (c) memory
+  per association can reach about 2 x the spool threshold (`spool_threshold`), not "below" it.
 - **MPPS and UPS state is held in memory** unless the product configures a state folder
   (`state_folder`); without one it is lost when the SCP stops.
 - **Incomplete-data policies: five of seven are available.** `QUARANTINE` (the default),

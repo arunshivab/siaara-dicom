@@ -16,6 +16,7 @@ internal static class C
     public const uint SIAARA_QUERY_NO_TOTAL = 1u;
     public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_RECORDS = 100000u;
     public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_BYTES = 67108864u;
+    public const uint SIAARA_DICOMDIR_MEMORY_DEFAULT_MAX_VALUE_BYTES = 65536u;
     public const uint SIAARA_DEID_ALL_FRAMES = 0xFFFFFFFFu;
     public const uint SIAARA_SORT_EXPAND_FRAMES = 1u;
     public const int SIAARA_OFFSET_TABLE_AUTO = 0;
@@ -545,10 +546,14 @@ internal static class C
     public const int SIAARA_GISSUE_PRESENT_UNLISTED = 8;
     public const int SIAARA_GISSUE_AMBIGUOUS_MATCH = 9;
     public const int SIAARA_GISSUE_UNSAFE_NAME = 10;
+    public const int SIAARA_GISSUE_DICOMDIR_DAMAGED = 11;
     public const int SIAARA_GSKIP_NOT_DICOM = 1;
     public const int SIAARA_GSKIP_UNREADABLE = 2;
     public const int SIAARA_GSKIP_FILE_LIMIT = 3;
     public const int SIAARA_GSKIP_TOTAL_BUDGET = 4;
+    public const int SIAARA_GSKIP_NOT_A_DICOMDIR = 5;
+    public const int SIAARA_GDAMAGED_INCOMPLETE = 1;
+    public const int SIAARA_GDAMAGED_WARNINGS = 2;
     public const int SIAARA_GLIMIT_NONE = 0;
     public const int SIAARA_GLIMIT_MAX_FILES = 1;
     public const int SIAARA_GLIMIT_FILE_BYTES = 2;
@@ -1009,6 +1014,7 @@ internal struct siaara_dicomdir_read_options
     public uint reserved0;
     public ulong max_records;
     public ulong max_bytes;
+    public ulong max_value_bytes;
 }
 
 /// <summary>siaara_dicomdir_summary (blittable, C layout).</summary>
