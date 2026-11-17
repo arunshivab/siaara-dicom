@@ -99,6 +99,13 @@ class CheckContent(unittest.TestCase):
     def test_duplicate_entry_fails(self):
         self.assertProblem(self.run_check(good_entries(), extra=[("LICENSE", b"other")]), "duplicate entries")
 
+    def test_deterministic_psmdcp_name_passes(self):
+        # A deterministic pack (ContinuousIntegrationBuild=true) names the file nuget.psmdcp.
+        e = good_entries()
+        del e["package/services/metadata/core-properties/0123456789abcdef0123456789abcdef.psmdcp"]
+        e["package/services/metadata/core-properties/nuget.psmdcp"] = b"<x/>"
+        self.assertEqual(self.run_check(e), [])
+
     def test_two_psmdcp_fail(self):
         e = good_entries()
         e["package/services/metadata/core-properties/ffffffffffffffffffffffffffffffff.psmdcp"] = b"<x/>"

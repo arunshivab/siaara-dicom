@@ -9,7 +9,7 @@ README.md, the nuspec (id, version, authors, licence file, NO dependency), and t
 under runtimes/<rid>/native for the runtimes present (--require-all-rids: all seven).
 Allow-list (R-218): the package may hold ONLY those files, an icon.png, and the OPC metadata that
 NuGet writes ([Content_Types].xml, _rels/.rels, package/services/metadata/core-properties/
-<32 hex digits>.psmdcp). Any other entry fails the check and is named.
+<32 hex digits>.psmdcp, or nuget.psmdcp in a deterministic pack). Any other entry fails the check and is named.
 Consumer test: copies examples/csharp/QuickStart into the work folder with a nuget.config whose
 only source is a local folder holding the package, then restores, builds and runs it with a fresh
 package cache. The caller makes the network unusable (dead proxy) to prove nothing is fetched; the
@@ -28,7 +28,8 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 MANAGED = ("lib/net10.0/Siaara.dll", "lib/net10.0/Siaara.Interop.dll", "lib/net10.0/Siaara.xml")
 REQUIRED = MANAGED + ("LICENSE", "README.md", "Siaara.nuspec")
 OPTIONAL = ("icon.png", "[Content_Types].xml", "_rels/.rels")
-PSMDCP = re.compile(r"package/services/metadata/core-properties/[0-9a-f]{32}\.psmdcp")
+# NuGet names it after a random GUID, or "nuget.psmdcp" in a deterministic pack (ContinuousIntegrationBuild).
+PSMDCP = re.compile(r"package/services/metadata/core-properties/(?:[0-9a-f]{32}|nuget)\.psmdcp")
 RIDS = {"linux-x64": "libsiaara.so", "linux-arm64": "libsiaara.so", "win-x64": "siaara.dll", "win-x86": "siaara.dll",
         "win-arm64": "siaara.dll", "osx-x64": "libsiaara.dylib", "osx-arm64": "libsiaara.dylib"}
 
